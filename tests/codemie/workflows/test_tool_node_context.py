@@ -331,6 +331,144 @@ def test_tc_tnc_004_tool_with_mcp_server(
     mock_mcp_tool.execute.assert_called_once()
 
 
+@patch("codemie.workflows.nodes.tool_node.MCPToolkitService")
+@patch("codemie.workflows.nodes.tool_node.config")
+def test_tc_tnc_004b_mcp_tool_standalone_without_url_raises(
+    mock_config,
+    mock_mcp_toolkit_service,
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+    mock_tool_config,
+):
+    """Standalone with MCP Connect enabled but no URL must raise the same error as a disabled flag."""
+    # Arrange
+    mock_config.STANDALONE = True
+    mock_config.MCP_CONNECT_ENABLED = True
+    mock_config.MCP_CONNECT_URL = ""
+
+    mcp_server = Mock(spec=MCPServerDetails)
+    mcp_server.name = "test_mcp"
+    mcp_server.enabled = True
+    mcp_server.config = Mock()
+    mcp_server.config.single_usage = False
+
+    mock_tool_config.mcp_server = mcp_server
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {},
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute MCP tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+        tool_args={"arg1": "test"},
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="MCP Connect is not available in configuration"):
+        node._execute_mcp_tool(state_schema)
+    mock_mcp_toolkit_service.get_mcp_server_tools.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "standalone,mcp_enabled,mcp_url,should_raise",
+    [
+        # Non-standalone ignores the URL entirely: reduces to today's MCP_CONNECT_ENABLED check.
+        (False, True, "", False),
+        (False, False, "http://mcp-connect:3000", True),
+        # Standalone with the flag off raises regardless of the URL.
+        (True, False, "http://mcp-connect:3000", True),
+    ],
+)
+@patch("codemie.workflows.nodes.tool_node.MCPToolkitService")
+@patch("codemie.workflows.nodes.tool_node.config")
+def test_tc_tnc_004c_mcp_tool_availability_matrix(
+    mock_config,
+    mock_mcp_toolkit_service,
+    standalone,
+    mcp_enabled,
+    mcp_url,
+    should_raise,
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+    mock_tool_config,
+):
+    """mcp_connect_available gates _execute_mcp_tool identically at every standalone x
+    MCP_CONNECT_ENABLED x MCP_CONNECT_URL combination not already covered above."""
+    # Arrange
+    mock_config.STANDALONE = standalone
+    mock_config.MCP_CONNECT_ENABLED = mcp_enabled
+    mock_config.MCP_CONNECT_URL = mcp_url
+
+    mcp_server = Mock(spec=MCPServerDetails)
+    mcp_server.name = "test_mcp"
+    mcp_server.enabled = True
+    mcp_server.config = Mock()
+    mcp_server.config.single_usage = False
+
+    mock_tool_config.mcp_server = mcp_server
+
+    mock_mcp_tool = Mock()
+    mock_mcp_tool.name = "test_tool"
+    mock_mcp_tool.args_schema = {"properties": {"arg1": {"type": "string"}}}
+    mock_mcp_tool.execute = Mock(return_value="MCP tool result")
+    mock_mcp_tool.apply_tokens_limit = Mock(return_value="MCP tool result")
+
+    mock_mcp_toolkit_service.get_mcp_server_tools = Mock(return_value=[mock_mcp_tool])
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {},
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute MCP tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+        tool_args={"arg1": "test"},
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    # Act / Assert
+    if should_raise:
+        with pytest.raises(ValueError, match="MCP Connect is not available in configuration"):
+            node._execute_mcp_tool(state_schema)
+        mock_mcp_toolkit_service.get_mcp_server_tools.assert_not_called()
+    else:
+        result = node._execute_mcp_tool(state_schema)
+        assert result == "MCP tool result"
+        mock_mcp_toolkit_service.get_mcp_server_tools.assert_called_once()
+
+
 def test_tc_tnc_005_tool_argument_validation(
     mock_workflow_execution_service,
     mock_thought_queue,

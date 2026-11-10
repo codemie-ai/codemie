@@ -21,7 +21,9 @@ from typing import Any, Dict, List, Optional, cast
 from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import APIRouter, status, Depends, Query, BackgroundTasks, Request
+
 from pydantic import BaseModel
+from codemie.rest_api.dependencies.core import require_core
 from codemie.rest_api.models.workflow_generator import WorkflowGeneratorRequest, WorkflowGeneratorResponse
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.service.workflow_generator_service import WorkflowGeneratorService
@@ -35,6 +37,19 @@ from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
 from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.core.constants import MermaidMimeType
+from codemie.service.file_service.mermaid_service import (
+    MERMAID_INVALID_DIAGRAM_HELP,
+    MERMAID_INVALID_DIAGRAM_MESSAGE,
+    MERMAID_NOT_CONFIGURED_DETAILS,
+    MERMAID_NOT_CONFIGURED_HELP,
+    MERMAID_NOT_CONFIGURED_MESSAGE,
+    MERMAID_UNAVAILABLE_DETAILS,
+    MERMAID_UNAVAILABLE_HELP,
+    MERMAID_UNAVAILABLE_MESSAGE,
+    MermaidDiagramGenerationError,
+    MermaidNotConfiguredError,
+    MermaidServiceUnavailableError,
+)
 from codemie.core.exceptions import (
     ExtendedHTTPException,
     MissingPlaceholderVariablesException,
@@ -79,7 +94,7 @@ from codemie.workflows.workflow import WorkflowExecutor
 router = APIRouter(
     tags=["Workflow"],
     prefix="/v1",
-    dependencies=[],
+    dependencies=[Depends(require_core)],
 )
 workflow_service = WorkflowService()
 workflow_monitoring_service = WorkflowMonitoringService()
@@ -793,6 +808,28 @@ def create_workflow_diagram(request: CreateWorkflowRequest, user: User = Depends
             workflow_config=workflow_config, user=user, error_format=WorkflowErrorFormat.STRING
         )
         b64_diagram = base64.b64encode(diagram).decode("utf-8") if diagram else None
+    except MermaidNotConfiguredError as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message=MERMAID_NOT_CONFIGURED_MESSAGE,
+            details=MERMAID_NOT_CONFIGURED_DETAILS,
+            help=MERMAID_NOT_CONFIGURED_HELP,
+            expected=True,
+        ) from e
+    except MermaidServiceUnavailableError as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message=MERMAID_UNAVAILABLE_MESSAGE,
+            details=MERMAID_UNAVAILABLE_DETAILS,
+            help=MERMAID_UNAVAILABLE_HELP,
+        ) from e
+    except MermaidDiagramGenerationError as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message=MERMAID_INVALID_DIAGRAM_MESSAGE,
+            details=str(e).strip(),
+            help=MERMAID_INVALID_DIAGRAM_HELP,
+        ) from e
     except Exception as e:
         formatted_exception = str(e).strip()
         raise ExtendedHTTPException(
@@ -859,7 +896,12 @@ def evaluate_workflow(
 
 
 def update_workflow_schema(workflow_config, user):
-    workflow_schema = WorkflowExecutor.validate_workflow_and_draw(workflow_config=workflow_config, user=user)
+    try:
+        workflow_schema = WorkflowExecutor.validate_workflow_and_draw(workflow_config=workflow_config, user=user)
+    except Exception as e:
+        # The diagram is optional: a rendering failure must never block saving the workflow
+        logger.error(f"Failed to draw workflow diagram, saving without it: {str(e)}")
+        workflow_schema = None
     workflow_service.save_workflow_schema(workflow_config, workflow_schema)
 
 

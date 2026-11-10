@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15689_hide-mcp-service-section-from-assistant-config-page",
+  "head": "f11d9a6242b009ec1d3c5227b436c432ea018e37",
+  "runner": "poetry",
+  "started_at": "2026-10-29T14:49:33Z",
+  "completed_at": "2026-10-29T14:57:11Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1890,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5916,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1059,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 39770,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "Finding is in standalone/.env.standalone, a gitignored, untracked local file (git ls-files reports it is not tracked; git check-ignore confirms .gitignore:132) not part of this branch's diff. `make gitleaks` scans the whole working-tree dir regardless of git status, so a local dev secret file surfaces here even though it never enters a commit. Reported as-is per gate contract; caller to judge whether this blocks the branch or is an environment artifact to clean up (e.g. delete/rename the local file, or extend .gitleaks.toml allowlist if this filename is a known local-dev pattern)."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 731,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: nothing staged in this gate run (branch already committed; `git diff --cached --name-only` is empty). Tool output: '0 commits scanned.' / 'scanned ~0 bytes (0) in 41.9ms' / 'no leaks found' — a vacuous pass, not a real scan of the branch's changes. Enable by staging the relevant files before running this hook, or rely on the CI-equivalent `make gitleaks` gate above which does scan the real content."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 297690,
+      "command": "make test",
+      "exit_code": 2
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 73,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: tool output '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable locally by setting SONAR_TOKEN (and SONAR_HOST_URL if non-default) via .env.local, with a reachable SonarQube server. This check is only truly settled by CI/pre-push, which this run did not exercise."
+    },
+    {
+      "id": "ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 8,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '[pre-commit] No staged Python files - skipping Ruff format/fix check.' Nothing is staged in this gate run; the `ruff` gate above already covers the branch's actual .py content via `make ruff` (format + check --fix + check)."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "N/A",
+      "command": "bash scripts/git-hooks/commit_msg.sh <msgfile>",
+      "notes": "No commit is being made in this gate run; the hook needs a commit message file to validate, which does not exist outside an actual `git commit`. Not a code-quality gate (it enforces the 'EPMCDME-<n>:' subject prefix), and the repo's recent commits already follow that convention."
+    }
+  ],
+  "failures": {
+    "gitleaks": "docker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 \\\n    dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace\nFinding:     AZURE_OPENAI_API_KEY=REDACTED\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.429229\nFile:        /workspace/standalone/.env.standalone\nLine:        20\nFingerprint: /workspace/standalone/.env.standalone:generic-api-key:20\n\n2:50PM INF scanned ~63537464 bytes (63.54 MB) in 38.9s\n2:50PM WRN leaks found: 1\nmake: *** [Makefile:73: gitleaks] Error 1",
+    "test": "FAILED tests/codemie/service/marketplace_management/test_llm_assessment_service.py::test_model_options_respect_what_the_model_declares\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_matplotlib_writes_single_and_multipage_pdf\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\n==== 4 failed, 23864 passed, 585 skipped, 435 warnings in 292.52s (0:04:52) ====\nmake: *** [Makefile:31: test] Error 1\n\nNote: none of the 4 failing tests are in files touched by this branch's diff (git diff --name-only origin/main...HEAD); they are in test_llm_assessment_service.py and test_filesystem_policy.py, unrelated to the MCP-service-section-hiding change. Root cause not investigated further per gate-runner contract — caller to determine whether these are pre-existing/flaky failures on main or newly broken by this branch."
+  }
+}

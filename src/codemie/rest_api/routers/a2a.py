@@ -16,9 +16,11 @@ import json
 from typing import Any, Optional
 
 from fastapi import APIRouter, status, Depends, Request, Query
+
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.configs import logger
 from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
@@ -49,7 +51,7 @@ from codemie.rest_api.security.user import User
 router = APIRouter(
     tags=["A2A"],
     prefix="/v1/a2a",
-    dependencies=[],
+    dependencies=[Depends(require_core)],
 )
 
 A2A_VERSION_HEADER = "A2A-Version"

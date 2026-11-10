@@ -26,6 +26,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Header, Query, status
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.configs import logger
 from codemie.core.constants import (
     HEADER_CODEMIE_CLI,
@@ -54,7 +55,7 @@ _RETRY_HELP = "Please retry; if the issue persists, contact support."
 router = APIRouter(
     tags=["Skills"],
     prefix="/v1/skills",
-    dependencies=[Depends(authenticate)],
+    dependencies=[Depends(require_core), Depends(authenticate)],
 )
 
 

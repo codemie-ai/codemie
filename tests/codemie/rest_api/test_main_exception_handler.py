@@ -122,6 +122,30 @@ async def test_extended_handler_keeps_details_of_503():
 
 
 @pytest.mark.asyncio
+async def test_extended_handler_logs_expected_503_as_warning_without_traceback():
+    exc = ExtendedHTTPException(code=503, message="Not configured", details="Set X", help="Help", expected=True)
+
+    with patch("codemie.rest_api.main.logger") as mock_logger:
+        response = await extended_http_exception_handler(_request(), exc)
+
+    assert response.status_code == 503
+    assert json.loads(response.body)["error"]["details"] == "Set X"
+    mock_logger.error.assert_not_called()
+    mock_logger.warning.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_extended_handler_logs_unexpected_503_with_traceback():
+    exc = ExtendedHTTPException(code=503, message="Unavailable", details="Elastic is down", help="Retry")
+
+    with patch("codemie.rest_api.main.logger") as mock_logger:
+        await extended_http_exception_handler(_request(), exc)
+
+    assert mock_logger.error.call_args.kwargs["exc_info"] is True
+    mock_logger.warning.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_extended_handler_keeps_details_of_4xx():
     exc = ExtendedHTTPException(code=400, message="Bad input", details="field x is invalid", help="Fix it")
 

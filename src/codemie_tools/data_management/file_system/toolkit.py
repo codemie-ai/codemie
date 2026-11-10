@@ -94,18 +94,38 @@ class FileSystemToolkit(BaseToolkit):
         return os.getenv("CODE_EXECUTOR_ENABLED", "false").lower() == "true"
 
     @classmethod
+    def _is_code_executor_offered(cls) -> bool:
+        """Standalone also requires the feature flag and a cluster connection; elsewhere the operator switch alone."""
+        from codemie.configs.code_executor_availability import code_executor_available  # noqa: PLC0415
+        from codemie.configs.config import config  # noqa: PLC0415
+
+        if config.STANDALONE:
+            return code_executor_available(config)
+        return cls._is_code_executor_enabled()
+
+    @classmethod
+    def _is_image_generation_offered(cls) -> bool:
+        """Standalone offers Generate Image only when an image model is configured (as _build_image_generator needs)."""
+        from codemie.configs.config import config  # noqa: PLC0415
+
+        return not config.STANDALONE or bool((config.IMAGE_GENERATION_MODEL or "").strip())
+
+    @classmethod
     def get_tools_ui_info(cls, is_admin: bool = False):
-        code_executor_enabled = cls._is_code_executor_enabled()
+        code_executor_enabled = cls._is_code_executor_offered()
+        image_generation_enabled = cls._is_image_generation_offered()
 
         # Only show all tools if user is admin AND environment variable is enabled
         if is_admin and cls._is_file_system_tools_enabled():
             toolkit = FileSystemToolkitUI()
             if not code_executor_enabled:
                 toolkit.tools = [tool for tool in toolkit.tools if tool.name != CODE_EXECUTOR_TOOL.name]
+            if not image_generation_enabled:
+                toolkit.tools = [tool for tool in toolkit.tools if tool.name != GENERATE_IMAGE_TOOL.name]
             return toolkit.model_dump()
 
         # Otherwise, return only safe tools
-        tools = [Tool.from_metadata(GENERATE_IMAGE_TOOL)]
+        tools = [Tool.from_metadata(GENERATE_IMAGE_TOOL)] if image_generation_enabled else []
         if code_executor_enabled:
             tools.append(Tool.from_metadata(CODE_EXECUTOR_TOOL))
         return ToolKit(
@@ -122,7 +142,7 @@ class FileSystemToolkit(BaseToolkit):
             ),
         ]
 
-        if self._is_code_executor_enabled():
+        if self._is_code_executor_offered():
             tools.append(
                 CodeExecutorTool(
                     file_repository=self.file_repository,

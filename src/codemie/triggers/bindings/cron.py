@@ -30,6 +30,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 
 from codemie.configs import logger, config
+from codemie.configs.llm_provider_availability import core_availability
 from codemie.core.constants import CodeIndexType
 from codemie.triggers.bindings.cron_helpers import normalize_day_of_week
 from codemie.triggers.bindings.cron_stagger import RESOURCE_TYPE_DATASOURCE, stagger_cron
@@ -82,13 +83,24 @@ from codemie.triggers.trigger_models import (
 DEFAULT_TASK_PROMPT = "Do it"
 
 
-async def _tracked_run(actor_fn, scheduler_id: str, **kwargs):
-    """Wrap a scheduler actor with SchedulerRun persistence."""
-    from codemie.repository.scheduler_run_repository import SchedulerRunRepository
-    from codemie.rest_api.models.scheduler_run import SchedulerRun
+def _skipped_for_disabled_core(actor_fn, scheduler_id: str) -> bool:
+    """Standalone without an LLM core: assistant/workflow runs cannot work. Skip the tick, keep the
+    stored schedule untouched, write no row (one per tick would flood the table)."""
+    if actor_fn not in (invoke_assistant, invoke_workflow) or not config.STANDALONE:
+        return False
+    available, provider, missing = core_availability(config)
+    if available:
+        return False
+    logger.warning(
+        "Scheduled run skipped, core is disabled: scheduler_id=%s provider=%s missing=%s",
+        scheduler_id,
+        provider,
+        missing,
+    )
+    return True
 
-    # CR-009: use timezone-aware UTC datetimes; datetime.utcnow() is deprecated in Python 3.12+
-    started_at = datetime.now(timezone.utc)
+
+def _scheduled_input_data(kwargs: dict) -> dict:
     input_data: dict = {}
     if kwargs.get("task"):
         input_data["task"] = kwargs["task"]
@@ -96,6 +108,20 @@ async def _tracked_run(actor_fn, scheduler_id: str, **kwargs):
         input_data["assistantId"] = kwargs["assistant_id"]
     elif kwargs.get("workflow_id"):
         input_data["workflowId"] = kwargs["workflow_id"]
+    return input_data
+
+
+async def _tracked_run(actor_fn, scheduler_id: str, **kwargs):
+    """Wrap a scheduler actor with SchedulerRun persistence."""
+    from codemie.repository.scheduler_run_repository import SchedulerRunRepository
+    from codemie.rest_api.models.scheduler_run import SchedulerRun
+
+    if _skipped_for_disabled_core(actor_fn, scheduler_id):
+        return
+
+    # CR-009: use timezone-aware UTC datetimes; datetime.utcnow() is deprecated in Python 3.12+
+    started_at = datetime.now(timezone.utc)
+    input_data = _scheduled_input_data(kwargs)
     run = SchedulerRun(
         scheduler_id=scheduler_id,
         status="running",

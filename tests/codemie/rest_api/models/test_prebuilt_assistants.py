@@ -15,8 +15,10 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from codemie.configs import config
+from codemie.configs.customer_config import CustomerConfig
 from codemie.rest_api.models.prebuilt_assistants import PrebuiltAssistant
 from codemie.rest_api.security.user import User
 
@@ -97,6 +99,21 @@ class TestPrebuiltAssistant(unittest.TestCase):
         )  # Adjusted based on current implementation
         for assistant_name in self.admin_only_assistants:
             self.assertTrue(any(assistant.name == assistant_name for assistant in assistants))
+
+    def _researcher_tool_count(self, standalone: bool) -> int:
+        with (
+            patch.object(config, "STANDALONE", standalone),
+            patch.object(config, "GOOGLE_SEARCH_API_KEY", ""),
+            patch.object(config, "TAVILY_API_KEY", ""),
+            patch.object(CustomerConfig, "is_feature_enabled", return_value=True),
+        ):
+            result = PrebuiltAssistant.prebuilt_assistants(User(id="test_user"))
+        researcher = next(a for a in result if a.slug == "template-google-search-assistant")
+        return len(researcher.toolkits[0].tools)
+
+    def test_researcher_template_hides_keyless_tools_in_standalone(self):
+        self.assertEqual(self._researcher_tool_count(True), 2)
+        self.assertEqual(self._researcher_tool_count(False), 6)
 
     def test_slug_is_prefilled(self):
         assistant = PrebuiltAssistant(

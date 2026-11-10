@@ -53,7 +53,7 @@ def get_tools(request: Request, user: User = Depends(authenticate)):
     """
     Returns all available tools
     """
-    tools_info = ToolsInfoService.get_tools_info(show_for_ui=True, user=user)
+    tools_info = ToolsInfoService.get_tools_info(show_for_ui=True, user=user, offered_only=True)
     return tools_info
 
 

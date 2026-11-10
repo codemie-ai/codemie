@@ -211,7 +211,7 @@ class TestPromptGeneratorChain(unittest.TestCase):
 
         chain.add_toolkits(self.mock_user, include_tools=True, prompt_template=None)
 
-        mock_tools_service.get_tools_info.assert_called_once_with(user=self.mock_user)
+        mock_tools_service.get_tools_info.assert_called_once_with(user=self.mock_user, offered_only=True)
         # Should store transformed toolkits directly
         self.assertEqual(
             chain._chain_input["toolkits"],
@@ -232,7 +232,7 @@ class TestPromptGeneratorChain(unittest.TestCase):
 
         chain.add_toolkits(self.mock_user, include_tools=True, prompt_template=mock_prompt)
 
-        mock_tools_service.get_tools_info.assert_called_once_with(user=self.mock_user)
+        mock_tools_service.get_tools_info.assert_called_once_with(user=self.mock_user, offered_only=True)
         mock_prompt.format.assert_called_once_with(
             toolkits=[{"toolkit": "tk1", "tools": [{"name": "t1", "label": "T1", "description": "desc"}]}],
             include_tools=True,

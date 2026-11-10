@@ -20,6 +20,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.rest_api.models.scheduler_run import (
     PatchSchedulerRequest,
     ProjectRef,
@@ -39,7 +40,7 @@ from codemie.service.settings.scheduler_settings_service import SchedulerSetting
 router = APIRouter(
     tags=["Schedulers"],
     prefix="/v1",
-    dependencies=[Depends(authenticate)],
+    dependencies=[Depends(require_core), Depends(authenticate)],
 )
 
 

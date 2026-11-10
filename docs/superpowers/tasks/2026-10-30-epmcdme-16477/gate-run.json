@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16477",
+  "head": "e9df651cc42811abed9da7687091376efd135ce9",
+  "runner": "custom",
+  "started_at": "2026-10-30T08:32:19Z",
+  "completed_at": "2026-10-30T08:34:34Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1545,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Also covers codemie-pre-commit hook ruff step; no files changed by auto-fix."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3006,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1128,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Also covers codemie-pre-commit hook license step."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 8279,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "1 leak: generic-api-key in standalone/.env.standalone:20 (file outside this repo's diff; Docker mount scanned parent workspace path /workspace/standalone)."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 120318,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "61 failed, 206 errors, 23962 passed; none in the 5 test files touched by this branch (failures concentrated in marketplace_management, enterprise/mcp_auth, alembic marketplace migrations). Also covers pre-push hook pytest."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 80,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skipped: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN to run locally; also run by pre-push hook."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make test-cli-analytics-live",
+      "notes": "Skip if: diff does not touch src/codemie/repository/cli_analytics/postgres/ (it does not)."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make coverage",
+      "notes": "Skip if: coverage not requested."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make verify",
+      "notes": "Composite of ruff, license, gitleaks, test, which ran individually."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "MR compliance gate; requires live docker stack and ~/.codemie/test-harness.json; run before opening MR."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "N/A",
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "notes": "Pre-commit staged scan; nothing staged. Full-tree scan covered by make gitleaks."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "command": ".gitlab-ci.yml wait-ci-init",
+      "notes": "CI only waits for external contexts (ci-pipeline, compliance-report); not runnable locally."
+    }
+  ],
+  "failures": {
+    "gitleaks": "docker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 \\\n\t    dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace\nFinding:     AZURE_OPENAI_API_KEY=\u001b[1;3;mREDACTED\u001b[0m\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     4.304229\nFile:        /workspace/standalone/.env.standalone\nLine:        20\nFingerprint: /workspace/standalone/.env.standalone:generic-api-key:20\n\n\u001b[90m8:32AM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~61654124 bytes (61.65 MB) in 7.58s\u001b[0m\n\u001b[90m8:32AM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 1\u001b[0m\nmake: *** [gitleaks] Error 1\n",
+    "unit": "ERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_disallowed_transitions_are_409[REJECTED-approve-kwargs2]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_disallowed_transitions_are_409[WITHDRAWN-approve-kwargs3]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_disallowed_transitions_are_409[DRAFT-reject-kwargs4]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_disallowed_transitions_are_409[APPROVED-reject-kwargs5]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_disallowed_transitions_are_409[REJECTED-reject-kwargs6]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_disallowed_transitions_are_409[APPROVED-force_publish-kwargs7]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_disallowed_transitions_are_409[DRAFT-withdraw-kwargs8]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_disallowed_transitions_are_409[WITHDRAWN-withdraw-kwargs9]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_disallowed_transitions_are_409[PENDING_REVIEW-submit-kwargs10]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_disallowed_transitions_are_409[APPROVED-submit-kwargs11]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_allowed_transitions_succeed_and_bump_the_version[PENDING_REVIEW-approve-kwargs0-APPROVED]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_allowed_transitions_succeed_and_bump_the_version[PENDING_REVIEW-reject-kwargs1-REJECTED]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_allowed_transitions_succeed_and_bump_the_version[PENDING_REVIEW-withdraw-kwargs2-WITHDRAWN]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_allowed_transitions_succeed_and_bump_the_version[APPROVED-withdraw-kwargs3-WITHDRAWN]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_allowed_transitions_succeed_and_bump_the_version[PENDING_REVIEW-force_publish-kwargs4-APPROVED]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_allowed_transitions_succeed_and_bump_the_version[DRAFT-submit-kwargs5-PENDING_REVIEW]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_allowed_transitions_succeed_and_bump_the_version[REJECTED-submit-kwargs6-PENDING_REVIEW]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_allowed_transitions_succeed_and_bump_the_version[WITHDRAWN-submit-kwargs7-PENDING_REVIEW]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_reject_unpublishes_and_deindexes[reject-kwargs0-PENDING_REVIEW]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_reject_unpublishes_and_deindexes[withdraw-kwargs1-APPROVED]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_approve_still_publishes_and_indexes\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_replayed_decision_is_byte_identical\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_a_second_approve_without_the_key_is_a_conflict\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_force_publish_persists_its_override_notice\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_force_publish_without_a_notice_is_refused\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_reject_records_its_reason_on_the_row_and_in_history\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_decision_writes_an_activity_event\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_each_decision_emits_a_metric\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_re_submit_transitions_approved_to_pending_review\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_re_submit_from_pending_review_stays_pending_and_advances_the_version\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_re_submit_from_a_status_that_was_never_reviewed_raises_conflict[DRAFT]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_re_submit_from_a_status_that_was_never_reviewed_raises_conflict[REJECTED]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_re_submit_from_a_status_that_was_never_reviewed_raises_conflict[WITHDRAWN]\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_list_marketplace_assistants_returns_all_three_statuses\nERROR tests/codemie/service/marketplace_management/test_queue_service_concurrency.py::test_list_marketplace_assistants_filters_to_approved_only\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_bypass_is_denied_for_non_admin_on_critical\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_bypass_never_skips_deterministic_gates\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_admin_bypass_waives_only_optional_findings\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_critical_gate_blocks_publish\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_optional_gate_does_not_block\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_gate_results_are_persisted_with_the_submission\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_pending_and_detail_agree_after_a_post_submit_edit\nERROR tests/codemie/rest_api/test_marketplace_cleanup_detail_field.py::test_cleanup_row_surfaces_detail_field\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_verdict_fields_when_verdict_exists\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_verdict_fields_are_null_when_no_verdict\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_bucket_reason_and_usage_tier\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_polish_check_results\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n= 61 failed, 23962 passed, 328 skipped, 432 warnings, 206 errors in 116.96s (0:01:56) =\nmake: *** [test] Error 1\n"
+  }
+}

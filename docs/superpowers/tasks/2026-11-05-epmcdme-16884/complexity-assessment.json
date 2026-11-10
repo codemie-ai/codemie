@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Gate Chats, Assistants, Workflows, Skills, Schedulers and webhook routers behind a settings-only LLM-provider check in standalone mode, with startup logging, scheduler skip, and a single availability source for the UI config.",
+  "generated": "2026-11-05T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches main.py composition root (about 12 router mounts), config, customer_config runtime components, model_provider_readiness, Cron scheduler/actors, and standalone env example; affects multiple workflows and shared config utilities." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the conditional router mounts plus runtime Component and check_model_provider_readiness, but readiness runs in lifespan after module-level mounts, is not settings-only, and its rules (NOT_CHECKED, Bedrock creds, whitespace strip) contradict D12/D16/AC10. Ordering change has no precedent; cross-router dependencies (skill, share, a2a) untraced; no mount-gating tests exist." },
+    { "dimension": "file_change_estimate", "reason": "Roughly 8-10 modified (main.py, config.py, customer_config.py, model_provider_readiness.py, cron.py, env example, tests) plus 2-3 new (availability module, tests) across src, standalone, tests." }
+  ],
+  "red_flags_applied": [
+    "Component Scope: affects multiple workflows and agents (assistants, workflows, schedulers, webhooks)",
+    "Technical Risk: existing readiness mechanism contradicts story rules and mount ordering has no precedent (divergence from closest pattern)"
+  ],
+  "split_recommendation": null
+}

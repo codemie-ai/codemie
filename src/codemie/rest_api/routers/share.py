@@ -14,6 +14,7 @@
 
 from typing import Any, Dict
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.conversation import Conversation
@@ -23,6 +24,7 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.share_conversation_service import ShareConversationService
 from fastapi import APIRouter, Depends, HTTPException, status
+
 from pydantic import BaseModel
 
 
@@ -33,6 +35,7 @@ class ShareConversationRequest(BaseModel):
 router = APIRouter(
     tags=["Share"],
     prefix="/v1",
+    dependencies=[Depends(require_core)],
 )
 
 

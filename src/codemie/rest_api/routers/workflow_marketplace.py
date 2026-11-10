@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.core.ability import Ability, Action
 from codemie.core.workflow_models import WorkflowConfig
 from codemie.rest_api.models.workflow_marketplace import (
@@ -34,7 +35,7 @@ from codemie.service.workflow_service import WorkflowService
 router = APIRouter(
     tags=["Workflow Marketplace"],
     prefix="/v1",
-    dependencies=[],
+    dependencies=[Depends(require_core)],
 )
 
 _workflow_service = WorkflowService()

@@ -28,6 +28,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from codemie.configs import config
+from codemie.rest_api.core_gating import log_core_gating as _log_core_gating, schema_routes
 from codemie.configs.customer_config import customer_config as _customer_config
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs.config import ENV_LOCAL, retrieval_available
@@ -61,6 +62,21 @@ from codemie.core.exceptions import (
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.rest_api.routers import budget_router, project_budget_router
 from codemie.rest_api.routers import (
+    a2a,
+    assistant_mapping,
+    assistant,
+    assistant_prompt_variable_mapping,
+    category,
+    conversation,
+    conversation_analysis,
+    share,
+    workflow,
+    workflow_marketplace,
+    workflow_executions,
+    webhook,
+    skill_events,
+    skill,
+    schedulers,
     agent_workspace,
     guardrail,
     index,
@@ -68,14 +84,7 @@ from codemie.rest_api.routers import (
     admin,
     feedback,
     background_tasks,
-    assistant,
-    assistant_mapping,
-    assistant_prompt_variable_mapping,
-    category,
     vendor,
-    workflow,
-    workflow_marketplace,
-    workflow_executions,
     user_settings,
     project_settings,
     settings,
@@ -83,15 +92,10 @@ from codemie.rest_api.routers import (
     cost_centers,
     llm_models,
     files,
-    conversation,
-    conversation_analysis,
-    webhook,
     user,
     customer_config,
     provider,
     tool,
-    share,
-    a2a,
     ide,
     permission,
     auth,
@@ -104,12 +108,9 @@ from codemie.rest_api.routers import (
     mcp_managed,
     ai_kata,
     user_kata_progress,
-    skill,
-    skill_events,
     dynamic_config,
     export,
 )
-from codemie.rest_api.routers import schedulers
 from codemie.rest_api.routers import sharepoint_oauth
 from codemie.rest_api.routers import google_oauth
 from codemie.rest_api.routers import gitlab_oauth
@@ -605,6 +606,53 @@ def _check_sharepoint_pkce_redis() -> None:
         logger.info("SharePoint PKCE: Redis connection verified")
     except Exception as exc:
         logger.warning(f"SharePoint PKCE: Redis unavailable at startup, PKCE flow will fail: {exc}")
+
+
+def _run_standalone_startup() -> None:
+    """Single entry point for standalone-image startup behaviour; no-op unless STANDALONE is set."""
+    if not config.STANDALONE:
+        return
+    logger.info("Standalone mode enabled")
+    _log_core_gating()
+    if config.MCP_CONNECT_ENABLED and not config.MCP_CONNECT_URL:
+        logger.warning(
+            "MCP_CONNECT_ENABLED is set but MCP_CONNECT_URL is empty; MCP Connect is degraded in "
+            "standalone mode. The following features are affected: MCP Servers on assistants, "
+            "workflow MCP tools, the admin MCP page, the MCP settings tab, and the MCP onboarding "
+            "steps. Set MCP_CONNECT_URL or set MCP_CONNECT_ENABLED=false to disable intentionally."
+        )
+
+    from codemie.service.file_service.mermaid_service import MermaidService
+
+    if not MermaidService.is_configured():
+        logger.warning(
+            "Standalone: Mermaid rendering is not configured (set MERMAID_SERVER_URL or "
+            "MERMAID_USE_MERMAID_INC=true). Degraded features: chat diagrams, workflow graph preview, "
+            "stored workflow diagram image, conversation export diagrams."
+        )
+
+    from codemie.configs.code_executor_availability import warn_code_executor_unavailable
+
+    warn_code_executor_unavailable()
+
+    from codemie.clients.redis import redis_configured
+
+    if not redis_configured():
+        if not config.GOOGLE_OAUTH_ENABLED:
+            logger.warning(
+                "Standalone: Redis is not configured, so Google OAuth stays disabled. Set "
+                "REDIS_HOST (and GOOGLE_OAUTH_ENABLED=true) to enable it."
+            )
+        else:
+            logger.warning(
+                "Standalone: Google OAuth requires Redis. Redis is required but not configured, "
+                "so Google OAuth stays disabled until REDIS_HOST is set."
+            )
+        if config.WEBHOOK_RATE_LIMIT_ENABLED:
+            logger.warning(
+                "Standalone: Redis is not configured, so webhook rate limiting is disabled. "
+                "Webhooks are accepted without rate limiting until REDIS_HOST is set."
+            )
 
 
 def _initialize_deployment_version() -> None:
@@ -1198,11 +1246,52 @@ async def _shutdown_services(app: FastAPI, tasks: list):
         otel_provider.shutdown()
 
 
+def _instrument_sqlalchemy_engines() -> None:
+    # Instrument SQLAlchemy engines explicitly after they are created.
+    # PostgresClient uses from-imports (sqlmodel.create_engine /
+    # sqlalchemy.ext.asyncio.create_async_engine) whose references are captured at import
+    # time, so the module-level monkey-patch in SQLAlchemyInstrumentor would never reach
+    # them.  Passing engine instances directly here ensures both the pool "connect" spans
+    # and the actual SQL cursor-execute spans appear as children of the HTTP span.
+    if not config.OTEL_ENABLED:
+        return
+    from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+    from codemie.clients.postgres import PostgresClient
+    from codemie.configs.otel_config import enrich_sqlalchemy_spans
+    from sqlalchemy.engine import Engine
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    sync_engine = PostgresClient.get_engine()
+    async_engine = PostgresClient.get_async_engine()
+    engines: list[Engine] = []
+
+    if isinstance(sync_engine, Engine):
+        engines.append(sync_engine)
+    else:
+        logger.debug(f"Skipping SQLAlchemy OTel instrumentation for non-engine sync target: {type(sync_engine)!r}")
+
+    if isinstance(async_engine, AsyncEngine):
+        engines.append(async_engine.sync_engine)
+    else:
+        logger.debug(f"Skipping SQLAlchemy OTel instrumentation for non-engine async target: {type(async_engine)!r}")
+
+    if engines:
+        SQLAlchemyInstrumentor().instrument(engines=engines)
+        # Enrich span names from "SELECT" to "SELECT <table>" for better visibility.
+        # Must be called after instrument() so our listener runs after OTel's.
+        enrich_sqlalchemy_spans(engines)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting CodeMie application. Config={config.to_safe_dict()}")
 
-    if not retrieval_available(config):
+    if config.STANDALONE and not retrieval_available(config):
+        logger.warning(
+            "Retrieval capability unavailable (ELASTIC_URL is empty). Knowledge bases, "
+            "datasources and code indexing are disabled. To enable retrieval, set ELASTIC_URL."
+        )
+    elif not retrieval_available(config):
         logger.warning(
             "Retrieval capability unavailable (RETRIEVAL_BACKEND=none). Knowledge bases, "
             "datasources and code indexing are disabled. To enable retrieval, set "
@@ -1238,40 +1327,7 @@ async def lifespan(app: FastAPI):
     # default model is used instead of the YAML fallback.
     _initialize_preconfigured_content()
 
-    # Instrument SQLAlchemy engines explicitly after they are created.
-    # PostgresClient uses from-imports (sqlmodel.create_engine /
-    # sqlalchemy.ext.asyncio.create_async_engine) whose references are captured at import
-    # time, so the module-level monkey-patch in SQLAlchemyInstrumentor would never reach
-    # them.  Passing engine instances directly here ensures both the pool "connect" spans
-    # and the actual SQL cursor-execute spans appear as children of the HTTP span.
-    if config.OTEL_ENABLED:
-        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-        from codemie.clients.postgres import PostgresClient
-        from codemie.configs.otel_config import enrich_sqlalchemy_spans
-        from sqlalchemy.engine import Engine
-        from sqlalchemy.ext.asyncio import AsyncEngine
-
-        sync_engine = PostgresClient.get_engine()
-        async_engine = PostgresClient.get_async_engine()
-        engines: list[Engine] = []
-
-        if isinstance(sync_engine, Engine):
-            engines.append(sync_engine)
-        else:
-            logger.debug(f"Skipping SQLAlchemy OTel instrumentation for non-engine sync target: {type(sync_engine)!r}")
-
-        if isinstance(async_engine, AsyncEngine):
-            engines.append(async_engine.sync_engine)
-        else:
-            logger.debug(
-                f"Skipping SQLAlchemy OTel instrumentation for non-engine async target: {type(async_engine)!r}"
-            )
-
-        if engines:
-            SQLAlchemyInstrumentor().instrument(engines=engines)
-            # Enrich span names from "SELECT" to "SELECT <table>" for better visibility.
-            # Must be called after instrument() so our listener runs after OTel's.
-            enrich_sqlalchemy_spans(engines)
+    _instrument_sqlalchemy_engines()
 
     register_prometheus_db_pool_metrics()
 
@@ -1292,6 +1348,7 @@ async def lifespan(app: FastAPI):
     _initialize_optional_features()
     _check_sharepoint_pkce_redis()
     _check_usage_attribution_settings()
+    _run_standalone_startup()
     assert_oauth_state_signing_secret_configured()
     assert_token_vault_available()
     warn_insecure_oauth_storage_for_enabled_providers()
@@ -1383,7 +1440,7 @@ def custom_openapi():
         title="Codemie",
         version=config.APP_VERSION,
         description=APP_DESCRIPTION,
-        routes=app.routes,
+        routes=schema_routes(app.routes),
     )
     openapi_schema["servers"] = [{"url": config.API_ROOT_PATH}]
 
@@ -1469,24 +1526,29 @@ def register_marketplace_management_router(target_app: FastAPI) -> bool:
     return True
 
 
-app.include_router(a2a.router)
-app.include_router(assistant_mapping.router)
-app.include_router(assistant.router)
-app.include_router(assistant_prompt_variable_mapping.router)
-app.include_router(category.router)
 if ElasticSearchClient.is_configured():
     app.include_router(index.router)
 app.include_router(common.router)
 app.include_router(feedback.router)
 app.include_router(admin.router)
 register_marketplace_management_router(app)
-app.include_router(background_tasks.router)
+app.include_router(a2a.router)
+app.include_router(assistant_mapping.router)
+app.include_router(assistant.router)
+app.include_router(assistant_prompt_variable_mapping.router)
+app.include_router(category.router)
 app.include_router(conversation.router)
 app.include_router(conversation_analysis.router)
-app.include_router(user.router)
+app.include_router(share.router)
 app.include_router(workflow.router)
 app.include_router(workflow_marketplace.router)
 app.include_router(workflow_executions.router)
+app.include_router(webhook.router)
+app.include_router(skill_events.router)
+app.include_router(skill.router)
+app.include_router(schedulers.router)
+app.include_router(background_tasks.router)
+app.include_router(user.router)
 app.include_router(user_settings.router)
 app.include_router(project_settings.router)
 app.include_router(settings.router)
@@ -1498,11 +1560,9 @@ app.include_router(guardrail.router)
 app.include_router(vendor.router)
 app.include_router(files.router)
 app.include_router(agent_workspace.router)
-app.include_router(webhook.router)
 app.include_router(customer_config.router)
 app.include_router(provider.router)
 app.include_router(tool.router)
-app.include_router(share.router)
 app.include_router(ide.router)
 app.include_router(permission.router)
 app.include_router(callbacks.router)
@@ -1515,14 +1575,11 @@ app.include_router(mcp_config.router)
 app.include_router(mcp_managed.router)
 app.include_router(user_kata_progress.router)
 app.include_router(ai_kata.router)
-app.include_router(skill_events.router)
-app.include_router(skill.router)
 app.include_router(export.router)
 app.include_router(dynamic_config.router)
 from codemie.rest_api.routers import hosted_applications  # noqa: E402
 
 app.include_router(hosted_applications.router)
-app.include_router(schedulers.router)
 if is_litellm_enabled() and config.LLM_PROXY_BUDGET_CHECK_ENABLED:
     app.include_router(budget_router.router)
 app.include_router(project_budget_router.router)
@@ -1685,7 +1742,7 @@ async def extended_http_exception_handler(request: Request, exc: ExtendedHTTPExc
         are included in the response, providing a consistent error reporting
         structure across the API.
     """
-    if exc.code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
+    if exc.code >= status.HTTP_500_INTERNAL_SERVER_ERROR and not exc.expected:
         logger.error(exc.details, exc_info=True)
         if exc.code == status.HTTP_500_INTERNAL_SERVER_ERROR:
             return JSONResponse(

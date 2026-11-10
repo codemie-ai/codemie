@@ -39,6 +39,7 @@ class ToolsInfoService:
         show_for_ui: bool = False,
         user: Optional[User] = None,
         exclude_toolkits: Optional[list[str]] = None,
+        offered_only: bool = False,
     ) -> List[Dict[str, str]]:
         """
         Get tools info to be displayed on the UI
@@ -47,6 +48,7 @@ class ToolsInfoService:
             show_for_ui: UI-specific formatting
             user: Current user (used for admin tools)
             exclude_toolkits: Toolkit names to exclude from the result
+            offered_only: Hide tools that are unusable in this deployment (offering paths only; lookups keep all)
         """
 
         # Derive show_admin_tools from user
@@ -59,10 +61,19 @@ class ToolsInfoService:
         # Import plugin UI info using enterprise dependency pattern
         from codemie.enterprise.plugin import get_plugin_toolkit_ui_info
 
+        research_kwargs = {}
+        if offered_only:
+            from codemie.configs.customer_config import customer_config  # noqa: PLC0415
+
+            research_kwargs = {
+                "offered_only": True,
+                "web_search_enabled": customer_config.is_feature_enabled("webSearch"),
+            }
+
         # Build standard toolkits list
         standard_toolkits = [
             GitToolkit.get_tools_ui_info(),
-            ResearchToolkit.get_tools_ui_info(),
+            ResearchToolkit.get_tools_ui_info(**research_kwargs),
             FileSystemToolkit.get_tools_ui_info(show_admin_tools),
             AgentWorkspaceToolkit.get_tools_ui_info(),
             FileAnalysisToolkit.get_tools_ui_info(),

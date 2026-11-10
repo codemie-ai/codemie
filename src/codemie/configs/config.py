@@ -83,6 +83,7 @@ class Config(BaseSettings):
     MERMAID_SERVER_URL: str = "http://localhost:8082"  # URL of the local Mermaid rendering server
     MERMAID_SERVER_TIMEOUT: int = 50  # Timeout (in seconds) for requests to the Mermaid server
     MERMAID_USE_MERMAID_INC: bool = False  # Use Mermaid Inc. hosted service if True, otherwise use local server
+    MERMAID_ENABLED: bool = True  # Publish Mermaid availability to the UI (standalone only; needs a renderer)
 
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
@@ -516,6 +517,10 @@ class Config(BaseSettings):
     # grants no access the user does not already have. Requires admin consent once per tenant.
     SHAREPOINT_OAUTH_SCOPES: str = "Sites.ReadWrite.All Files.ReadWrite.All offline_access User.Read"
 
+    # Google OAuth (Authorization Code + PKCE). Requires Redis (state is stored there), so in
+    # Standalone this stays disabled unless Redis is also configured — see redis_configured().
+    GOOGLE_OAUTH_ENABLED: bool = False
+
     # GitLab OAuth (Authorization Code + PKCE). App credentials (client_id/client_secret) are
     # supplied per integration through the UI; the callback base URL is derived server-side from
     # CALLBACK_API_BASE_URL.
@@ -614,6 +619,7 @@ class Config(BaseSettings):
     # calling window.close(), so its console/URL can be inspected. Default False
     # preserves the auto-close UX.
     MCP_AUTH_CALLBACK_KEEP_TAB_OPEN: bool = False
+    STANDALONE: bool = False
     MCP_CONNECT_ENABLED: bool = True
     MCP_CONNECT_URL: str = "http://localhost:3000"
     MCP_CONNECT_BUCKETS_COUNT: int = 10
@@ -1286,7 +1292,26 @@ class Config(BaseSettings):
 
 
 def retrieval_available(cfg: Config) -> bool:
+    """Whether the retrieval backend is usable. Outside standalone this depends only on
+    ``RETRIEVAL_BACKEND`` (zero behavior change); in standalone a non-empty ``ELASTIC_URL``
+    is the single switch, and any non-empty value counts as configured."""
+    if cfg.STANDALONE:
+        return bool(cfg.ELASTIC_URL)
     return cfg.RETRIEVAL_BACKEND != "none"
+
+
+def retrieval_disabled_reason(cfg: Config) -> str:
+    """The setting to name in messages about disabled retrieval: standalone switches on ``ELASTIC_URL``."""
+    return "ELASTIC_URL is empty" if cfg.STANDALONE else "RETRIEVAL_BACKEND=none"
+
+
+def mcp_connect_available(cfg: Config) -> bool:
+    """Whether MCP Connect is actually usable. Outside standalone this is exactly
+    ``MCP_CONNECT_ENABLED`` (zero behavior change); in standalone it also requires a
+    configured ``MCP_CONNECT_URL``."""
+    if not cfg.STANDALONE:
+        return cfg.MCP_CONNECT_ENABLED
+    return cfg.MCP_CONNECT_ENABLED and bool(cfg.MCP_CONNECT_URL)
 
 
 class HealthCheckFilter(logging.Filter):

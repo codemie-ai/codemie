@@ -899,7 +899,7 @@ class PromptGeneratorChain:
         if not include_tools:
             return
 
-        toolkits = ToolsInfoService.get_tools_info(user=user)
+        toolkits = ToolsInfoService.get_tools_info(user=user, offered_only=True)
         toolkits = self._transform_toolkits(toolkits)
         if not prompt_template:
             self._chain_input["toolkits"] = toolkits

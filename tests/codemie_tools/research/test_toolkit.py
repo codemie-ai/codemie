@@ -16,9 +16,9 @@ from unittest.mock import patch
 
 import pytest
 
-from codemie_tools.research.toolkit import ResearchToolkit
+from codemie_tools.research.toolkit import ResearchToolkit, ResearchToolkitUI
 from codemie_tools.research.tools import WebScrapperTool, WikipediaQueryRun, GoogleSearchResults
-from codemie_tools.research.tools_vars import TAVILY_SEARCH_TOOL
+from codemie_tools.research.tools_vars import TAVILY_SEARCH_TOOL, WEB_SCRAPPER_TOOL, WIKIPEDIA_TOOL
 
 
 class TestResearchToolkit:
@@ -88,3 +88,17 @@ class TestResearchToolkit:
     def test_get_webscrapper_tool(self, toolkit):
         tool = toolkit.get_webscrapper_tool()
         assert isinstance(tool, WebScrapperTool), "get_webscrapper_tool did not return WebScrapperTool"
+
+
+class TestResearchToolkitOffered:
+    def test_offered_only_standalone_without_keys(self):
+        with (
+            patch("codemie.configs.config.config.STANDALONE", True),
+            patch("codemie.configs.config.config.GOOGLE_SEARCH_API_KEY", ""),
+            patch("codemie.configs.config.config.TAVILY_API_KEY", ""),
+        ):
+            info = ResearchToolkit.get_tools_ui_info(offered_only=True, web_search_enabled=True)
+            default = ResearchToolkit.get_tools_ui_info()
+        assert {t["name"] for t in info["tools"]} == {WIKIPEDIA_TOOL.name, WEB_SCRAPPER_TOOL.name}
+        assert len(default["tools"]) == 6
+        assert len(ResearchToolkitUI().tools) == 6

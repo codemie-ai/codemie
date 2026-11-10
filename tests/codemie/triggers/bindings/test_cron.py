@@ -23,6 +23,7 @@ from codemie.triggers.bindings.cron import (
     CronTrigger,
     Job,
     _extract_datasource_metrics,
+    _tracked_run,
     _tracked_run_sync,
     invoke_assistant,
     invoke_workflow,
@@ -1408,3 +1409,60 @@ def test_create_cron_trigger_without_resource_id_is_never_staggered():
     trigger = Cron._Cron__create_cron_trigger("0 0 * * *", timezone="UTC")
     fields = {str(f.name): f for f in trigger.fields}
     assert (str(fields["minute"]), str(fields["hour"])) == ("0", "0")
+
+
+CORE_OFF = (False, "openai", ["OPENAI_API_KEY"])
+CORE_ON = (True, "openai", [])
+
+
+def _run_tracked(actor_attr, standalone, availability, scheduler_id="sched-1"):
+    """Run _tracked_run with a spy standing in for cron.<actor_attr> (None = unrelated actor)."""
+    import asyncio
+
+    called = []
+
+    async def spy(**kw):
+        called.append(kw)
+
+    with (
+        patch("codemie.triggers.bindings.cron.config") as cfg,
+        patch("codemie.triggers.bindings.cron.core_availability", return_value=availability) as avail,
+        patch("codemie.triggers.bindings.cron.logger") as log,
+        patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository") as repo_cls,
+        patch(f"codemie.triggers.bindings.cron.{actor_attr or 'invoke_assistant'}", spy)
+        if actor_attr
+        else patch.dict({}),
+    ):
+        cfg.STANDALONE = standalone
+        asyncio.run(_tracked_run(spy, scheduler_id, task="t"))
+    return called, repo_cls.return_value, avail, log
+
+
+@pytest.mark.parametrize("actor_attr", ["invoke_assistant", "invoke_workflow"])
+def test_assistant_job_skipped_without_row_when_core_off(actor_attr):
+    called, repo, _, log = _run_tracked(actor_attr, True, CORE_OFF)
+    assert not called
+    repo.create.assert_not_called()
+    log.warning.assert_called_once()
+    args = log.warning.call_args[0]
+    rendered = args[0] % args[1:]
+    assert "sched-1" in rendered and "OPENAI_API_KEY" in rendered
+
+
+def test_datasource_actor_runs_when_core_off():
+    called, repo, _, _ = _run_tracked(None, True, CORE_OFF)
+    assert called
+    repo.create.assert_called_once()
+
+
+@pytest.mark.parametrize("actor_attr", ["invoke_assistant", "invoke_workflow"])
+def test_core_actor_runs_when_core_on(actor_attr):
+    called, repo, _, _ = _run_tracked(actor_attr, True, CORE_ON)
+    assert called
+    repo.create.assert_called_once()
+
+
+def test_core_actor_runs_without_consulting_core_when_not_standalone():
+    called, repo, avail, _ = _run_tracked("invoke_workflow", False, CORE_OFF)
+    assert called
+    avail.assert_not_called()

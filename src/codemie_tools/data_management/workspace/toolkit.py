@@ -84,7 +84,12 @@ class AgentWorkspaceToolkit(BaseToolkit):
 
     @classmethod
     def get_tools_ui_info(cls):
-        return AgentWorkspaceToolkitUI().model_dump()
+        from codemie.configs.customer_config import customer_config  # noqa: PLC0415
+
+        toolkit = AgentWorkspaceToolkitUI()
+        if not customer_config.is_feature_enabled("workspaceScriptRunner"):
+            toolkit.tools = [t for t in toolkit.tools if t.name != EXECUTE_WORKSPACE_SCRIPT_TOOL.name]
+        return toolkit.model_dump()
 
     @staticmethod
     def _script_tool_description(tool_calling: ToolCallingSettings | None) -> str:

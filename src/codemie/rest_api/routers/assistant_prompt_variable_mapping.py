@@ -18,6 +18,7 @@ Router for assistant prompt variable mappings endpoints.
 
 from fastapi import APIRouter, status, Depends
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.configs import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import BaseResponse
@@ -36,7 +37,7 @@ from codemie.service.assistant.assistant_prompt_variable_mapping_service import 
 router = APIRouter(
     tags=["Assistant Prompt Variable Mappings"],
     prefix="/v1",
-    dependencies=[],
+    dependencies=[Depends(require_core)],
 )
 
 

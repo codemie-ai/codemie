@@ -17,6 +17,7 @@ from typing import Dict
 from codemie.core.exceptions import ValidationException
 from codemie.rest_api.models.assistant import Assistant, Context
 from codemie.configs import logger
+from codemie.configs.config import config, retrieval_disabled_reason
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs.customer_config import customer_config
 from codemie.rest_api.models.guardrail import GuardrailEntity
@@ -126,7 +127,8 @@ def get_all_contexts(assistant_slug: str, assistant_template: Assistant) -> list
     """
     if not ElasticSearchClient.is_configured():
         logger.info(
-            f"Skipping retrieval contexts for preconfigured assistant '{assistant_slug}': RETRIEVAL_BACKEND=none"
+            f"Skipping retrieval contexts for preconfigured assistant '{assistant_slug}': "
+            f"{retrieval_disabled_reason(config)}"
         )
         return []
 

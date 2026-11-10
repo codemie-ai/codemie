@@ -17,6 +17,20 @@ from __future__ import annotations
 from codemie.configs import config
 
 
+def redis_configured() -> bool:
+    """Is Redis configured at all? True when ``REDIS_HOST`` is non-empty.
+
+    Distinct from reachability (a configured Redis can still be down at call time) —
+    this answers only "is there a Redis to talk to".
+    """
+    return bool(config.REDIS_HOST)
+
+
+def google_oauth_available() -> bool:
+    """Outside Standalone, always available. In Standalone, only when the flag is on and Redis is configured."""
+    return True if not config.STANDALONE else bool(config.GOOGLE_OAUTH_ENABLED and redis_configured())
+
+
 def create_redis_client():
     import redis
 

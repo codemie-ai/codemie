@@ -54,6 +54,8 @@ class ExtendedHTTPException(Exception):
         details (str, optional): Additional information about the error, such as the specific
                                  reason it occurred or the exact field that caused the issue.
         help (str, optional): Guidance on how to resolve the error or what steps the user should take next.
+        expected (bool): True when a 5xx reports a known deployment state rather than a fault. It is logged
+                         as a warning without a traceback.
 
     Example:
         raise ExtendedHTTPException(
@@ -64,11 +66,12 @@ class ExtendedHTTPException(Exception):
         )
     """
 
-    def __init__(self, code: int, message: str, details: str | dict = None, help: str = None):
+    def __init__(self, code: int, message: str, details: str | dict = None, help: str = None, expected: bool = False):
         self.code = code
         self.message = message
         self.details = details
         self.help = help
+        self.expected = expected
 
 
 class ModelNotAllowedException(ExtendedHTTPException):

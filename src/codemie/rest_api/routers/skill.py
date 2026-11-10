@@ -19,9 +19,11 @@ REST API endpoints for Skills management.
 import json
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
+
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.rest_api.models.skill import (
     MarketplaceFilter,
     PublishToMarketplaceRequest,
@@ -62,7 +64,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 router = APIRouter(
     tags=["Skills"],
     prefix="/v1",
-    dependencies=[],
+    dependencies=[Depends(require_core)],
 )
 
 

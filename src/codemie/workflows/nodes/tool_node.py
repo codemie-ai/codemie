@@ -28,6 +28,7 @@ from codemie.workflows.nodes.base_node import BaseNode, StateSchemaType
 from codemie.workflows.models import AgentMessages
 from codemie.rest_api.security.user import User
 from codemie.configs import logger, config
+from codemie.configs.config import mcp_connect_available
 from codemie.service.assistant import VirtualAssistantService
 from codemie.service.tools import ToolsService
 from codemie.service.tools import ToolkitService
@@ -122,9 +123,9 @@ class ToolNode(BaseNode[AgentMessages]):
             ValueError: If MCP Connect is disabled, MCP server is disabled, or tool not found
             Exception: Any exception from MCP tool execution
         """
-        # Check if MCP Connect is enabled
-        if not config.MCP_CONNECT_ENABLED:
-            raise ValueError("MCP Connect is not enabled in configuration")
+        # Check if MCP Connect is available
+        if not mcp_connect_available(config):
+            raise ValueError("MCP Connect is not available in configuration")
 
         mcp_server = self._tool_config.mcp_server
         # Skip if MCP server is disabled

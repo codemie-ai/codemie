@@ -17,6 +17,7 @@ from typing import List
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.conversation_service import ConversationService
 from codemie.rest_api.security.authentication import authenticate
@@ -115,7 +116,7 @@ async def delete(request: FeedbackDeleteRequest, user: User = Depends(authentica
     return BaseResponse(message="Specified feedback entry removed")
 
 
-@router.post("/conversations/{conversation_id}/feedback")
+@router.post("/conversations/{conversation_id}/feedback", dependencies=[Depends(require_core)])
 async def final_feedback(
     conversation_id: str,
     request: FinalFeedbackRequest,

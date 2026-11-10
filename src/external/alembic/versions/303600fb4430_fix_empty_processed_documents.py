@@ -12,6 +12,7 @@ from alembic import op
 import sqlalchemy as sa
 import sqlmodel
 from codemie.clients.elasticsearch import ElasticSearchClient
+from codemie.configs.config import config
 from codemie.configs.logger import logger
 import json
 
@@ -24,6 +25,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    # Standalone runs without Elasticsearch unless ELASTIC_URL is set: nothing to backfill from.
+    if config.STANDALONE and not ElasticSearchClient.is_configured():
+        logger.info("Skipping processed_files backfill: Elasticsearch is not configured in standalone")
+        return
+
     connection = op.get_bind()
 
     def get_index_identifier(row) -> str:

@@ -20,10 +20,16 @@ with support for both in-cluster and kubeconfig-based authentication.
 """
 
 import logging
+import os
 import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def cluster_connection_configured() -> bool:
+    """Whether a kubeconfig path or an in-cluster environment is configured (pure env check, no I/O)."""
+    return bool(os.getenv("CODE_EXECUTOR_KUBECONFIG_PATH") or os.getenv("KUBERNETES_SERVICE_HOST"))
 
 
 class KubernetesClientManager:

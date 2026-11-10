@@ -46,6 +46,12 @@ CONFIG_IDS = {
     "metricsAnalytics": "features:metricsAnalytics",
     "marketplaceManagement": "features:marketplaceManagement",
     "marketplaceApprovalGate": "features:marketplaceApprovalGate",
+    "mermaid": "features:mermaid",
+    "dynamicCodeInterpreter": "features:dynamicCodeInterpreter",
+    "workspaceScriptRunner": "features:workspaceScriptRunner",
+    "googleOauth": "features:googleOauth",
+    "sharepointPkce": "features:sharepointPkce",
+    "core": "features:core",
 }
 
 
@@ -300,7 +306,72 @@ class CustomerConfig(BaseModel):
             )
         )
 
+        # Mermaid rendering. Always available outside standalone; in standalone it needs
+        # both the MERMAID_ENABLED flag and a configured renderer.
+        from codemie.service.file_service.mermaid_service import MermaidService  # noqa: PLC0415
+
+        mermaid_available = (
+            True if not config.STANDALONE else bool(config.MERMAID_ENABLED and MermaidService.is_configured())
+        )
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["mermaid"],
+                settings=ComponentSetting(enabled=mermaid_available),
+            )
+        )
+
+        # Code Executor. The configured (YAML/DB) flag is the starting point; standalone adds the
+        # operator and cluster prerequisites. The script runner follows availability, never settable.
+        from codemie.configs.code_executor_availability import code_executor_available  # noqa: PLC0415
+
+        available = code_executor_available(config)
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["dynamicCodeInterpreter"],
+                settings=ComponentSetting(enabled=available),
+            )
+        )
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["workspaceScriptRunner"],
+                settings=ComponentSetting(enabled=available if config.STANDALONE else True),
+            )
+        )
+
+        # Core (LLM-backed features). Provider settings are only consulted in standalone mode.
+        core_enabled = True
+        if config.STANDALONE:
+            from codemie.configs.llm_provider_availability import core_availability  # noqa: PLC0415
+
+            core_enabled = core_availability(config)[0]
+        runtime_config.append(Component(id=CONFIG_IDS["core"], settings=ComponentSetting(enabled=core_enabled)))
+
+        # Google OAuth. Shares the router's enable-gate, so the UI and the router agree.
+        from codemie.clients.redis import google_oauth_available  # noqa: PLC0415
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["googleOauth"],
+                settings=ComponentSetting(enabled=google_oauth_available()),
+            )
+        )
+
+        # SharePoint PKCE. Flat — always equal to SHAREPOINT_PKCE_ENABLED, never Redis-gated —
+        # matching the GitLab/Jira/Confluence OAuth shape above. No new disable logic: the flag
+        # alone governs this, same as today.
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["sharepointPkce"],
+                settings=ComponentSetting(enabled=config.SHAREPOINT_PKCE_ENABLED),
+            )
+        )
+
         return runtime_config
+
+    def configured_feature_enabled(self, feature_key: str) -> bool:
+        """A feature's YAML/database value, ignoring runtime computation."""
+        component = _resolve_component(f"features:{feature_key}", self.components, [], set())
+        return component is not None and component.settings.enabled
 
     def get_runtime_components(self) -> List[Component]:
         """Runtime-computed components, which are never overridable from YAML or the database."""

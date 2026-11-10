@@ -15,8 +15,11 @@
 import asyncio
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+
 from fastapi.responses import PlainTextResponse
 
+from codemie.rest_api.dependencies.core import require_core
+from codemie.clients.redis import redis_configured
 from codemie.configs import config, logger
 from codemie.triggers.bindings.webhook import WebhookService
 from codemie.triggers.bindings.webhook_rate_limiter import get_rate_limiter
@@ -28,6 +31,10 @@ MAX_VALIDATION_TOKEN_LENGTH = 256
 
 
 def _check_rate_limit(webhook_id: str) -> None:
+    if config.STANDALONE and not redis_configured():
+        # Redis-backed rate limiting has nothing to talk to; skip silently rather than
+        # calling a limiter that would fail on every webhook (see the startup warning).
+        return
     if not config.WEBHOOK_RATE_LIMIT_ENABLED:
         return
     try:
@@ -54,7 +61,7 @@ def _check_rate_limit(webhook_id: str) -> None:
 router = APIRouter(
     tags=["Webhooks"],
     prefix="/v1",
-    dependencies=[],
+    dependencies=[Depends(require_core)],
 )
 
 

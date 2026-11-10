@@ -1,0 +1,77 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-16884_standalone-core-gating",
+ "head": "953b3846fbfabd0789d745fef3550d74ade612ee",
+ "runner": "poetry",
+ "started_at": "2026-11-05T10:55:03.896614Z",
+ "completed_at": "2026-11-05T10:55:03.896614Z",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 4897,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 15276,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 3490,
+   "command": "make license-check",
+   "exit_code": 0,
+   "notes": "First run failed (tests/codemie/configs/test_llm_provider_availability.py missing header); make license-fix applied, re-run passed. File now modified in working tree, uncommitted."
+  },
+  {
+   "id": "gitleaks",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 68064,
+   "command": "make gitleaks",
+   "exit_code": 0
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 968715,
+   "command": "make test",
+   "exit_code": 2
+  },
+  {
+   "id": "sonar-local",
+   "source": "hook",
+   "status": "N/A",
+   "command": "make sonar-local",
+   "notes": "pre-push hook; needs Sonar credentials/network; owed to pre-push/CI"
+  },
+  {
+   "id": "test-harness",
+   "source": "guide",
+   "status": "N/A",
+   "command": "make test-harness",
+   "notes": "Not opening MR; needs docker stack and fixtures"
+  },
+  {
+   "id": "cli-analytics-live",
+   "source": "guide",
+   "status": "N/A",
+   "command": "make test-cli-analytics-live",
+   "notes": "Diff does not touch CLI Analytics SQL"
+  }
+ ],
+ "failures": {
+  "unit": "  /home/siarhei/projects/codemie-dev/codemie/tests/codemie/rest_api/routers/test_assistant.py:150: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)\n\ntests/codemie/rest_api/routers/test_assistant.py::TestAskAssistantWithGuardrails::test_deduplicates_blocked_reasons\n  /home/siarhei/projects/codemie-dev/codemie/tests/codemie/rest_api/routers/test_assistant.py:261: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)\n\ntests/codemie/rest_api/routers/test_assistant.py::TestSlugAmbiguityDetection::test_ambiguous_slug_without_project_raises_422\n  /home/siarhei/projects/codemie-dev/codemie/src/codemie/rest_api/routers/assistant/catalog.py:287: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    assistant = _get_assistant_by_slug_or_raise(assistant_slug, project)\n\ntests/codemie/rest_api/routers/test_assistant_marketplace.py::test_publish_requires_acknowledging_optional_findings_on_accept[False-422]\ntests/codemie/rest_api/routers/test_assistant_marketplace.py::test_publish_assistant_after_quality_validation_reject_and_user_bypasses\n  /home/siarhei/projects/codemie-dev/codemie/src/codemie/rest_api/routers/assistant/marketplace.py:621: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    published_with_bypass = _llm_validate_on_marketplace_publish(raw_request, assistant, user, waiver_applies)\n\ntests/codemie/rest_api/routers/test_assistant_marketplace.py::test_gate_check_returns_422_when_critical_findings_present\n  /home/siarhei/projects/codemie-dev/codemie/src/codemie/rest_api/routers/assistant/marketplace.py:375: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise critical_gate_blocked_error(assistant.id, findings, critical)\n\ntests/codemie/rest_api/routers/test_contract_baseline.py::TestWorkflowContract::test_create_status_and_keys\n  /home/siarhei/.cache/pypoetry/virtualenvs/codemie-Qx-nzro9-py3.12/lib/python3.12/site-packages/pydantic/type_adapter.py:677: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `list[GuardrailAssignmentItem]` - serialized value may not be as expected [field_name='guardrail_assignments', input_value=<MagicMock name='get_enti...)' id='139920489953472'>, input_type=MagicMock])\n    return self.serializer.to_json(\n\ntests/codemie/rest_api/routers/test_contract_baseline.py::TestWorkflowContract::test_update_status_and_keys\n  /home/siarhei/.cache/pypoetry/virtualenvs/codemie-Qx-nzro9-py3.12/lib/python3.12/site-packages/pydantic/type_adapter.py:677: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `list[GuardrailAssignmentItem]` - serialized value may not be as expected [field_name='guardrail_assignments', input_value=<MagicMock name='get_enti...)' id='139920540561104'>, input_type=MagicMock])\n    return self.serializer.to_json(\n\ntests/codemie/rest_api/routers/test_contract_baseline.py::TestSilentRewrites::test_workflow_put_stores_yaml_config_as_sent_when_no_model_id_changes\n  /home/siarhei/.cache/pypoetry/virtualenvs/codemie-Qx-nzro9-py3.12/lib/python3.12/site-packages/pydantic/type_adapter.py:677: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `list[GuardrailAssignmentItem]` - serialized value may not be as expected [field_name='guardrail_assignments', input_value=<MagicMock name='get_enti...)' id='139920489985472'>, input_type=MagicMock])\n    return self.serializer.to_json(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/configs/test_customer_config.py::TestPublishedAvailabilityComponents::test_standalone_no_redis_flag_off\nFAILED tests/codemie/configs/test_customer_config.py::TestPublishedAvailabilityComponents::test_standalone_no_redis_sharepoint_pkce_still_reports_its_own_flag\nFAILED tests/codemie/rest_api/routers/test_google_oauth.py::test_initiate_503_when_disabled\nFAILED tests/codemie/rest_api/routers/test_google_oauth.py::test_callback_503_when_disabled\nFAILED tests/codemie/rest_api/routers/test_google_oauth.py::test_status_503_when_disabled\nFAILED tests/codemie/rest_api/routers/test_google_oauth.py::test_endpoints_unaffected_outside_standalone\nFAILED tests/codemie/service/marketplace_management/test_llm_assessment_service.py::test_model_options_respect_what_the_model_declares\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_matplotlib_writes_single_and_multipage_pdf\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\nFAILED tests/codemie/rest_api/handlers/test_hedged_handler.py::TestHandleStreamFastPathWins::test_save_chat_history_called_with_fast_path_text\n=== 11 failed, 28949 passed, 744 skipped, 438 warnings in 960.20s (0:16:00) ====\nmake: *** [Makefile:31: test] Error 1"
+ }
+}

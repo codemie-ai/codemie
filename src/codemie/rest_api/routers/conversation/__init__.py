@@ -14,6 +14,7 @@
 
 from fastapi import APIRouter, Depends
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.rest_api.routers.conversation import crud, deletion, folders, history, messages, retrieval, streaming
 from codemie.rest_api.routers.conversation.messages import _resolve_audio_filename
 from codemie.rest_api.security.authentication import authenticate
@@ -22,7 +23,7 @@ from codemie.rest_api.security.authentication import authenticate
 router = APIRouter(
     tags=["Conversation"],
     prefix="/v1",
-    dependencies=[Depends(authenticate)],
+    dependencies=[Depends(require_core), Depends(authenticate)],
 )
 
 # Include order is source order and load-bearing: 5 of the 7 route-precedence pairs span modules.

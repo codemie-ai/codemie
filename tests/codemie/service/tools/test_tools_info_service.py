@@ -16,6 +16,7 @@
 
 from unittest.mock import patch
 
+from codemie.configs.customer_config import CustomerConfig
 from codemie_tools.base.models import ToolSet
 
 from codemie.service.tools.tools_info_service import ToolsInfoService
@@ -57,3 +58,38 @@ class TestToolsInfoServiceRetrievalGating:
         names = _toolkit_names(toolkits)
         assert ToolSet.KB_TOOLS.value in names
         assert ToolSet.CODEBASE_TOOLS.value in names
+
+
+@patch("codemie.service.tools.tools_info_service.ToolsInfoService._provider_toolkits_info", return_value=[])
+@patch("codemie.enterprise.plugin.get_plugin_toolkit_ui_info", return_value=None)
+@patch("codemie.service.tools.tools_info_service.toolkit_provider.get_available_toolkits_info", return_value=[])
+@patch("codemie.service.tools.tools_info_service.ElasticSearchClient.is_configured", return_value=False)
+class TestOfferedOnly:
+    @staticmethod
+    def _research_tools(toolkits):
+        return {t["name"] for tk in toolkits if tk.get("toolkit") == ToolSet.RESEARCH.value for t in tk["tools"]}
+
+    def test_offered_only_hides_unusable_but_lookup_keeps_all(self, *_mocks):
+        with (
+            patch("codemie.configs.config.config.STANDALONE", True),
+            patch("codemie.configs.config.config.GOOGLE_SEARCH_API_KEY", ""),
+            patch("codemie.configs.config.config.TAVILY_API_KEY", ""),
+            patch.object(CustomerConfig, "is_feature_enabled", return_value=True),
+        ):
+            lookup = self._research_tools(ToolsInfoService.get_tools_info())
+            offered = self._research_tools(ToolsInfoService.get_tools_info(offered_only=True))
+        assert len(lookup) == 6
+        assert len(offered) == 2
+
+    def test_web_search_flag_not_cached(self, *_mocks):
+        with (
+            patch("codemie.configs.config.config.STANDALONE", True),
+            patch("codemie.configs.config.config.GOOGLE_SEARCH_API_KEY", "k"),
+            patch("codemie.configs.config.config.TAVILY_API_KEY", "k"),
+            patch.object(CustomerConfig, "is_feature_enabled", return_value=True) as flag,
+        ):
+            on = self._research_tools(ToolsInfoService.get_tools_info(offered_only=True))
+            flag.return_value = False
+            off = self._research_tools(ToolsInfoService.get_tools_info(offered_only=True))
+        assert len(on) == 6
+        assert len(off) == 2

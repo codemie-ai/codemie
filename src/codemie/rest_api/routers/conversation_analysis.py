@@ -17,8 +17,10 @@ from __future__ import annotations
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+
 from pydantic import BaseModel, Field
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.configs import config, logger
 from codemie.repository.conversation_analysis_queue_repository import ConversationAnalysisQueueRepository
 from codemie.repository.conversation_analytics_repository import ConversationAnalyticsRepository
@@ -26,7 +28,9 @@ from codemie.rest_api.security.authentication import authenticate, admin_access_
 from codemie.rest_api.security.user import User
 from codemie.service.conversation_analysis.conversation_analysis_service import ConversationAnalysisService
 
-router = APIRouter(prefix="/v1/conversation-analysis", tags=["Conversation Analysis"])
+router = APIRouter(
+    prefix="/v1/conversation-analysis", tags=["Conversation Analysis"], dependencies=[Depends(require_core)]
+)
 
 
 class TriggerAnalysisRequest(BaseModel):

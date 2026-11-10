@@ -47,6 +47,7 @@ _STATE_KEY_PREFIX = "codemie:sp_pkce:state:"
 _RESULT_KEY_PREFIX = "codemie:sp_pkce:result:"
 _REFRESH_LOCK_KEY_PREFIX = "codemie:sp_pkce:refresh_lock:"
 _STATE_TTL = 600
+_AUTH_UNAVAILABLE_MSG = "Authentication service temporarily unavailable. Please try again."
 _RESULT_TTL = 300
 # Outlive the slowest possible refresh (_REFRESH_TIMEOUT plus the write) so the lock is
 # never released under its holder, but still expire if a worker dies mid-refresh.
@@ -136,6 +137,8 @@ class SharePointPKCEService:
             self._redis.set(f"{_STATE_KEY_PREFIX}{state}", self._enc.encrypt(state_data), ex=_STATE_TTL)
         except Exception as exc:
             logger.error(f"SharePoint PKCE: failed to store state in Redis: {exc}")
+            if config.STANDALONE:
+                raise ExtendedHTTPException(503, _AUTH_UNAVAILABLE_MSG)
             raise ExtendedHTTPException(502, "Failed to initiate authentication")
 
         authorize_base = _MS_BASE.format(tenant=effective_tenant_id) + "/authorize"
@@ -162,7 +165,7 @@ class SharePointPKCEService:
             raw = self._redis.getdel(state_key)
         except Exception as exc:
             logger.error(f"SharePoint PKCE: Redis unavailable reading state in callback: {exc}")
-            return CallbackResult(False, "Authentication service temporarily unavailable. Please try again.", 503)
+            return CallbackResult(False, _AUTH_UNAVAILABLE_MSG, 503)
 
         # Extract user_id before branching — needed in both error and success result payloads
         user_id = ""
@@ -238,7 +241,7 @@ class SharePointPKCEService:
             _RESULT_TTL,
         )
         if not stored:
-            return CallbackResult(False, "Authentication service temporarily unavailable. Please try again.", 503)
+            return CallbackResult(False, _AUTH_UNAVAILABLE_MSG, 503)
 
         return CallbackResult(True, "Authentication successful.", 200)
 

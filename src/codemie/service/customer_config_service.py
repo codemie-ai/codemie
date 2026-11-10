@@ -30,7 +30,7 @@ from typing import Any
 import bleach
 
 from codemie.clients.postgres import get_async_session
-from codemie.configs.config import config
+from codemie.configs.config import config, mcp_connect_available
 from codemie.configs import component_resolution
 from codemie.configs.component_resolution import Overrides
 from codemie.configs.customer_config import CONFIG_IDS, Component, ComponentSetting, customer_config
@@ -60,6 +60,8 @@ from codemie.service.usage_attribution.constants import USAGE_ATTRIBUTION_COMPON
 
 _LEADERBOARD_COMPONENT_ID = "aiChampionsLeaderboard"
 _PRIVATE_SETTINGS_COMPONENT_IDS = frozenset({USAGE_ATTRIBUTION_COMPONENT_ID})
+# The UI reads these as available when absent, so they must stay in the response when disabled.
+_REPORTED_WHEN_DISABLED_COMPONENT_IDS = frozenset({CONFIG_IDS["core"], CONFIG_IDS["mermaid"]})
 _PUBLIC_SETTING_FIELDS = ("enabled", "availableForExternal", "name", "description")
 
 
@@ -155,7 +157,7 @@ def _parse_override(key: str, raw_value: str, declaration: SettingDeclaration) -
 
 
 async def resolve_components() -> list[Component]:
-    """Return the enabled components with overrides applied before the enabled filter."""
+    """Return the enabled components, plus those reported when disabled, with overrides applied before the filter."""
     await override_cache.get()
 
     resolved = component_resolution.resolve_all(
@@ -163,10 +165,17 @@ async def resolve_components() -> list[Component]:
         customer_config.get_runtime_components(),
         set(CONFIG_IDS.values()),
     )
-    enabled = [component for component in resolved if component.settings.enabled]
+    enabled = [
+        component
+        for component in resolved
+        if component.settings.enabled or component.id in _REPORTED_WHEN_DISABLED_COMPONENT_IDS
+    ]
 
     if not config.LEADERBOARD_ENABLED:
         enabled = [component for component in enabled if component.id != _LEADERBOARD_COMPONENT_ID]
+
+    if config.STANDALONE and not mcp_connect_available(config):
+        enabled = [component for component in enabled if component.id != "mcpConnect"]
 
     return [_public_view(component) for component in enabled]
 

@@ -39,7 +39,10 @@ from codemie_tools.research.tools_vars import (
     WEB_SCRAPPER_TOOL,
 )
 from codemie_tools.data_management.code_executor.tools_vars import CODE_EXECUTOR_TOOL
+from codemie.configs.research_tool_availability import research_tool_available
 from codemie.configs import config
+from codemie.configs.code_executor_availability import code_executor_available
+from codemie.configs.config import mcp_connect_available
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
@@ -278,9 +281,9 @@ class ToolkitService:
             research_toolkit = ToolKit(
                 toolkit=ToolSet.RESEARCH,
                 tools=[
-                    Tool.from_metadata(GOOGLE_SEARCH_RESULTS_TOOL),
-                    Tool.from_metadata(TAVILY_SEARCH_TOOL),
-                    Tool.from_metadata(WEB_SCRAPPER_TOOL),
+                    Tool.from_metadata(t)
+                    for t in (GOOGLE_SEARCH_RESULTS_TOOL, TAVILY_SEARCH_TOOL, WEB_SCRAPPER_TOOL)
+                    if research_tool_available(t.name, config, enable_web_search)
                 ],
             )
             toolkits.append(research_toolkit)
@@ -290,7 +293,7 @@ class ToolkitService:
         # AND the Code Executor is enabled by the operator (disabled by default).
         enable_code_interpreter = (
             request.enable_code_interpreter is True
-            and customer_config.is_feature_enabled("dynamicCodeInterpreter")
+            and code_executor_available(config)
             and FileSystemToolkit._is_code_executor_enabled()
         )
 
@@ -1049,7 +1052,7 @@ class ToolkitService:
         )
 
         # MCP tools (includes MCP servers contributed by attached skills)
-        if config.MCP_CONNECT_ENABLED:
+        if mcp_connect_available(config):
             effective_mcp_server_single_usage = cls._determine_mcp_server_lifecycle(request)
             tools.extend(
                 MCPToolkitService.get_mcp_server_tools(
@@ -1067,6 +1070,11 @@ class ToolkitService:
                 )
             )
             cls._forward_mcp_auth_warnings_to_request(request)
+        elif config.STANDALONE and cls._merge_skill_mcp_servers(assistant):
+            logger.warning(
+                "MCP Connect is not available in standalone mode; skipping MCP tools for assistant %s",
+                assistant.id,
+            )
         return cls._process_final_tools_traditional(tools, llm_model, assistant, request_uuid)
 
     @classmethod

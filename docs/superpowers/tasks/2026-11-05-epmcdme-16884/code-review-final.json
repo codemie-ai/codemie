@@ -1,0 +1,211 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "CR-001..005 resolved by check round; CR-006 fixed after by rewording the two commits"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User: fix CR-001..CR-005; CR-006 (commit prefixes) handled separately"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "CR-001..005 resolved by check round; CR-006 fixed after by rewording the two commits"
+    }
+  ],
+  "reviewed_head": "a7b786da6265768f6e3793362501d6e7ed3c4818",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "Final round requested changes (CR-001..CR-006). CR-001..CR-005 were fixed and verified by the check round; CR-006 was fixed by rewording the two commits. All six findings are closed; approved by the user at code-review.check.",
+  "confidence": "low",
+  "check_confidence": "medium",
+  "risk_flags": [
+    "public-api",
+    "breaking-change"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 6,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/configs/llm_provider_availability.py",
+      "line": 104,
+      "title": "Transient check failure cached as core off",
+      "problem": "The except branch in _compute returns (False, None, ...) and the result is memoized by @cache, so one transient exception (config not loaded, import error) disables core for the process lifetime.",
+      "impact": "Core routes stay unmounted or 404 until restart after a one-off early failure. Reachability of a transient failure was not confirmed.",
+      "recommendation": "Do not cache failures: clear the cache in the except branch, or compute outside @cache and only memoize successful results.",
+      "status": "resolved",
+      "check_notes": "core_availability catches outside @cache; _compute no longer catches; test_failure_is_not_cached exists",
+      "fix": {
+        "change": "_compute no longer catches; core_availability catches outside @cache so failures are not memoized",
+        "test": "test_failure_is_not_cached"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/configs/llm_provider_availability.py",
+      "line": 107,
+      "title": "require_core ignores STANDALONE setting",
+      "problem": "require_core calls core_availability(config) unconditionally. The docstring and spec say the check is only called when STANDALONE is on, and core is always on otherwise. Verified in source: no STANDALONE guard.",
+      "impact": "Non-standalone deployments with no static provider settings (stored credentials, SaaS) get 404 on ide inference, user reactions, final_feedback and admin conversation routes. Breaks AC1 and AC2 and public endpoints.",
+      "recommendation": "Return early when not config.STANDALONE (e.g. `if config.STANDALONE and not core_availability(config)[0]: raise HTTPException(404, 'Not found')`) and add a test with STANDALONE off and no provider.",
+      "status": "resolved",
+      "check_notes": "require_core checks config.STANDALONE first; noop test exists",
+      "fix": {
+        "change": "require_core returns early unless config.STANDALONE",
+        "test": "test_require_core_noop_when_not_standalone"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/main.py",
+      "title": "Core gating concern added to oversized main.py",
+      "problem": "CORE_ROUTERS, register_core_routers and _log_core_gating are appended to a ~1970-line main.py; code-quality.md Module Cohesion requires a dedicated module.",
+      "impact": "Documented code-quality standard only partially met; blocks the workflow per standards review.",
+      "recommendation": "Move CORE_ROUTERS, register_core_routers and _log_core_gating to a new module and import them in main.py.",
+      "status": "resolved",
+      "check_notes": "main.py imports register_core_routers/log_core_gating from core_gating.py",
+      "fix": {
+        "change": "moved CORE_ROUTERS, register_core_routers, log_core_gating to rest_api/core_gating.py",
+        "test": "test_core_gating.py"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/admin.py",
+      "title": "Route inventory incomplete for two routers",
+      "problem": "Spec requires admin, background_tasks and agent_workspace to be inventoried with per-route verdicts. Only admin is gated; no change or recorded verdict for background_tasks or agent_workspace. Edge lens also notes other always-mounted LLM-backed routers (tool, files, workflow generator) are ungated.",
+      "impact": "Core-reaching routes may return 5xx instead of 404 when core is off. Reachability unconfirmed.",
+      "recommendation": "Grep background_tasks and agent_workspace for core-reaching routes, gate them with Depends(require_core) or record a not-gated verdict; also confirm other LLM-backed routers.",
+      "status": "resolved",
+      "check_notes": "core_gating docstring records not-gated verdicts for background_tasks and agent_workspace",
+      "fix": {
+        "change": "inventoried background_tasks and agent_workspace: no LLM path, verdict not-gated recorded in core_gating docstring",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/test_core_gating.py",
+      "line": 925,
+      "title": "Main-mount test sets no Azure profile",
+      "problem": "test_main_app_mounts_core_with_valid_profile sets neither an Azure profile nor STANDALONE, so it passes trivially with standalone off.",
+      "impact": "The spec'd regression test (valid profile mounts core) does not guard the behavior.",
+      "recommendation": "Set STANDALONE and a valid Azure profile, reimport main, assert core routes are mounted.",
+      "status": "resolved",
+      "check_notes": "test sets STANDALONE and Azure settings and asserts core paths in openapi",
+      "fix": {
+        "change": "test sets STANDALONE and Azure profile and asserts core mounted",
+        "test": "test_main_app_mounts_core_with_valid_profile"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Two commits lack ticket prefix",
+      "problem": "Commits 71564c1441 'chore: update doctor cache' and eecf47e607 'Refactor: format long function call across multiple lines' do not match 'EPMCDME-####: Description' from git-workflow.md.",
+      "impact": "Documented commit-format standard broken in the review range.",
+      "recommendation": "Reword both subjects with the EPMCDME-16884: prefix or squash them into ticket-prefixed commits.",
+      "status": "resolved",
+      "check_notes": "commits reworded with the EPMCDME-16884: prefix; tree unchanged",
+      "fix": {
+        "change": "reworded the two commit subjects with the EPMCDME-16884: prefix (history rewrite approved by the user)",
+        "test": "n/a"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "core_availability is never called when STANDALONE is off",
+      "status": "pass",
+      "notes": "fixed after the final round (CR-002/CR-004/CR-005 and follow-up docs); require_core calls core_availability with no STANDALONE guard"
+    },
+    {
+      "kind": "spec",
+      "item": "Shared require_core dependency raises 404 when core off",
+      "status": "pass",
+      "notes": "fixed after the final round (CR-002/CR-004/CR-005 and follow-up docs); ignores STANDALONE; tests only patch core_availability"
+    },
+    {
+      "kind": "spec",
+      "item": "admin, background_tasks, agent_workspace inventoried; verdicts recorded",
+      "status": "pass",
+      "notes": "fixed after the final round (CR-002/CR-004/CR-005 and follow-up docs); only admin gated; no verdict for the other two"
+    },
+    {
+      "kind": "spec",
+      "item": "Docstrings and healthcheck doc state NOT_CONFIGURED can occur while core on",
+      "status": "pass",
+      "notes": "fixed after the final round (CR-002/CR-004/CR-005 and follow-up docs); follow-up wording and healthcheck doc missing"
+    },
+    {
+      "kind": "spec",
+      "item": "Test: importing main with a valid Azure profile mounts core",
+      "status": "pass",
+      "notes": "fixed after the final round (CR-002/CR-004/CR-005 and follow-up docs); sets no Azure profile or STANDALONE; passes trivially"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "fixed after the final round (CR-003, CR-006); 2 of 9 subjects lack EPMCDME-#### prefix: 71564c1441, eecf47e607"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "fixed after the final round (CR-003, CR-006); main.py (~1970 lines) gains core gating concern; Module Cohesion says extract to own module"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Logs only setting names and provider name; no secrets or auth reimplementation"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "require_core ignores STANDALONE so existing endpoints can 404 in non-standalone deployments (AC1/AC2 break); other findings are cached transient failure, spec gaps, weak test and standards. Candidates beyond require_core were not individually reachability-verified (lens grading kept); 0 deferred, ~11 blind/edge items dismissed as speculative or below the floor.",
+    "confidence": "low",
+    "risk_flags": [
+      "public-api",
+      "breaking-change"
+    ]
+  }
+}

@@ -23,6 +23,7 @@ from codemie.agents.assistant_agent import AIToolsAgent
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs import logger
+from codemie.configs.config import config, retrieval_disabled_reason
 from codemie.core.constants import METADATA_CHUNK_NUM, METADATA_FILE_PATH, METADATA_SOURCE, METADATA_TITLE
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.core.utils import calculate_tokens
@@ -289,7 +290,9 @@ def get_final_state(state_id: str, enable_summarization_node: bool) -> str:
 
 def get_documents_tree_by_datasource_id(datasource_id: str, include_content: bool = False) -> List[Dict[str, Any]]:
     if not ElasticSearchClient.is_configured():
-        raise ValueError("Retrieval backend is disabled (RETRIEVAL_BACKEND=none); cannot search code index.")
+        raise ValueError(
+            f"Retrieval backend is disabled ({retrieval_disabled_reason(config)}); cannot search code index."
+        )
 
     datasource = IndexInfo.find_by_id(datasource_id)
 

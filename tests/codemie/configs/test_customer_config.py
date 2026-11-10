@@ -20,7 +20,13 @@ from unittest.mock import patch
 import yaml
 from pydantic import ValidationError
 
+from codemie.clients import redis as redis_client_module
 from codemie.configs.customer_config import CustomerConfig, Component, ComponentSetting
+
+# Imported eagerly: the code-executor check imports these lazily, and a first import under the
+# Path.read_text patches below corrupts importlib.metadata lookups.
+import codemie_tools.data_management.code_executor.k8s_client_manager  # noqa: F401
+import codemie_tools.data_management.file_system.toolkit  # noqa: F401
 
 SHIPPED_CUSTOMER_CONFIG = Path(__file__).resolve().parents[3] / "config/customer/customer-config.yaml"
 
@@ -131,6 +137,8 @@ class TestCustomerConfig(unittest.TestCase):
             mock_config.RETRIEVAL_BACKEND = "elasticsearch"
             mock_config.CONVERSATION_ANALYSIS_ENABLED = False
             mock_config.TOOL_SELECTION_ENABLED = False
+            mock_config.STANDALONE = False
+            mock_config.SHAREPOINT_PKCE_ENABLED = False
 
             config = CustomerConfig()
             enabled_components = config.get_enabled_components()
@@ -138,7 +146,10 @@ class TestCustomerConfig(unittest.TestCase):
             # 1 YAML component + 2 enterprise runtime features (enterpriseEdition, metricsAnalytics)
             # + 2 runtime values (idpProvider, mcpAuthOrigin)
             # + 3 retrieval features (knowledgeBases, datasources, codeIndexing)
-            self.assertEqual(len(enabled_components), 8)
+            # + 1 mermaid (always available outside standalone)
+            # + 1 core (always available outside standalone)
+            # + 1 googleOauth (always available outside standalone; sharepointPkce off)
+            self.assertEqual(len(enabled_components), 13)
 
             yaml_components = [c for c in enabled_components if c.id == "component1"]
             self.assertEqual(len(yaml_components), 1)
@@ -228,13 +239,14 @@ class TestCustomerConfig(unittest.TestCase):
             # Test unconfigured assistant (should default to enabled)
             self.assertTrue(config.is_assistant_enabled("unconfigured"))
 
+    @patch("codemie.enterprise.has_enterprise", new=lambda: False)
     def test_is_feature_enabled(self):
         """Test is_feature_enabled checks feature flags by component id prefix 'features:'"""
         yaml_with_features = {
             'components': [
                 {'id': 'component1', 'settings': {'enabled': True}},
                 {'id': 'features:webSearch', 'settings': {'enabled': True}},
-                {'id': 'features:dynamicCodeInterpreter', 'settings': {'enabled': False}},
+                {'id': 'features:codeIndexingLegacy', 'settings': {'enabled': False}},
             ]
         }
 
@@ -246,7 +258,7 @@ class TestCustomerConfig(unittest.TestCase):
             self.assertTrue(config.is_feature_enabled("webSearch"))
 
             # Disabled feature returns False
-            self.assertFalse(config.is_feature_enabled("dynamicCodeInterpreter"))
+            self.assertFalse(config.is_feature_enabled("codeIndexingLegacy"))
 
             # Unconfigured feature defaults to False (is_component_enabled defaults to False)
             self.assertFalse(config.is_feature_enabled("unknownFeature"))
@@ -332,6 +344,8 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.RETRIEVAL_BACKEND = "elasticsearch"
         mock_config.CONVERSATION_ANALYSIS_ENABLED = False
         mock_config.TOOL_SELECTION_ENABLED = False
+        mock_config.STANDALONE = False
+        mock_config.SHAREPOINT_PKCE_ENABLED = False
 
         config = CustomerConfig()
         components = config.get_enabled_components()
@@ -339,7 +353,11 @@ class TestRuntimeFeatures(unittest.TestCase):
         # 2 YAML components + 5 runtime features
         # (enterpriseEdition, metricsAnalytics, userManagement, idpProvider, mcpAuthOrigin)
         # + 3 retrieval features (knowledgeBases, datasources, codeIndexing)
-        self.assertEqual(len(components), 10)
+        # + 1 mermaid (always available outside standalone)
+        # + 2 code-execution features (dynamicCodeInterpreter, workspaceScriptRunner)
+        # + 1 core (always available outside standalone)
+        # + 1 googleOauth (always available outside standalone; sharepointPkce off)
+        self.assertEqual(len(components), 15)
 
         # Check enterprise edition is enabled
         enterprise_components = [c for c in components if c.id == "features:enterpriseEdition"]
@@ -407,13 +425,19 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.RETRIEVAL_BACKEND = "elasticsearch"
         mock_config.CONVERSATION_ANALYSIS_ENABLED = False
         mock_config.TOOL_SELECTION_ENABLED = False
+        mock_config.STANDALONE = False
+        mock_config.SHAREPOINT_PKCE_ENABLED = False
 
         config = CustomerConfig()
         components = config.get_enabled_components()
 
         # 2 YAML components + 2 runtime features (idpProvider, mcpAuthOrigin)
         # + 3 retrieval features (knowledgeBases, datasources, codeIndexing)
-        self.assertEqual(len(components), 7)
+        # + 1 mermaid (always available outside standalone)
+        # + 2 code-execution features (dynamicCodeInterpreter, workspaceScriptRunner)
+        # + 1 core (always available outside standalone)
+        # + 1 googleOauth (always available outside standalone; sharepointPkce off)
+        self.assertEqual(len(components), 12)
 
         enterprise_components = [c for c in components if c.id == "features:enterpriseEdition"]
         self.assertEqual(len(enterprise_components), 0)
@@ -468,6 +492,8 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.RETRIEVAL_BACKEND = "elasticsearch"
         mock_config.CONVERSATION_ANALYSIS_ENABLED = False
         mock_config.TOOL_SELECTION_ENABLED = False
+        mock_config.STANDALONE = False
+        mock_config.SHAREPOINT_PKCE_ENABLED = False
 
         config = CustomerConfig()
         components = config.get_enabled_components()
@@ -475,7 +501,11 @@ class TestRuntimeFeatures(unittest.TestCase):
         # 1 YAML component + 5 runtime features (YAML runtime IDs filtered out)
         # (enterpriseEdition, metricsAnalytics, userManagement, idpProvider, mcpAuthOrigin)
         # + 3 retrieval features (knowledgeBases, datasources, codeIndexing)
-        self.assertEqual(len(components), 9)
+        # + 1 mermaid (always available outside standalone)
+        # + 2 code-execution features (dynamicCodeInterpreter, workspaceScriptRunner)
+        # + 1 core (always available outside standalone)
+        # + 1 googleOauth (always available outside standalone; sharepointPkce off)
+        self.assertEqual(len(components), 14)
 
         # Runtime features should be True (not False from YAML)
         self.assertTrue(config.is_feature_enabled("enterpriseEdition"))
@@ -525,13 +555,19 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.RETRIEVAL_BACKEND = "none"
         mock_config.CONVERSATION_ANALYSIS_ENABLED = False
         mock_config.TOOL_SELECTION_ENABLED = False
+        mock_config.STANDALONE = False
+        mock_config.SHAREPOINT_PKCE_ENABLED = False
 
         config = CustomerConfig()
         components = config.get_enabled_components()
 
         # 1 YAML component + 2 feature components (idpProvider, mcpAuthOrigin)
         # retrieval features excluded since RETRIEVAL_BACKEND == "none"
-        self.assertEqual(len(components), 3)
+        # + 1 mermaid (always available outside standalone)
+        # + 2 code-execution features (dynamicCodeInterpreter, workspaceScriptRunner)
+        # + 1 core (always available outside standalone)
+        # + 1 googleOauth (always available outside standalone; sharepointPkce off)
+        self.assertEqual(len(components), 8)
 
         yaml_components = [c for c in components if c.id == "component1"]
         self.assertEqual(len(yaml_components), 1)
@@ -771,6 +807,102 @@ class TestRuntimeFeatures(unittest.TestCase):
         self.assertFalse(any(c.id == "features:codeIndexing" for c in components))
 
 
+class TestMermaidRuntimeFeature(unittest.TestCase):
+    """features:mermaid: always available outside standalone; flag AND renderer inside standalone."""
+
+    def _mermaid_enabled(self, *, standalone, flag, server_url, use_inc=False):
+        yaml_data = {'components': [{'id': 'component1', 'settings': {'enabled': True}}]}
+        with (
+            patch("codemie.configs.customer_config.Path.read_text", return_value=yaml.dump(yaml_data)),
+            patch("codemie.enterprise.has_enterprise", new=lambda: False),
+            patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True),
+            patch("codemie.configs.marketplace_management.is_approval_gate_armed", return_value=False),
+            patch("codemie.configs.customer_config.config") as mock_config,
+            patch("codemie.service.file_service.mermaid_service.config") as mermaid_config,
+        ):
+            mock_config.ENABLE_USER_MANAGEMENT = False
+            mock_config.IDP_PROVIDER = "local"
+            mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
+            mock_config.STANDALONE = standalone
+            mock_config.MERMAID_ENABLED = flag
+            mermaid_config.MERMAID_SERVER_URL = server_url
+            mermaid_config.MERMAID_USE_MERMAID_INC = use_inc
+            return CustomerConfig().is_component_enabled("features:mermaid")
+
+    def test_mermaid_available_outside_standalone_regardless_of_flag_or_config(self):
+        self.assertTrue(self._mermaid_enabled(standalone=False, flag=False, server_url=""))
+
+    def test_mermaid_unavailable_in_standalone_without_renderer(self):
+        self.assertFalse(self._mermaid_enabled(standalone=True, flag=True, server_url=""))
+
+    def test_mermaid_unavailable_in_standalone_when_flag_off(self):
+        self.assertFalse(self._mermaid_enabled(standalone=True, flag=False, server_url="http://mermaid:8082"))
+
+    def test_mermaid_available_in_standalone_when_flag_on_and_configured(self):
+        self.assertTrue(self._mermaid_enabled(standalone=True, flag=True, server_url="http://mermaid:8082"))
+
+    def test_mermaid_available_in_standalone_with_mermaid_ink_only(self):
+        self.assertTrue(self._mermaid_enabled(standalone=True, flag=True, server_url="", use_inc=True))
+
+
+class TestPublishedAvailabilityComponents(unittest.TestCase):
+    """features:googleOauth: same Standalone/flag/Redis shape as the router gate.
+    features:sharepointPkce: flat, always equal to SHAREPOINT_PKCE_ENABLED, never Redis-gated.
+    """
+
+    def _enabled(self, *, standalone, google_oauth_enabled, redis_host, sharepoint_pkce_enabled):
+        yaml_data = {'components': [{'id': 'component1', 'settings': {'enabled': True}}]}
+        with (
+            patch("codemie.configs.customer_config.Path.read_text", return_value=yaml.dump(yaml_data)),
+            patch("codemie.enterprise.has_enterprise", new=lambda: False),
+            patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True),
+            patch("codemie.configs.marketplace_management.is_approval_gate_armed", return_value=False),
+            patch("codemie.configs.customer_config.config") as mock_config,
+            patch.object(redis_client_module.config, "REDIS_HOST", redis_host),
+            patch.object(redis_client_module.config, "STANDALONE", standalone),
+            patch.object(redis_client_module.config, "GOOGLE_OAUTH_ENABLED", google_oauth_enabled),
+        ):
+            mock_config.ENABLE_USER_MANAGEMENT = False
+            mock_config.IDP_PROVIDER = "local"
+            mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
+            mock_config.STANDALONE = standalone
+            mock_config.SHAREPOINT_PKCE_ENABLED = sharepoint_pkce_enabled
+            config = CustomerConfig()
+            return (
+                config.is_component_enabled("features:googleOauth"),
+                config.is_component_enabled("features:sharepointPkce"),
+            )
+
+    def test_non_standalone_both_always_available_regardless_of_redis(self):
+        google_oauth, sharepoint_pkce = self._enabled(
+            standalone=False, google_oauth_enabled=False, redis_host="", sharepoint_pkce_enabled=False
+        )
+        self.assertTrue(google_oauth)
+        self.assertFalse(sharepoint_pkce)
+
+    def test_standalone_no_redis_flag_off(self):
+        google_oauth, sharepoint_pkce = self._enabled(
+            standalone=True, google_oauth_enabled=False, redis_host="", sharepoint_pkce_enabled=False
+        )
+        self.assertFalse(google_oauth)
+        self.assertFalse(sharepoint_pkce)
+
+    def test_standalone_redis_configured_flag_on(self):
+        google_oauth, sharepoint_pkce = self._enabled(
+            standalone=True, google_oauth_enabled=True, redis_host="localhost", sharepoint_pkce_enabled=False
+        )
+        self.assertTrue(google_oauth)
+        self.assertFalse(sharepoint_pkce)
+
+    def test_standalone_no_redis_sharepoint_pkce_still_reports_its_own_flag(self):
+        """SharePoint PKCE availability is flat — no Redis gate — even with Redis absent."""
+        google_oauth, sharepoint_pkce = self._enabled(
+            standalone=True, google_oauth_enabled=False, redis_host="", sharepoint_pkce_enabled=True
+        )
+        self.assertFalse(google_oauth)
+        self.assertTrue(sharepoint_pkce)
+
+
 # Helper that patches CustomerConfig to load from a YAML string.
 def _make_config(yaml_text: str) -> "CustomerConfig":
     """Build a CustomerConfig from an inline YAML string (no real file needed)."""
@@ -943,6 +1075,7 @@ class TestCapabilityHidingFlags(unittest.TestCase):
         self._base_mock(mock_config, mock_read_text)
         mock_config.CONVERSATION_ANALYSIS_ENABLED = False
         mock_config.TOOL_SELECTION_ENABLED = False
+        mock_config.STANDALONE = False
 
         cfg = CustomerConfig()
         ids = [c.id for c in cfg.get_enabled_components()]
@@ -956,6 +1089,7 @@ class TestCapabilityHidingFlags(unittest.TestCase):
         self._base_mock(mock_config, mock_read_text)
         mock_config.CONVERSATION_ANALYSIS_ENABLED = True
         mock_config.TOOL_SELECTION_ENABLED = False
+        mock_config.STANDALONE = False
 
         cfg = CustomerConfig()
         ids = [c.id for c in cfg.get_enabled_components()]
@@ -969,6 +1103,7 @@ class TestCapabilityHidingFlags(unittest.TestCase):
         self._base_mock(mock_config, mock_read_text)
         mock_config.CONVERSATION_ANALYSIS_ENABLED = False
         mock_config.TOOL_SELECTION_ENABLED = False
+        mock_config.STANDALONE = False
 
         cfg = CustomerConfig()
         ids = [c.id for c in cfg.get_enabled_components()]
@@ -1009,3 +1144,46 @@ class TestShippedHostedApplications(unittest.TestCase):
         with patch.dict("os.environ", {"FEATURE_HOSTED_APPLICATIONS": "true"}):
             config = CustomerConfig(config_path=SHIPPED_CUSTOMER_CONFIG)
         self.assertTrue(config.is_feature_enabled("hostedApplications"))
+
+
+class TestCoreRuntimeComponent(unittest.TestCase):
+    """features:core: on outside standalone (provider never checked); in standalone follows core_availability."""
+
+    def _core(self, *, standalone, availability=(False, None, ["X"])):
+        yaml_data = {'components': [{'id': 'component1', 'settings': {'enabled': True}}]}
+        with (
+            patch("codemie.configs.customer_config.Path.read_text", return_value=yaml.dump(yaml_data)),
+            patch("codemie.enterprise.has_enterprise", new=lambda: False),
+            patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True),
+            patch("codemie.configs.marketplace_management.is_approval_gate_armed", return_value=False),
+            patch("codemie.configs.customer_config.config") as mock_config,
+            patch(
+                "codemie.configs.llm_provider_availability.core_availability", return_value=availability
+            ) as availability_mock,
+        ):
+            mock_config.ENABLE_USER_MANAGEMENT = False
+            mock_config.IDP_PROVIDER = "local"
+            mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
+            mock_config.STANDALONE = standalone
+            cfg = CustomerConfig()
+            return cfg.is_feature_enabled("core"), availability_mock, cfg.resolve_all()
+
+    def test_core_component_enabled_outside_standalone_without_checking_provider(self):
+        enabled, availability_mock, _ = self._core(standalone=False)
+        self.assertTrue(enabled)
+        availability_mock.assert_not_called()
+
+    def test_core_component_disabled_in_standalone_without_provider(self):
+        enabled, _, _ = self._core(standalone=True)
+        self.assertFalse(enabled)
+
+    def test_core_component_enabled_in_standalone_with_provider(self):
+        enabled, _, _ = self._core(standalone=True, availability=(True, "anthropic", []))
+        self.assertTrue(enabled)
+
+    def test_payload_has_core_and_no_standalone_key(self):
+        for standalone in (True, False):
+            _, _, components = self._core(standalone=standalone)
+            ids = [c.id for c in components]
+            self.assertIn("features:core", ids)
+            self.assertNotIn("STANDALONE", str([c.model_dump() for c in components]))

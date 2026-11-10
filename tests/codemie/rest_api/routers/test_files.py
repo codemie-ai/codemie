@@ -31,6 +31,11 @@ from codemie.rest_api.middleware.security_headers import SecurityHeadersMiddlewa
 from codemie.rest_api.routers import files
 from codemie.rest_api.security.user import User
 from codemie.rest_api.routers.files import router
+from codemie.service.file_service.mermaid_service import (
+    MermaidDiagramGenerationError,
+    MermaidNotConfiguredError,
+    MermaidServiceUnavailableError,
+)
 from codemie.rest_api.security.authentication import authenticate
 import hashlib
 
@@ -447,6 +452,56 @@ def test_create_mermaid_diagram_service_unavailable(mocker, auth_headers):
 
     # Verify read_file was called with the correct parameters
     mock_fs_repo.read_file.assert_called_once_with(expected_filename, owner="test_user")
+
+
+def _post_mermaid_with_draw_error(mocker, auth_headers, error):
+    mock_fs_repo = mocker.Mock()
+    mock_fs_repo.read_file.side_effect = FileNotFoundError("File not found")
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository", return_value=mock_fs_repo
+    )
+    mocker.patch("codemie.service.file_service.mermaid_service.MermaidService.draw_mermaid", side_effect=error)
+    return client.post("/v1/files/diagram/mermaid", json={"code": "graph TD; A-->B;"}, headers=auth_headers)
+
+
+def test_create_mermaid_diagram_not_configured(mocker, auth_headers):
+    response = _post_mermaid_with_draw_error(
+        mocker, auth_headers, MermaidNotConfiguredError("Mermaid rendering is not configured")
+    )
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    body = response.json()["error"]
+    assert "not configured" in body["message"].lower()
+    assert "syntax" not in body["help"].lower()
+
+
+def test_create_mermaid_diagram_renderer_unavailable(mocker, auth_headers):
+    response = _post_mermaid_with_draw_error(mocker, auth_headers, MermaidServiceUnavailableError("connection refused"))
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    body = response.json()["error"]
+    assert "unavailable" in body["message"].lower()
+    assert "syntax" not in body["help"].lower()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        MermaidServiceUnavailableError("http://mermaid-internal:8082/generate refused"),
+        MermaidNotConfiguredError("http://mermaid-internal:8082/generate"),
+    ],
+)
+def test_create_mermaid_diagram_error_hides_renderer_url(mocker, auth_headers, error):
+    response = _post_mermaid_with_draw_error(mocker, auth_headers, error)
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert "mermaid-internal" not in response.text
+
+
+@pytest.mark.parametrize("error", [MermaidDiagramGenerationError("400"), MermaidDiagramGenerationError("422")])
+def test_create_mermaid_diagram_invalid_diagram(mocker, auth_headers, error):
+    response = _post_mermaid_with_draw_error(mocker, auth_headers, error)
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    body = response.json()["error"]
+    assert body["message"] == "Invalid Mermaid diagram"
+    assert "syntax" in body["help"].lower()
 
 
 def test_create_mermaid_diagram_unauthenticated():

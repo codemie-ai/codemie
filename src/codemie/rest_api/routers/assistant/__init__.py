@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.rest_api.routers.assistant import (
     catalog,
     execution,
@@ -28,7 +29,7 @@ from codemie.rest_api.routers.assistant import (
 router = APIRouter(
     tags=["Assistant"],
     prefix="/v1",
-    dependencies=[],
+    dependencies=[Depends(require_core)],
 )
 
 router.include_router(catalog.router)

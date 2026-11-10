@@ -118,6 +118,9 @@ COPY --chmod=755 standalone/docker/entrypoint.sh /entrypoint.sh
 # backend/pyproject.toml: packages = [{ include = "codemie", from = "src" }]
 ENV PYTHONPATH=/app/backend/src
 
+# Standalone image: no external Elasticsearch/Mermaid/MCP-connect/Redis.
+ENV STANDALONE=true ELASTIC_URL= MERMAID_SERVER_URL= MCP_CONNECT_URL= REDIS_HOST=
+
 # Pre-create the writable data directories so new named volumes inherit codemie ownership.
 USER codemie
 RUN mkdir -p /app/codemie-storage /app/codemie-repos

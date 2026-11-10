@@ -81,6 +81,21 @@ async def test_empty_database_leaves_yaml_behaviour_untouched(patched_yaml):
 
 
 @pytest.mark.asyncio
+async def test_disabled_core_stays_in_payload_for_the_ui(patched_yaml):
+    """The UI reads an absent features:core as available, so core off must reach it as explicit false."""
+    patched_yaml.get_runtime_components.return_value = [
+        Component(id="features:core", settings=ComponentSetting(enabled=False)),
+        Component(id="features:googleOauth", settings=ComponentSetting(enabled=False)),
+    ]
+
+    with _patch_rows([]):
+        components = await resolve_components()
+
+    assert _find(components, "features:core").settings.enabled is False
+    assert _find(components, "features:googleOauth") is None
+
+
+@pytest.mark.asyncio
 async def test_override_merges_before_enabled_filter(patched_yaml):
     rows = [_row("CUSTOMER_CONFIG__CHAT_DISCLAIMER", {"enabled": True, "text": "Be careful"})]
 
@@ -497,6 +512,57 @@ async def test_metrics_analytics_projection_toggles_with_enterprise(has_ent, exp
     assert (_find(components, "features:metricsAnalytics") is not None) == expected_present
 
 
+# --- mcpConnect follows mcp_connect_available, only in standalone mode ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "standalone,mcp_enabled,mcp_url,expected_present",
+    [
+        # Standalone: tracks mcp_connect_available (enabled AND a configured URL).
+        (True, True, "http://mcp-connect:3000", True),
+        (True, True, "", False),
+        (True, False, "http://mcp-connect:3000", False),
+        (True, False, "", False),
+        # Non-standalone: byte-for-byte unchanged from today, regardless of the flag/URL.
+        (False, True, "http://mcp-connect:3000", True),
+        (False, True, "", True),
+        (False, False, "http://mcp-connect:3000", True),
+        (False, False, "", True),
+    ],
+)
+async def test_mcp_connect_follows_availability_only_in_standalone(
+    patched_yaml, standalone, mcp_enabled, mcp_url, expected_present
+):
+    """mcpConnect tracks mcp_connect_available only in standalone; outside standalone the
+    response must stay identical to today regardless of MCP_CONNECT_ENABLED/MCP_CONNECT_URL."""
+    patched_yaml.components = [
+        Component(id="mcpConnect", settings=ComponentSetting(enabled=True)),
+    ]
+
+    with _patch_rows([]):
+        with patch("codemie.service.customer_config_service.config") as mock_cfg:
+            mock_cfg.STANDALONE = standalone
+            mock_cfg.MCP_CONNECT_ENABLED = mcp_enabled
+            mock_cfg.MCP_CONNECT_URL = mcp_url
+            components = await resolve_components()
+
+    assert (_find(components, "mcpConnect") is not None) == expected_present
+
+
+@pytest.mark.asyncio
+async def test_mcp_connect_filter_is_noop_when_component_absent(patched_yaml):
+    """No KeyError/no-op when "mcpConnect" is not among the enabled components."""
+    with _patch_rows([]):
+        with patch("codemie.service.customer_config_service.config") as mock_cfg:
+            mock_cfg.STANDALONE = True
+            mock_cfg.MCP_CONNECT_ENABLED = True
+            mock_cfg.MCP_CONNECT_URL = ""
+            components = await resolve_components()
+
+    assert _find(components, "mcpConnect") is None
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 def test_conversation_analytics_follows_config_flag(enabled):
     """conversationAnalytics runtime projection must track CONVERSATION_ANALYSIS_ENABLED."""
@@ -541,3 +607,25 @@ async def test_marketplace_thresholds_surfaces_python_defaults_not_zero(patched_
         "graceDays": "60",
         "archiveDeadAfterDays": "30",
     }
+
+
+@pytest.mark.asyncio
+async def test_disabled_mermaid_is_reported_as_explicitly_disabled(patched_yaml):
+    patched_yaml.get_runtime_components.return_value = [
+        Component(id="features:mermaid", settings=ComponentSetting(enabled=False))
+    ]
+    with _patch_rows([]):
+        components = await resolve_components()
+
+    assert _find(components, "features:mermaid").settings.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_other_disabled_components_stay_omitted(patched_yaml):
+    patched_yaml.get_runtime_components.return_value = [
+        Component(id="features:mermaid", settings=ComponentSetting(enabled=False))
+    ]
+    with _patch_rows([]):
+        components = await resolve_components()
+
+    assert _find(components, "chatDisclaimer") is None

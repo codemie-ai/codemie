@@ -15,6 +15,7 @@
 import asyncio
 
 from elasticsearch import NotFoundError
+from codemie.rest_api.dependencies.core import require_core
 from fastapi import APIRouter, status, Request, Depends, Query
 from fastapi.responses import RedirectResponse
 from typing import Optional, Union
@@ -435,6 +436,7 @@ def _process_skill_reactions(
 
 @router.get(
     "/user/reactions",
+    dependencies=[Depends(require_core)],
     status_code=status.HTTP_200_OK,
     response_model=UserReactionsResponse,
     response_model_by_alias=True,

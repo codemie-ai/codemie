@@ -20,7 +20,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from codemie.configs.config import Config, load_env_files, retrieval_available
+from codemie.configs.config import Config, load_env_files, mcp_connect_available, retrieval_available
 
 
 def test_is_local_local():
@@ -147,10 +147,81 @@ class TestLoadEnvFiles:
 
 
 def test_retrieval_available_true_for_elasticsearch():
-    cfg = SimpleNamespace(RETRIEVAL_BACKEND="elasticsearch")
+    cfg = SimpleNamespace(STANDALONE=False, RETRIEVAL_BACKEND="elasticsearch")
     assert retrieval_available(cfg) is True
 
 
 def test_retrieval_available_false_for_none():
-    cfg = SimpleNamespace(RETRIEVAL_BACKEND="none")
+    cfg = SimpleNamespace(STANDALONE=False, RETRIEVAL_BACKEND="none")
     assert retrieval_available(cfg) is False
+
+
+def test_mcp_connect_available_non_standalone_ignores_url():
+    cfg = SimpleNamespace(STANDALONE=False, MCP_CONNECT_ENABLED=True, MCP_CONNECT_URL="")
+    assert mcp_connect_available(cfg) is True
+
+
+def test_mcp_connect_available_non_standalone_follows_flag():
+    cfg = SimpleNamespace(STANDALONE=False, MCP_CONNECT_ENABLED=False, MCP_CONNECT_URL="")
+    assert mcp_connect_available(cfg) is False
+
+
+def test_mcp_connect_available_standalone_requires_enabled_and_url():
+    cfg = SimpleNamespace(STANDALONE=True, MCP_CONNECT_ENABLED=True, MCP_CONNECT_URL="http://x")
+    assert mcp_connect_available(cfg) is True
+
+
+def test_mcp_connect_available_standalone_deliberately_disabled():
+    cfg = SimpleNamespace(STANDALONE=True, MCP_CONNECT_ENABLED=False, MCP_CONNECT_URL="http://x")
+    assert mcp_connect_available(cfg) is False
+
+
+def test_mcp_connect_available_standalone_empty_url():
+    cfg = SimpleNamespace(STANDALONE=True, MCP_CONNECT_ENABLED=True, MCP_CONNECT_URL="")
+    assert mcp_connect_available(cfg) is False
+
+
+def test_mcp_connect_available_standalone_none_url():
+    cfg = SimpleNamespace(STANDALONE=True, MCP_CONNECT_ENABLED=True, MCP_CONNECT_URL=None)
+    assert mcp_connect_available(cfg) is False
+
+
+def test_standalone_defaults_false(monkeypatch):
+    monkeypatch.delenv("STANDALONE", raising=False)
+    assert Config(_env_file=None).STANDALONE is False
+
+
+def test_standalone_from_env(monkeypatch):
+    monkeypatch.setenv("STANDALONE", "true")
+    assert Config(_env_file=None).STANDALONE is True
+
+
+def test_standalone_from_env_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("STANDALONE", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("STANDALONE=true\n")
+    assert Config(_env_file=env_file).STANDALONE is True
+
+
+def test_standalone_invalid_value_rejected(monkeypatch):
+    monkeypatch.setenv("STANDALONE", "maybe")
+    with pytest.raises(ValidationError):
+        Config(_env_file=None)
+
+
+def test_standalone_does_not_change_external_service_defaults(monkeypatch):
+    for key in ("ELASTIC_URL", "MERMAID_SERVER_URL", "MCP_CONNECT_URL", "REDIS_HOST"):
+        monkeypatch.delenv(key, raising=False)
+    cfg = Config(_env_file=None)
+    assert cfg.ELASTIC_URL == "http://localhost:9200"
+    assert cfg.MERMAID_SERVER_URL == "http://localhost:8082"
+    assert cfg.MCP_CONNECT_URL == "http://localhost:3000"
+    assert cfg.REDIS_HOST == "localhost"
+
+
+@pytest.mark.parametrize("flag", ["true", "false"])
+def test_standalone_not_exposed_in_customer_config(monkeypatch, flag):
+    from codemie.configs.customer_config import customer_config
+
+    monkeypatch.setenv("STANDALONE", flag)
+    assert not [c for c in customer_config.resolve_all() if "standalone" in str(c.id).lower()]

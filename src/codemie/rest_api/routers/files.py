@@ -36,7 +36,20 @@ from codemie.rest_api.security.user import User
 from codemie.service.file_service.download_rules import can_download
 from codemie.service.file_service.file_service import FileService
 from codemie.service.file_service.markdown_cache_service import MarkdownCacheService
-from codemie.service.file_service.mermaid_service import MermaidService
+from codemie.service.file_service.mermaid_service import (
+    MERMAID_INVALID_DIAGRAM_HELP,
+    MERMAID_INVALID_DIAGRAM_MESSAGE,
+    MERMAID_NOT_CONFIGURED_DETAILS,
+    MERMAID_NOT_CONFIGURED_HELP,
+    MERMAID_NOT_CONFIGURED_MESSAGE,
+    MERMAID_UNAVAILABLE_DETAILS,
+    MERMAID_UNAVAILABLE_HELP,
+    MERMAID_UNAVAILABLE_MESSAGE,
+    MermaidDiagramGenerationError,
+    MermaidNotConfiguredError,
+    MermaidService,
+    MermaidServiceUnavailableError,
+)
 from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
 
 router = APIRouter(
@@ -416,6 +429,28 @@ def generate_diagram_or_raise(mermaid_code: str, content_type: MermaidContentTyp
     """
     try:
         diagram = MermaidService.draw_mermaid(mermaid_code=mermaid_code, type=content_type)
+    except MermaidNotConfiguredError as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message=MERMAID_NOT_CONFIGURED_MESSAGE,
+            details=MERMAID_NOT_CONFIGURED_DETAILS,
+            help=MERMAID_NOT_CONFIGURED_HELP,
+            expected=True,
+        ) from e
+    except MermaidServiceUnavailableError as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message=MERMAID_UNAVAILABLE_MESSAGE,
+            details=MERMAID_UNAVAILABLE_DETAILS,
+            help=MERMAID_UNAVAILABLE_HELP,
+        ) from e
+    except MermaidDiagramGenerationError as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message=MERMAID_INVALID_DIAGRAM_MESSAGE,
+            details=str(e).strip(),
+            help=MERMAID_INVALID_DIAGRAM_HELP,
+        ) from e
     except Exception as e:
         formatted_exception = str(e).strip()
         raise ExtendedHTTPException(

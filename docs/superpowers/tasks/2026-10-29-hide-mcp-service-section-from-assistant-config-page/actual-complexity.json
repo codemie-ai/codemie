@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 10,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "The diff gates MCP Connect availability in five distinct components — the shared Config/mcp_connect_available helper, FastAPI startup (_run_standalone_startup warning in main.py), CustomerConfigService.resolve_components (dynamic-config component filtering), ToolkitService._get_tools (assistant MCP tool assembly), and ToolNode._execute_mcp_tool (workflow MCP execution) — spanning infrastructure/config, service, and workflow-engine subsystems." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 10 files changed (5 source + 5 matching test files), 0 new files — falls in the 7-10 modified / L band." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches the core shared Config utility (mcp_connect_available helper added to codemie.configs.config, a module imported throughout the backend) in addition to two service classes and a workflow node."
+  ],
+  "split_recommendation": null
+}

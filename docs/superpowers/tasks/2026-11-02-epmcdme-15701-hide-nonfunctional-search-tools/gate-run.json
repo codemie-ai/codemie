@@ -1,0 +1,86 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-15701_hide-nonfunctional-search-tools",
+ "head": "96f674431d0d80784aaa056477825b76d82cb342",
+ "runner": "poetry",
+ "started_at": "2026-11-02T12:15:00Z",
+ "completed_at": "2026-11-02T12:28:00Z",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 2043,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 7071,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license-check",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 1538,
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "gitleaks",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 39550,
+   "command": "make gitleaks",
+   "exit_code": 2,
+   "notes": "Finding in standalone/.env.standalone (AZURE_OPENAI_API_KEY), file not in branch diff"
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 319862,
+   "command": "make test",
+   "exit_code": 2,
+   "notes": "4 failed: test_llm_assessment_service::test_model_options_respect_what_the_model_declares (ModelNotAllowedException); 3 test_filesystem_policy matplotlib/openpyxl (OpenBLAS pthread_create / RLIMIT_NPROC env limit). None in changed files."
+  },
+  {
+   "id": "precommit-gitleaks",
+   "source": "hook",
+   "status": "N/A",
+   "command": "scripts/git-hooks/validate_secrets.sh",
+   "notes": "staged-only scan; covered by make gitleaks"
+  },
+  {
+   "id": "sonar-local",
+   "source": "hook",
+   "status": "N/A",
+   "command": "make sonar-local",
+   "notes": "pre-push hook; needs Sonar credentials/network; owed locally"
+  },
+  {
+   "id": "cli-analytics-live",
+   "source": "guide",
+   "status": "N/A",
+   "command": "make test-cli-analytics-live",
+   "notes": "change does not touch CLI Analytics SQL"
+  },
+  {
+   "id": "test-harness",
+   "source": "guide",
+   "status": "N/A",
+   "command": "make test-harness",
+   "notes": "not opening MR in this run"
+  }
+ ],
+ "failures": {
+  "gitleaks": "docker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 \\\n    dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace\nFinding:     AZURE_OPENAI_API_KEY=\u001b[1;3;mREDACTED\u001b[0m\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     4.429229\nFile:        /workspace/standalone/.env.standalone\nLine:        20\nFingerprint: /workspace/standalone/.env.standalone:generic-api-key:20\n\n\u001b[90m12:21PM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~69813589 bytes (69.81 MB) in 37.6s\u001b[0m\n\u001b[90m12:21PM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 1\u001b[0m\nmake: *** [Makefile:73: gitleaks] Error 1\n",
+  "unit": "tests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /home/siarhei/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:294: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /home/siarhei/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:679: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(mcp_config.config, config_id=config_id)\n\ntests/codemie/service/test_mcp_config_service_clone.py::test_invalid_auth_config_raises_422\n  /home/siarhei/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:388: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_body_carries_the_failing_rules_and_every_finding\n  /home/siarhei/projects/codemie-dev/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:28: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    error = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1])\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_only_the_help_text_may_differ_between_callers\n  /home/siarhei/projects/codemie-dev/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:41: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    publish = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1])\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_only_the_help_text_may_differ_between_callers\n  /home/siarhei/projects/codemie-dev/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:42: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    approve = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1], help=\"use force-publish\")\n\ntests/codemie/rest_api/routers/test_user_settings_crud.py::test_create_user_setting_integrity_error_non_ms_teams_not_mislabeled\n  /home/siarhei/projects/codemie-dev/codemie/src/codemie/rest_api/routers/user_settings.py:194: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise _map_integrity_error(request) from e\n\ntests/codemie/rest_api/routers/test_user_settings_crud.py::test_update_user_setting_integrity_error_non_ms_teams_not_mislabeled\n  /home/siarhei/projects/codemie-dev/codemie/src/codemie/rest_api/routers/user_settings.py:256: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise _map_integrity_error(request) from e\n\ntests/codemie/rest_api/routers/test_workflow.py::test_create_workflow_restricted_mode_accepts_catalog_ref_server_declared_only_in_yaml\n  /home/siarhei/.cache/pypoetry/virtualenvs/codemie-Qx-nzro9-py3.12/lib/python3.12/site-packages/pydantic/type_adapter.py:677: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `list[GuardrailAssignmentItem]` - serialized value may not be as expected [field_name='guardrail_assignments', input_value=<MagicMock name='get_enti...)' id='135769289112128'>, input_type=MagicMock])\n    return self.serializer.to_json(\n\ntests/codemie/rest_api/routers/test_workflow.py::test_create_workflow_open_mode_accepts_handwritten_server_declared_only_in_yaml\n  /home/siarhei/.cache/pypoetry/virtualenvs/codemie-Qx-nzro9-py3.12/lib/python3.12/site-packages/pydantic/type_adapter.py:677: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `list[GuardrailAssignmentItem]` - serialized value may not be as expected [field_name='guardrail_assignments', input_value=<MagicMock name='get_enti...)' id='135769204374032'>, input_type=MagicMock])\n    return self.serializer.to_json(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/service/marketplace_management/test_llm_assessment_service.py::test_model_options_respect_what_the_model_declares\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_matplotlib_writes_single_and_multipage_pdf\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\n==== 4 failed, 25391 passed, 632 skipped, 438 warnings in 311.98s (0:05:11) ====\nmake: *** [Makefile:31: test] Error 1\n"
+ }
+}

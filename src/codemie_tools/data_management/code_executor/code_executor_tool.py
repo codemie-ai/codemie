@@ -33,6 +33,7 @@ from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.data_management.code_executor.batch_job_runner import run_via_jobs
 from codemie_tools.data_management.code_executor.run_observer import RunOutcome, SandboxFailure, SandboxRunObserver
+from codemie_tools.data_management.code_executor.k8s_client_manager import cluster_connection_configured
 from codemie_tools.data_management.code_executor.file_export_service import FileExportService
 from codemie_tools.data_management.code_executor.file_upload_service import FileUploadService
 from codemie_tools.data_management.code_executor.llm_sandbox import apply_llm_sandbox_patch
@@ -59,6 +60,24 @@ from codemie_tools.data_management.code_executor.tools_vars import (
 )
 
 logger = logging.getLogger(__name__)
+
+NOT_CONFIGURED_MESSAGE = (
+    "Code Executor is not configured on this deployment (it needs CODE_EXECUTOR_ENABLED=true and a "
+    "Kubernetes cluster connection). Do not retry; tell the user an administrator must set it up."
+)
+
+
+def is_standalone() -> bool:
+    return os.getenv("STANDALONE", "").strip().lower() in ("1", "true", "yes", "on", "y", "t")
+
+
+def is_code_executor_enabled() -> bool:
+    return os.getenv("CODE_EXECUTOR_ENABLED", "false").lower() == "true"
+
+
+def _environment_unavailable(detail: str) -> str:
+    return f"The code execution environment is unavailable (this is not a problem with your code): {detail}"
+
 
 _DENIAL_EVENT_FIELD_LIMITS: dict[str, int] = {
     "operation": 128,
@@ -461,6 +480,7 @@ class CodeExecutorTool(CodeMieTool):
         Raises:
             ToolException: If execution fails
         """
+        self._ensure_executor_configured()
         user_workdir = self._get_user_workdir()
         self._validate_export_paths(export_files, user_workdir)
         guarded_code = build_guarded_python_script(
@@ -516,6 +536,10 @@ class CodeExecutorTool(CodeMieTool):
             raise ToolException(
                 "Required library is not installed. Please install it with: pip install 'llm-sandbox[k8s]'"
             ) from e
+        except SandboxFailure as e:
+            if e.outcome == RunOutcome.SANDBOX_ERROR:
+                raise SandboxFailure(_environment_unavailable(str(e)), e.outcome) from e
+            raise
         except ToolException:
             raise
         except Exception as e:
@@ -529,9 +553,21 @@ class CodeExecutorTool(CodeMieTool):
                 exc_info=True,
             )
 
-            # Provide detailed error message to user
+            # Reaching here means the execution environment failed, not the user's code (code errors come
+            # back as a non-zero exit code and are reported by _format_execution_result).
             detailed_error = f"{error_type}: {error_msg}" if error_msg else f"{error_type}: {error_repr}"
-            raise ToolException(f"Error executing code: {detailed_error}") from e
+            raise ToolException(_environment_unavailable(detailed_error)) from e
+
+    @staticmethod
+    def _ensure_executor_configured() -> None:
+        """Standalone only: fail fast, before any Kubernetes client is built, when Code Executor is not set up."""
+        if not is_standalone():
+            return
+        from codemie.configs.customer_config import customer_config  # noqa: PLC0415
+
+        flag = customer_config.configured_feature_enabled("dynamicCodeInterpreter")
+        if not (flag and is_code_executor_enabled() and cluster_connection_configured()):
+            raise ToolException(NOT_CONFIGURED_MESSAGE)
 
     def _upload_files_to_sandbox(self, session: SandboxSession, file_objects: List[FileObject], workdir: str) -> None:
         """

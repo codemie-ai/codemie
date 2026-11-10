@@ -212,6 +212,78 @@ class TestToolkitServiceGetToolsWithHeaders:
     @patch('codemie.service.tools.toolkit_service.ToolkitService.add_file_tools')
     @patch('codemie.service.tools.toolkit_service.ToolkitService.add_context_tools')
     @patch('codemie.service.tools.toolkit_service.ToolkitService.get_core_tools')
+    @patch('codemie.service.tools.toolkit_service.logger')
+    @patch('codemie.service.tools.toolkit_service.config')
+    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools')
+    def test_get_tools_skips_mcp_in_standalone_without_url_and_warns(
+        self,
+        mock_get_mcp_tools,
+        mock_config,
+        mock_logger,
+        mock_get_core_tools,
+        mock_add_context_tools,
+        mock_add_file_tools,
+        mock_process_final_tools,
+        mock_toolkit_lookup,
+    ):
+        """Standalone with MCP Connect enabled but no URL: MCP tools are skipped and a warning is logged."""
+        # Arrange
+        _setup_mock_config(mock_config)
+        mock_config.STANDALONE = True
+        mock_config.MCP_CONNECT_ENABLED = True
+        mock_config.MCP_CONNECT_URL = ""
+        mock_get_core_tools.return_value = []
+        mock_add_context_tools.return_value = []
+        mock_add_file_tools.return_value = []
+        mock_process_final_tools.return_value = []
+
+        assistant = Mock(spec=Assistant)
+        assistant.id = 'asst-123'
+        assistant.name = 'Test Assistant'
+        assistant.project = 'test-project'
+        assistant.toolkits = []
+        assistant.context = []
+        assistant.mcp_servers = [{'name': 'test-server', 'command': 'test-command', 'args': []}]
+        assistant.assistant_ids = None
+        assistant.skill_ids = []  # Prevent SkillTool creation
+
+        request = AssistantChatRequest(
+            text='Hello',
+            conversation_id='conv-123',
+            tools_config=None,
+        )
+
+        user = Mock(spec=User)
+        user.id = 'user-123'
+        user.name = 'Test User'
+        user.is_admin = False
+
+        # Act
+        tools = ToolkitService.get_tools(
+            assistant=assistant,
+            request=request,
+            user=user,
+            llm_model='claude-sonnet-4',
+            request_uuid='req-123',
+            is_react=False,
+            thread_generator=None,
+            exclude_extra_context_tools=False,
+            file_objects=None,
+            mcp_server_args_preprocessor=None,
+            smart_tool_selection_enabled=False,
+            request_headers={'X-Tenant-ID': 'tenant-123'},
+        )
+
+        # Assert - MCP tools skipped and a warning logged
+        assert isinstance(tools, list)
+        mock_get_mcp_tools.assert_not_called()
+        mock_logger.warning.assert_called_once()
+
+    @patch('codemie.service.tools.toolkit_service.ToolkitLookupService')
+    @patch('codemie.service.tools.toolkit_service.ToolkitService._process_final_tools_traditional')
+    @patch('codemie.service.tools.toolkit_service.ToolkitService.add_file_tools')
+    @patch('codemie.service.tools.toolkit_service.ToolkitService.add_context_tools')
+    @patch('codemie.service.tools.toolkit_service.ToolkitService.get_core_tools')
     @patch('codemie.service.tools.toolkit_service.config')
     @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools')
     def test_get_tools_with_mixed_tools(
@@ -498,3 +570,78 @@ class TestToolkitServiceGetToolsWithHeaders:
 
         assert tools == [mcp_tool]
         assert request.metadata == {"mcp_auth_warnings": [warning_payload]}
+
+    @pytest.mark.parametrize(
+        "standalone,mcp_enabled,mcp_url,should_fetch,should_warn",
+        [
+            # Non-standalone ignores the URL entirely: reduces to today's MCP_CONNECT_ENABLED check.
+            (False, True, "", True, False),
+            (False, False, "http://mcp-connect:3000", False, False),
+            # Standalone with the flag off skips with a warning regardless of the URL.
+            (True, False, "http://mcp-connect:3000", False, True),
+            # Standalone, enabled, with a configured URL: MCP tools are fetched.
+            (True, True, "http://mcp-connect:3000", True, False),
+        ],
+    )
+    @patch('codemie.service.tools.toolkit_service.ToolkitService._process_final_tools_traditional')
+    @patch('codemie.service.tools.toolkit_service.ToolkitService.add_tools_with_creds')
+    @patch('codemie.service.tools.toolkit_service.logger')
+    @patch('codemie.service.tools.toolkit_service.config')
+    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools')
+    def test_get_tools_mcp_availability_matrix(
+        self,
+        mock_get_mcp_tools,
+        mock_config,
+        mock_logger,
+        mock_add_tools_with_creds,
+        mock_process_final_tools,
+        standalone,
+        mcp_enabled,
+        mcp_url,
+        should_fetch,
+        should_warn,
+    ):
+        """mcp_connect_available gates MCP tool fetch identically at every standalone x
+        MCP_CONNECT_ENABLED x MCP_CONNECT_URL combination not already covered above."""
+        _setup_mock_config(mock_config)
+        mock_config.STANDALONE = standalone
+        mock_config.MCP_CONNECT_ENABLED = mcp_enabled
+        mock_config.MCP_CONNECT_URL = mcp_url
+        mock_add_tools_with_creds.return_value = []
+        mock_get_mcp_tools.return_value = []
+        mock_process_final_tools.side_effect = lambda tools, *_: tools
+
+        assistant = Mock(spec=Assistant)
+        assistant.id = 'asst-123'
+        assistant.name = 'Test Assistant'
+        assistant.project = 'test-project'
+        assistant.toolkits = []
+        assistant.context = []
+        assistant.mcp_servers = [{'name': 'test-server', 'command': 'test-command', 'args': []}]
+        assistant.assistant_ids = None
+        assistant.skill_ids = []
+
+        request = AssistantChatRequest(text='Hello', conversation_id='conv-123', tools_config=None)
+
+        user = Mock(spec=User)
+        user.id = 'user-123'
+        user.name = 'Test User'
+        user.is_admin = False
+
+        # Act
+        ToolkitService._get_tools(
+            assistant=assistant,
+            request=request,
+            user=user,
+            llm_model='claude-sonnet-4',
+            request_uuid='req-123',
+            thread_generator=None,
+            mcp_server_args_preprocessor=None,
+        )
+
+        # Assert
+        if should_fetch:
+            mock_get_mcp_tools.assert_called_once()
+        else:
+            mock_get_mcp_tools.assert_not_called()
+        assert mock_logger.warning.called is should_warn

@@ -19,6 +19,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from codemie.clients.redis import google_oauth_available
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.google_oauth.flow_service import GoogleOAuthFlowService
@@ -42,6 +44,11 @@ def _get_oauth_service() -> GoogleOAuthFlowService:
     return _oauth_service
 
 
+def _require_enabled() -> None:
+    if not google_oauth_available():
+        raise ExtendedHTTPException(503, "Google OAuth is not enabled.")
+
+
 _CALLBACK_SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self'",
     "X-Frame-Options": "DENY",
@@ -57,6 +64,7 @@ async def initiate_oauth(
     Returns an authorization URL and opaque state token for the frontend to
     redirect the user to Google's consent screen.
     """
+    _require_enabled()
     result = _get_oauth_service().initiate_flow(user.id)
     return JSONResponse(content=result)
 
@@ -74,6 +82,12 @@ async def oauth_callback(
     authorization code for tokens and stores the result in Redis.
     Returns an HTML page the user can close.
     """
+    if not google_oauth_available():
+        return HTMLResponse(
+            content=html_error_page("Google OAuth is not enabled."),
+            status_code=503,
+            headers=_CALLBACK_SECURITY_HEADERS,
+        )
     result = _get_oauth_service().handle_callback(code, state, error, scope)
     content = html_success_page(result.message) if result.success else html_error_page(result.message)
     return HTMLResponse(
@@ -95,6 +109,7 @@ async def oauth_status(
     - 200 + { status: "success", … } — authorization completed successfully
     - 400 + { status: "error", … }   — authorization failed or state expired
     """
+    _require_enabled()
     result = _get_oauth_service().get_status(state, user.id)
     if result["status"] == "pending":
         return JSONResponse(status_code=202, content=result)

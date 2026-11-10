@@ -1,0 +1,4 @@
+{"ts":"2026-10-28T14:11:18Z","gate_id":"spec.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved spec","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-28T14:14:06Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved plan","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-28T14:23:20Z","gate_id":"code-review.final","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved; 0 findings","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-28T14:35:34Z","gate_id":"feature.verification","mode":"hitl","verdict":{"decision":"approve","rationale":"QA unit gate: 4 unrelated failures (llm_assessment, code_executor filesystem_policy) accepted as pre-existing by user","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

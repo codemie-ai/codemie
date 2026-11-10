@@ -18,8 +18,10 @@ from typing import Annotated, Dict, List, NoReturn, Optional
 
 from elasticsearch import NotFoundError
 from fastapi import APIRouter, Query, status, Depends, BackgroundTasks, Body, Request
+
 from starlette.responses import StreamingResponse
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.core.dependecies import set_disable_prompt_cache
@@ -69,7 +71,7 @@ from codemie.workflows.utils.html_utils import generate_html_report
 router = APIRouter(
     tags=["WorkflowExecutions"],
     prefix="/v1",
-    dependencies=[],
+    dependencies=[Depends(require_core)],
 )
 
 WORKFLOW_STARTED_BG_MSG = "Workflow has been started"

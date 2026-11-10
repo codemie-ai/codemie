@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient, ASGITransport
 
-from codemie.rest_api.routers.webhook import router
+from codemie.rest_api.routers import webhook as webhook_module
+from codemie.rest_api.routers.webhook import router, _check_rate_limit
 from codemie.triggers.bindings.webhook import WebhookService
 
 app = FastAPI()
@@ -107,3 +108,36 @@ async def test_invoke_webhook_msgraph_validation_token_too_long(mock_invoke_webh
 
     assert response.status_code == 400
     mock_invoke_webhook_logic.assert_not_called()
+
+
+def test_rate_limit_skipped_when_standalone_no_redis():
+    """Standalone + no Redis: skip the limiter entirely, no call, no log line."""
+    with (
+        patch.object(webhook_module.config, "STANDALONE", True),
+        patch.object(webhook_module.config, "REDIS_HOST", ""),
+        patch.object(webhook_module.config, "WEBHOOK_RATE_LIMIT_ENABLED", True),
+        patch.object(webhook_module, "get_rate_limiter") as mock_get_rate_limiter,
+        patch.object(webhook_module, "logger") as mock_logger,
+    ):
+        _check_rate_limit("test-webhook-id")
+
+    mock_get_rate_limiter.assert_not_called()
+    mock_logger.error.assert_not_called()
+    mock_logger.warning.assert_not_called()
+
+
+def test_rate_limit_unchanged_when_redis_configured_but_unreachable():
+    """Redis configured but erroring at call time: existing fail-open-with-error path, untouched."""
+    limiter = MagicMock()
+    limiter.check_and_increment.side_effect = Exception("redis down")
+    with (
+        patch.object(webhook_module.config, "STANDALONE", True),
+        patch.object(webhook_module.config, "REDIS_HOST", "localhost"),
+        patch.object(webhook_module.config, "WEBHOOK_RATE_LIMIT_ENABLED", True),
+        patch.object(webhook_module, "get_rate_limiter", return_value=limiter),
+        patch.object(webhook_module, "logger") as mock_logger,
+    ):
+        _check_rate_limit("test-webhook-id")
+
+    limiter.check_and_increment.assert_called_once()
+    mock_logger.error.assert_called_once()

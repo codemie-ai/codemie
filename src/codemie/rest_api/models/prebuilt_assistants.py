@@ -51,6 +51,7 @@ from codemie.rest_api.models.assistant import AssistantBase, ToolKitDetails
 from codemie.rest_api.security.user import User
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.configs import logger
+from codemie.configs.customer_config import customer_config
 from codemie.templates.agents.business_analyst import BA_SYSTEM_PROMPT
 from codemie.templates.agents.cloud_agent import CLOUD_AGENT_PROMPT
 from codemie.templates.agents.core_prompts import (
@@ -316,7 +317,9 @@ class PrebuiltAssistant(AssistantBase):
             slug="template-google-search-assistant",
             description="""Prebuilt Research Assistant. Assistant can browse internet, web scrapping and provide research report.""",
             system_prompt=RESEARCHER_PROMPT.strip(),
-            toolkits=cast_to_toolkit_details([ResearchToolkitUI()]),
+            toolkits=cast_to_toolkit_details(
+                [ResearchToolkitUI.offered(customer_config.is_feature_enabled("webSearch"))]
+            ),
             icon_url="https://epam-gen-ai-run.github.io/ai-run-install/docs/assets/ai/researcher.png",
             is_react=False,
             project=user_project,

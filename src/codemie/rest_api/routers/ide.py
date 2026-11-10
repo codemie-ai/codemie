@@ -39,6 +39,7 @@ from codemie.service.request_summary_manager import request_summary_manager
 from codemie.rest_api.models.conversation import Conversation, ConversationListItem
 
 from codemie.configs import config
+from codemie.rest_api.dependencies.core import require_core
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 
@@ -64,6 +65,7 @@ def get_config(request: IdeConfigurationRequest, user: User = Depends(authentica
 
 @router.get(
     "/virtual/conversations/{virtual_assistant_id}",
+    dependencies=[Depends(require_core)],
     response_model=List[ConversationListItem],
 )
 def get_virtual_assistant_conversations(
@@ -78,6 +80,7 @@ def get_virtual_assistant_conversations(
 
 @router.post(
     "/virtual/conversations",
+    dependencies=[Depends(require_core)],
     response_model=Conversation,
 )
 def create_virtual_conversation(
@@ -90,6 +93,7 @@ def create_virtual_conversation(
 
 @router.post(
     "/inference/virtual",
+    dependencies=[Depends(require_core)],
     status_code=status.HTTP_200_OK,
     response_model=BaseModelResponse,
     response_model_by_alias=True,
@@ -140,6 +144,7 @@ async def inference_virtual(
 
 @router.post(
     "/inference/{assistant_id}",
+    dependencies=[Depends(require_core)],
     status_code=status.HTTP_200_OK,
     response_model=BaseModelResponse,
     response_model_by_alias=True,

@@ -16,6 +16,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, status, Depends, BackgroundTasks
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.configs import config
 from codemie.core.models import (
     Application,
@@ -80,7 +81,7 @@ def add_application(application: ApplicationRequest, admin: User = Depends(authe
 @router.get(
     "/admin/users/{user_id}/conversations/{conversation_id}",
     response_model=Conversation,
-    dependencies=[Depends(admin_access_only)],
+    dependencies=[Depends(admin_access_only), Depends(require_core)],
 )
 async def get_conversation_by_ids(user_id: str, conversation_id: str) -> Conversation:
     """
@@ -92,7 +93,7 @@ async def get_conversation_by_ids(user_id: str, conversation_id: str) -> Convers
 @router.put(
     "/admin/users/{user_id}/conversations/{conversation_id}/feedback",
     response_model=Conversation,
-    dependencies=[Depends(admin_access_only)],
+    dependencies=[Depends(admin_access_only), Depends(require_core)],
 )
 async def update_conversation_final_feedback(
     user_id: str,

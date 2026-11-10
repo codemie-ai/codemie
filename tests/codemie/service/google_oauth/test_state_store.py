@@ -15,11 +15,12 @@
 """Unit tests for GoogleOAuthStateStore."""
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.service.google_oauth import state_store as state_store_module
 from codemie.service.google_oauth.state_store import (
     GoogleOAuthStateStore,
     STATE_KEY_PREFIX,
@@ -67,13 +68,26 @@ class TestStoreState:
         assert call_args[1]["ex"] == 600  # STATE_TTL
 
     def test_store_state_raises_on_redis_failure(self, store, mock_redis):
-        """Should raise ExtendedHTTPException when Redis fails."""
+        """Should raise ExtendedHTTPException when Redis fails (non-Standalone: unchanged 502)."""
         mock_redis.set.side_effect = Exception("Redis error")
 
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            store.store_state("test_state", {"data": "test"})
+        with patch.object(state_store_module.config, "STANDALONE", False):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                store.store_state("test_state", {"data": "test"})
 
         assert exc_info.value.code == 502
+        assert exc_info.value.message == "Failed to initiate authentication"
+
+    def test_store_state_raises_503_in_standalone(self, store, mock_redis):
+        """In Standalone, a Redis failure raises the same 503 as its sibling consume_state."""
+        mock_redis.set.side_effect = Exception("Redis error")
+
+        with patch.object(state_store_module.config, "STANDALONE", True):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                store.store_state("test_state", {"data": "test"})
+
+        assert exc_info.value.code == 503
+        assert exc_info.value.message == "Authentication service temporarily unavailable. Please try again."
 
 
 class TestConsumeState:

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "In standalone mode, drop the mcpConnect customer-config component unless MCP_CONNECT_ENABLED is true and MCP_CONNECT_URL is non-empty, degrade MCP gracefully at runtime, and log a standalone-only startup warning when MCP_CONNECT_URL is empty; non-standalone unchanged.",
+  "generated": "2026-10-28T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the customer-config resolution path (customer_config_service.resolve_components / GET /v1/config), the startup sequence (standalone warning), and MCP runtime enforcement points (toolkit_service, tool_node, MCPConnectClient singleton init with empty URL) — 3-4 components across config/service/API layers; bumped from M because customer-config resolution is a core shared utility serving every deployment." },
+    { "dimension": "requirements_clarity", "reason": "Refined task is concrete (flag + non-empty URL, standalone-only), but depends on the unmerged EPMCDME-16473 STANDALONE gate and the ticket's 'MCP Connect key' has no backing setting; minor assumptions remain." },
+    { "dimension": "technical_risk", "reason": "Closest patterns: the LEADERBOARD_ENABLED post-filter in resolve_components and ElasticSearchClient.is_configured runtime flags (EPMCDME-14652) cover the visibility half; runtime graceful degradation with an empty MCP_CONNECT_URL (import-time client construction) is untested, so not S. No security surface. Calibration: nearest bundle M example (EPMCDME-10203, total 15) agrees with the M band." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared utility (customer-config component resolution serving GET /v1/config for all deployments)"
+  ],
+  "split_recommendation": null
+}

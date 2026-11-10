@@ -15,6 +15,7 @@
 import yaml
 from fastapi import APIRouter, Depends, Query, status
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.category_repository import CategoryRepository
 from codemie.rest_api.models.category import (
@@ -30,7 +31,7 @@ from codemie.service.assistant.category_service import category_service
 router = APIRouter(
     tags=["Category"],
     prefix="/v1",
-    dependencies=[],
+    dependencies=[Depends(require_core)],
 )
 
 

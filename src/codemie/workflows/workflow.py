@@ -311,18 +311,20 @@ class WorkflowExecutor:
                 node_colors=NodeStyles(first="#c3a6ff", last="#c3a6ff", default="#c3a6ff"),
                 wrap_label_n_words=9,
             )
-            content = MermaidService.draw_mermaid(
-                mermaid_code=mermaid_syntax,
-                type=MermaidContentType.SVG,
-            )
-            if content is None:
-                logger.error('Failed to draw Mermaid PNG')
-                return None
-
-            return content
         except Exception as e:
-            logger.error(f'Failed to draw Mermaid PNG: {str(e)}')
+            logger.error(f'Failed to build workflow graph for Mermaid: {str(e)}')
             return None
+
+        # Rendering errors (not configured, unavailable, invalid diagram) propagate to the caller
+        content = MermaidService.draw_mermaid(
+            mermaid_code=mermaid_syntax,
+            type=MermaidContentType.SVG,
+        )
+        if content is None:
+            logger.error('Failed to draw Mermaid diagram')
+            return None
+
+        return content
 
     def __init__(
         self,

@@ -63,7 +63,9 @@ class WorkflowGeneratorService:
 
         with spend_origin(TrafficOrigin.WORKFLOW_GENERATOR):
             try:
-                available_tools = ToolsInfoService.get_tools_info(user=user, exclude_toolkits=["Plugin"])
+                available_tools = ToolsInfoService.get_tools_info(
+                    user=user, exclude_toolkits=["Plugin"], offered_only=True
+                )
 
                 initial_state: WorkflowGeneratorState = {
                     "nl_query": nl_query,
@@ -175,7 +177,9 @@ class WorkflowGeneratorService:
 
         with spend_origin(TrafficOrigin.WORKFLOW_GENERATOR):
             try:
-                available_tools = ToolsInfoService.get_tools_info(user=user, exclude_toolkits=["Plugin"])
+                available_tools = ToolsInfoService.get_tools_info(
+                    user=user, exclude_toolkits=["Plugin"], offered_only=True
+                )
 
                 initial_state: WorkflowGeneratorState = {
                     "nl_query": "",

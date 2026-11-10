@@ -20,6 +20,7 @@ from typing import Optional
 
 from fastapi import APIRouter, status, Depends
 
+from codemie.rest_api.dependencies.core import require_core
 from codemie.configs import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import BaseResponse
@@ -106,7 +107,7 @@ def _resolve_auto_lookup(credential_types: str, user: User, assistant) -> list[d
 router = APIRouter(
     tags=["Assistant Mappings"],
     prefix="/v1",
-    dependencies=[],
+    dependencies=[Depends(require_core)],
 )
 
 

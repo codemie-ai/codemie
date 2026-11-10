@@ -35,7 +35,7 @@ async def get_tools(user: User = Depends(authenticate)):
     Get list of all available tool names (backward compatible)
     """
     try:
-        toolkits = ToolsInfoService.get_tools_info(user=user)
+        toolkits = ToolsInfoService.get_tools_info(user=user, offered_only=True)
         tool_names = [tool.get("name") for toolkit in toolkits for tool in toolkit.get("tools")]
         return tool_names
     except Exception as e:

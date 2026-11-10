@@ -119,7 +119,7 @@ class SkillGeneratorService:
 
                 # Inject toolkits if requested
                 if include_tools:
-                    toolkits = ToolsInfoService.get_tools_info(user=user)
+                    toolkits = ToolsInfoService.get_tools_info(user=user, offered_only=True)
                     toolkits = cls._transform_toolkits(toolkits)
                     chain_input["toolkits"] = toolkits
 

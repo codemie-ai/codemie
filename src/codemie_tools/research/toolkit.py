@@ -57,6 +57,16 @@ class ResearchToolkitUI(ToolKit):
         Tool.from_metadata(WEB_SCRAPPER_TOOL),
     ]
 
+    @classmethod
+    def offered(cls, web_search_enabled: bool) -> "ResearchToolkitUI":
+        """Fresh instance listing only tools usable in this deployment (the class default is never mutated)."""
+        from codemie.configs.config import config  # noqa: PLC0415
+        from codemie.configs.research_tool_availability import research_tool_available  # noqa: PLC0415
+
+        return cls(
+            tools=[t for t in cls().tools if research_tool_available(t.name, config, web_search_enabled)],
+        )
+
 
 class ResearchToolkit(BaseToolkit):
     research_config: ResearchConfig
@@ -67,7 +77,9 @@ class ResearchToolkit(BaseToolkit):
         return cls(research_config=research_config)
 
     @classmethod
-    def get_tools_ui_info(cls, *args, **kwargs):
+    def get_tools_ui_info(cls, *args, offered_only: bool = False, web_search_enabled: bool = False, **kwargs):
+        if offered_only:
+            return ResearchToolkitUI.offered(web_search_enabled).model_dump()
         return ResearchToolkitUI().model_dump()
 
     def get_tools(self):

@@ -1,0 +1,160 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved the CR-001 fix"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "CR-001 fix requested"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved the CR-001 fix"
+    }
+  ],
+  "reviewed_head": "96f674431d0d80784aaa056477825b76d82cb342",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "CR-001 resolved: catalog.py:219 enrichment lookup is back to ToolsInfoService.get_tools_info(user=user), matching the original recommendation. No new findings discovered in this targeted round.",
+  "confidence": "high",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/assistant/catalog.py",
+      "line": 219,
+      "title": "Detail enrichment lookup wrongly uses offered-only list",
+      "problem": "_build_assistant_detail_response now calls get_tools_info(user=user, offered_only=True) to enrich settings_config flags for an assistant's saved toolkits and nested assistants. This is a lookup of saved tools, not an offering.",
+      "impact": "A saved assistant that uses a hidden Google/Tavily tool gets no match in the lookup, so its settings_config flag is not enriched; also contradicts requirement 12 (lookup unchanged). Consequence is limited to the flag.",
+      "recommendation": "Revert to ToolsInfoService.get_tools_info(user=user); enrichment is a lookup, not an offering.",
+      "status": "resolved",
+      "check_notes": "catalog.py:219 now calls get_tools_info(user=user) without offered_only; lookup restored.",
+      "fix": {
+        "change": "catalog.py detail enrichment lookup reverted to get_tools_info(user=user)",
+        "test": "n/a"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "1 Standalone off unchanged",
+      "status": "pass",
+      "notes": "predicate returns True when not STANDALONE"
+    },
+    {
+      "kind": "spec",
+      "item": "2 Google key set lists Google tools",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "3 No Google key hides Google tools",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "4 Tavily key lists Tavily",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "5 No Tavily key hides Tavily",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "6 webSearch off hides all four",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "7 Wikipedia and Web Scrapper always listed",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "8 Auto web search skips keyless tool",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "9 Both keys set uses both",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "10 No frontend diff",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "11 Researcher template omits Google tools",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "12 Lookup/validation unchanged",
+      "status": "pass",
+      "notes": "lens passed it, but catalog.py:219 enrichment lookup now offered-only (see CR-001)"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "standards not audited in this profile"
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "standards not audited in this profile"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "standards not audited in this profile"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "One surviving defect: the assistant detail enrichment lookup was switched to offered_only=True, contradicting the 'lookup unchanged' requirement; no deferred items, 0 dismissed. Blind and verification-gap lenses were not part of the compact profile; standards intentionally omitted.",
+    "confidence": "high",
+    "risk_flags": []
+  }
+}

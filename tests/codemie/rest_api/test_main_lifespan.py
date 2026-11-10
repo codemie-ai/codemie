@@ -38,6 +38,7 @@ async def test_lifespan_logs_retrieval_unavailable_warning_when_disabled(mock_co
     """RETRIEVAL_BACKEND=none logs a warning naming retrieval as unavailable."""
     from codemie.rest_api.main import lifespan
 
+    mock_config.STANDALONE = False
     mock_config.RETRIEVAL_BACKEND = "none"
     mock_config.to_safe_dict.return_value = {}
 

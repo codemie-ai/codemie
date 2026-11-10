@@ -328,6 +328,35 @@ unavailable. The body limit is `ANALYTICS_INGEST_MAX_BODY_BYTES` (5 MiB by defau
 Open CodeMie at `http://localhost:8080` once `codemie` reports healthy; the Analytics menu item is
 visible to a global/project admin when `features:cliAnalytics` is enabled.
 
+## Elasticsearch-dependent features (optional)
+
+PostgreSQL is the only required dependency. The default Compose stack has no Elasticsearch service:
+with `ELASTIC_URL` empty, the image default, the application starts and knowledge bases, datasources
+and code indexing are unavailable.
+
+Set `ELASTIC_URL` in `standalone/.env.standalone` to enable them. Standalone checks only that the
+value is non-empty: any value counts as configured, and a wrong URL surfaces as connection errors,
+or a failed startup, for you to debug. `RETRIEVAL_BACKEND` has no effect in standalone.
+
+## Redis-dependent features (optional)
+
+The default Compose stack has no Redis service, and Redis is optional here: Standalone starts
+fine without it, with two features degraded rather than failing.
+
+- **Google integration OAuth** authorization (`GOOGLE_OAUTH_ENABLED`) needs Redis to store flow state, so it stays
+  disabled until both `REDIS_HOST` is set and `GOOGLE_OAUTH_ENABLED=true`.
+- **Webhook rate limiting** needs Redis to count requests. Without `REDIS_HOST`, it is skipped
+  entirely — webhooks are still accepted, just without a rate limit — rather than erroring on
+  every request.
+
+Each condition logs exactly one warning at startup, not per request. Point `REDIS_HOST` (and the
+other `REDIS_*` variables, if not using the defaults) at a reachable Redis in
+`standalone/.env.standalone` to enable both, for example:
+
+```
+REDIS_HOST=redis
+```
+
 ## What the build script does
 
 1. Validates all required source files exist before invoking the builder.

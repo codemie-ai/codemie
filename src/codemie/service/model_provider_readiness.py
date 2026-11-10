@@ -21,6 +21,9 @@ no single hard deadline (see _bedrock_session). A resolution that fails is repor
 "not checked" rather than asserted to be missing credentials. Other supported providers
 are reported as not checked so this diagnostic does not change or overstate their
 runtime behavior.
+
+This check can diverge from ``core_availability`` (codemie.configs.llm_provider_availability):
+``/v1/healthcheck/model`` can report NOT_CONFIGURED while core is on.
 """
 
 from enum import Enum

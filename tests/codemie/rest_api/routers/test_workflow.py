@@ -40,6 +40,12 @@ from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
 from codemie.rest_api.security.user import User
 from codemie.service.workflow_service import WorkflowService
 import codemie.rest_api.routers.workflow as workflow_router
+from codemie.service.file_service.mermaid_service import (
+    MermaidDiagramGenerationError,
+    MermaidNotConfiguredError,
+    MermaidServiceUnavailableError,
+)
+from codemie.workflows.workflow import WorkflowExecutor
 
 CREATE_DIAGRAM_PATH = "/v1/workflows/diagram"
 
@@ -1230,6 +1236,98 @@ async def test_create_workflow_diagram_invalid_config(mock_draw, create_workflow
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert response.json()["error"]["details"] == "Workflow diagram creation failed"
+
+
+async def _post_diagram(create_workflow_request, request_header):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        return await ac.post(CREATE_DIAGRAM_PATH, json=create_workflow_request.model_dump(), headers=request_header)
+
+
+@pytest.mark.asyncio
+@patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw")
+async def test_create_workflow_diagram_not_configured(mock_draw, create_workflow_request, request_header):
+    mock_draw.side_effect = MermaidNotConfiguredError("not configured")
+    response = await _post_diagram(create_workflow_request, request_header)
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    body = response.json()["error"]
+    assert "not configured" in body["message"].lower()
+    assert "syntax" not in body["help"].lower()
+
+
+@pytest.mark.asyncio
+@patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw")
+async def test_create_workflow_diagram_renderer_unavailable(mock_draw, create_workflow_request, request_header):
+    mock_draw.side_effect = MermaidServiceUnavailableError("unreachable")
+    response = await _post_diagram(create_workflow_request, request_header)
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    body = response.json()["error"]
+    assert "unavailable" in body["message"].lower()
+    assert "syntax" not in body["help"].lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        MermaidServiceUnavailableError("http://mermaid-internal:8082/generate refused"),
+        MermaidNotConfiguredError("http://mermaid-internal:8082/generate"),
+    ],
+)
+@patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw")
+async def test_create_workflow_diagram_error_hides_renderer_url(
+    mock_draw, exc, create_workflow_request, request_header
+):
+    mock_draw.side_effect = exc
+    response = await _post_diagram(create_workflow_request, request_header)
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert "mermaid-internal" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [MermaidDiagramGenerationError("400"), MermaidDiagramGenerationError("422")])
+@patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw")
+async def test_create_workflow_diagram_invalid_diagram(mock_draw, exc, create_workflow_request, request_header):
+    mock_draw.side_effect = exc
+    response = await _post_diagram(create_workflow_request, request_header)
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    body = response.json()["error"]
+    assert "invalid mermaid diagram" in body["message"].lower()
+    assert "syntax" in body["help"].lower()
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        MermaidNotConfiguredError("not configured"),
+        MermaidServiceUnavailableError("unreachable"),
+        MermaidDiagramGenerationError("400"),
+    ],
+)
+@patch("codemie.rest_api.routers.workflow.workflow_service")
+@patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw")
+def test_update_workflow_schema_swallows_mermaid_errors(mock_draw, mock_service, exc):
+    mock_draw.side_effect = exc
+    workflow_config, user = MagicMock(), MagicMock()
+    workflow_router.update_workflow_schema(workflow_config, user)
+    mock_service.save_workflow_schema.assert_called_once_with(workflow_config, None)
+
+
+@patch("codemie.workflows.workflow.MermaidService.draw_mermaid")
+@patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow")
+def test_validate_workflow_and_draw_propagates_mermaid_errors(mock_validate, mock_draw):
+    mock_validate.return_value.get_graph.return_value = MagicMock(edges=[])
+    mock_draw.side_effect = MermaidNotConfiguredError("not configured")
+    with pytest.raises(MermaidNotConfiguredError):
+        WorkflowExecutor.validate_workflow_and_draw(MagicMock(), MagicMock())
+
+
+@patch("codemie.workflows.workflow.MermaidService.draw_mermaid")
+@patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow")
+def test_validate_workflow_and_draw_returns_none_on_graph_failure(mock_validate, mock_draw):
+    mock_validate.return_value.get_graph.side_effect = RuntimeError("langgraph failure")
+    assert WorkflowExecutor.validate_workflow_and_draw(MagicMock(), MagicMock()) is None
+    mock_draw.assert_not_called()
 
 
 @patch('codemie.service.workflow_service.WorkflowService.get_prebuilt_workflows')

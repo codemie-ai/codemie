@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from codemie_tools.base.models import ToolSet
+from codemie_tools.research.tools_vars import WEB_SCRAPPER_TOOL
 
 from codemie.configs.component_resolution import clear_snapshot, publish_snapshot
 from codemie.core.models import AssistantChatRequest
@@ -77,3 +78,28 @@ def test_declaration_exists_for_the_pilot_flag():
     declaration = by_component_id("features:webSearch")
     assert declaration is not None
     assert {field.name for field in declaration.fields} == {"enabled"}
+
+
+@pytest.mark.parametrize(
+    "standalone,google,tavily,expected",
+    [
+        (True, "", "", 1),
+        (True, "", "t", 2),
+        (True, "g", "t", 3),
+        (False, "", "", 3),
+    ],
+)
+def test_research_tools_follow_key_availability(
+    request_with_web_search, assistant, user, standalone, google, tavily, expected
+):
+    from codemie.configs import config
+
+    with (
+        patch.object(config, "STANDALONE", standalone),
+        patch.object(config, "GOOGLE_SEARCH_API_KEY", google),
+        patch.object(config, "TAVILY_API_KEY", tavily),
+    ):
+        toolkits = _augment(request_with_web_search, assistant, user)
+    research = next(tk for tk in toolkits if tk.toolkit == ToolSet.RESEARCH)
+    assert len(research.tools) == expected
+    assert WEB_SCRAPPER_TOOL.name in {t.name for t in research.tools}

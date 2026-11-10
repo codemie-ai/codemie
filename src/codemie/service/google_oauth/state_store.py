@@ -18,7 +18,7 @@ import json
 from typing import Optional
 
 from codemie.clients.redis import create_redis_client
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.encryption.encryption_factory import EncryptionFactory
 
@@ -106,6 +106,8 @@ class GoogleOAuthStateStore:
         """
         state_key = f"{STATE_KEY_PREFIX}{state}"
         if not self._redis_set_encrypted(state_key, state_data, STATE_TTL):
+            if config.STANDALONE:
+                raise ExtendedHTTPException(503, "Authentication service temporarily unavailable. Please try again.")
             raise ExtendedHTTPException(502, "Failed to initiate authentication")
 
     def consume_state(self, state: str) -> Optional[dict]:
