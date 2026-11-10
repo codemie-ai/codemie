@@ -1,0 +1,919 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Check round approved: all 16 findings resolved (13 code fixes, CR-004 and CR-014 by decision, CR-016 by rewording the commit)"
+  },
+  "gates": [
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "CR-001..CR-015 fixed and confirmed by the check round; CR-016 disposed as wont-fix (squash merge, original author's history untouched)"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Check round approved: all 16 findings resolved (13 code fixes, CR-004 and CR-014 by decision, CR-016 by rewording the commit)"
+    }
+  ],
+  "reviewed_head": "fd956a7881dba6f867ee978e6648dcf095133e97",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "Targeted check of all 16 blocking findings from code-review-final.json at HEAD fd956a7: 13 code fixes confirmed in current source, CR-004 and CR-014 resolved by their recorded decisions and matching source, CR-016 by the reworded commit subject; all resolved. No lenses or standards audit run on this round by design; business and standards review carried forward; 0 deferred.",
+  "confidence": "low",
+  "check_confidence": "high",
+  "risk_flags": [
+    "auth",
+    "migration",
+    "public-api",
+    "data-contract",
+    "security"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 13,
+    "moot": 0,
+    "decided": 3,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "deploy-templates/templates/hosted-apps/clamd-configmap.yaml",
+      "line": 17,
+      "title": "clamd port reachable from every cluster pod",
+      "problem": "The chart runs clamd as its own Deployment with `TCPAddr 0.0.0.0` behind a ClusterIP Service, and `networkPolicy.enabled` defaults to false (values.yaml:437). The README and the standalone clamd.conf/kubernetes.yaml describe clamd bound to 127.0.0.1 inside the validator pod, so the documented residual-risk claim does not hold for chart installs.",
+      "impact": "When hosted-apps is enabled with chart defaults, any workload in the cluster can reach clamd's unauthenticated port 3310 and send it SHUTDOWN/RELOAD or heavy INSTREAM scans. That takes the scanner down, so every upload fails validation, and the validator port is cluster-reachable as well.",
+      "recommendation": "Turn on the hosted-apps NetworkPolicies by default whenever `hosted-apps.enabled` is true, or render the clamd/validator policies unconditionally, so that only the validator pod can reach clamd:3310. Then align the README residual-risk text and kubernetes.yaml with the chart's separate-Deployment topology.",
+      "status": "resolved",
+      "check_notes": "clamd-networkpolicy.yaml now renders whenever hosted-apps is enabled, admitting only validator pods to clamd; networkPolicy.enabled defaults true.",
+      "fix": {
+        "change": "Chart clamd NetworkPolicy (ingress from validator only) rendered whenever hosted-apps is enabled; networkPolicy.enabled defaults to true; kubernetes.yaml, clamd.conf and README realigned to the separate clamd Deployment",
+        "test": "tests/codemie/core/hosted_applications/test_deployment_manifests.py::test_chart_network_policies_are_on_by_default, ::test_chart_clamd_ingress_policy_does_not_depend_on_the_network_policy_switch, ::test_standalone_clamd_admits_only_the_validator"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "deploy-templates/values.yaml",
+      "line": 170,
+      "title": "Chart and runbook disagree on validator service names",
+      "problem": "The chart creates `codemie-hosted-apps-validator` / `codemie-hosted-apps-clamd` in the `codemie-hosted-apps` namespace. The README and kubernetes.yaml use `codemie-hosted-validator` / `codemie-hosted-clamd`, README section 3 documents `HOSTED_APPS_VALIDATOR_URL=http://codemie-hosted-validator:8091`, and the values.yaml comment suggests a short name that does not resolve across namespaces.",
+      "impact": "An operator following either document configures a validator URL that does not resolve, so validation is unavailable and no hosted app can be published. Reachability was not confirmed against a rendered chart.",
+      "recommendation": "Use one set of names across the chart, README and kubernetes.yaml. In the values.yaml and README examples, document the namespace-qualified validator URL (`http://codemie-hosted-apps-validator.<hosted namespace>.svc:8091`).",
+      "status": "resolved",
+      "check_notes": "Chart, README, kubernetes.yaml and values.yaml use codemie-hosted-apps-validator with the namespace-qualified .svc URL.",
+      "fix": {
+        "change": "One set of names (codemie-hosted-apps-validator/-clamd) across chart, kubernetes.yaml and README; namespace-qualified validator URL in values.yaml and README",
+        "test": "tests/codemie/core/hosted_applications/test_deployment_manifests.py::test_standalone_objects_use_the_chart_names_and_topology, ::test_runbook_and_values_name_the_namespace_qualified_validator_url"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie",
+      "title": "New modules omit future annotations import",
+      "problem": "code-quality.md (Types and Imports) says to add `from __future__ import annotations` in new modules. 45 new src/codemie modules omit it, for example service/hosted_applications/catalog.py, worker.py, rest_api/routers/hosted_applications.py, hosted_apps_validator/server.py and core/hosted_applications/settings.py.",
+      "impact": "A documented code-quality standard is unmet across most of the new package surface, and no Ruff rule (FA) enforces it.",
+      "recommendation": "Add `from __future__ import annotations` after the license header in each new src/codemie module that lacks it.",
+      "status": "resolved",
+      "check_notes": "All 68 added src/codemie modules carry from __future__ import annotations.",
+      "fix": {
+        "change": "Added `from __future__ import annotations` to the 45 new src/codemie modules that lacked it",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/core/hosted_applications/identity.py",
+      "line": 218,
+      "title": "Revocation SID taken from unverified header token",
+      "problem": "For platform_jwt providers (keycloak, oidc, entraid-oidc without the JWKS wrapper), record_platform_identity decodes the token from `x-auth-request-access-token` / Authorization with `verify_signature: False` and uses its sid, iat and auth_time for the hosted identity and SID-based revocation. The enterprise IdP that actually authenticated the request is not in this repository, so I could not confirm it reads the same header.",
+      "impact": "If the platform authenticates from a different header or cookie, a signed-in caller who controls this header can choose their own sid/iat and escape SID-based revocation or the logout cutoff. Reachability was not confirmed because the enterprise IdP code is outside this repository.",
+      "recommendation": "Decide whether platform_jwt providers may feed SID-based revocation. If they may, bind the hosted identity to the token the enterprise IdP actually verified, for example by having keycloak/oidc providers store their verified claims on request.state the way JwksValidatingIdp does. Otherwise do not use `sid` from an unverified token for revocation decisions.",
+      "status": "decided",
+      "check_notes": "Decision recorded (no claims from unverified token); bind_forwarded_identity binds platform_jwt by digest with sid/auth_time None; tests updated.",
+      "fix": {
+        "change": "platform_jwt binds through new bind_forwarded_identity: no sid/iat/auth_time/exp from the unverified token, digest binding, issued_at = acceptance time; bind_identity is verified-claims only; README 5 and spec 8/11 updated",
+        "test": "tests/codemie/core/hosted_applications/test_identity.py::test_forwarded_token_claims_never_feed_revocation_or_session_bounds, ::test_forwarded_token_binds_per_token_and_takes_nothing_from_its_claims"
+      },
+      "decision": {
+        "outcome": "platform_jwt providers must NOT feed SID-based revocation or any hosted identity claim from an unverified token: take sid/iat/auth_time only from verified claims (local_jwt, jwks); for platform_jwt, bind the hosted identity without SID (sessions bounded by token lifetime and the existing principal-level revocation on platform logout); update spec 8 identity / 11 security and hosted-applications/README.md 5; add tests.",
+        "rationale": "The forwarded token is decoded without signature verification, so any claim in it could be chosen by a caller who controls the header; binding by the token digest with issued_at at platform acceptance and relying on the sid-less per-principal logout cutoff removes that lever while keeping the platform_jwt trust model."
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/hosted_applications/protocol.py",
+      "line": 105,
+      "title": "Cross-app cookie bombing locks viewers out",
+      "problem": "Every app version is served from a subdomain of one registrable content domain, so uploaded JS on any app can set many `Domain=<content domain>` cookies. parse_session_cookies raises ValueError as soon as the Cookie header exceeds COOKIE_HEADER_LIMIT (8192).",
+      "impact": "Any internal user who uploads an app can make every viewer who opens it get 401 on all hosted apps until they clear their cookies. This is a cross-tenant availability attack.",
+      "recommendation": "Do not fail the whole request on an oversized Cookie header. Instead, parse only the platform session cookie names and ignore the rest, or have the gateway strip non-session cookies set on the parent content domain. Add a test with a Cookie header larger than 8 KiB that includes a valid session cookie.",
+      "status": "resolved",
+      "check_notes": "parse_session_cookies no longer limits header length; non-platform cookie pairs are ignored; COOKIE_HEADER_LIMIT removed.",
+      "fix": {
+        "change": "parse_session_cookies no longer refuses a long Cookie header; it reads only the platform names",
+        "test": "tests/codemie/core/hosted_applications/test_protocol.py::test_a_cookie_flood_from_a_sibling_app_cannot_lock_the_viewer_out"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/hosted_apps_gateway/dispatch.py",
+      "line": 69,
+      "title": "Lossy ASCII encoding in host dispatch matcher",
+      "problem": "security-patterns.md forbids lossy normalization before a security decision. HostDispatcher builds `_domain_bytes` with `domain.encode(\"ascii\", errors=\"ignore\")`, and `_mentions_content` uses it to decide whether a non-canonical Host goes to content or management. HostedSettings.from_config does not reject a non-ASCII content domain outright.",
+      "impact": "With a non-ASCII configured content domain, the substring check stops matching, so malformed content hosts route to management instead of failing closed. The trigger is operator configuration; reachability was not confirmed.",
+      "recommendation": "Encode strictly with `domain.encode(\"ascii\")` and raise ValueError at construction for a non-ASCII content domain, the same way an empty domain is already rejected.",
+      "status": "resolved",
+      "check_notes": "HostDispatcher encodes the content domain strictly and raises ValueError for non-ASCII.",
+      "fix": {
+        "change": "HostDispatcher encodes the content domain strictly and raises ValueError for a non-ASCII domain",
+        "test": "tests/codemie/core/hosted_applications/test_dispatch.py::test_dispatcher_refuses_a_non_ascii_content_domain"
+      }
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/hosted_apps_validator/scanner.py",
+      "line": 67,
+      "title": "clamd signature date assumed UTC",
+      "problem": "parse_scanner_version parses clamd's signature date with strptime and then `.replace(tzinfo=timezone.utc)`, but clamd formats that date in its own local time.",
+      "impact": "A clamd container whose TZ is ahead of UTC makes every signature date look as if it is in the future, which trips the 5-minute future check, so every scan is refused and validation becomes unavailable. A TZ behind UTC shifts the 48-hour staleness window. Reachability depends on the container's TZ and was not confirmed.",
+      "recommendation": "Either pin TZ=UTC on the clamd container (chart, kubernetes.yaml, Dockerfile) and document that the parser relies on it, or interpret the stamp in the scanner's timezone before the staleness and future checks.",
+      "status": "resolved",
+      "check_notes": "Chart clamd.env and kubernetes.yaml pin TZ=UTC; parser comment and README document the reliance.",
+      "fix": {
+        "change": "TZ=UTC pinned on the clamd container in values.yaml, chart README and kubernetes.yaml; parser reliance documented in scanner.py and README 7",
+        "test": "tests/codemie/core/hosted_applications/test_deployment_manifests.py::test_clamd_runs_in_utc_everywhere"
+      }
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/hosted_apps_validator/server.py",
+      "line": 221,
+      "title": "Parser stderr pipe can deadlock validation",
+      "problem": "Inspector.parser pipes both stdout and stderr from the sandbox subprocess but reads stderr only after stdout reaches EOF and process.wait() returns. A parser that writes more than a pipe buffer (~64 KiB) to stderr, such as a long traceback or per-file warnings caused by a crafted upload, blocks on that write.",
+      "impact": "The child never closes stdout, so the validation job hangs until its budget timeout and fails with 503. While it hangs it holds a validator slot, and a crafted upload can trigger this on every retry. Reachability depends on how much the sandbox writes to stderr and was not confirmed.",
+      "recommendation": "Drain stderr while stdout is being read, for example `stderr_task = asyncio.create_task(process.stderr.read(64 * 1024))` started before the stdout loop and awaited after `process.wait()`. Discard anything past the bound so the child never blocks on a full stderr pipe.",
+      "status": "resolved",
+      "check_notes": "stderr drained concurrently via a bounded _drain task started before reading stdout.",
+      "fix": {
+        "change": "Inspector.parser drains stderr in a task while stdout is read, keeping the first 64 KiB",
+        "test": "tests/codemie/core/hosted_applications/test_validator_server.py::test_a_parser_that_floods_stderr_before_its_result_does_not_hang"
+      }
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/hosted_applications/filesystem.py",
+      "line": 233,
+      "title": "Failed put leaves partial immutable object",
+      "problem": "PrefixWriter.put creates the object with O_EXCL and increments used_objects/used_bytes. Only the digest-mismatch branch unlinks the object and refunds the counters. An oversize chunk, a non-bytes chunk (which raises an untyped ValueError) or a final size mismatch leaves the partial file on disk.",
+      "impact": "A retry that writes the same key hits FileExistsError, which returns 409 STORAGE_IMMUTABLE, and the reservation counters stay inflated. Whether retries reuse the key was not confirmed.",
+      "recommendation": "On every failure after `_create_object` succeeds (oversize chunk, non-bytes chunk, size mismatch, OSError), unlink the partial object and refund `used_objects`/`used_bytes`, as the digest-mismatch branch already does. Raise a typed HostedApplicationError instead of a bare `ValueError(\"Invalid storage chunk\")`.",
+      "status": "resolved",
+      "check_notes": "put() discards the partial object and refunds counters on any failure in _write; non-bytes chunks raise typed HostedApplicationError.",
+      "fix": {
+        "change": "PrefixWriter.put unlinks the partial object and refunds counters on every failure after creation; non-bytes chunk raises typed STORAGE_UNAVAILABLE",
+        "test": "tests/codemie/service/hosted_applications/test_storage_contract.py::test_a_failed_filesystem_put_leaves_nothing_behind_so_a_retry_succeeds"
+      }
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/hosted_application_requests.py",
+      "line": 75,
+      "title": "PATCH description null escapes validation",
+      "problem": "AppPatch makes `description: StrictStr | None` but inherits AppCreate.description_text, which calls `unicodedata.normalize(\"NFC\", value)` without checking for None. A PATCH body with `\"description\": null` raises TypeError inside the field validator. Pydantic converts only ValueError and AssertionError, so the TypeError is not turned into a validation error, and the has_changes check never runs.",
+      "impact": "A client error becomes a 5xx (503 through HostedAPIRoute) instead of 422 on a public endpoint. That misleads clients and monitoring.",
+      "recommendation": "In `description_text`, reject non-strings first with `if not isinstance(value, str): raise ValueError(\"Description is required\")`, the same way `_plain` does, so that AppPatch answers 422.",
+      "status": "resolved",
+      "check_notes": "description_text rejects non-strings with ValueError before NFC normalization, so PATCH null gives 422.",
+      "fix": {
+        "change": "AppCreate.description_text rejects a non-string with ValueError so AppPatch answers 422",
+        "test": "tests/codemie/core/hosted_applications/test_requests.py::test_a_null_metadata_field_in_a_patch_is_a_validation_error"
+      }
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/hosted_applications.py",
+      "line": 58,
+      "title": "Untyped public helpers in hosted API layer",
+      "problem": "code-quality.md forbids untyped public functions in new code. runtime(), mutation(), reply(), unavailable_capabilities() in the router, and verified_context(), require_verified_context(), hosted_identity(), guard_mutation() in rest_api/security/hosted_applications.py, leave parameters or return types unannotated. Route handlers also declare their dependencies as untyped `identity=Depends(...)` / `value=Depends(...)`.",
+      "impact": "A documented code-quality standard is broken in new public API-layer code, and the Ruff gate does not enforce ANN rules.",
+      "recommendation": "Annotate the parameters and return types of runtime(), mutation(), reply(), unavailable_capabilities(), verified_context(), require_verified_context(), hosted_identity() and guard_mutation(). Type the handler dependencies as HostedActor/HostedApplicationsRuntime, as open_share_link and get_share_link already do.",
+      "status": "resolved",
+      "check_notes": "runtime, mutation, reply, unavailable_capabilities and the security helpers are fully annotated; dependencies typed.",
+      "fix": {
+        "change": "Annotated runtime, mutation, reply, unavailable_capabilities, verified_context, require_verified_context, hosted_identity, guard_mutation and every hosted route handler's dependencies and return type",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-012",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/hosted_applications/administration.py",
+      "line": 78,
+      "title": "Suspend no-op skips administrator actor_kind",
+      "problem": "Spec 5.6 requires moderation operations to be recorded with actor_kind='administrator'. When an already-suspended app is suspended again, security() returns through tx.finish before `op.actor_kind = \"administrator\"` is set, so the operation keeps the default 'user'. _reinstate also passes `Actor(user.id, \"user\")` to retire_version, although spec 8 says reinstate retires the version as the admin.",
+      "impact": "The audit trail attributes an administrator takedown, or a version retirement during reinstate, to an ordinary user. This is a spec requirement that is only partly met.",
+      "recommendation": "Set `op.actor_kind = \"administrator\"` right after the replay check, before the suspended-twice early return. In `_reinstate`, pass `Actor(user.id, \"administrator\")` to `retire_version` so that the retirement is attributed to the admin, as spec 8 requires.",
+      "status": "resolved",
+      "check_notes": "actor_kind='administrator' set right after replay check, before no-op suspend return; reinstate retires as administrator.",
+      "fix": {
+        "change": "op.actor_kind = 'administrator' set right after the replay check; reinstate retires the previous version as Actor(user.id, 'administrator')",
+        "test": "tests/codemie/service/hosted_applications/test_administration.py::test_suspending_an_already_suspended_app_is_still_recorded_as_the_administrator, ::test_reinstate_can_delete_the_previous_version_in_the_same_action"
+      }
+    },
+    {
+      "id": "CR-013",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/hosted_applications/catalog.py",
+      "line": 371,
+      "title": "Unchanged shared=true blocks edits when suspended",
+      "problem": "patch_app calls `suspend_refuses(app, \"share_on\")` whenever `request.shared is True`, even when the app is already shared. Moves are compared with the current project, but share_on is not compared with the current value.",
+      "impact": "A metadata edit, such as a name change, on a suspended shared app that re-sends the unchanged `shared=true` (as a full-form client does) is refused with 409 APP_SUSPENDED, although the spec gates only a real share-on transition.",
+      "recommendation": "Gate only a real share-on transition: `if request.shared is True and not app.shared: suspend_refuses(app, \"share_on\")`.",
+      "status": "resolved",
+      "check_notes": "share_on suspension check gated on a real transition (shared True and not app.shared).",
+      "fix": {
+        "change": "patch_app gates share_on only when the app is not already shared",
+        "test": "tests/codemie/service/hosted_applications/test_catalog.py::test_an_edit_that_resends_an_unchanged_shared_true_is_allowed_while_suspended"
+      }
+    },
+    {
+      "id": "CR-014",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/service/hosted_applications/catalog.py",
+      "title": "lock_timeout is not the first open statement",
+      "problem": "Spec 6.3 step 1 requires `SET LOCAL lock_timeout = '400ms'` as the first statement of the share-link open transaction. open_share_link sets it first in its own body, but repository.transaction(write=True) has already run `SELECT clock_timestamp()` and the _check_sign_in reads.",
+      "impact": "The code deviates from the spec as written. Those earlier reads take no row locks, so lock waits stay bounded today, but a later lock added to _check_sign_in would silently escape the 400 ms bound.",
+      "recommendation": "Decide between two fixes. Either move `SET LOCAL lock_timeout` into `repository.transaction` (an option used by open_share_link) so it runs before the `clock_timestamp()` and `_check_sign_in` reads, or amend spec 6.3 step 1 to say the timeout must come before the first locking statement. The current reads take no row locks.",
+      "status": "decided",
+      "check_notes": "Decision recorded; transaction(lock_timeout_ms=...) issues SET LOCAL lock_timeout before clock_timestamp and sign-in reads; open_share_link passes it.",
+      "fix": {
+        "change": "repository.transaction(lock_timeout_ms=) runs SET LOCAL lock_timeout as its first statement; open_share_link passes SHARE_LINK_OPEN_LOCK_TIMEOUT_MS",
+        "test": "tests/codemie/service/hosted_applications/test_transaction.py::test_a_transaction_lock_timeout_is_its_first_statement, tests/codemie/service/hosted_applications/test_catalog.py::test_opening_a_link_bounds_its_lock_wait_before_anything_else"
+      },
+      "decision": {
+        "outcome": "Move SET LOCAL lock_timeout into repository.transaction as an option used by open_share_link so it is the first statement of that transaction, before clock_timestamp() and the sign-in reads; keep spec 6.3 as written.",
+        "rationale": "Making the timeout the transaction's first statement satisfies spec 6.3 step 1 literally and keeps any lock later added to the sign-in checks inside the 400 ms bound."
+      }
+    },
+    {
+      "id": "CR-015",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/permission/named_grant_service.py",
+      "line": 327,
+      "title": "Owner can grant access to themselves",
+      "problem": "_prepare_grant runs the owner check and de-duplication, but nothing removes the owner's own id from user_ids. The owner passes the recipient check, so a self-grant row is upserted.",
+      "impact": "The owner appears in shared_with, and the 'people' sharing filter classifies a private app as shared with people. That misleads both the owner and the catalog filters.",
+      "recommendation": "Remove the owner's own id in `_prepare_grant`, for example with `ids = [uid for uid in _dedupe(user_ids) if uid != owner.id]`, or refuse it with a 400, so that no self-grant row is written.",
+      "status": "resolved",
+      "check_notes": "_prepare_grant drops the owner's own id after dedupe, so no self-grant row is written.",
+      "fix": {
+        "change": "_prepare_grant drops the owner's own id after de-duplication",
+        "test": "tests/codemie/service/permission/test_named_grant_service.py::test_the_owner_never_grants_access_to_themselves"
+      }
+    },
+    {
+      "id": "CR-016",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subject breaks ticket-prefix format",
+      "problem": "git-workflow.md requires the commit subject format `EPMCDME-####: Description`. In f2900a55..HEAD, the commit `epmcdme-16173: add planning artifacts` uses a lowercase ticket prefix and a lowercase description.",
+      "impact": "This breaks a documented repository convention, and the guide also requires the final squash commit to keep the ticket-prefixed format.",
+      "recommendation": "Reword the subject to `EPMCDME-16173: Add planning artifacts`, or make sure the squash-merge commit message uses the documented format.",
+      "status": "decided",
+      "check_notes": "Commit reworded to 'EPMCDME-16173: Add planning artifacts' (1759ba8af); all 127 subjects in origin/main..HEAD match the format.",
+      "decision": {
+        "outcome": "Reword commit 17cb43f3a to 'EPMCDME-16173: Add planning artifacts' (now 1759ba8af) by rebasing the branch chain with --update-refs; trees of all three branches are byte-identical to before.",
+        "rationale": "User chose to reword the commit so no non-conforming subject remains in origin/main..HEAD."
+      },
+      "disposition": {
+        "rationale": "Not fixed by design: commit 17cb43f3a belongs to the original author's branch history, and the MR is merged with a squash commit whose message follows the \"EPMCDME-15659: <subject>\" format, so the lowercase subject never reaches main. Rewriting it would rebase the whole branch chain for no effect on the merged result.",
+        "source": "hitl"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Feature off by default via features:hostedApplications, FEATURE_HOSTED_APPLICATIONS override; requires ENABLE_USER_MANAGEMENT",
+      "status": "pass",
+      "notes": "customer-config enabled:false; settings.py override + ValueError; test_customer_config covers override"
+    },
+    {
+      "kind": "spec",
+      "item": "Migration chain 16001d9b0c1d -> 5c7e1a93b0d4 -> 7d3a9e51c2f8 -> a4c8e2f7b196 -> 2a698734de1a (head)",
+      "status": "pass",
+      "notes": "down_revision values match the stated chain"
+    },
+    {
+      "kind": "spec",
+      "item": "16001d9b0c1d creates hosted tables, pg_trgm and GIN trigram index hosted_applications_search",
+      "status": "pass",
+      "notes": "CREATE EXTENSION IF NOT EXISTS pg_trgm; gin(search_text gin_trgm_ops)"
+    },
+    {
+      "kind": "spec",
+      "item": "5c7e1a93b0d4 widens storage_attempts provider to filesystem/aws/gcp",
+      "status": "pass",
+      "notes": "CHECK widened; downgrade restores filesystem-only"
+    },
+    {
+      "kind": "spec",
+      "item": "7d3a9e51c2f8: HOSTED_APPLICATION enum value, grant_source, source_link_id, grant_source check; downgrade deletes hosted rows first",
+      "status": "pass",
+      "notes": "upgrade/downgrade match"
+    },
+    {
+      "kind": "spec",
+      "item": "a4c8e2f7b196: share_links, uq_share_links_live, permissions_source_link_id_fkey RESTRICT; downgrade order",
+      "status": "pass",
+      "notes": "to_regclass guard on both directions"
+    },
+    {
+      "kind": "spec",
+      "item": "2a698734de1a: data-only grant_source='name' on assistant USER grants; downgrade no-op",
+      "status": "pass",
+      "notes": "2a698734de1a_assistant_grants_grant_source_name.py"
+    },
+    {
+      "kind": "spec",
+      "item": "hosted_applications columns, CHECKs and indexes",
+      "status": "pass",
+      "notes": "model CheckConstraints/Index list mirrored in 16001d9b0c1d DDL"
+    },
+    {
+      "kind": "spec",
+      "item": "share_links model; permissions grant_source/source_link_id; ResourceType.HOSTED_APPLICATION; _lookup only DATASOURCE",
+      "status": "pass",
+      "notes": "rest_api/models/permission.py"
+    },
+    {
+      "kind": "spec",
+      "item": "access.py is the only access definition; fixed module-level imports; never imports the model",
+      "status": "pass",
+      "notes": "test_access.py pins import set"
+    },
+    {
+      "kind": "spec",
+      "item": "platform_user roles from users/user_projects; is_admin = is_admin OR is_maintainer",
+      "status": "pass",
+      "notes": "access.platform_user"
+    },
+    {
+      "kind": "spec",
+      "item": "Roles: eligible, owner, manager, viewer; creator eligibility not a term",
+      "status": "pass",
+      "notes": "access._manager/_viewer/readable/manageable"
+    },
+    {
+      "kind": "spec",
+      "item": "MANAGER_GRANT_ACTIONS empty; grant term never on DELETE; manageable accepts WRITE or DELETE",
+      "status": "pass",
+      "notes": "access.py"
+    },
+    {
+      "kind": "spec",
+      "item": "levels_covering, PreloadedGrants, GRANT_LOADER lazy per-class, Role.GRANTED action-aware, Ability(user, *, grants=)",
+      "status": "pass",
+      "notes": "core/ability.py"
+    },
+    {
+      "kind": "spec",
+      "item": "live_grants is the only live-grant statement; grant_exists with resource_key",
+      "status": "pass",
+      "notes": "permission.py live_grants/grant_exists"
+    },
+    {
+      "kind": "spec",
+      "item": "Permission.get_for reads APPLICATION principals only at a covering level",
+      "status": "pass",
+      "notes": "permission.py get_for"
+    },
+    {
+      "kind": "spec",
+      "item": "Suspension gates {activate,publish,share_on,move}; 409 APP_SUSPENDED; evaluated on the locked row",
+      "status": "pass",
+      "notes": "access.py; publication.py; catalog.patch_app; grant descriptor before_grant"
+    },
+    {
+      "kind": "spec",
+      "item": "Every app projection carries suspension/ability fields; managers also get version ids, lifecycle, revision, etag",
+      "status": "pass",
+      "notes": "projections.app_projection"
+    },
+    {
+      "kind": "spec",
+      "item": "Moderation route POST /v1/admin/hosted-applications/{id}/security/{suspend|reinstate}",
+      "status": "pass",
+      "notes": "router app_security; administration.security"
+    },
+    {
+      "kind": "spec",
+      "item": "Suspend refuses version_id/delete_previous and empty reason; suspending twice is a no-op",
+      "status": "pass",
+      "notes": "administration.py; SecurityReason"
+    },
+    {
+      "kind": "spec",
+      "item": "Reinstate refused to creator, NOT_SUSPENDED, REVALIDATION_REQUIRED, NO_OTHER_VERSION",
+      "status": "pass",
+      "notes": "administration._reinstate"
+    },
+    {
+      "kind": "spec",
+      "item": "Moderation operation recorded with actor_kind='administrator', reason and admin id; digest fields",
+      "status": "partial",
+      "notes": "suspend-twice no-op finishes before op.actor_kind='administrator' is set; reinstate retires with Actor(user,'user') (CR-012)"
+    },
+    {
+      "kind": "spec",
+      "item": "No moderation list/scope/tab (S-28); platform admin reaches any app by id",
+      "status": "pass",
+      "notes": "SCOPES has no moderation scope"
+    },
+    {
+      "kind": "spec",
+      "item": "Gateway re-evaluates readable/manageable per request; access_revision bumped only on delete and purge",
+      "status": "pass",
+      "notes": "launch._load; _begin_purge"
+    },
+    {
+      "kind": "spec",
+      "item": "Sign-out writes a durable cutoff; logout routes call revoke_hosted_sessions_best_effort; POST /sessions/revoke",
+      "status": "pass",
+      "notes": "logout.py 2 s timeout; router revoke route"
+    },
+    {
+      "kind": "spec",
+      "item": "Management writes apply the cutoff to the recorded identity; refused without one (CORE-22, CORE-23)",
+      "status": "pass",
+      "notes": "repository.transaction AUTHENTICATION_REQUIRED and _check_sign_in"
+    },
+    {
+      "kind": "spec",
+      "item": "Named-grant owner-only routes behind user_management; 403/404 split",
+      "status": "pass",
+      "notes": "router dependency; catalog._owned_app"
+    },
+    {
+      "kind": "spec",
+      "item": "ShareUsersRequest 1..100 ids, extra forbidden, de-duplicated keeping order",
+      "status": "pass",
+      "notes": "ShareUsersRequest; named_grant_service._dedupe"
+    },
+    {
+      "kind": "spec",
+      "item": "Grant/revoke on the locked app row in the management transaction",
+      "status": "pass",
+      "notes": "catalog.share/unshare"
+    },
+    {
+      "kind": "spec",
+      "item": "grant: owner check, before_grant, dedupe, validation select, upsert DO UPDATE, RETURNING (xmax=0)",
+      "status": "pass",
+      "notes": "named_grant_service"
+    },
+    {
+      "kind": "spec",
+      "item": "revoke any source; missing grant no-op; list_shared_with incl. orphans; sharable search limit 20, q 2..200",
+      "status": "pass",
+      "notes": "named_grant_service; router; user_repository"
+    },
+    {
+      "kind": "spec",
+      "item": "NAMED_GRANT_TYPES maps HOSTED_APPLICATION and ASSISTANT lazily to descriptors",
+      "status": "pass",
+      "notes": "named_grant_types.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Hosted grant descriptor: resolve, before_grant share_on, is_owner, recipient, audit app_id",
+      "status": "pass",
+      "notes": "hosted_applications/grant_descriptor.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Assistant descriptor and AssistantShareService delegate to the shared module; routes unchanged",
+      "status": "pass",
+      "notes": "assistant/grant_descriptor.py; FOR NO KEY UPDATE lock"
+    },
+    {
+      "kind": "spec",
+      "item": "Assistant is_shared_with project/Marketplace only; is_granted_to reads loaded grants; one Ability per list",
+      "status": "pass",
+      "notes": "models/assistant.py; repository; guardrail_service"
+    },
+    {
+      "kind": "spec",
+      "item": "Generic permissions API refuses named grants on POST; DELETE routes named grants through descriptor",
+      "status": "pass",
+      "notes": "permission_creation_service; permission_deletion_service"
+    },
+    {
+      "kind": "spec",
+      "item": "Delete revokes links and removes all grants in the delete transaction; assistant delete removes all grants",
+      "status": "pass",
+      "notes": "catalog._begin_purge"
+    },
+    {
+      "kind": "spec",
+      "item": "Audit: one strict activity event per changed row; nothing with ACTIVITY_EVENTS_ENABLED off",
+      "status": "pass",
+      "notes": "named_grant_service events; *_strict return []"
+    },
+    {
+      "kind": "spec",
+      "item": "Link events share_link.created/revoked, never the token",
+      "status": "pass",
+      "notes": "share_link_service._event"
+    },
+    {
+      "kind": "spec",
+      "item": "SHARE_LINK_TYPES registry (hosted only); link type must be a named-grant type",
+      "status": "pass",
+      "notes": "share_link_types; share_link_service"
+    },
+    {
+      "kind": "spec",
+      "item": "Token token_urlsafe(32), stored as token_sha256 (lookup only) and plaintext token",
+      "status": "pass",
+      "notes": "lookup binds only the digest"
+    },
+    {
+      "kind": "spec",
+      "item": "GET/POST/DELETE /{id}/share-link owner/admin rules, tombstone + grant removal, {link:null}",
+      "status": "pass",
+      "notes": "catalog; share_link_descriptor.may_revoke"
+    },
+    {
+      "kind": "spec",
+      "item": "Open: POST share-links/open {token 1..512}; returns {app_id} only",
+      "status": "pass",
+      "notes": "router open_share_link"
+    },
+    {
+      "kind": "spec",
+      "item": "Open step 1: SET LOCAL lock_timeout 400ms as the first statement",
+      "status": "partial",
+      "notes": "set first in open_share_link, but repository.transaction already ran clock_timestamp and _check_sign_in reads (no row locks) (CR-014)"
+    },
+    {
+      "kind": "spec",
+      "item": "Open steps 2-6: recipient 403, hash lookup 404, readable short-circuit, alock, re-read, link_grant",
+      "status": "pass",
+      "notes": "share_link_service.aopen"
+    },
+    {
+      "kind": "spec",
+      "item": "Lock timeout 55P03 -> 503 SERVICE_BUSY; 400 ms under half the 2.0 s checkout",
+      "status": "pass",
+      "notes": "catalog.open_share_link; test asserts 400"
+    },
+    {
+      "kind": "spec",
+      "item": "Hosted engine hide_parameters, 10 connections, no overflow, 2.0 s checkout; 503 SERVICE_BUSY",
+      "status": "pass",
+      "notes": "runtime.py"
+    },
+    {
+      "kind": "spec",
+      "item": "scope=shared lists active readable apps with a live grant not created by the caller",
+      "status": "pass",
+      "notes": "catalog.list_scope"
+    },
+    {
+      "kind": "spec",
+      "item": "Project scope: member sees shared, project admin also unshared; platform admin only own projects",
+      "status": "pass",
+      "notes": "list_scope project"
+    },
+    {
+      "kind": "spec",
+      "item": "shared and is_global independent; is_global only via marketplace publish/unpublish",
+      "status": "pass",
+      "notes": "catalog.create_app/patch_app; publication"
+    },
+    {
+      "kind": "spec",
+      "item": "Publish refused while suspended; unpublish allowed while suspended",
+      "status": "pass",
+      "notes": "publication.publish"
+    },
+    {
+      "kind": "spec",
+      "item": "Create and move require project access; move refused while suspended",
+      "status": "pass",
+      "notes": "catalog.require_project_access"
+    },
+    {
+      "kind": "spec",
+      "item": "POST /hosted-applications AppCreate rules, 201, 409 APPLICATION_LIMIT at 500",
+      "status": "pass",
+      "notes": "AppCreate; MAX_APPLICATIONS_PER_OWNER=500"
+    },
+    {
+      "kind": "spec",
+      "item": "Create locks the creator's quota row before counting and idempotency lookup (CORE-21)",
+      "status": "pass",
+      "notes": "catalog.create_app lock_quota"
+    },
+    {
+      "kind": "spec",
+      "item": "Lock order quota -> app; managed_app locks and re-checks",
+      "status": "pass",
+      "notes": "repository.managed_app/lock_app"
+    },
+    {
+      "kind": "spec",
+      "item": "PATCH AppPatch at least one non-null field; If-Match and Idempotency-Key",
+      "status": "pass",
+      "notes": "AppPatch.has_changes"
+    },
+    {
+      "kind": "spec",
+      "item": "DELETE 202 and _begin_purge semantics",
+      "status": "pass",
+      "notes": "catalog.delete/_begin_purge"
+    },
+    {
+      "kind": "spec",
+      "item": "GET /{id}/deletion-status for managers",
+      "status": "pass",
+      "notes": "catalog.deletion_status"
+    },
+    {
+      "kind": "spec",
+      "item": "Retention deletes share_links rows before the app row",
+      "status": "pass",
+      "notes": "retention.py"
+    },
+    {
+      "kind": "spec",
+      "item": "List API params and validation; 422 INVALID_FILTER / INVALID_CURSOR",
+      "status": "pass",
+      "notes": "router catalog; catalog.list_apps"
+    },
+    {
+      "kind": "spec",
+      "item": "List filters: project, created_by, shared, status, artifact_kind, version_state",
+      "status": "pass",
+      "notes": "catalog.list_filters"
+    },
+    {
+      "kind": "spec",
+      "item": "GET /hosted-applications/users distinct creators; 422 on bad scope",
+      "status": "pass",
+      "notes": "catalog.list_creators"
+    },
+    {
+      "kind": "spec",
+      "item": "GET /capabilities works without the feature; other routes 403 FEATURE_DISABLED",
+      "status": "pass",
+      "notes": "router capabilities; runtime()"
+    },
+    {
+      "kind": "spec",
+      "item": "GET /usage reports the caller's own quota",
+      "status": "pass",
+      "notes": "router usage"
+    },
+    {
+      "kind": "spec",
+      "item": "Mutations guarded by guard_mutation; Idempotency-Key format",
+      "status": "pass",
+      "notes": "security/hosted_applications.guard_mutation"
+    },
+    {
+      "kind": "spec",
+      "item": "Responses no-store + ETag; CORS exposes ETag/Retry-After; body boundary; error handler",
+      "status": "pass",
+      "notes": "router reply(); main.py"
+    },
+    {
+      "kind": "spec",
+      "item": "hosted_actor: platform User plus recorded sign-in; external accounts 403",
+      "status": "pass",
+      "notes": "security/hosted_applications.hosted_actor"
+    },
+    {
+      "kind": "spec",
+      "item": "Versions and viewing routes with stated request models",
+      "status": "pass",
+      "notes": "router routes; request models"
+    },
+    {
+      "kind": "spec",
+      "item": "Launch: purposes, hosted identity required, 409 NO_ACTIVE_VERSION, audited",
+      "status": "pass",
+      "notes": "router launch; launch.issue"
+    },
+    {
+      "kind": "spec",
+      "item": "Thumbnail: readable, 204 without cover, 304 on match",
+      "status": "pass",
+      "notes": "router thumbnail"
+    },
+    {
+      "kind": "spec",
+      "item": "Identity: record_platform_identity; JwksValidatingIdp verified claims; leeway max(5, JWKS_LEEWAY_SECONDS)",
+      "status": "pass",
+      "notes": "persistent.py; jwks_validating.py; settings.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Runtime starts in lifespan; host dispatch when content domain set; router included",
+      "status": "pass",
+      "notes": "main.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Storage sweep under async_leader_lock(987654340)",
+      "status": "pass",
+      "notes": "runtime.py"
+    },
+    {
+      "kind": "spec",
+      "item": "HOSTED_APPS_* settings defaults; secret and validator key >= 32 chars; quota min 1 MiB",
+      "status": "pass",
+      "notes": "config.py; settings.py"
+    },
+    {
+      "kind": "spec",
+      "item": "ActivityDomain/EntityType HOSTED_APPLICATION; strict insert helpers",
+      "status": "pass",
+      "notes": "activity_models.py; activity_repository.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Deployment: Helm templates, values, plain manifests, Dockerfile.validator, clamd.conf, probes",
+      "status": "pass",
+      "notes": "present; topology/exposure concerns tracked as CR-001, CR-002"
+    },
+    {
+      "kind": "spec",
+      "item": "Changes outside feature: alembic env, guide exception, ignore files, email test fix",
+      "status": "pass",
+      "notes": "present in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Dependencies: google-cloud-storage add, python-jose removed, listed bumps",
+      "status": "pass",
+      "notes": "pyproject.toml matches; no remaining jose imports"
+    },
+    {
+      "kind": "spec",
+      "item": "OpenAPI baseline matches the hosted routes",
+      "status": "pass",
+      "notes": "router_guards baselines/openapi.json"
+    },
+    {
+      "kind": "spec",
+      "item": "PostgreSQL-backed verification of migrations, constraints, lock timeout and sweep lock",
+      "status": "pending-stage-7",
+      "notes": "spec 17.1/17.4: not run against real PostgreSQL"
+    },
+    {
+      "kind": "spec",
+      "item": "Gateway authorize p95/p99 latency recorded in the MR (CORE-34)",
+      "status": "pending-stage-7",
+      "notes": "runtime measurement only"
+    },
+    {
+      "kind": "spec",
+      "item": "Rollout gate ID-10 and MR description asks for /sanity (P-C4)",
+      "status": "na",
+      "notes": "release and MR-description steps, not in a code diff"
+    },
+    {
+      "kind": "spec",
+      "item": "UI routes and tabs (10.1)",
+      "status": "na",
+      "notes": "codemie-ui MR"
+    },
+    {
+      "kind": "spec",
+      "item": "UI access predicates and actions (10.2)",
+      "status": "na",
+      "notes": "codemie-ui MR"
+    },
+    {
+      "kind": "spec",
+      "item": "UI create and edit form (10.3)",
+      "status": "na",
+      "notes": "codemie-ui MR"
+    },
+    {
+      "kind": "spec",
+      "item": "UI generic sharing components (10.4)",
+      "status": "na",
+      "notes": "codemie-ui MR"
+    },
+    {
+      "kind": "spec",
+      "item": "UI share page (10.5)",
+      "status": "na",
+      "notes": "codemie-ui MR"
+    },
+    {
+      "kind": "spec",
+      "item": "UI admin dialogs (10.6)",
+      "status": "na",
+      "notes": "codemie-ui MR"
+    },
+    {
+      "kind": "spec",
+      "item": "UI catalog filters (10.7)",
+      "status": "na",
+      "notes": "codemie-ui MR"
+    },
+    {
+      "kind": "spec",
+      "item": "Other UI rules and UI changes outside the feature (10.8, 13.2)",
+      "status": "na",
+      "notes": "codemie-ui MR"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "partial",
+      "notes": "git-workflow.md requires `EPMCDME-####: Description`; 133 of 134 subjects in f2900a55..HEAD conform; `epmcdme-16173: add planning artifacts` does not"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "License headers present. Unmet: `from __future__ import annotations` missing in 45 new modules; untyped public helpers in rest_api/routers and security/hosted_applications.py"
+    },
+    {
+      "kind": "security",
+      "status": "partial",
+      "notes": "Central authenticate used; no secrets in hosted logs. hosted_apps_gateway/dispatch.py:69 builds the host matcher with encode('ascii', errors='ignore') (lossy normalization)"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Oversized diff (~2.6 MB) with blind and edge-case lenses truncated on budget: their scopes were only partly covered, and acceptance checked validator/scanner/storage/worker internals only at integration points; all 51 deduped candidates were reached in reachability checks. Two decision_needed items remain (CR-004 unverified-token SID for revocation, CR-014 spec 6.3 lock_timeout ordering) alongside a clamd exposure (CR-001), an audit actor_kind gap (CR-012, spec 5.6 partial) and standards partials; 0 deferred, 35 dismissed as noise, spec-mandated design, or unreachable.",
+    "confidence": "low",
+    "risk_flags": [
+      "auth",
+      "migration",
+      "public-api",
+      "data-contract",
+      "security"
+    ]
+  }
+}

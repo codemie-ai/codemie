@@ -19,7 +19,7 @@ import pytest
 
 from codemie.core.ability import Action
 from codemie.rest_api.models.assistant import Assistant
-from codemie.service.assistant import assistant_share_service as share_module
+from codemie.service.permission import named_grant_service as share_module
 
 ASSISTANT_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -32,7 +32,16 @@ def _assistant():
 
 
 def _rows(n=2):
-    return [MagicMock(principal_type="USER", principal_id=f"uid-{i}", permission_level=Action.READ) for i in range(n)]
+    return [
+        MagicMock(
+            principal_type="USER",
+            principal_id=f"uid-{i}",
+            permission_level=Action.READ,
+            grant_source="name",
+            source_link_id=None,
+        )
+        for i in range(n)
+    ]
 
 
 @pytest.fixture()
@@ -61,7 +70,8 @@ def _share_env(rows, insert_strict=None):
     return (
         session,
         patch("codemie.rest_api.models.assistant.Session", return_value=ctx),
-        patch.object(share_module.activity_event_repository, "insert_strict", side_effect=insert_strict),
+        # The shared module writes one batch per statement; the side effect sees every event of it.
+        patch.object(share_module.activity_event_repository, "insert_many_strict", side_effect=insert_strict),
     )
 
 
@@ -71,14 +81,15 @@ def test_delete_assistant_removes_grants_with_one_event_each_before_deleting(del
     calls = []
     session.delete.side_effect = lambda obj: calls.append("delete")
     with session_patch, strict_patch as strict:
-        strict.side_effect = lambda *a, **k: calls.append("event")
+        strict.side_effect = lambda events, _session: calls.extend("event" for _ in events)
         Assistant.delete_assistant("assistant-1", user=user)
 
     assert calls == ["event", "event", "delete"]
     session.delete.assert_called_once_with(delete_env)
     delete_env.delete.assert_not_called()  # the row goes through the caller's session, not its own commit
     session.commit.assert_called_once()
-    assert all(c.args[0].actor_id == "owner-1" for c in strict.call_args_list)
+    assert all(event.actor_id == "owner-1" for event in strict.call_args.args[0])
+    assert all(event.attributes["assistant_id"] == ASSISTANT_ID for event in strict.call_args.args[0])
 
 
 def test_failed_audit_insert_aborts_assistant_delete(delete_env):
@@ -95,7 +106,7 @@ def test_delete_without_user_records_system_actor(delete_env):
     with session_patch, strict_patch as strict:
         Assistant.delete_assistant("assistant-1")
 
-    event = strict.call_args.args[0]
+    event = strict.call_args.args[0][0]
     assert event.actor_id is None
     assert event.attributes["actor_username"] == "system"
     session.delete.assert_called_once_with(delete_env)

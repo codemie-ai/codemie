@@ -42,6 +42,7 @@ from codemie.rest_api.security.user_providers import get_user_provider
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
 from codemie.service.assistant.assistant_user_interaction_service import assistant_user_interaction_service
 from codemie.service.skill_user_interaction_service import skill_user_interaction_service
+from codemie.service.hosted_applications.logout import revoke_hosted_sessions_best_effort
 from codemie.service.security.logout_token_cleanup import remove_user_tokens_on_logout_async
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.skill_service import SkillService
@@ -183,20 +184,23 @@ async def _resolve_logout_user_id(request: Request) -> str | None:
         return None
 
 
-async def _remove_session_user_tokens(request: Request) -> None:
+async def _remove_session_user_tokens(request: Request) -> str | None:
     """Best-effort TMS token cleanup for the logging-out session; never raises.
 
     A state-changing GET can be triggered by any site, so only a same-origin or same-site request may
     purge; anything else still logs out, it just leaves the tokens in place.
+
+    Returns the session user the platform resolved, or None when the request was not resolved.
     """
     if not _is_same_site_request(request):
         logger.warning("Logout token cleanup skipped: request is not same-origin or same-site")
-        return
+        return None
     user_id = await _resolve_logout_user_id(request)
     if user_id is None:
         logger.warning("Logout token cleanup skipped: session user could not be resolved")
-        return
+        return None
     await remove_user_tokens_on_logout_async(user_id)
+    return user_id
 
 
 @router.get("/user/log_out", include_in_schema=False)
@@ -205,11 +209,13 @@ async def logout(request: Request) -> RedirectResponse:
     Removes the user's TMS tokens (best effort, same-origin or same-site requests only), deletes keycloak
     cookie and redirects to keycloak logout page
     """
-    await _remove_session_user_tokens(request)
+    user_id = await _remove_session_user_tokens(request)
 
     response = RedirectResponse(url=config.KEYCLOAK_LOGOUT_URL, status_code=status.HTTP_302_FOUND)
     response.delete_cookie(get_idp_provider().get_session_cookie())
 
+    # After the platform logout is prepared: bounded, never raises, never blocks the redirect.
+    await revoke_hosted_sessions_best_effort(request, principal=user_id)
     return response
 
 

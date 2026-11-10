@@ -31,6 +31,8 @@ from httpx import AsyncClient, ASGITransport
 
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.hosted_applications.identity import PrincipalRevocation
+from codemie.core.hosted_applications.settings import IdentityAuthority
 from codemie.enterprise.idp.dependencies import register_enterprise_idps
 from codemie.rest_api.models.usage.assistant_user_interaction import ReactionType
 from codemie.rest_api.models.user import UserData
@@ -1065,3 +1067,87 @@ async def test_logout_skips_cleanup_but_redirects_when_real_keycloak_chain_canno
 
     mock_cleanup.assert_not_awaited()
     _assert_redirected_and_cookie_deleted(response, cookie_name)
+
+
+# --- Hosted applications: SSO logout never depends on hosted session revocation ------------------
+
+
+def _hosted_runtime(revoke) -> SimpleNamespace:
+    settings = SimpleNamespace(enabled=True, authority=IdentityAuthority())
+    return SimpleNamespace(settings=settings, launch=SimpleNamespace(logout=revoke))
+
+
+@pytest.fixture
+def hosted_state():
+    """Install a hosted runtime on the test app for one test."""
+    previous = getattr(app.state, "hosted_applications", None)
+
+    def install(runtime):
+        app.state.hosted_applications = runtime
+
+    yield install
+    app.state.hosted_applications = previous
+
+
+@pytest.mark.anyio
+@patch(_CLEANUP)
+async def test_logout_revokes_the_signed_out_users_hosted_sessions(mock_cleanup, logout_deps, mock_user, hosted_state):
+    revoke = AsyncMock()
+    hosted_state(_hosted_runtime(revoke))
+
+    response = await _get_logout(_SAME_ORIGIN)
+
+    _assert_redirected_and_cookie_deleted(response)
+    revoke.assert_awaited_once_with(PrincipalRevocation(mock_user.id))
+
+
+@pytest.mark.anyio
+@patch(_CLEANUP)
+async def test_logout_redirects_when_hosted_revocation_fails(mock_cleanup, logout_deps, mock_user, hosted_state):
+    revoke = AsyncMock(side_effect=RuntimeError(_SECRET))
+    hosted_state(_hosted_runtime(revoke))
+
+    response = await _get_logout(_SAME_ORIGIN)
+
+    _assert_redirected_and_cookie_deleted(response)
+    mock_cleanup.assert_awaited_once_with(mock_user.id)
+
+
+@pytest.mark.anyio
+@patch(_CLEANUP)
+async def test_logout_redirects_when_hosted_revocation_times_out(mock_cleanup, logout_deps, hosted_state, monkeypatch):
+    async def stalled(_identity):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr("codemie.service.hosted_applications.logout.LOGOUT_REVOCATION_TIMEOUT_SECONDS", 0.05)
+    hosted_state(_hosted_runtime(AsyncMock(side_effect=stalled)))
+
+    response = await asyncio.wait_for(_get_logout(_SAME_ORIGIN), timeout=2)
+
+    _assert_redirected_and_cookie_deleted(response)
+
+
+@pytest.mark.anyio
+@patch(_CLEANUP)
+async def test_cross_site_logout_leaves_hosted_sessions_alone(mock_cleanup, logout_deps, hosted_state):
+    """A GET that any site can trigger signs out but cannot purge: only a resolved session user is revoked."""
+    revoke = AsyncMock()
+    hosted_state(_hosted_runtime(revoke))
+
+    response = await _get_logout({"sec-fetch-site": "cross-site"})
+
+    _assert_redirected_and_cookie_deleted(response)
+    revoke.assert_not_awaited()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("headers", "principal"), [(_SAME_ORIGIN, "user-123"), ({}, None)])
+@patch(_CLEANUP)
+async def test_logout_hands_the_platform_resolved_user_to_hosted_revocation(
+    mock_cleanup, logout_deps, headers, principal
+):
+    with patch("codemie.rest_api.routers.user.revoke_hosted_sessions_best_effort", AsyncMock()) as revoke:
+        response = await _get_logout(headers)
+
+    _assert_redirected_and_cookie_deleted(response)
+    assert revoke.await_args.kwargs == {"principal": principal}

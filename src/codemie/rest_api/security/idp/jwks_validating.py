@@ -82,6 +82,9 @@ class JwksValidatingIdp(BaseIdp):
                 details="Invalid or expired credentials",
             ) from e
         self._inject_access_token_header(request, token)
+        from codemie.core.hosted_applications.identity import VERIFIED_TOKEN_STATE
+
+        setattr(request.state, VERIFIED_TOKEN_STATE, (claims, token))
         user = await self._inner.authenticate(request)
         user.tenant_id = self._extract_tenant_id(claims)
         return user

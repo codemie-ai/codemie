@@ -230,6 +230,21 @@
     "method": "GET"
   },
   {
+    "earlier": "/v1/hosted-applications/capabilities",
+    "later": "/v1/hosted-applications/{app_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/hosted-applications/usage",
+    "later": "/v1/hosted-applications/{app_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/hosted-applications/users",
+    "later": "/v1/hosted-applications/{app_id}",
+    "method": "GET"
+  },
+  {
     "earlier": "/v1/scheduler-runs/stats",
     "later": "/v1/scheduler-runs/{run_id}",
     "method": "GET"

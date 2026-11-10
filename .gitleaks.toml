@@ -8,6 +8,7 @@ description = "Allowlisted files"
 paths = [
   '''config/index-dumps/.*\.json$''',  # Index dumps contain sample data
   '''.*/__pycache__/.*''',             # Compiled Python bytecode (gitignored, contains test mock keys)
+  '''(^|/)\.ruff_cache/.*''',           # Generated Ruff cache, not source
   '''.pytest_cache/.*''',              # pytest cache (gitignored, mirrors test param strings)
   '''.idea/.*''',                      # IDE workspace files (gitignored, UUIDs trigger generic-api-key)
   '''.keys/.*''',                      # Local dev keys (gitignored, never committed)
@@ -18,6 +19,8 @@ paths = [
   '''(^|/)\.kube-local/.*''',          # Local k3s kubeconfigs (gitignored, never committed)
   '''(^|/)\.codemie-storage/.*''',     # Local runtime storage (gitignored, holds sandbox kubeconfig)
   '''(^|/)\.env$''',                   # Local environment variables (gitignored, never committed)
+  '''(^|/)output/playwright/hosted-qa-20261006/frozen-snapshot\.json$''', # Gitignored manifest: file paths and SHA-256 digests, not credentials
+  '''(^|/)local/hosted-applications/scanner/signatures/[^/]+\.(cld|cvd)$''', # Gitignored ClamAV virus definitions downloaded and verified by FreshClam, not credentials
   '''htmlcov/.*''',                    # Coverage HTML output (gitignored, renders test source as HTML)
   '''(^|/)\.claude/worktrees/.*''',  # Local agent worktrees (gitignored, copies of other checkouts with their local certs and env files)
   '''(^|/)\.codegraph/.*''',          # Local CodeGraph index (gitignored, SQLite pages hold indexed source strings)

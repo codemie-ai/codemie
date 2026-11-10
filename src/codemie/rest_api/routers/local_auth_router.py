@@ -38,6 +38,7 @@ from codemie.service.activity.activity_models import (
     UserManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.service.hosted_applications.logout import revoke_hosted_sessions_best_effort
 from codemie.service.security.logout_token_cleanup import remove_user_tokens_on_logout_async
 from codemie.service.user.authentication_service import authentication_service
 from codemie.service.user.registration_service import registration_service
@@ -230,7 +231,7 @@ async def change_password(data: PasswordChangeRequest, user: User = Depends(auth
 
 
 @router.post("/logout", response_model=MessageResponse)
-async def logout(response: Response, _user: User = Depends(authenticate)):
+async def logout(request: Request, response: Response, _user: User = Depends(authenticate)):
     """Logout and clear the authentication cookie
 
     Requires authentication (via cookie or Authorization header).
@@ -241,6 +242,8 @@ async def logout(response: Response, _user: User = Depends(authenticate)):
         key=config.AUTH_COOKIE_NAME,
         path=config.AUTH_COOKIE_PATH,
     )
+    # After the platform logout work, before the activity insert: bounded, never raises, never blocks logout.
+    await revoke_hosted_sessions_best_effort(request, principal=_user.id)
     async with get_async_session() as session:
         await activity_event_repository.async_insert(
             ActivityEventCreate(

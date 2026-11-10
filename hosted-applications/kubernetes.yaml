@@ -1,0 +1,389 @@
+# Hosted applications: the Kubernetes objects next to the CodeMie API release, the same topology and names as the
+# chart (deploy-templates, features.tools.hosted-apps).
+#
+# The validator and clamd go into the hosted applications namespace (codemie-hosted-apps, as in the chart); the
+# content Ingress goes into the API namespace. Replace every example value first (images pinned by digest, domain,
+# the API namespace and the labels of your API pods, ingress class and TLS secret):
+#   kubectl create namespace codemie-hosted-apps
+#   kubectl -n codemie-hosted-apps create secret generic codemie-hosted-applications \
+#     --from-literal=validator-key="<the same value as HOSTED_APPS_VALIDATOR_KEY>"
+#   kubectl -n codemie-hosted-apps create configmap codemie-hosted-apps-clamd \
+#     --from-file=clamd.conf=hosted-applications/clamd.conf
+#   kubectl apply -f hosted-applications/kubernetes.yaml
+# The API reaches the validator at http://codemie-hosted-apps-validator.codemie-hosted-apps.svc:8091
+# (HOSTED_APPS_VALIDATOR_URL). The API container settings go into the chart values (README, section 3).
+# Storage: uploaded files live in a dedicated private bucket, one bucket per deployment. Create the bucket
+# first (README, section 6). FILES_STORAGE_TYPE selects the hosted backend: aws (S3) or gcp (GCS).
+# The filesystem adapter is not supported in production. Add these API container settings:
+#   HOSTED_APPS_STORAGE_BUCKET=<your dedicated bucket>
+#   HOSTED_APPS_STORAGE_S3_GRACE_SECONDS=30      # S3 only
+---
+# The validator, in its own private pod outside the API pods: a parser compromise does not share the API pod's
+# network identity or service account.
+#
+# Exactly one replica: a validation result lives in the pod that produced it, so every request of one
+# validation must reach the same pod. Validation pauses while the pod restarts; queued uploads retry.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codemie-hosted-apps-validator
+  namespace: codemie-hosted-apps
+  labels:
+    app.kubernetes.io/name: codemie-hosted-apps-validator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codemie-hosted-apps-validator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: codemie-hosted-apps-validator
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: validator
+          # Built from the same commit as the API image (Dockerfile.validator).
+          image: registry.example.com/codemie-hosted-validator:API_COMMIT
+          env:
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: VALIDATOR_BIND_HOST
+              value: "0.0.0.0"
+            - name: VALIDATOR_PORT
+              value: "8091"
+            - name: VALIDATOR_WORKSPACE
+              value: "/work"
+            - name: VALIDATOR_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codemie-hosted-applications
+                  key: validator-key
+            - name: CLAMD_HOST
+              value: "codemie-hosted-apps-clamd"
+            - name: CLAMD_PORT
+              value: "3310"
+            - name: CLAMD_CONFIGURATION
+              value: "/etc/clamav/clamd.conf"
+          ports:
+            - name: http
+              containerPort: 8091
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          # The validator exits at startup when the node cannot sandbox the parser (Landlock ABI 3,
+          # normally Linux 6.2 or later), so a node without that support shows up as a crash loop.
+          readinessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: clamd-config
+              mountPath: /etc/clamav/clamd.conf
+              subPath: clamd.conf
+              readOnly: true
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: clamd-config
+          configMap:
+            name: codemie-hosted-apps-clamd
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codemie-hosted-apps-validator
+  namespace: codemie-hosted-apps
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: codemie-hosted-apps-validator
+  ports:
+    - name: http
+      port: 8091
+      targetPort: http
+---
+# Only the API pods reach the validator; the validator reaches DNS and clamd, nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: codemie-hosted-apps-validator
+  namespace: codemie-hosted-apps
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: codemie-hosted-apps-validator
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              # The namespace of your API release.
+              kubernetes.io/metadata.name: codemie
+          podSelector:
+            matchLabels:
+              # The API pods of your release (deploy-templates selector labels).
+              app.kubernetes.io/name: codemie
+              app.kubernetes.io/instance: codemie
+      ports:
+        - port: 8091
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: codemie-hosted-apps-clamd
+      ports:
+        - port: 3310
+          protocol: TCP
+---
+# clamd, in its own pod: the API keeps serving while ClamAV loads or refreshes its signatures (minutes after
+# every start), and the validator stays ready meanwhile. clamd listens on the pod network without
+# authentication, so the NetworkPolicy below admits only the validator pods.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codemie-hosted-apps-clamd
+  namespace: codemie-hosted-apps
+  labels:
+    app.kubernetes.io/name: codemie-hosted-apps-clamd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codemie-hosted-apps-clamd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: codemie-hosted-apps-clamd
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The pinned upstream scanner image is amd64-only. Never run production scanning under emulation.
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: clamd
+          # Upstream ClamAV image used as is, ClamAV 1.4 (LTS) or 1.5 only; pin by digest and move to a
+          # newer digest when a scan reports a fixed vulnerability. The _base variant carries no
+          # signatures: the signatures emptyDir below hides the image's /var/lib/clamav anyway, and
+          # freshclam downloads them on pod start. The image runs freshclam and clamd and drops to its
+          # clamav user itself, so it starts as root and keeps the capabilities it needs for that.
+          image: clamav/clamav:1.5.4_base@sha256:58168cd4f48a118c7d20b76da8ffce97e579b84ed7e6d1e977c6e22b1e989c5a
+          env:
+            # Required: clamd reports its signature date in local time and the validator reads it as UTC.
+            - name: TZ
+              value: "UTC"
+            - name: CLAMAV_NO_MILTERD
+              value: "true"
+            - name: FRESHCLAM_CHECKS
+              value: "4"
+              # Upstream freshclam default is ~1 check/day; 4 checks/day is every 6h (AC10).
+              # The image's /init passes this value to freshclam as --checks.
+          ports:
+            - name: clamd
+              containerPort: 3310
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              # Upstream init owns the signature volume and the daemons switch to clamav.
+              add: ["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"]
+          startupProbe:
+            exec:
+              command: ["clamdscan", "--config-file=/etc/clamav/clamd.conf", "--ping=1"]
+            periodSeconds: 10
+            failureThreshold: 60
+          # A probe failure restarts the whole container (both clamd and freshclam), reopening
+          # the T14-accepted scanner gap and start-up load race. This check only detects a
+          # dead/zombie freshclam process — it does not detect an updater that runs but keeps
+          # failing or sits in a mirror cool-down (that's a sibling sub-task, via signature age).
+          # initialDelaySeconds below is counted from startupProbe's own success, not from
+          # container start, so it gives freshclam extra time to spawn after clamd first answers
+          # ping. clamd's own signature load is documented as minutes-long, likely longer than
+          # freshclam's own startup, but that ordering comes from the upstream image's /init
+          # script and is not verified from source here — hence the explicit grace period.
+          livenessProbe:
+            initialDelaySeconds: 60
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  clamdscan --config-file=/etc/clamav/clamd.conf --ping=1 || { echo "clamd is not responding"; exit 1; }
+                  live=0
+                  for pid in $(pgrep freshclam); do
+                    stat=$(cat /proc/$pid/stat 2>/dev/null) || continue
+                    state=$(printf '%s' "$stat" | awk '{print $3}')
+                    if [ "$state" != "Z" ]; then
+                      live=1
+                      break
+                    fi
+                  done
+                  [ "$live" = "1" ] || { echo "freshclam is not running"; exit 1; }
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1536Mi
+            limits:
+              cpu: "1"
+              memory: 3Gi
+          volumeMounts:
+            - name: clamd-config
+              mountPath: /etc/clamav/clamd.conf
+              subPath: clamd.conf
+              readOnly: true
+            - name: signatures
+              mountPath: /var/lib/clamav
+            - name: clamd-run
+              mountPath: /run/clamav
+      volumes:
+        - name: signatures
+          emptyDir:
+            sizeLimit: 2Gi
+        # The upstream image does not ship /run/clamav and its entrypoint would create it with
+        # install -o clamav -m 775, which needs CAP_FOWNER. A volume here makes it skip that step.
+        - name: clamd-run
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: clamd-config
+          configMap:
+            name: codemie-hosted-apps-clamd
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codemie-hosted-apps-clamd
+  namespace: codemie-hosted-apps
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: codemie-hosted-apps-clamd
+  ports:
+    - name: clamd
+      port: 3310
+      targetPort: clamd
+---
+# Only the validator pods reach clamd's unauthenticated port; clamd reaches DNS and the ClamAV signature mirror
+# over HTTPS, never cluster-internal or cloud metadata addresses. Use your mirror's address if you run one.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: codemie-hosted-apps-clamd
+  namespace: codemie-hosted-apps
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: codemie-hosted-apps-clamd
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: codemie-hosted-apps-validator
+      ports:
+        - port: 3310
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - "0.0.0.0/8"
+              - "10.0.0.0/8"
+              - "100.64.0.0/10"
+              - "127.0.0.0/8"
+              - "169.254.0.0/16"
+              - "172.16.0.0/12"
+              - "192.168.0.0/16"
+              - "198.18.0.0/15"
+              - "224.0.0.0/4"
+              - "240.0.0.0/4"
+      ports:
+        - port: 443
+          protocol: TCP
+---
+# Content hosts: the wildcard of the separate content domain, and nothing else, to the API Service.
+# No annotations on purpose: configure your controller so that it keeps Host, path and query unchanged,
+# sends X-Forwarded-Host only as an exact copy of Host (or not at all) and no Forwarded or
+# X-Original-Host header, allows 130-second responses and small (64 KiB) request bodies, and adds no
+# authentication proxy, rewrite, cache, CORS or SPA fallback.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: codemie-hosted-content
+  # The API namespace: the backend is the API Service.
+  namespace: codemie
+spec:
+  ingressClassName: your-ingress-class
+  tls:
+    - hosts: ["*.apps-content.example.net"]
+      secretName: apps-content-wildcard-tls
+  rules:
+    - host: "*.apps-content.example.net"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: codemie
+                port:
+                  number: 8080

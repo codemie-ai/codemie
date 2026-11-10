@@ -356,6 +356,17 @@ components:
         # Every analysis a user starts (a period or settings not cached yet) counts, default settings too.
         maxComputationsPerHour: 30
 
+  # Custom (hosted) applications: people upload static web apps, an HTML file or a ZIP build, then open and
+  # share them from the Applications page. Off by default. Turning it on also needs the HOSTED_APPS_*
+  # deployment settings (hosted-applications/README.md); turning it off hides the feature in
+  # the UI and closes its API and content domain. FEATURE_HOSTED_APPLICATIONS=true|false overrides
+  # `enabled` where this component exists, so a customer ConfigMap that replaces this file must add it.
+  - id: "features:hostedApplications"
+    settings:
+      enabled: false
+      name: "Custom Applications"
+      description: "Upload, share and open custom static web applications on the Applications page"
+
 preconfigured_assistants:
   # Optional settings.llm_model_type overrides the assistant model on creation and every deployment.
   # Use a model ID available in this deployment; omit it to keep the existing model fallback behavior.

@@ -94,7 +94,8 @@ def test_config_model_config_includes_env_local():
     ), "Config.model_config must include '.env.local' so personal overrides take precedence over .env"
 
 
-def test_env_local_overrides_env(tmp_path):
+def test_env_local_overrides_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
     env_file = tmp_path / ".env"
     env_local_file = tmp_path / ".env.local"
     env_file.write_text("LOG_LEVEL=WARNING\n")

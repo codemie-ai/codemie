@@ -22,10 +22,11 @@ Coverage target: >= 80%
 Note: Rate limiter is disabled using conftest.py fixture.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import Response
+from fastapi import Response, FastAPI
 from starlette.requests import Request
 
 from codemie.core.exceptions import ExtendedHTTPException
@@ -65,6 +66,7 @@ def mock_request():
         "client": ("127.0.0.1", 8000),
         "server": ("localhost", 8000),
     }
+    scope["app"] = FastAPI()
     return Request(scope)
 
 
@@ -598,10 +600,12 @@ class TestLogoutEndpoint:
 
     @pytest.mark.asyncio
     @patch("codemie.rest_api.routers.local_auth_router.remove_user_tokens_on_logout_async")
-    async def test_logout_removes_user_tokens_once(self, mock_cleanup, mock_response, mock_user, event_insert):
+    async def test_logout_removes_user_tokens_once(
+        self, mock_cleanup, mock_request, mock_response, mock_user, event_insert
+    ):
         """Logout hands the authenticated user's id to the TMS token cleanup"""
         # Act
-        await logout(mock_response, _user=mock_user)
+        await logout(mock_request, mock_response, _user=mock_user)
 
         # Assert
         mock_cleanup.assert_awaited_once_with(mock_user.id)
@@ -610,14 +614,14 @@ class TestLogoutEndpoint:
     @patch("codemie.service.security.logout_token_cleanup._delete_all_tms_tokens")
     @patch("codemie.service.security.logout_token_cleanup._tms_in_use", return_value=True)
     async def test_logout_response_unchanged_when_token_cleanup_fails(
-        self, _mock_in_use, mock_delete, mock_response, mock_user, event_insert
+        self, _mock_in_use, mock_delete, mock_request, mock_response, mock_user, event_insert
     ):
         """A failing TMS delete never changes the message, cookie deletion or activity event"""
         # Arrange
         mock_delete.side_effect = RuntimeError("sentinel-secret")
 
         # Act
-        result = await logout(mock_response, _user=mock_user)
+        result = await logout(mock_request, mock_response, _user=mock_user)
 
         # Assert
         mock_delete.assert_called_once_with(mock_user.id)
@@ -628,7 +632,7 @@ class TestLogoutEndpoint:
     @pytest.mark.asyncio
     @patch("codemie.rest_api.routers.local_auth_router.remove_user_tokens_on_logout_async")
     async def test_logout_removes_user_tokens_even_when_activity_insert_fails(
-        self, mock_cleanup, mock_response, mock_user, event_insert
+        self, mock_cleanup, mock_request, mock_response, mock_user, event_insert
     ):
         """The purge runs before the activity insert, so an insert failure cannot skip it"""
         # Arrange
@@ -636,20 +640,20 @@ class TestLogoutEndpoint:
 
         # Act & Assert
         with pytest.raises(RuntimeError, match="db down"):
-            await logout(mock_response, _user=mock_user)
+            await logout(mock_request, mock_response, _user=mock_user)
 
         mock_cleanup.assert_awaited_once_with(mock_user.id)
 
     @pytest.mark.asyncio
     @patch("codemie.rest_api.routers.local_auth_router.config")
-    async def test_logout_clears_cookie(self, mock_config, mock_response, mock_user):
+    async def test_logout_clears_cookie(self, mock_config, mock_request, mock_response, mock_user):
         """Logout clears authentication cookie"""
         # Arrange
         mock_config.AUTH_COOKIE_NAME = "codemie_access_token"
         mock_config.AUTH_COOKIE_PATH = "/"
 
         # Act
-        result = await logout(mock_response, _user=mock_user)
+        result = await logout(mock_request, mock_response, _user=mock_user)
 
         # Assert
         assert result.message == "Logged out successfully"
@@ -657,6 +661,102 @@ class TestLogoutEndpoint:
             key="codemie_access_token",
             path="/",
         )
+
+
+class TestLogoutNeverDependsOnHostedRevocation:
+    """Platform logout completes whatever happens to best-effort hosted session revocation."""
+
+    @pytest.fixture
+    def platform_logout(self, mock_request):
+        with (
+            patch("codemie.rest_api.routers.local_auth_router.get_async_session") as get_session,
+            patch("codemie.rest_api.routers.local_auth_router.activity_event_repository") as repository,
+            patch("codemie.rest_api.routers.local_auth_router.remove_user_tokens_on_logout_async") as cleanup,
+        ):
+            get_session.return_value.__aenter__.return_value = AsyncMock()
+            get_session.return_value.__aexit__.return_value = False
+            repository.async_insert = AsyncMock()
+            yield SimpleNamespace(insert=repository.async_insert, cleanup=cleanup)
+
+    @staticmethod
+    def hosted_runtime(logout):
+        from codemie.core.hosted_applications.settings import IdentityAuthority
+
+        settings = SimpleNamespace(enabled=True, authority=IdentityAuthority())
+        return SimpleNamespace(settings=settings, launch=SimpleNamespace(logout=logout))
+
+    @staticmethod
+    def assert_logged_out(result, response, platform_logout, user):
+        assert result.message == "Logged out successfully"
+        response.delete_cookie.assert_called_once()
+        platform_logout.cleanup.assert_awaited_once_with(user.id)
+        platform_logout.insert.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_logout_succeeds_when_hosted_revocation_fails(
+        self, platform_logout, mock_request, mock_response, mock_user
+    ):
+        failing = AsyncMock(side_effect=RuntimeError("database unavailable"))
+        mock_request.app.state.hosted_applications = self.hosted_runtime(failing)
+
+        result = await logout(mock_request, mock_response, _user=mock_user)
+
+        self.assert_logged_out(result, mock_response, platform_logout, mock_user)
+
+    @pytest.mark.asyncio
+    async def test_logout_succeeds_when_hosted_revocation_times_out(
+        self, platform_logout, mock_request, mock_response, mock_user, monkeypatch
+    ):
+        import asyncio
+
+        async def stalled(_identity):
+            await asyncio.sleep(5)
+
+        monkeypatch.setattr("codemie.service.hosted_applications.logout.LOGOUT_REVOCATION_TIMEOUT_SECONDS", 0.05)
+        mock_request.app.state.hosted_applications = self.hosted_runtime(AsyncMock(side_effect=stalled))
+
+        result = await asyncio.wait_for(logout(mock_request, mock_response, _user=mock_user), timeout=2)
+
+        self.assert_logged_out(result, mock_response, platform_logout, mock_user)
+
+    @pytest.mark.asyncio
+    async def test_logout_with_hosted_applications_disabled_skips_revocation(
+        self, platform_logout, mock_request, mock_response, mock_user
+    ):
+        result = await logout(mock_request, mock_response, _user=mock_user)
+
+        self.assert_logged_out(result, mock_response, platform_logout, mock_user)
+
+    @pytest.mark.asyncio
+    async def test_logout_cuts_off_every_hosted_session_of_the_user(
+        self, platform_logout, mock_request, mock_response, mock_user
+    ):
+        from codemie.core.hosted_applications.identity import PrincipalRevocation
+
+        revoke = AsyncMock()
+        mock_request.app.state.hosted_applications = self.hosted_runtime(revoke)
+
+        result = await logout(mock_request, mock_response, _user=mock_user)
+
+        self.assert_logged_out(result, mock_response, platform_logout, mock_user)
+        revoke.assert_awaited_once_with(PrincipalRevocation(mock_user.id))
+
+    @pytest.mark.asyncio
+    async def test_hosted_revocation_runs_after_the_platform_logout_work(
+        self, platform_logout, mock_request, mock_response, mock_user
+    ):
+        async def after_platform_logout(request, *, principal):
+            platform_logout.cleanup.assert_awaited_once_with(mock_user.id)
+            mock_response.delete_cookie.assert_called_once()
+            assert principal == mock_user.id and request is mock_request
+
+        with patch(
+            "codemie.rest_api.routers.local_auth_router.revoke_hosted_sessions_best_effort",
+            AsyncMock(side_effect=after_platform_logout),
+        ) as revoke:
+            await logout(mock_request, mock_response, _user=mock_user)
+
+        revoke.assert_awaited_once()
 
 
 class TestJWKSEndpoint:

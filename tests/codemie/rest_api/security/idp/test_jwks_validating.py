@@ -82,6 +82,26 @@ class TestJwksValidatingIdp:
         inner_idp.authenticate.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_records_the_verified_token_for_hosted_applications(self, wrapped_idp):
+        request = _make_request({"Authorization": "Bearer raw-bearer-token"})
+
+        await wrapped_idp.authenticate(request)
+
+        assert getattr(request.state, "hosted_verified_token") == ({"sub": "u1"}, "raw-bearer-token")
+
+    @pytest.mark.asyncio
+    async def test_records_no_verified_token_after_a_failed_validation(self, wrapped_idp, validator_mock):
+        from codemie.rest_api.security.idp.jwks_validating import _AuthenticationError
+
+        validator_mock.validate.side_effect = _AuthenticationError("bad")
+        request = _make_request({"Authorization": "Bearer raw-bearer-token"})
+
+        with pytest.raises(ExtendedHTTPException):
+            await wrapped_idp.authenticate(request)
+
+        assert getattr(request.state, "hosted_verified_token", None) is None
+
+    @pytest.mark.asyncio
     async def test_propagates_inner_user(self, wrapped_idp, fake_user):
         request = _make_request({"Authorization": "Bearer raw-bearer-token"})
 

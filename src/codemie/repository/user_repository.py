@@ -17,7 +17,7 @@ import uuid
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, UTC
-from typing import Iterator, Literal, Optional
+from typing import Any, Iterator, Literal, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import ColumnElement, Result, Row, and_, not_
@@ -651,15 +651,19 @@ class UserRepository:
         session: AsyncSession,
         search: Optional[str] = None,
         projects: Optional[list[str]] = None,
-        exclude_user_type: Optional[str] = None,
+        exclude_user_type: str | None = None,
+        limit: int | None = None,
+        condition: Any = None,
     ) -> list["UserDB"]:
-        """Return all active, non-deleted users, optionally filtered by text search and/or projects.
+        """Return active, non-deleted users, optionally filtered by text search and/or projects.
 
         Args:
             session: Async database session
             search: Optional ILIKE pattern applied to email, username, and name
             projects: Optional list of project names to filter by
             exclude_user_type: If set, exclude users with this user_type from results
+            limit: Optional maximum number of rows, applied in SQL
+            condition: Optional extra SQL condition on ``UserDB`` (for example a named-grant recipient rule)
 
         Returns:
             List of UserDB instances ordered by name then username
@@ -669,6 +673,8 @@ class UserRepository:
         stmt = select(UserDB).where(_ACTIVE)  # noqa: E712
         if exclude_user_type:
             stmt = stmt.where(UserDB.user_type != exclude_user_type)
+        if condition is not None:
+            stmt = stmt.where(condition)
         if search:
             escaped = escape_like_wildcards(search)
             pattern = f"%{escaped}%"
@@ -682,6 +688,8 @@ class UserRepository:
         if projects:
             stmt = stmt.join(UserProject).where(UserProject.project_name.in_(projects)).distinct()
         stmt = stmt.order_by(UserDB.name, UserDB.username)
+        if limit is not None:
+            stmt = stmt.limit(limit)
         result = await session.execute(stmt)
         return list(result.scalars().all())
 

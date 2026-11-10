@@ -1,0 +1,37 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Hosted applications private validator. Build from the repository root with the same commit as the API image:
+#   docker build -f hosted-applications/Dockerfile.validator -t <registry>/codemie-hosted-validator:<commit> .
+# Official Python 3.12 / Alpine 3.24; pin the multi-architecture index after image and sandbox qualification.
+FROM python@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app/src \
+    VALIDATOR_BIND_HOST=127.0.0.1 VALIDATOR_PORT=8091 VALIDATOR_WORKSPACE=/work
+COPY hosted-applications/requirements-validator.txt /tmp/requirements-validator.txt
+# Every dependency is pinned with a hash; nothing is resolved or built at image build time.
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: --no-deps -r /tmp/requirements-validator.txt \
+    && rm /tmp/requirements-validator.txt
+WORKDIR /app
+COPY src/codemie/__init__.py /app/src/codemie/__init__.py
+COPY src/codemie/core/__init__.py /app/src/codemie/core/__init__.py
+COPY src/codemie/core/hosted_applications /app/src/codemie/core/hosted_applications
+COPY src/codemie/hosted_apps_validator /app/src/codemie/hosted_apps_validator
+RUN mkdir -p /work && chown 65532:65532 /work && chmod 700 /work
+USER 65532:65532
+# Loopback by default; the standalone Kubernetes pod explicitly binds its protected service listener.
+EXPOSE 8091
+# Unauthenticated, information-free /livez on the local listener (HTTP or HTTPS).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["python", "-B", "-m", "codemie.hosted_apps_validator.server", "--probe"]
+CMD ["python", "-B", "-m", "codemie.hosted_apps_validator.server"]

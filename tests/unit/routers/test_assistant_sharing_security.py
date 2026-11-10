@@ -80,9 +80,9 @@ def test_is_shared_with_external_recipient_denied_despite_grant():
     user.project_names = []
     user.id = "user-1"
 
-    with patch("codemie.rest_api.models.assistant.Session") as mock_session_cls:
-        mock_session_cls.return_value.__enter__.return_value.exec.return_value.first.return_value = "asst-1"
-        assert asst.is_shared_with(user) is False
+    from codemie.core.ability import Action, PreloadedGrants
+
+    assert asst.is_granted_to(user, Action.READ, PreloadedGrants("Assistant", {"asst-1": Action.READ})) is False
 
 
 # ---------------------------------------------------------------------------
@@ -228,14 +228,15 @@ async def test_search_sharable_users_passes_exclude_external_to_query():
     mock_repo.aquery_active_users = AsyncMock(return_value=[internal_user])
 
     with (
-        patch("codemie.service.assistant.assistant_share_service.config") as mock_cfg,
         patch("codemie.clients.postgres.get_async_session") as mock_ctx,
-        patch("codemie.repository.user_repository.user_repository", mock_repo),
+        patch("codemie.service.permission.named_grant_service.user_repository", mock_repo),
     ):
-        mock_cfg.EXTERNAL_USER_TYPE = "external"
         mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
         result = await AssistantShareService.search_sharable_users("alice")
 
     assert len(result) == 1
     assert result[0]["id"] == "u1"
+    # The recipient rule (internal users only) is a SQL condition of the query, not a filter after the fetch.
+    condition = mock_repo.aquery_active_users.await_args.kwargs["condition"]
+    assert "external" in condition.compile().params.values()

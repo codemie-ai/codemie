@@ -126,7 +126,17 @@ class PersistentUserProvider(UserProvider):
             client_access_token = idp_user.client_access_token
 
         # 3. Coalesced authentication — first request processes, rest wait
-        return await _coalesced_authenticate(user_id, idp_user, auth_token, client_access_token)
+        user = await _coalesced_authenticate(user_id, idp_user, auth_token, client_access_token)
+        # Record the hosted identity only now: the IdP accepted the request and the platform loaded the user.
+        from codemie.core.hosted_applications.identity import record_platform_identity
+
+        record_platform_identity(
+            request,
+            user.id,
+            provider=config.IDP_PROVIDER,
+            verified=(claims, auth_token) if config.IDP_PROVIDER == "local" else None,
+        )
+        return user
 
 
 async def _coalesced_authenticate(

@@ -145,6 +145,56 @@ async def test_async_insert_adds_and_flushes_event():
     assert result.domain == ActivityDomain.USER_MANAGEMENT
 
 
+@pytest.mark.asyncio
+async def test_async_insert_strict_adds_and_flushes_without_savepoint():
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.begin_nested = MagicMock()
+    dto = _create_dto()
+
+    with patch("codemie.service.activity.activity_repository.config") as mock_config:
+        mock_config.ACTIVITY_EVENTS_ENABLED = True
+        result = await _repo().async_insert_strict(dto, session)
+
+    session.begin_nested.assert_not_called()
+    session.add.assert_called_once()
+    session.flush.assert_awaited_once()
+    assert result.domain == ActivityDomain.USER_MANAGEMENT
+
+
+@pytest.mark.asyncio
+async def test_async_insert_strict_propagates_flush_error():
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush.side_effect = RuntimeError("flush failed")
+    dto = _create_dto()
+
+    with patch("codemie.service.activity.activity_repository.config") as mock_config:
+        mock_config.ACTIVITY_EVENTS_ENABLED = True
+        with pytest.raises(RuntimeError, match="flush failed"):
+            await _repo().async_insert_strict(dto, session)
+
+
+@pytest.mark.asyncio
+async def test_async_insert_strict_returns_none_when_events_disabled():
+    session = AsyncMock()
+    session.add = MagicMock()
+    dto = _create_dto()
+
+    with patch("codemie.service.activity.activity_repository.config") as mock_config:
+        mock_config.ACTIVITY_EVENTS_ENABLED = False
+        result = await _repo().async_insert_strict(dto, session)
+
+    assert result is None
+    session.add.assert_not_called()
+    session.flush.assert_not_awaited()
+
+
+def test_hosted_application_domain_and_entity_type_exist():
+    assert ActivityDomain.HOSTED_APPLICATION == "hosted_application"
+    assert ActivityEntityType.HOSTED_APPLICATION == "hosted_application"
+
+
 def test_find_by_entity_executes_query():
     session = MagicMock()
     mock_result = MagicMock()

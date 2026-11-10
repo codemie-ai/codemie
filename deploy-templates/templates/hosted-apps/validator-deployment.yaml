@@ -1,0 +1,89 @@
+{{- $hostedApps := index .Values.features.tools "hosted-apps" }}
+{{- if $hostedApps.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "codemie.hostedValidator.name" . }}
+  namespace: {{ $hostedApps.namespace.name | default .Release.Namespace }}
+  labels:
+    {{- include "codemie.hostedValidator.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "codemie.hostedValidator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "codemie.hostedValidator.labels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: {{ $hostedApps.validator.automountServiceAccountToken }}
+      enableServiceLinks: {{ $hostedApps.validator.enableServiceLinks }}
+      {{- with ($hostedApps.validator.imagePullSecrets | default .Values.imagePullSecrets) }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $hostedApps.validator.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $hostedApps.validator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $hostedApps.validator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $hostedApps.validator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $hostedApps.validator.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: validator
+          image: "{{ $hostedApps.validator.image.repository }}:{{ $hostedApps.validator.image.tag | default .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $hostedApps.validator.image.pullPolicy }}
+          {{- with $hostedApps.validator.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8091
+          {{- with $hostedApps.validator.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $hostedApps.validator.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $hostedApps.validator.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $hostedApps.validator.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: clamd-config
+              mountPath: /etc/clamav/clamd.conf
+              subPath: clamd.conf
+              readOnly: true
+            {{- with $hostedApps.validator.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: clamd-config
+          configMap:
+            name: {{ include "codemie.hostedClamd.configMapName" . }}
+        {{- with $hostedApps.validator.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

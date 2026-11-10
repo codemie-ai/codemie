@@ -819,7 +819,8 @@ def test_filter_omits_per_user_grant_path_when_user_management_disabled(monkeypa
 
     sql_str = str(AssistantRepository._per_user_grant_condition(user)).lower()
 
-    assert "permissions" not in sql_str
+    # The gate lives in ``live_grants`` (one statement of the live rule): the grant select matches nothing.
+    assert "where false" in sql_str
 
 
 def test_filter_includes_per_user_grant_path():
@@ -871,10 +872,14 @@ def test_external_user_predicates_skip_named_grants(mock_external_user):
         assert "permissions" not in str(query.whereclause).lower()
 
 
-@patch("codemie.rest_api.models.permission.Permission.get_by_fields")
+@patch("codemie.service.assistant.assistant_share_service.Session")
 @patch("codemie.service.assistant.assistant_repository.Session")
-def test_query_preloads_grants_in_one_permission_query(mock_session_class, mock_get_by_fields, mock_user):
-    """A page of N assistants issues exactly one Permission query; granted rows still get READ (a9)."""
+def test_query_preloads_grants_in_one_permission_query(mock_session_class, share_session, mock_user, monkeypatch):
+    """A page of N assistants reads the user's grants once, through Ability's lazy load; granted rows get READ (a9)."""
+    from codemie.core.ability import Action, PreloadedGrants
+    from codemie.rest_api.models.permission import ResourceType
+
+    monkeypatch.setattr("codemie.service.permission.named_grant_service.config.ENABLE_USER_MANAGEMENT", True)
     page = []
     for i in range(3):
         asst = Assistant(
@@ -895,35 +900,31 @@ def test_query_preloads_grants_in_one_permission_query(mock_session_class, mock_
         )
         page.append(asst)
 
-    statements = []
-
     def _exec(stmt):
-        statements.append(str(stmt).lower())
         result = MagicMock()
         result.one.return_value = 3
-        if statements[-1].startswith("select cast(permissions.resource_id as text)"):
-            # A plain sa.select comes back as Row tuples; only .scalars() yields the bare ids
-            result.all.return_value = [("asst-0",), ("asst-2",)]
-            result.scalars.return_value.all.return_value = ["asst-0", "asst-2"]
-        else:
-            result.all.return_value = page
+        result.all.return_value = page
         return result
 
     mock_session = MagicMock()
     mock_session.exec.side_effect = _exec
     mock_session_class.return_value.__enter__.return_value = mock_session
     mock_user.is_admin_or_maintainer = False
+    mock_user.is_external_user = False
+    granted = PreloadedGrants("Assistant", {"asst-0": Action.READ, "asst-2": Action.READ})
 
-    with patch("codemie.rest_api.models.assistant.Session") as model_session:
+    with (
+        patch("codemie.rest_api.models.assistant.Session") as model_session,
+        patch("codemie.service.permission.named_grant_service.preload", return_value=granted) as preload,
+    ):
         result = AssistantRepository().query(user=mock_user, scope=AssistantScope.VISIBLE_TO_USER)
 
-    permission_queries = [s for s in statements if s.startswith("select cast(permissions.resource_id as text)")]
-    assert len(permission_queries) == 1
+    preload.assert_called_once()
+    assert preload.call_args.args[1] is ResourceType.ASSISTANT
+    # All of the user's assistant grants in one statement, not narrowed by the page and not once per row.
+    assert len(preload.call_args.args) == 3
     model_session.assert_not_called()
-    mock_get_by_fields.assert_not_called()
     abilities = {a.id: a.user_abilities for a in result["data"]}
-    from codemie.core.ability import Action
-
     assert Action.READ in abilities["asst-0"]
     assert abilities["asst-1"] == []
     assert Action.READ in abilities["asst-2"]

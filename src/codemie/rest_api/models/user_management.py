@@ -19,6 +19,7 @@ from enum import StrEnum
 from typing import Optional
 from uuid import uuid4
 
+import sqlalchemy as sa
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from sqlalchemy import Index, UniqueConstraint, text
 from sqlmodel import Field as SQLField, SQLModel
@@ -57,6 +58,15 @@ class UserDB(BaseModelWithSQLSupport, table=True):
     project_limit: Optional[int] = SQLField(default=None)  # Max shared projects; NULL = unlimited (admins)
     # Using date/update_date inherited from CommonBaseModel (no created_at/updated_at)
     deleted_at: Optional[datetime] = SQLField(default=None, index=True)
+
+
+def eligible_internal_user(users: type[UserDB] | sa.FromClause) -> sa.ColumnElement[bool]:
+    """SQL predicate: the user is active, not deleted and not external.
+
+    `users` is UserDB, an alias of it, or the users table.
+    """
+    cols = getattr(users, "c", users)
+    return sa.and_(cols.is_active.is_(True), cols.deleted_at.is_(None), cols.user_type != config.EXTERNAL_USER_TYPE)
 
 
 class UserProject(BaseModelWithSQLSupport, table=True):

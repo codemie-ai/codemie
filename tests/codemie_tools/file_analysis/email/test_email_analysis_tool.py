@@ -669,7 +669,13 @@ def test_fetch_url_content_normalizes_github_blob_url():
 def test_fetch_url_content_returns_bytes_on_success():
     eml_bytes = b"From: a@b.com\r\nSubject: hi\r\n\r\nbody"
 
-    with patch("codemie_tools.file_analysis.email.tools.httpx.Client") as mock_cls:
+    with (
+        patch("codemie_tools.file_analysis.email.tools.httpx.Client") as mock_cls,
+        patch(
+            "codemie_tools.file_analysis.email.tools.socket.getaddrinfo",
+            return_value=[(None, None, None, None, ("93.184.215.14", 0))],
+        ),
+    ):
         mock_client = MagicMock()
         mock_cls.return_value.__enter__.return_value = mock_client
         mock_response = MagicMock()
@@ -685,7 +691,13 @@ def test_fetch_url_content_returns_bytes_on_success():
 
 
 def test_fetch_url_content_raises_on_404():
-    with patch("codemie_tools.file_analysis.email.tools.httpx.Client") as mock_cls:
+    with (
+        patch("codemie_tools.file_analysis.email.tools.httpx.Client") as mock_cls,
+        patch(
+            "codemie_tools.file_analysis.email.tools.socket.getaddrinfo",
+            return_value=[(None, None, None, None, ("93.184.215.14", 0))],
+        ),
+    ):
         mock_client = MagicMock()
         mock_cls.return_value.__enter__.return_value = mock_client
         mock_response = MagicMock()

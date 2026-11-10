@@ -144,3 +144,65 @@ Returns a YAML array parsed by callers via fromYamlArray.
 {{ $result | toYaml }}
 {{- end }}
 {{- end }}
+
+{{/*
+Hosted applications validator name
+*/}}
+{{- define "codemie.hostedValidator.name" -}}
+codemie-hosted-apps-validator
+{{- end }}
+
+{{/*
+Hosted applications validator selector labels
+*/}}
+{{- define "codemie.hostedValidator.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "codemie.hostedValidator.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Hosted applications validator common labels
+*/}}
+{{- define "codemie.hostedValidator.labels" -}}
+helm.sh/chart: {{ include "codemie.chart" . }}
+{{ include "codemie.hostedValidator.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Hosted applications clamd name
+*/}}
+{{- define "codemie.hostedClamd.name" -}}
+codemie-hosted-apps-clamd
+{{- end }}
+
+{{/*
+Hosted applications clamd selector labels
+*/}}
+{{- define "codemie.hostedClamd.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "codemie.hostedClamd.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Hosted applications clamd common labels
+*/}}
+{{- define "codemie.hostedClamd.labels" -}}
+helm.sh/chart: {{ include "codemie.chart" . }}
+{{ include "codemie.hostedClamd.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Name of the ConfigMap with the clamd configuration
+*/}}
+{{- define "codemie.hostedClamd.configMapName" -}}
+{{- $hostedApps := index .Values.features.tools "hosted-apps" -}}
+{{- $hostedApps.clamdConfig.existingConfigMap | default (include "codemie.hostedClamd.name" .) -}}
+{{- end }}

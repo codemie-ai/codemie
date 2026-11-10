@@ -1,0 +1,18 @@
+{{- $hostedApps := index .Values.features.tools "hosted-apps" }}
+{{- if $hostedApps.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "codemie.hostedClamd.name" . }}
+  namespace: {{ $hostedApps.namespace.name | default .Release.Namespace }}
+  labels:
+    {{- include "codemie.hostedClamd.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "codemie.hostedClamd.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: clamd
+      port: {{ $hostedApps.clamd.port }}
+      targetPort: clamd
+{{- end }}

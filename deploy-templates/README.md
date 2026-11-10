@@ -62,6 +62,55 @@ A Helm chart for AI/Run API
 | features.tools.code_executor.namespace.create | bool | `false` | Create the namespace where executor pods run. Set to true only if it doesn't already exist |
 | features.tools.code_executor.namespace.name | string | `"codemie-code-executor"` | Namespace where executor pods run (must match CODE_EXECUTOR_NAMESPACE env var) |
 | features.tools.code_executor.rbac | object | `{"enabled":false}` | Create Role and RoleBinding in features.tools.code_executor.namespace.name to allow the service account to manage executor pods |
+| features.tools.hosted-apps.clamd.affinity | object | `{}` | Affinity rules for the clamd pod |
+| features.tools.hosted-apps.clamd.automountServiceAccountToken | bool | `false` | Mount the service account token into the clamd pod |
+| features.tools.hosted-apps.clamd.enableServiceLinks | bool | `false` | Inject Service environment variables into the clamd pod |
+| features.tools.hosted-apps.clamd.env | list | `[{"name":"TZ","value":"UTC"},{"name":"FRESHCLAM_CHECKS","value":"4"}]` | Environment variables for the clamd container. TZ=UTC is required: clamd reports its signature date in local time and the validator reads it as UTC |
+| features.tools.hosted-apps.clamd.image.pullPolicy | string | `"IfNotPresent"` | Image pull policy for ClamAV |
+| features.tools.hosted-apps.clamd.image.repository | string | `"clamav/clamav"` | Repository of the ClamAV image |
+| features.tools.hosted-apps.clamd.image.tag | string | `"1.5.4_base@sha256:58168cd4f48a118c7d20b76da8ffce97e579b84ed7e6d1e977c6e22b1e989c5a"` | ClamAV image tag, pinned by digest |
+| features.tools.hosted-apps.clamd.imagePullSecrets | list | `[]` | Image pull secrets for the clamd pod. Defaults to the top-level imagePullSecrets |
+| features.tools.hosted-apps.clamd.livenessProbe | object | `{"exec":{"command":["/bin/sh","-c","clamdscan --config-file=/etc/clamav/clamd.conf --ping=1 || { echo \"clamd is not responding\"; exit 1; }\nlive=0\nfor pid in $(pgrep freshclam); do\n  stat=$(cat /proc/$pid/stat 2>/dev/null) || continue\n  state=$(printf '%s' \"$stat\" | awk '{print $3}')\n  if [ \"$state\" != \"Z\" ]; then\n    live=1\n    break\n  fi\ndone\n[ \"$live\" = \"1\" ] || { echo \"freshclam is not running\"; exit 1; }\n"]},"failureThreshold":3,"initialDelaySeconds":60,"periodSeconds":30,"timeoutSeconds":10}` | Liveness probe for the clamd container. Checks that clamd answers and freshclam is running |
+| features.tools.hosted-apps.clamd.nodeSelector | object | `{}` | Node selector for the clamd pod. The pinned upstream image is amd64-only |
+| features.tools.hosted-apps.clamd.podSecurityContext | object | `{"seccompProfile":{"type":"RuntimeDefault"}}` | Pod security context for the clamd pod |
+| features.tools.hosted-apps.clamd.port | int | `3310` | clamd TCP port (must match TCPSocket in clamd.conf and CLAMD_PORT in validator.env) |
+| features.tools.hosted-apps.clamd.priorityClassName | string | `""` | Priority class for the clamd pod |
+| features.tools.hosted-apps.clamd.resources | object | `{"limits":{"cpu":"1","memory":"3Gi"},"requests":{"cpu":"1","memory":"1536Mi"}}` | Resources for the clamd container |
+| features.tools.hosted-apps.clamd.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"add":["CHOWN","DAC_OVERRIDE","SETGID","SETUID"],"drop":["ALL"]}}` | Security context for the clamd container |
+| features.tools.hosted-apps.clamd.startupProbe | object | `{"exec":{"command":["clamdscan","--config-file=/etc/clamav/clamd.conf","--ping=1"]},"failureThreshold":60,"periodSeconds":10}` | Startup probe for the clamd container. Signature load takes minutes after every start |
+| features.tools.hosted-apps.clamd.tolerations | list | `[]` | Tolerations for the clamd pod |
+| features.tools.hosted-apps.clamd.volumeMounts | list | `[{"mountPath":"/var/lib/clamav","name":"signatures"},{"mountPath":"/run/clamav","name":"clamd-run"}]` | Extra volume mounts for the clamd container |
+| features.tools.hosted-apps.clamd.volumes | list | `[{"emptyDir":{"sizeLimit":"2Gi"},"name":"signatures"},{"emptyDir":{"sizeLimit":"1Mi"},"name":"clamd-run"}]` | Extra volumes for the clamd pod |
+| features.tools.hosted-apps.clamdConfig.existingConfigMap | string | `""` | Name of an existing ConfigMap with the clamd configuration under the clamd.conf key. When empty, the chart creates codemie-hosted-apps-clamd |
+| features.tools.hosted-apps.enabled | bool | `false` | Enable hosted applications resources |
+| features.tools.hosted-apps.ingress.annotations | object | `{}` | Additional ingress annotations |
+| features.tools.hosted-apps.ingress.enabled | bool | `true` | Create the hosted applications content Ingress |
+| features.tools.hosted-apps.ingress.host | string | `""` | Wildcard host of the content domain, e.g. "*.apps-content.example.net" |
+| features.tools.hosted-apps.ingress.ingressClassName | string | `"nginx"` | Ingress class name |
+| features.tools.hosted-apps.ingress.tls | list | `[]` | Ingress TLS configuration |
+| features.tools.hosted-apps.namespace.create | bool | `false` | Create the namespace for hosted applications resources. Set to true only if it doesn't already exist |
+| features.tools.hosted-apps.namespace.name | string | `"codemie-hosted-apps"` | Namespace for hosted applications resources |
+| features.tools.hosted-apps.networkPolicy.egress.clamd | list | `[{"ipBlock":{"cidr":"0.0.0.0/0","except":["10.92.249.0/26","10.92.202.160/28","172.20.0.0/16","172.21.0.0/17","172.30.0.0/16","169.254.0.0/16"]}}]` | Where clamd may download signatures from (port 443). Defaults to the internet without the cluster ranges and link-local addresses |
+| features.tools.hosted-apps.networkPolicy.egress.dns | list | `[]` | Where the validator and clamd may send DNS queries (port 53). Empty allows any destination, which also covers GKE NodeLocal DNSCache |
+| features.tools.hosted-apps.networkPolicy.enabled | bool | `true` | Create NetworkPolicies for the validator pod and clamd egress, plus a default-deny ingress policy when the hosted applications namespace differs from the release namespace. The policy that admits only the validator to clamd's unauthenticated port is created whenever hosted-apps is enabled. Needs a CNI that enforces NetworkPolicy |
+| features.tools.hosted-apps.validator.affinity | object | `{}` | Affinity rules for the validator pod |
+| features.tools.hosted-apps.validator.automountServiceAccountToken | bool | `false` | Mount the service account token into the validator pod |
+| features.tools.hosted-apps.validator.enableServiceLinks | bool | `false` | Inject Service environment variables into the validator pod |
+| features.tools.hosted-apps.validator.env | list | `[{"name":"VALIDATOR_BIND_HOST","value":"0.0.0.0"},{"name":"VALIDATOR_SERVICE_KEY","valueFrom":{"secretKeyRef":{"key":"validator-key","name":"codemie-hosted-applications"}}},{"name":"CLAMD_HOST","value":"codemie-hosted-apps-clamd"},{"name":"CLAMD_PORT","value":"3310"},{"name":"CLAMD_CONFIGURATION","value":"/etc/clamav/clamd.conf"}]` | Environment variables for the validator container |
+| features.tools.hosted-apps.validator.image.pullPolicy | string | `"IfNotPresent"` | Image pull policy for the validator |
+| features.tools.hosted-apps.validator.image.repository | string | `""` | Repository of the hosted applications validator image (built from Dockerfile.validator) |
+| features.tools.hosted-apps.validator.image.tag | string | `""` | Validator image tag. Defaults to image.tag (the API image tag), then to the chart appVersion |
+| features.tools.hosted-apps.validator.imagePullSecrets | list | `[]` | Image pull secrets for the validator pod. Defaults to the top-level imagePullSecrets |
+| features.tools.hosted-apps.validator.livenessProbe | object | `{"httpGet":{"path":"/livez","port":"http"},"initialDelaySeconds":10,"periodSeconds":30,"timeoutSeconds":5}` | Liveness probe for the validator container |
+| features.tools.hosted-apps.validator.nodeSelector | object | `{}` | Node selector for the validator pod |
+| features.tools.hosted-apps.validator.podSecurityContext | object | `{"seccompProfile":{"type":"RuntimeDefault"}}` | Pod security context for the validator pod |
+| features.tools.hosted-apps.validator.priorityClassName | string | `""` | Priority class for the validator pod |
+| features.tools.hosted-apps.validator.readinessProbe | object | `{"httpGet":{"path":"/livez","port":"http"},"periodSeconds":10}` | Readiness probe for the validator container |
+| features.tools.hosted-apps.validator.resources | object | `{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"250m","memory":"512Mi"}}` | Resources for the validator container |
+| features.tools.hosted-apps.validator.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsGroup":65532,"runAsNonRoot":true,"runAsUser":65532}` | Security context for the validator container |
+| features.tools.hosted-apps.validator.tolerations | list | `[]` | Tolerations for the validator pod |
+| features.tools.hosted-apps.validator.volumeMounts | list | `[{"mountPath":"/work","name":"work"}]` | Extra volume mounts for the validator container |
+| features.tools.hosted-apps.validator.volumes | list | `[{"emptyDir":{"sizeLimit":"2Gi"},"name":"work"}]` | Extra volumes for the validator pod |
 | fullnameOverride | string | `""` |  |
 | hostAliases | list | `[]` | Mapping between IP and hostnames that will be injected as entries in the pod's hosts files |
 | hpa.enabled | bool | `false` | Enable the HorizontalPodAutoscaler for the codemie-api rollout/deployment |

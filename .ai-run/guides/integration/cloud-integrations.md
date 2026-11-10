@@ -20,4 +20,6 @@ Use repository implementations for file storage behavior.
 | Service-level branches for S3/Azure/GCP file operations | `AWSFileRepository`, `AzureFileRepository`, or `GCPFileRepository` |
 | Duplicated storage config parsing | Existing repository factory/config pattern |
 
+Exception (hosted applications): the hosted adapter reuses only the client setup of `aws_file_repository.py` and `gcp_file_repository.py` (credentials and region from the files-storage settings). It does not use the `FileRepository` classes or their bucket layout. It uses its own dedicated bucket, `HOSTED_APPS_STORAGE_BUCKET`, and never creates buckets.
+
 Evidence: storage repositories exist under `src/codemie/repository/aws_file_repository.py`, `azure_file_repository.py`, and `gcp_file_repository.py`.

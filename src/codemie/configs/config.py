@@ -94,6 +94,31 @@ class Config(BaseSettings):
     PG_POOL_SIZE: int = 10
     DEFAULT_DB_SCHEMA: str = "codemie"
 
+    # Hosted applications (EPMCDME-16001): static web apps that users upload and open from a separate
+    # content domain. The customer-config feature `features:hostedApplications` turns them on; these
+    # settings describe the deployment (hosted-applications/README.md).
+    # Wildcard content domain on its own registrable domain, e.g. "apps-content.example.net".
+    # Local development uses "apps.localhost:<backend port>" with ENV=local.
+    HOSTED_APPS_CONTENT_DOMAIN: str = ""
+    # At least 32 random characters. Signs launch tickets, viewing sessions and page cursors.
+    HOSTED_APPS_CREDENTIAL_SECRET: str = ""
+    # Absolute path of the volume shared by all API replicas, outside FILES_STORAGE_DIR.
+    HOSTED_APPS_STORAGE_DIR: str = ""
+    # Dedicated bucket for hosted applications when FILES_STORAGE_TYPE is aws or gcp.
+    HOSTED_APPS_STORAGE_BUCKET: str = ""
+    # S3 only: seconds S3 cleanup waits after a writer's lease ends, to cover clock skew between the
+    # database, the pods and S3. Startup refuses S3 when the measured skew exceeds it.
+    HOSTED_APPS_STORAGE_S3_GRACE_SECONDS: int = 30
+    # Seconds between reconciliation sweeps that delete old orphaned objects from the hosted bucket.
+    HOSTED_APPS_STORAGE_SWEEP_SECONDS: int = 3600
+    # Longest time one sweep run spends walking the bucket before it saves its place and stops.
+    HOSTED_APPS_STORAGE_SWEEP_BUDGET_SECONDS: int = 20
+    # The private validator service (loopback in local development) and its key (at least 32 characters).
+    HOSTED_APPS_VALIDATOR_URL: str = "http://127.0.0.1:8091"
+    HOSTED_APPS_VALIDATOR_KEY: str = ""
+    # Storage per owner: every retained version, covers and uploads in progress.
+    HOSTED_APPS_QUOTA_BYTES: int = Field(default=2147483648, ge=1048576)
+
     # Database batch operation limits
     # PostgreSQL has two relevant limits:
     # 1. Parameter limit: 32,767-65,535 parameters per query (varies by server config)

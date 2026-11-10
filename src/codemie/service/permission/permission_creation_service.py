@@ -20,6 +20,7 @@ from codemie.core.ability import Ability, Action
 from codemie.rest_api.models.permission import Permission, PermissionCreateRequest, ResourceType, PrincipalType
 from codemie.rest_api.security.user import User
 from codemie.configs.authorized_apps_config import authorized_applications_config
+from .named_grant_types import is_named_grant
 from .permission_exceptions import PermissionAccessDenied, PermissionResourceNotFound, PermissionPrincipalNotFound
 from .permission_base_service import PermissionBaseService
 
@@ -29,8 +30,10 @@ class PermissionCreationService(PermissionBaseService):
 
     @classmethod
     def run(cls, request: PermissionCreateRequest, user: User) -> tuple[Permission, str]:
-        if request.resource_type == ResourceType.ASSISTANT:
-            # Assistant grants go through AssistantShareService so they are audited and validated.
+        if is_named_grant(request.resource_type, request.principal_type):
+            # Named grants are made through the type's own API, never through this generic endpoint.
+            raise PermissionAccessDenied
+        if request.resource_type not in ResourceType._lookup:
             raise PermissionAccessDenied
         try:
             cls._check_ability(resource_id=request.resource_id, resource_type=request.resource_type, user=user)

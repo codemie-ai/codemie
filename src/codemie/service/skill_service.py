@@ -1230,7 +1230,7 @@ description: {skill.description}
         if not assistants:
             return []
 
-        # Filter by user's read access using Ability framework
+        # Filter by user's read access using Ability framework (it loads the user's named grants once if needed)
         ability = Ability(user)
         accessible_assistants = [
             AssistantListResponse(

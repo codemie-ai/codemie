@@ -652,6 +652,7 @@ class GuardrailService:
             list(entity_ids_to_load[GuardrailEntity.ASSISTANT])
         )  # type: ignore
 
+        ability = Ability(user)
         for assistant in assistants:
             entity_details[GuardrailEntity.ASSISTANT][assistant.id] = (
                 {
@@ -659,7 +660,7 @@ class GuardrailService:
                     "name": assistant.name,
                     "icon_url": assistant.icon_url,
                 }
-                if Ability(user).can(Action.READ, assistant)
+                if ability.can(Action.READ, assistant)
                 else {}
             )
 

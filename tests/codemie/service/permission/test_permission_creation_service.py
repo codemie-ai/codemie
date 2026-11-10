@@ -24,6 +24,7 @@ from codemie.service.permission.permission_creation_service import PermissionCre
 
 
 def test_generic_create_rejects_assistant_resources():
+    """ASSISTANT is a named-grant type, so the generic create refuses it like any other."""
     request = PermissionCreateRequest(
         resource_id="asst-1",
         resource_type=ResourceType.ASSISTANT,

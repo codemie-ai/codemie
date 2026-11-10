@@ -2,6 +2,13 @@
 venv
 .mypy_cache
 .vscode
+.idea
+.claude
+.ai-run
+.sonarlint
+tests/
+docs/
+scripts/
 .env.*
 # .env.example is a tracked, secret-free template, not a real env file. Dockerfile.test
 # copies it so tests/codemie/configs/test_env_example.py can assert against it.
@@ -10,12 +17,26 @@ venv
 notebooks
 utils
 build
+
+# Local history, runtime data and QA artifacts must never enter a build context.
 .git
-__pycache__
-.pytest_cache
+local/
 .env
+.keys
+.aws
+.codemie-storage
+codemie-storage
+codemie-repos
+output
+.pytest_cache
+.ruff_cache
+__pycache__
+*.py[cod]
+htmlcov
+.coverage*
+coverage
+dist
 credentials.json
 google_credentials.json
-.idea
 node_modules
 standalone-build/

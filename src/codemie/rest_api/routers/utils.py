@@ -119,6 +119,7 @@ def check_user_can_access_assistant(user: User, assistant: Assistant, action_nam
     """
     Checks if a user has permission to perform an action on an assistant
     """
+    # A named grant (READ only) is read by Ability itself when no other role admits the user.
     if not Ability(user).can(action_type, assistant):
         raise_access_denied(action_name)
 

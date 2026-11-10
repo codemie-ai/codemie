@@ -62,6 +62,20 @@ class ActivityEventRepository(ABC):
         """Persist a new event within the caller's async transaction."""
 
     @abstractmethod
+    async def async_insert_strict(self, event: ActivityEventCreate, session: AsyncSession) -> ActivityEvent | None:
+        """Async twin of insert_strict(); unlike async_insert(), propagates failures."""
+
+    @abstractmethod
+    def insert_many_strict(self, events: list[ActivityEventCreate], session: Session) -> list[ActivityEvent]:
+        """Persist several events in the caller's transaction with a single flush; propagates failures."""
+
+    @abstractmethod
+    async def async_insert_many_strict(
+        self, events: list[ActivityEventCreate], session: AsyncSession
+    ) -> list[ActivityEvent]:
+        """Async twin of insert_many_strict()."""
+
+    @abstractmethod
     def find_by_entity(
         self,
         entity_type: str,
@@ -185,6 +199,32 @@ class SQLActivityEventRepository(ActivityEventRepository):
                 f"[activity_events] async_insert failed domain={event.domain!r} event_type={event.event_type!r}: {exc}"
             )
             return None
+
+    async def async_insert_strict(self, event: ActivityEventCreate, session: AsyncSession) -> ActivityEvent | None:
+        if not config.ACTIVITY_EVENTS_ENABLED:
+            return None
+        row = ActivityEvent(**event.model_dump())
+        session.add(row)
+        await session.flush()
+        return row
+
+    def insert_many_strict(self, events: list[ActivityEventCreate], session: Session) -> list[ActivityEvent]:
+        if not config.ACTIVITY_EVENTS_ENABLED or not events:
+            return []
+        rows = [ActivityEvent(**event.model_dump()) for event in events]
+        session.add_all(rows)
+        session.flush()
+        return rows
+
+    async def async_insert_many_strict(
+        self, events: list[ActivityEventCreate], session: AsyncSession
+    ) -> list[ActivityEvent]:
+        if not config.ACTIVITY_EVENTS_ENABLED or not events:
+            return []
+        rows = [ActivityEvent(**event.model_dump()) for event in events]
+        session.add_all(rows)
+        await session.flush()
+        return rows
 
     def find_by_entity(
         self,

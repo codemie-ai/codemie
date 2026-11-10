@@ -128,47 +128,10 @@ def _make_assistant(project="proj", shared=False, is_global=False):
     )
 
 
-def test_is_shared_with_per_user_grant():
-    assistant = _make_assistant(project="proj", shared=False)
-    user = MagicMock()
-    user.is_external_user = False
-    user.project_names = []
-    user.admin_project_names = []
-    user.id = "user-1"
+def _grants(*assistant_ids):
+    from codemie.core.ability import PreloadedGrants
 
-    with patch("codemie.rest_api.models.assistant.Session") as mock_session_cls:
-        session = mock_session_cls.return_value.__enter__.return_value
-        session.exec.return_value.first.return_value = "asst-1"
-        assert assistant.is_shared_with(user) is True
-    sql = str(session.exec.call_args[0][0]).lower()
-    assert "permissions" in sql and "principal_id" in sql
-
-
-def test_is_shared_with_no_grant_returns_false():
-    assistant = _make_assistant(project="proj", shared=False)
-    user = MagicMock()
-    user.is_external_user = False
-    user.project_names = []
-    user.admin_project_names = []
-    user.id = "user-1"
-
-    with patch("codemie.rest_api.models.assistant.Session") as mock_session_cls:
-        mock_session_cls.return_value.__enter__.return_value.exec.return_value.first.return_value = None
-        assert assistant.is_shared_with(user) is False
-
-
-def test_is_shared_with_project_shared_still_works():
-    assistant = _make_assistant(project="proj", shared=True)
-    user = MagicMock()
-    user.is_external_user = False
-    user.project_names = ["proj"]
-    user.id = "user-1"
-
-    # Should NOT need to query Permission at all
-    with patch("codemie.rest_api.models.assistant.Session") as mock_get:
-        result = assistant.is_shared_with(user)
-    mock_get.assert_not_called()
-    assert result is True
+    return PreloadedGrants("Assistant", {assistant_id: Action.READ for assistant_id in assistant_ids})
 
 
 def _grant_user(external=False):
@@ -181,68 +144,117 @@ def _grant_user(external=False):
     return user
 
 
-@pytest.fixture(autouse=True)
-def _user_management_enabled(monkeypatch):
+def test_is_granted_to_reads_the_preloaded_grant():
+    assistant = _make_assistant(project="proj", shared=False)
+    assert assistant.is_granted_to(_grant_user(), Action.READ, _grants("asst-1")) is True
+    assert assistant.is_granted_to(_grant_user(), Action.READ, _grants("other")) is False
+    assert assistant.is_granted_to(_grant_user(), Action.WRITE, _grants("asst-1")) is False
+
+
+def test_is_shared_with_has_no_grant_term():
+    import inspect
+
+    from codemie.rest_api.models.assistant import Assistant
+
+    assert "grants" not in inspect.signature(Assistant.is_shared_with).parameters
+
+
+def test_assistant_read_registers_granted_and_write_delete_do_not():
+    from codemie.core.ability import Role
+
+    roles = Ability.PERMISSIONS["Assistant"]
+    assert Role.GRANTED in roles[Action.READ]
+    assert Role.GRANTED not in roles[Action.WRITE] and Role.GRANTED not in roles[Action.DELETE]
+
+
+def test_can_passes_the_action_to_the_granted_role():
+    from codemie.core.ability import PreloadedGrants
+
+    assistant = _make_assistant(project="proj", shared=False)
+    calls = []
+    original = type(assistant).is_granted_to
+
+    def spy(self, user, action, grants):
+        calls.append(action)
+        return original(self, user, action, grants)
+
+    with patch.object(type(assistant), "is_granted_to", spy):
+        assert Ability(_grant_user(), grants=PreloadedGrants("Assistant", {"asst-1": Action.READ})).can(
+            Action.READ, assistant
+        )
+    assert calls == [Action.READ]
+
+
+def test_is_shared_with_fails_closed_without_a_preload(monkeypatch):
+    """No preload means no grant: the assistant does no per-object lookup (shared named-grant rule)."""
     monkeypatch.setattr("codemie.rest_api.models.permission.config.ENABLE_USER_MANAGEMENT", True)
-
-
-def test_named_grant_resource_ids_none_when_user_management_disabled(monkeypatch):
-    from codemie.rest_api.models.permission import Permission
-
-    monkeypatch.setattr("codemie.rest_api.models.permission.config.ENABLE_USER_MANAGEMENT", False)
-    assert Permission.named_grant_resource_ids(_grant_user()) is None
-
-
-def test_is_shared_with_ignores_grants_when_user_management_disabled(monkeypatch):
-    monkeypatch.setattr("codemie.rest_api.models.permission.config.ENABLE_USER_MANAGEMENT", False)
     assistant = _make_assistant(project="proj", shared=False)
-    with patch("codemie.rest_api.models.assistant.Session") as mock_session_cls:
+    with (
+        patch("codemie.rest_api.models.assistant.Session") as assistant_session,
+        patch("codemie.rest_api.models.permission.Session") as permission_session,
+    ):
         assert assistant.is_shared_with(_grant_user()) is False
-    mock_session_cls.assert_not_called()
+    assistant_session.assert_not_called()
+    permission_session.assert_not_called()
 
 
-def test_named_grant_resource_ids_none_for_external_user():
-    from codemie.rest_api.models.permission import Permission
-
-    assert Permission.named_grant_resource_ids(_grant_user(external=True)) is None
-
-
-def test_named_grant_resource_ids_for_internal_user():
-    from codemie.rest_api.models.permission import Permission
-
-    sql = str(Permission.named_grant_resource_ids(_grant_user())).lower()
-    assert "cast(permissions.resource_id as text)" in sql
-    assert "principal_id" in sql and "resource_type" in sql
-
-
-def test_is_shared_with_external_user_with_grant_returns_false():
-    assistant = _make_assistant(project="proj", shared=False)
-    with patch("codemie.rest_api.models.assistant.Session") as mock_session_cls:
-        mock_session_cls.return_value.__enter__.return_value.exec.return_value.first.return_value = "asst-1"
-        assert assistant.is_shared_with(_grant_user(external=True)) is False
-    mock_session_cls.assert_not_called()
+def test_is_shared_with_project_shared_still_works():
+    assistant = _make_assistant(project="proj", shared=True)
+    user = _grant_user()
+    user.project_names = ["proj"]
+    assert assistant.is_shared_with(user) is True
 
 
 def test_is_shared_with_external_user_with_preloaded_grant_returns_false():
     assistant = _make_assistant(project="proj", shared=False)
-    assert assistant.is_shared_with(_grant_user(external=True), granted_ids={"asst-1"}) is False
+    assert assistant.is_granted_to(_grant_user(external=True), Action.READ, _grants("asst-1")) is False
+    assert Ability(_grant_user(external=True), grants=_grants("asst-1")).list(assistant) == []
 
 
-def test_is_shared_with_uses_granted_ids_without_db():
+def test_ability_with_preloaded_assistant_grants_lists_read_only():
     assistant = _make_assistant(project="proj", shared=False)
-    with patch("codemie.rest_api.models.assistant.Session") as mock_session_cls:
-        assert assistant.is_shared_with(_grant_user(), granted_ids={"asst-1"}) is True
-        assert assistant.is_shared_with(_grant_user(), granted_ids=set()) is False
-    mock_session_cls.assert_not_called()
-
-
-def test_ability_with_granted_ids_lists_read_without_db():
-    assistant = _make_assistant(project="proj", shared=False)
-    with patch("codemie.rest_api.models.assistant.Session") as mock_session_cls:
-        abilities = Ability(_grant_user(), granted_ids={"asst-1"}).list(assistant)
-    mock_session_cls.assert_not_called()
+    abilities = Ability(_grant_user(), grants=_grants("asst-1")).list(assistant)
     assert Action.READ in abilities
     assert Action.WRITE not in abilities
+
+
+def test_ability_without_a_grant_row_gives_a_grantee_nothing():
+    from codemie.core.ability import PreloadedGrants
+
+    assistant = _make_assistant(project="proj", shared=False)
+    with patch("codemie.core.ability.load_class_grants", return_value=PreloadedGrants("Assistant", {})) as load:
+        assert Ability(_grant_user()).list(assistant) == []
+    load.assert_called_once()
+
+
+def test_ability_loads_its_own_grants_for_a_class_it_was_not_given():
+    from codemie.core.ability import PreloadedGrants
+
+    assistant = _make_assistant(project="proj", shared=False)
+    hosted = PreloadedGrants("HostedApplications", {"asst-1": Action.READ})
+    with patch("codemie.core.ability.load_class_grants", return_value=_grants("asst-1")) as load:
+        assert Ability(_grant_user(), grants=hosted).list(assistant) == [Action.READ]
+    assert load.call_args.args[1] == "Assistant"
+
+
+def test_granted_is_the_last_role_so_other_roles_never_load_grants():
+    from codemie.core.ability import Role
+
+    for permissions in Ability.PERMISSIONS.values():
+        for roles in permissions.values():
+            assert Role.GRANTED not in roles or roles[-1] is Role.GRANTED
+
+
+def test_a_class_without_named_grants_has_no_grant_source():
+    from codemie.service.permission.named_grant_service import load_class_grants
+
+    assert load_class_grants(_grant_user(), "WorkflowConfig") is None
+
+
+def test_ability_has_one_grant_keyword():
+    import inspect
+
+    assert list(inspect.signature(Ability.__init__).parameters) == ["self", "user", "grants"]
 
 
 def test_is_shared_with_global_assistant_without_id_still_true():
@@ -254,22 +266,4 @@ def test_is_shared_with_global_assistant_without_id_still_true():
 def test_is_shared_with_unsaved_assistant_has_no_grant():
     assistant = _make_assistant(project="proj", shared=False)
     assistant.id = None
-    with patch("codemie.rest_api.models.assistant.Session") as mock_session_cls:
-        assert assistant.is_shared_with(_grant_user()) is False
-    mock_session_cls.assert_not_called()
-
-
-def test_named_grant_predicate_binds_caller_assistant_and_user_principal():
-    from sqlalchemy.dialects import postgresql
-
-    from codemie.rest_api.models.permission import Permission, PrincipalType, ResourceType
-
-    compiled = Permission.named_grant_resource_ids(_grant_user()).compile(dialect=postgresql.dialect())
-    sql = str(compiled).lower()
-    assert "permissions.resource_type = %(resource_type_1)s" in sql
-    assert "permissions.principal_type = %(principal_type_1)s" in sql
-    assert "permissions.principal_id = %(principal_id_1)s" in sql
-    params = compiled.params
-    assert params["principal_id_1"] == "user-1"
-    assert params["resource_type_1"] in (ResourceType.ASSISTANT, ResourceType.ASSISTANT.name)
-    assert params["principal_type_1"] in (PrincipalType.USER, PrincipalType.USER.name)
+    assert assistant.is_granted_to(_grant_user(), Action.READ, _grants("asst-1")) is False

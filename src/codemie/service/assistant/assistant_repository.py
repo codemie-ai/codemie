@@ -17,7 +17,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Text, cast, false
+from sqlalchemy import false
 from sqlalchemy.sql.selectable import Select
 from sqlmodel import select, or_, and_, Session, func, case
 
@@ -207,16 +207,8 @@ class AssistantRepository:
             # Execute query
             assistants = session.exec(query).all()
 
-            # Preload the page's named grants in one query instead of one lookup per row
-            from codemie.rest_api.models.permission import Permission
-
-            grant_query = Permission.named_grant_resource_ids(user)
-            page_ids = [item.id for item in assistants]
-            granted_ids = (
-                set(session.exec(grant_query.where(cast(Permission.resource_id, Text).in_(page_ids))).scalars().all())
-                if grant_query is not None and page_ids
-                else set()
-            )
+            # One Ability for the page: it reads the user's named grants once, not once per row
+            ability = Ability(user)
 
         pages = math.ceil(total / per_page)
 
@@ -224,7 +216,7 @@ class AssistantRepository:
 
         # Add user abilities to each result
         for item in assistants:
-            item.user_abilities = Ability(user, granted_ids=granted_ids).list(item)
+            item.user_abilities = ability.list(item)
 
         # Convert to response model if needed
         response_wrapper = AssistantListResponse if minimal_response else Assistant
@@ -589,10 +581,15 @@ class AssistantRepository:
 
     @staticmethod
     def _per_user_grant_condition(user: User):
-        from codemie.rest_api.models.permission import Permission
+        """Assistants live-granted to the user by name (the shared ``live_grants`` rule, ids compared as text)."""
+        from sqlalchemy import literal
 
-        grant_query = Permission.named_grant_resource_ids(user)
-        return false() if grant_query is None else Assistant.id.in_(grant_query)
+        from codemie.rest_api.models.permission import ResourceType
+        from codemie.service.permission.named_grant_service import granted_ids_statement
+
+        if user.is_external_user:
+            return false()
+        return Assistant.id.in_(granted_ids_statement(ResourceType.ASSISTANT, literal(user.id)))
 
     def _apply_custom_filters(self, query, user: User, scope: AssistantScope, filters: Dict[str, Any]):
         personal_grant = (

@@ -1336,13 +1336,43 @@ async def lifespan(app: FastAPI):
     # CLI Analytics storage: PostgreSQL prepares its schema and runs rollup/partition jobs.
     app.state.cli_analytics_jobs = await start_cli_analytics_runtime()
 
+    await _start_hosted_applications(app)
+
     # Last, so the blocking startup work above is not reported as event-loop lag (EPMCDME-15537).
     _schedule_event_loop_lag_monitor(tasks)
 
     yield
 
     # Cleanup on shutdown
+    await _stop_hosted_applications(app)
     await _shutdown_services(app, tasks)
+
+
+async def _stop_hosted_applications(app: FastAPI) -> None:
+    if getattr(app.state, "hosted_applications", None):
+        await app.state.hosted_applications.close()
+
+
+async def _start_hosted_applications(app: FastAPI) -> None:
+    """Hosted applications never block platform startup: a failure is logged and leaves the feature closed."""
+    from codemie.core.hosted_applications.settings import log_disabled_reason
+    from codemie.service.hosted_applications.runtime import HostedApplicationsRuntime
+
+    app.state.hosted_applications = None
+    hosted = None
+    try:
+        hosted = HostedApplicationsRuntime(config)
+        log_disabled_reason(hosted.settings)
+        await hosted.start()
+    except Exception as exc:
+        logger.error(f"Hosted applications failed to start and stay unavailable: {type(exc).__name__}", exc_info=True)
+        if hosted is not None:
+            try:
+                await hosted.close()
+            except Exception as close_error:
+                logger.warning(f"Hosted applications cleanup after a failed start: {type(close_error).__name__}")
+        return
+    app.state.hosted_applications = hosted
 
 
 def custom_openapi():
@@ -1489,6 +1519,9 @@ app.include_router(skill_events.router)
 app.include_router(skill.router)
 app.include_router(export.router)
 app.include_router(dynamic_config.router)
+from codemie.rest_api.routers import hosted_applications  # noqa: E402
+
+app.include_router(hosted_applications.router)
 app.include_router(schedulers.router)
 if is_litellm_enabled() and config.LLM_PROXY_BUDGET_CHECK_ENABLED:
     app.include_router(budget_router.router)
@@ -1816,13 +1849,19 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
+from codemie.hosted_apps_gateway.management import HostedManagementBodyBoundary  # noqa: E402
+
+# Bounds hosted JSON mutation bodies. Registered just before CORS so it runs inside CORSMiddleware and its
+# 408/413 refusals carry the same CORS headers as every other management response.
+app.add_middleware(HostedManagementBodyBoundary)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=WEBAPP_CORS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
+    expose_headers=["Content-Disposition", "ETag", "Retry-After"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -1862,6 +1901,26 @@ if config.PYROSCOPE_ENABLED:
 
     app.middleware("http")(pyroscope_endpoint_tagging_middleware)
     configure_pyroscope()
+
+
+from codemie.core.hosted_applications.errors import HostedApplicationError  # noqa: E402
+
+
+@app.exception_handler(HostedApplicationError)
+async def hosted_application_failure(request: Request, exc: HostedApplicationError):
+    """Bounded public hosted error; 5xx are logged with code, route and exc_info, never bodies or credentials."""
+    from codemie.hosted_apps_gateway.management import hosted_error_response
+
+    return hosted_error_response(request, exc)
+
+
+# Host dispatch wraps the whole application: the content namespace reaches only the closed content tree,
+# every other Host (including probes and in-cluster callers) reaches this management application.
+if config.HOSTED_APPS_CONTENT_DOMAIN:
+    from codemie.core.hosted_applications.settings import HostedSettings
+    from codemie.hosted_apps_gateway.dispatch import protect_content_hosts
+
+    app = protect_content_hosts(app, HostedSettings.from_config(config))
 
 
 if __name__ == '__main__':

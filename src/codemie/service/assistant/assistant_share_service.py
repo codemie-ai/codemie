@@ -12,93 +12,49 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Assistant sharing with named users, on the shared named-grant module (``named_grant_service``).
+
+The rules are the shared ones: eligible grantees only, the live grant rule, preloaded grants (fail closed without a
+preload), audited removal through the generic permissions API by ``grant_remover``. What stays assistant-specific is
+here and in the ``ASSISTANT`` descriptor: the personal-integration refusal and the REST response shapes.
+"""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from uuid import uuid4
 
-from sqlalchemy import Text, cast, delete, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import Text, cast, select
 from sqlmodel import Session
 
 from codemie.configs import config
-from codemie.core.ability import Action
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.core.models import CreatedByUser
-from codemie.repository.user_repository import UserRepository
 from codemie.rest_api.models.assistant import Assistant, AssistantConfiguration, AssistantRequest
 from codemie.rest_api.models.base import BaseModelWithSQLSupport
-from codemie.rest_api.models.permission import Permission, PrincipalType, ResourceType
+from codemie.rest_api.models.permission import Permission, ResourceType
 from codemie.rest_api.models.settings import Settings, SettingType
 from codemie.rest_api.security.user import User
-from codemie.service.activity.activity_models import (
-    ActivityDomain,
-    ActivityEntityType,
-    ActivityEventCreate,
-    AssistantEvent,
-)
-from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.service.permission import named_grant_service
+from codemie.service.permission.named_grant_types import descriptor_for
 
-SEARCH_RESULT_LIMIT = 20
-_DELETED_COLUMNS = (Permission.principal_type, Permission.principal_id, Permission.permission_level)
-
-
-def _enum_value(value):
-    return getattr(value, "value", value)
-
-
-def _enum_name(value):
-    return getattr(value, "name", value)
+SEARCH_RESULT_LIMIT = named_grant_service.SEARCH_RESULT_LIMIT
+RESOURCE_TYPE = ResourceType.ASSISTANT
 
 
 class AssistantShareService:
-    """Grant and revoke per-user READ access to an assistant."""
+    """Grant and revoke per-user READ access to an assistant through the shared named-grant module."""
 
     @classmethod
     def grant(cls, owner: User, assistant: Assistant, user_ids: list[str]) -> list[dict[str, str | None]]:
         cls._require_owner(owner, assistant)
-        user_ids = list(dict.fromkeys(user_ids))
-        if cls.assistant_uses_personal_integration(assistant):
-            raise ExtendedHTTPException(
-                code=400,
-                message="Assistant uses a personal integration and cannot be shared with users. "
-                "Replace personal integrations with project integrations before sharing.",
-            )
-        repo = UserRepository()
         with Session(BaseModelWithSQLSupport.get_engine()) as session:
-            for uid in user_ids:
-                db_user = repo.get_by_id(session, uid)
-                if not db_user:
-                    raise ExtendedHTTPException(
-                        code=404,
-                        message=f"User {uid} not found",
-                    )
-                if db_user.user_type == config.EXTERNAL_USER_TYPE or not db_user.is_active or db_user.deleted_at:
-                    raise ExtendedHTTPException(
-                        code=400,
-                        message=f"User {uid} is not a sharable internal user",
-                    )
-            now = datetime.now()
-            for uid in user_ids:
-                stmt = (
-                    insert(Permission)
-                    .values(
-                        id=str(uuid4()),
-                        date=now,
-                        update_date=now,
-                        resource_type=ResourceType.ASSISTANT,
-                        resource_id=assistant.id,
-                        principal_type=PrincipalType.USER,
-                        principal_id=uid,
-                        permission_level=Action.READ,
-                        created_by=CreatedByUser(id=owner.id, username=owner.username, name=owner.name),
-                    )
-                    .on_conflict_do_nothing(constraint="unique_resource_principal")
-                    .returning(Permission.id)
-                )
-                # No row returned means the grant already existed (repeat or concurrent request).
-                if session.execute(stmt).scalar_one_or_none() is not None:
-                    cls._audit(session, owner, assistant.id, assistant.project, uid, None, Action.READ)
+            locked = cls._locked(session, assistant.id)
+            named_grant_service.grant(
+                session,
+                resource_type=RESOURCE_TYPE,
+                resource=locked,
+                owner=owner,
+                project=locked.project,
+                user_ids=user_ids,
+            )
             session.commit()
         return cls.list_shared_with(assistant.id)
 
@@ -106,52 +62,33 @@ class AssistantShareService:
     def revoke(cls, owner: User, assistant: Assistant, user_ids: list[str]) -> list[dict[str, str | None]]:
         cls._require_owner(owner, assistant)
         with Session(BaseModelWithSQLSupport.get_engine()) as session:
-            for uid in dict.fromkeys(user_ids):
-                stmt = (
-                    delete(Permission)
-                    .where(
-                        Permission.resource_type == ResourceType.ASSISTANT,
-                        Permission.resource_id == assistant.id,
-                        Permission.principal_type == PrincipalType.USER,
-                        Permission.principal_id == uid,
-                    )
-                    .returning(*_DELETED_COLUMNS)
-                )
-                cls._audit_deleted(session, owner, assistant.id, assistant.project, session.execute(stmt).first())
+            locked = cls._locked(session, assistant.id)
+            named_grant_service.revoke(
+                session,
+                resource_type=RESOURCE_TYPE,
+                resource=locked,
+                owner=owner,
+                project=locked.project,
+                user_ids=user_ids,
+            )
             session.commit()
         return cls.list_shared_with(assistant.id)
-
-    @classmethod
-    def revoke_permission(cls, actor: User, permission: Permission) -> None:
-        """Delete one ASSISTANT permission row with audit. The caller authorizes."""
-        assistant = Assistant.find_by_id(str(permission.resource_id))
-        project = assistant.project if assistant else None
-        with Session(BaseModelWithSQLSupport.get_engine()) as session:
-            stmt = delete(Permission).where(Permission.id == permission.id).returning(*_DELETED_COLUMNS)
-            cls._audit_deleted(session, actor, str(permission.resource_id), project, session.execute(stmt).first())
-            session.commit()
 
     @classmethod
     def remove_all_grants(
         cls, actor: User | None, assistant_id: str, project: str | None = None, session: Session | None = None
     ) -> None:
-        """Delete every live grant on an assistant (e.g. on assistant delete), one audit event per row.
+        """Delete every grant on an assistant (e.g. on assistant delete), one audit event per row.
 
         actor None means a system-initiated delete: recorded with actor_id None and username "system".
         With a caller-supplied session nothing is committed here; the caller owns the transaction.
         """
         if session is None:
             with Session(BaseModelWithSQLSupport.get_engine()) as own_session:
-                cls.remove_all_grants(actor, assistant_id, project, own_session)
+                named_grant_service.remove_all_grants(actor, RESOURCE_TYPE, assistant_id, project, own_session)
                 own_session.commit()
             return
-        stmt = (
-            delete(Permission)
-            .where(Permission.resource_type == ResourceType.ASSISTANT, Permission.resource_id == assistant_id)
-            .returning(*_DELETED_COLUMNS)
-        )
-        for row in session.execute(stmt).all():
-            cls._audit_deleted(session, actor, assistant_id, project, row)
+        named_grant_service.remove_all_grants(actor, RESOURCE_TYPE, assistant_id, project, session)
 
     @classmethod
     def has_named_grants(cls, assistant_id: str) -> bool:
@@ -223,110 +160,30 @@ class AssistantShareService:
         return await cls.search_sharable_users(query)
 
     @classmethod
-    def _audit_deleted(cls, session: Session, actor: User, assistant_id: str, project, row) -> None:
-        if row is not None:
-            cls._audit(
-                session,
-                actor,
-                assistant_id,
-                project,
-                row.principal_id,
-                row.permission_level,
-                None,
-                principal_type=row.principal_type,
-            )
-
-    @staticmethod
-    def _audit(
-        session: Session,
-        actor: User,
-        assistant_id: str,
-        project,
-        principal_id: str,
-        before,
-        after,
-        principal_type=PrincipalType.USER,
-    ) -> None:
-        activity_event_repository.insert_strict(
-            ActivityEventCreate(
-                domain=ActivityDomain.ASSISTANT,
-                event_type=AssistantEvent.GRANT_ADDED if after is not None else AssistantEvent.GRANT_REMOVED,
-                entity_type=ActivityEntityType.ASSISTANT,
-                entity_id=str(assistant_id),
-                actor_id=actor.id if actor else None,
-                attributes={
-                    "actor_id": actor.id if actor else None,
-                    "actor_username": actor.username if actor else "system",
-                    "principal_type": _enum_name(principal_type),
-                    "principal_id": principal_id,
-                    "assistant_id": str(assistant_id),
-                    "project": project,
-                    "before": _enum_value(before),
-                    "after": _enum_value(after),
-                    "occurred_at": datetime.now(timezone.utc).isoformat(),
-                },
-            ),
-            session,
-        )
-
-    @classmethod
     def list_shared_with(cls, assistant_id: str) -> list[dict[str, str | None]]:
-        perms = Permission.get_all_by_fields(
-            {
-                "resource_type": ResourceType.ASSISTANT,
-                "resource_id": assistant_id,
-                "principal_type": PrincipalType.USER,
-            },
-            order_by="date",
-        )
-        repo = UserRepository()
-        result = []
         with Session(BaseModelWithSQLSupport.get_engine()) as session:
-            for perm in perms:
-                db_user = repo.get_by_id(session, perm.principal_id)
-                if db_user:
-                    result.append(
-                        {
-                            "id": db_user.id,
-                            "username": db_user.username,
-                            "email": db_user.email,
-                            "name": db_user.name,
-                            "picture": getattr(db_user, "picture", None),
-                        }
-                    )
-                else:
-                    # Orphan grant (user gone): listed so the owner can revoke it; has_named_grants counts it.
-                    uid = perm.principal_id
-                    result.append({"id": uid, "username": uid, "email": None, "name": None, "picture": None})
-        return sorted(result, key=lambda u: u.get("name") or u["username"])
+            return named_grant_service.list_shared_with(session, RESOURCE_TYPE, assistant_id)
 
     @classmethod
     async def search_sharable_users(cls, query: str) -> list[dict[str, str | None]]:
         from codemie.clients.postgres import get_async_session
-        from codemie.repository.user_repository import user_repository as _user_repo
 
         async with get_async_session() as session:
-            users = await _user_repo.aquery_active_users(
-                session,
-                search=query or None,
-                exclude_user_type=config.EXTERNAL_USER_TYPE,
-            )
-        # ponytail: repository has no limit arg, so the cap is applied after the query; add LIMIT if lists grow large.
-        return [
-            {
-                "id": u.id,
-                "username": u.username,
-                "email": u.email,
-                "name": u.name,
-                "picture": getattr(u, "picture", None),
-            }
-            for u in users[:SEARCH_RESULT_LIMIT]
-        ]
+            return await named_grant_service.search_sharable_users(session, RESOURCE_TYPE, query)
+
+    # ---- helpers ----------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def _locked(session: Session, assistant_id: str) -> Assistant:
+        """The assistant row locked for the grant change; a concurrently deleted one is 404."""
+        statement = select(Assistant).where(Assistant.id == assistant_id).with_for_update(key_share=True)
+        locked = session.execute(statement).scalars().first()
+        if locked is None:
+            raise ExtendedHTTPException(code=404, message="Assistant not found")
+        return locked
 
     @staticmethod
     def _require_owner(owner: User, assistant: Assistant) -> None:
-        if not assistant.is_owned_by(owner):
-            raise ExtendedHTTPException(
-                code=403,
-                message="Only the assistant owner can share or revoke access",
-            )
+        descriptor = descriptor_for(RESOURCE_TYPE)
+        if not descriptor.is_owner(assistant, owner):
+            raise ExtendedHTTPException(code=403, message=descriptor.not_owner_message)

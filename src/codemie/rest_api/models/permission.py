@@ -12,26 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime
 from uuid import UUID
-from typing import Optional, Any, Self
+from typing import Optional, Any, Callable, Self
 import sqlalchemy as sa
-from sqlalchemy.sql.selectable import Select
-from sqlmodel import Field as SQLField, Column, Index, UniqueConstraint
+from sqlmodel import Field as SQLField, Column, Index, Session, SQLModel, UniqueConstraint, select
 from enum import Enum
 from pydantic import BaseModel
 
-from codemie.core.ability import Action, Owned
+from codemie.core.ability import Action, Owned, levels_covering
 from codemie.core.models import CreatedByUser
 from codemie.rest_api.models.base import BaseModelWithSQLSupport, PydanticType
 from codemie.rest_api.security.user import User
 from codemie.rest_api.models.index import IndexInfo
 from codemie.configs import config
 from codemie.configs.logger import logger
+from codemie.rest_api.models.user_management import UserDB
 
 
 class ResourceType(str, Enum):
     DATASOURCE = "datasource"
     ASSISTANT = "assistant"
+    HOSTED_APPLICATION = "hosted_application"
 
     @property
     def resource_class(self):
@@ -50,10 +52,8 @@ class ResourceType(str, Enum):
     @classmethod
     @property
     def _lookup(cls):
-        """Type to class mapping"""
-        from codemie.rest_api.models.assistant import Assistant
-
-        return {cls.DATASOURCE: IndexInfo, cls.ASSISTANT: Assistant}
+        """Type to class mapping of APPLICATION-principal permissions; named-grant types are not here."""
+        return {cls.DATASOURCE: IndexInfo}
 
 
 class PrincipalType(str, Enum):
@@ -70,6 +70,12 @@ class Permission(BaseModelWithSQLSupport, Owned, table=True):
         Index("idx_permissions_principal", "principal_type", "principal_id"),
         UniqueConstraint(
             "resource_type", "resource_id", "principal_type", "principal_id", name="unique_resource_principal"
+        ),
+        sa.CheckConstraint(
+            "(grant_source IS NULL AND source_link_id IS NULL)"
+            " OR (grant_source = 'name' AND source_link_id IS NULL)"
+            " OR (grant_source = 'link' AND source_link_id IS NOT NULL)",
+            name="permissions_grant_source_check",
         ),
     )
 
@@ -97,6 +103,21 @@ class Permission(BaseModelWithSQLSupport, Owned, table=True):
         default=Action.READ,
         description="Permission level (READ, WRITE, DELETE)",
     )
+    grant_source: str | None = SQLField(
+        default=None,
+        sa_column=Column(sa.String(16), nullable=True),
+        description="How a named grant was made: 'name' or 'link'; null for older rows",
+    )
+    source_link_id: UUID | None = SQLField(
+        default=None,
+        sa_column=Column(
+            sa.Uuid,
+            # RESTRICT: a link row never takes its grants with it; they are removed explicitly, with audit.
+            sa.ForeignKey("share_links.id", ondelete="RESTRICT", name="permissions_source_link_id_fkey"),
+            nullable=True,
+        ),
+        description="Share link (share_links.id) a 'link' grant came from; null otherwise",
+    )
 
     created_by: Optional[CreatedByUser] = SQLField(default=None, sa_column=Column(PydanticType(CreatedByUser)))
 
@@ -110,30 +131,19 @@ class Permission(BaseModelWithSQLSupport, Owned, table=True):
         return self.created_by.id == user.id
 
     @classmethod
-    def named_grant_resource_ids(cls, user: User) -> Select | None:
-        """Select of assistant IDs (as text) named-granted to the user.
-
-        None for external users and when user management is disabled (the sharing endpoints are off then too).
-        """
-        if user.is_external_user or not config.ENABLE_USER_MANAGEMENT:
-            return None
-        return sa.select(sa.cast(cls.resource_id, sa.Text)).where(
-            cls.resource_type == ResourceType.ASSISTANT,
-            cls.principal_type == PrincipalType.USER,
-            cls.principal_id == user.id,
-        )
-
-    @classmethod
     def get_for(cls, user: User, instance: Any, action: Action) -> Optional[Self]:
-        """Get a permission for the given user and instance"""
+        """Get an APPLICATION permission for the given user and instance covering the action"""
         try:
-            return Permission.get_by_fields(
-                {
-                    "resource_id": instance.id,
-                    "resource_type": ResourceType.type_for_instance(instance),
-                    "principal_id": user.username,
-                }
+            resource_type = ResourceType.type_for_instance(instance)
+            statement = select(Permission).where(
+                Permission.resource_id == instance.id,
+                Permission.resource_type == resource_type,
+                Permission.principal_type == PrincipalType.APPLICATION,
+                Permission.principal_id == user.username,
+                Permission.permission_level.in_(levels_covering(action)),
             )
+            with Session(cls.get_engine()) as session:
+                return session.exec(statement).first()
         except ValueError:
             return None
         except Exception as e:
@@ -146,9 +156,91 @@ class Permission(BaseModelWithSQLSupport, Owned, table=True):
         return cls.get_for(user, instance, action) is not None
 
 
+class ShareLink(SQLModel, table=True):
+    """One revocable share link of a resource, for every link-sharing resource type (``SHARE_LINK_TYPES``).
+
+    Keyed like ``permissions`` (``resource_type``, ``resource_id``) and, like it, without a foreign key to the
+    resource: each type deletes its rows explicitly. At most one live link per resource; a revoked row stays as a
+    tombstone, so its token is never live again. Link grants are ``permissions`` rows whose ``source_link_id`` is
+    this id.
+    """
+
+    __tablename__ = "share_links"
+    __table_args__ = (
+        Index(
+            "uq_share_links_live",
+            "resource_type",
+            "resource_id",
+            unique=True,
+            postgresql_where=sa.text("revoked_at IS NULL"),
+        ),
+    )
+
+    id: UUID = SQLField(sa_column=Column(sa.Uuid, nullable=False, primary_key=True))
+    resource_type: ResourceType = SQLField(
+        sa_column=Column(sa.Enum(ResourceType, schema="codemie"), nullable=False),
+    )
+    resource_id: UUID = SQLField(nullable=False)
+    token: str = SQLField(sa_column=Column(sa.Text, nullable=False))
+    token_sha256: str = SQLField(sa_column=Column(sa.Text, nullable=False, unique=True))
+    created_by: CreatedByUser = SQLField(sa_column=Column(PydanticType(CreatedByUser), nullable=False))
+    created_at: datetime = SQLField(sa_column=Column(sa.DateTime(timezone=True), nullable=False))
+    revoked_at: datetime | None = SQLField(default=None, sa_column=Column(sa.DateTime(timezone=True), nullable=True))
+    revoked_by: CreatedByUser | None = SQLField(
+        default=None, sa_column=Column(PydanticType(CreatedByUser), nullable=True)
+    )
+
+
 class PermissionCreateRequest(BaseModel):
     resource_type: ResourceType
     resource_id: str
     principal_type: PrincipalType
     principal_id: str
     permission_level: Action
+
+
+def _same_key(column: Any) -> Any:
+    return column
+
+
+def live_grants(
+    resource_type: ResourceType,
+    principal_id_expr: sa.ColumnElement[Any],
+    recipient: Callable[[Any], sa.ColumnElement[bool]],
+) -> sa.Select:
+    """The only statement of a live USER grant: (resource_id, permission_level).
+
+    Counts only for a grantee whose ``users`` row meets the type's ``recipient`` policy (its descriptor's; hosted
+    and assistants: eligible internal user) while ENABLE_USER_MANAGEMENT is on; otherwise empty.
+    """
+    columns = sa.select(Permission.resource_id, Permission.permission_level)
+    if not config.ENABLE_USER_MANAGEMENT:
+        return columns.where(sa.false())
+    return columns.join(UserDB, UserDB.id == Permission.principal_id).where(
+        Permission.principal_type == PrincipalType.USER,
+        Permission.resource_type == resource_type,
+        Permission.principal_id == principal_id_expr,
+        recipient(UserDB),
+    )
+
+
+def grant_exists(
+    resource_type: ResourceType,
+    resource_id_expr: sa.ColumnElement[Any],
+    principal_id_expr: sa.ColumnElement[Any],
+    action: Action,
+    *,
+    recipient: Callable[[Any], sa.ColumnElement[bool]],
+    resource_key: Callable[[Any], Any] = _same_key,
+) -> sa.Exists:
+    """EXISTS over live_grants for the resource at a level covering the action.
+
+    ``resource_key`` turns ``permissions.resource_id`` (uuid) into the resource table's id type; for uuid ids it is
+    the column itself, so ``unique_resource_principal`` serves the probe (no cast).
+    """
+    return sa.exists(
+        live_grants(resource_type, principal_id_expr, recipient).where(
+            resource_key(Permission.resource_id) == resource_id_expr,
+            Permission.permission_level.in_(levels_covering(action)),
+        )
+    )

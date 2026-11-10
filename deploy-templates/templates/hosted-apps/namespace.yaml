@@ -1,0 +1,9 @@
+{{- $hostedApps := index .Values.features.tools "hosted-apps" }}
+{{- if and $hostedApps.enabled $hostedApps.namespace.create $hostedApps.namespace.name }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $hostedApps.namespace.name }}
+  labels:
+    {{- include "codemie.labels" . | nindent 4 }}
+{{- end }}

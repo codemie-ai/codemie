@@ -1,0 +1,15 @@
+{{- $hostedApps := index .Values.features.tools "hosted-apps" }}
+{{- $namespace := $hostedApps.namespace.name | default .Release.Namespace }}
+{{- if and $hostedApps.enabled $hostedApps.networkPolicy.enabled (ne $namespace .Release.Namespace) }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: codemie-hosted-apps-default-deny
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "codemie.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+{{- end }}

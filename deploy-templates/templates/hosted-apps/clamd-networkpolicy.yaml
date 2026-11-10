@@ -1,0 +1,48 @@
+{{- $hostedApps := index .Values.features.tools "hosted-apps" }}
+{{- /* Always rendered with hosted-apps: clamd listens on the pod network without authentication, so only the */}}
+{{- /* validator may reach it. networkPolicy.enabled adds the egress restrictions. */}}
+{{- if $hostedApps.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "codemie.hostedClamd.name" . }}
+  namespace: {{ $hostedApps.namespace.name | default .Release.Namespace }}
+  labels:
+    {{- include "codemie.hostedClamd.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "codemie.hostedClamd.selectorLabels" . | nindent 6 }}
+  {{- if $hostedApps.networkPolicy.enabled }}
+  policyTypes: ["Ingress", "Egress"]
+  {{- else }}
+  policyTypes: ["Ingress"]
+  {{- end }}
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "codemie.hostedValidator.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: clamd
+          protocol: TCP
+  {{- if $hostedApps.networkPolicy.enabled }}
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+      {{- with $hostedApps.networkPolicy.egress.dns }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with $hostedApps.networkPolicy.egress.clamd }}
+    - to:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+  {{- end }}
+{{- end }}

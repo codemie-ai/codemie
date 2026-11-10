@@ -914,7 +914,7 @@ class TestShippedWorkspaceScriptToolCalls(unittest.TestCase):
         self.assertEqual(ids[: len(PRE_EXISTING_SHIPPED_COMPONENT_IDS)], list(PRE_EXISTING_SHIPPED_COMPONENT_IDS))
         self.assertEqual(
             ids[len(PRE_EXISTING_SHIPPED_COMPONENT_IDS) :],
-            ["features:workspaceScriptBridge", "features:usageAttribution"],
+            ["features:workspaceScriptBridge", "features:usageAttribution", "features:hostedApplications"],
         )
 
 
@@ -987,3 +987,25 @@ class TestCapabilityHidingFlags(unittest.TestCase):
         ids = [c.id for c in cfg.get_enabled_components()]
 
         self.assertIn("features:smartToolSelection", ids)
+
+
+class TestShippedHostedApplications(unittest.TestCase):
+    """The shipped default carries the custom (hosted) applications switch, turned off."""
+
+    def _load_shipped(self) -> CustomerConfig:
+        with patch.dict("os.environ"):
+            os.environ.pop("FEATURE_HOSTED_APPLICATIONS", None)
+            return CustomerConfig(config_path=SHIPPED_CUSTOMER_CONFIG)
+
+    def test_component_present_and_disabled(self) -> None:
+        config = self._load_shipped()
+        component = next((c for c in config.components if c.id == "features:hostedApplications"), None)
+        assert component is not None
+        self.assertFalse(component.settings.enabled)
+        self.assertTrue(component.settings.name)
+        self.assertFalse(config.is_feature_enabled("hostedApplications"))
+
+    def test_environment_override_turns_it_on(self) -> None:
+        with patch.dict("os.environ", {"FEATURE_HOSTED_APPLICATIONS": "true"}):
+            config = CustomerConfig(config_path=SHIPPED_CUSTOMER_CONFIG)
+        self.assertTrue(config.is_feature_enabled("hostedApplications"))

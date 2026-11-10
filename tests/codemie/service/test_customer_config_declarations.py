@@ -16,6 +16,7 @@ import pytest
 
 from codemie.service.customer_config_declarations import (
     DECLARATIONS,
+    HOSTED_APPLICATIONS,
     MCP_CUSTOM_SERVERS_DISABLED,
     SCHEDULERS,
     WORKSPACE_SCRIPT_BRIDGE,
@@ -237,3 +238,10 @@ def test_new_marketplace_declarations_registered(component_id):
     assert component_id in _BY_COMPONENT_ID
     assert any(d.component_id == component_id for d in DECLARATIONS)
     assert _BY_COMPONENT_ID[component_id].key in _BY_KEY
+
+
+def test_hosted_applications_is_declared_with_an_enabled_switch():
+    assert by_component_id("features:hostedApplications") is HOSTED_APPLICATIONS
+    assert HOSTED_APPLICATIONS.key == "CUSTOMER_CONFIG__FEATURES__HOSTED_APPLICATIONS"
+    [field] = HOSTED_APPLICATIONS.fields
+    assert (field.name, field.type) == ("enabled", FieldType.SWITCH)

@@ -32,7 +32,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field as SQLField, Session, select, Column, and_, Index, text
 
-from codemie.core.ability import Owned, Ability, Action
+from codemie.core.ability import Owned, Ability, Action, preloaded_grant_covers
 from codemie.core.constants import DEMO_PROJECT
 from codemie.core.models import (
     AssistantChatRequest,
@@ -937,7 +937,7 @@ class AssistantBase(CommonBaseModel, Owned):
     def is_managed_by(self, user: User):
         return self.project in user.admin_project_names
 
-    def is_shared_with(self, user: User, granted_ids: set[str] | None = None):
+    def is_shared_with(self, user: User):
         if self.is_global:
             # For marketplace (global) assistants, check if external users have project access
             if user.is_external_user:
@@ -948,21 +948,13 @@ class AssistantBase(CommonBaseModel, Owned):
             # Internal users can access all marketplace assistants
             return True
         # Project-wide sharing (original predicate — evaluated first, no DB call)
-        if self.project in user.project_names and self.shared:
-            return True
-        # Per-user grant (named grants never apply to external users)
-        from sqlalchemy import Text, cast
-        from codemie.rest_api.models.permission import Permission
+        return bool(self.project in user.project_names and self.shared)
 
+    def is_granted_to(self, user: User, action, grants) -> bool:
+        """Named grant (``Role.GRANTED``), read from grants preloaded by the caller; never for external users."""
         if user.is_external_user or not self.id:
             return False
-        if granted_ids is not None:
-            return self.id in granted_ids
-        grant_query = Permission.named_grant_resource_ids(user)
-        if grant_query is None:
-            return False
-        with Session(Permission.get_engine()) as session:
-            return session.exec(grant_query.where(cast(Permission.resource_id, Text) == self.id)).first() is not None
+        return preloaded_grant_covers(grants, self.id, action)
 
     @staticmethod
     def _should_update_field(field: str, fields_set: set | None) -> bool:
@@ -1384,7 +1376,8 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
         if parent_assistant and parent_assistant.is_global:
             return list(entries)
 
-        return [entry for entry in entries if Ability(user).can(Action.READ, entry)]
+        ability = Ability(user)
+        return [entry for entry in entries if ability.can(Action.READ, entry)]
 
     @classmethod
     def get_by_ids_no_permission_check(cls, ids: List[str]) -> List['Assistant']:

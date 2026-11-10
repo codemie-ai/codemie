@@ -1,0 +1,32 @@
+{{- $hostedApps := index .Values.features.tools "hosted-apps" }}
+{{- if and $hostedApps.enabled $hostedApps.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: codemie-hosted-apps-content
+  labels:
+    {{- include "codemie.labels" . | nindent 4 }}
+  {{- with $hostedApps.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $hostedApps.ingress.ingressClassName }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with $hostedApps.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ required "features.tools.hosted-apps.ingress.host is required, e.g. \"*.apps-content.example.net\"" $hostedApps.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "codemie.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

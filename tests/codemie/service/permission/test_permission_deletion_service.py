@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import uuid
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,9 +22,10 @@ from codemie.core.models import CreatedByUser
 from codemie.rest_api.models.permission import Permission, PrincipalType, ResourceType
 from codemie.rest_api.security.user import User
 from codemie.service.permission import PermissionAccessDenied
+from codemie.service.permission import permission_deletion_service as deletion_module
+from codemie.service.permission.named_grant_types import ResolvedResource
 from codemie.service.permission.permission_deletion_service import PermissionDeletionService
 
-SHARE = "codemie.service.assistant.assistant_share_service.AssistantShareService.revoke_permission"
 GET = "codemie.service.permission.permission_deletion_service.Permission.get_by_id"
 
 
@@ -46,45 +47,60 @@ def _permission(resource_type: ResourceType) -> Permission:
     )
 
 
-def _run(permission: Permission, user: User):
+def _run(permission: Permission, user: User, may_remove: bool):
+    """Run the delete with the ASSISTANT descriptor's resolve answering ``may_remove``."""
+    resolve = MagicMock(return_value=ResolvedResource(project="proj", creator_id="grantor", may_remove=may_remove))
+    session = MagicMock()
+    session_cm = MagicMock()
+    session_cm.__enter__.return_value = session
+    descriptor = deletion_module.descriptor_for(ResourceType.ASSISTANT)
     with (
         patch(GET, return_value=permission),
-        patch(SHARE) as revoke,
+        patch.object(deletion_module, "descriptor_for", return_value=MagicMock(resolve=resolve)),
+        patch.object(deletion_module, "Session", return_value=session_cm),
+        patch.object(deletion_module.Permission, "get_engine", return_value=MagicMock()),
+        patch.object(deletion_module, "revoke_permission") as revoke,
+        patch.object(deletion_module, "Ability") as ability,
         patch.object(Permission, "delete") as plain_delete,
     ):
         try:
             PermissionDeletionService.run(permission_id=permission.id, user=user)
         finally:
-            run_mocks = (revoke, plain_delete)
-    return run_mocks
+            mocks = SimpleMocks(resolve, revoke, ability, plain_delete, session, descriptor)
+    return mocks
 
 
-@pytest.mark.parametrize(
-    "user",
-    [
-        _user("grantor"),
-        _user("admin", admin=True),
-    ],
-    ids=["grantor", "admin"],
-)
-def test_assistant_row_delegates_to_share_service(user):
+class SimpleMocks:
+    def __init__(self, resolve, revoke, ability, plain_delete, session, descriptor):
+        self.resolve, self.revoke, self.ability = resolve, revoke, ability
+        self.plain_delete, self.session, self.descriptor = plain_delete, session, descriptor
+
+
+def test_assistant_row_is_decided_by_the_descriptor_and_revoked_with_audit():
     permission = _permission(ResourceType.ASSISTANT)
-    revoke, plain_delete = _run(permission, user)
-    revoke.assert_called_once_with(user, permission)
-    plain_delete.assert_not_called()
+    user = _user("creator")
+    mocks = _run(permission, user, may_remove=True)
+    mocks.resolve.assert_called_once_with(mocks.session, permission.resource_id, user)
+    mocks.revoke.assert_called_once_with(user, permission, mocks.session, project="proj")
+    mocks.ability.assert_not_called()
+    mocks.plain_delete.assert_not_called()
+    mocks.session.commit.assert_called_once()
 
 
-def test_assistant_row_denied_for_other_user():
+def test_assistant_row_refused_when_the_remover_rule_denies():
+    """Rule change: the row's creator or a request-role admin no longer decides; ``grant_remover`` does."""
     permission = _permission(ResourceType.ASSISTANT)
-    with patch(GET, return_value=permission), patch(SHARE) as revoke, patch.object(Permission, "delete") as plain:
-        with pytest.raises(PermissionAccessDenied):
-            PermissionDeletionService.run(permission_id=permission.id, user=_user("other"))
-    revoke.assert_not_called()
-    plain.assert_not_called()
+    with pytest.raises(PermissionAccessDenied):
+        _run(permission, _user("grantor", admin=True), may_remove=False)
 
 
 def test_datasource_row_uses_plain_delete():
     permission = _permission(ResourceType.DATASOURCE)
-    revoke, plain_delete = _run(permission, _user("grantor"))
+    with (
+        patch(GET, return_value=permission),
+        patch.object(deletion_module, "revoke_permission") as revoke,
+        patch.object(Permission, "delete") as plain_delete,
+    ):
+        PermissionDeletionService.run(permission_id=permission.id, user=_user("grantor"))
     plain_delete.assert_called_once_with()
     revoke.assert_not_called()

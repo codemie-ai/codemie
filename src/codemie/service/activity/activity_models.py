@@ -33,6 +33,7 @@ class ActivityDomain:
     CUSTOMER_CONFIG = "customer_config"
     MARKETPLACE = "marketplace"
     ASSISTANT = "assistant"
+    HOSTED_APPLICATION = "hosted_application"
 
 
 class ActivityEntityType:
@@ -44,6 +45,7 @@ class ActivityEntityType:
     PROJECT_BUDGET_ASSIGNMENT = "project_budget_assignment"
     CUSTOMER_CONFIG_SETTING = "customer_config_setting"
     ASSISTANT = "assistant"
+    HOSTED_APPLICATION = "hosted_application"
 
 
 class MarketplaceModerationEvent:

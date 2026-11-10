@@ -156,6 +156,31 @@ extraEnv:
   - name: BITBUCKET_IDENTIFIERS
     value: '["bitbucket"]'
 
+  # Hosted applications (EPMCDME-16001) are off until the customer-config feature
+  # features:hostedApplications is on (FEATURE_HOSTED_APPLICATIONS overrides it). They also need a
+  # separate content domain with wildcard DNS/TLS, the validator pod, a shared RWX volume mounted through
+  # extraVolumes/extraVolumeMounts, and user management (ENABLE_USER_MANAGEMENT=true; any IDP_PROVIDER
+  # works). Runbook and objects: hosted-applications/README.md and kubernetes.yaml
+  # - name: FEATURE_HOSTED_APPLICATIONS
+  #   value: "true"
+  # - name: HOSTED_APPS_CONTENT_DOMAIN
+  #   value: "apps-content.example.net"
+  # - name: HOSTED_APPS_STORAGE_DIR
+  #   value: "/mnt/hosted-applications"
+  # The validator runs in features.tools.hosted-apps.namespace.name, so use the namespace-qualified name:
+  # - name: HOSTED_APPS_VALIDATOR_URL
+  #   value: "http://codemie-hosted-apps-validator.codemie-hosted-apps.svc:8091"
+  # - name: HOSTED_APPS_CREDENTIAL_SECRET
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: codemie-hosted-applications
+  #       key: credential-secret
+  # - name: HOSTED_APPS_VALIDATOR_KEY
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: codemie-hosted-applications
+  #       key: validator-key
+
 # -- List of custom extra environment variables to be used by the AI/Run API
 # Use this to add or override environment variables
 # @default -- `[]`
@@ -216,6 +241,225 @@ features:
       # -- Create Role and RoleBinding in features.tools.code_executor.namespace.name to allow the service account to manage executor pods
       rbac:
         enabled: false
+    hosted-apps:
+      # -- Enable hosted applications resources
+      enabled: false
+      namespace:
+        # -- Create the namespace for hosted applications resources. Set to true only if it doesn't already exist
+        create: false
+        # -- Namespace for hosted applications resources
+        name: "codemie-hosted-apps"
+      # clamd configuration, mounted into both the validator and clamd at /etc/clamav/clamd.conf
+      clamdConfig:
+        # -- Name of an existing ConfigMap with the clamd configuration under the clamd.conf key. When empty,
+        # the chart creates codemie-hosted-apps-clamd
+        existingConfigMap: ""
+      validator:
+        image:
+          # -- Repository of the hosted applications validator image (built from Dockerfile.validator)
+          repository: ""
+          # -- Image pull policy for the validator
+          pullPolicy: IfNotPresent
+          # -- Validator image tag. Defaults to image.tag (the API image tag), then to the chart appVersion
+          tag: ""
+        # -- Environment variables for the validator container
+        env:
+          - name: VALIDATOR_BIND_HOST
+            value: "0.0.0.0"
+          - name: VALIDATOR_SERVICE_KEY
+            valueFrom:
+              secretKeyRef:
+                name: codemie-hosted-applications
+                key: validator-key
+          - name: CLAMD_HOST
+            value: "codemie-hosted-apps-clamd"
+          - name: CLAMD_PORT
+            value: "3310"
+          - name: CLAMD_CONFIGURATION
+            value: "/etc/clamav/clamd.conf"
+        # -- Mount the service account token into the validator pod
+        automountServiceAccountToken: false
+        # -- Inject Service environment variables into the validator pod
+        enableServiceLinks: false
+        # -- Image pull secrets for the validator pod. Defaults to the top-level imagePullSecrets
+        imagePullSecrets: []
+        # -- Priority class for the validator pod
+        priorityClassName: ""
+        # -- Node selector for the validator pod
+        nodeSelector: {}
+        # -- Affinity rules for the validator pod
+        affinity: {}
+        # -- Tolerations for the validator pod
+        tolerations: []
+        # -- Pod security context for the validator pod
+        podSecurityContext:
+          seccompProfile:
+            type: RuntimeDefault
+        # -- Security context for the validator container
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        # -- Readiness probe for the validator container
+        readinessProbe:
+          httpGet:
+            path: /livez
+            port: http
+          periodSeconds: 10
+        # -- Liveness probe for the validator container
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+        # -- Resources for the validator container
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+        # -- Extra volume mounts for the validator container
+        volumeMounts:
+          - name: work
+            mountPath: /work
+        # -- Extra volumes for the validator pod
+        volumes:
+          - name: work
+            emptyDir:
+              sizeLimit: 2Gi
+      clamd:
+        image:
+          # -- Repository of the ClamAV image
+          repository: "clamav/clamav"
+          # -- Image pull policy for ClamAV
+          pullPolicy: IfNotPresent
+          # -- ClamAV image tag, pinned by digest
+          tag: "1.5.4_base@sha256:58168cd4f48a118c7d20b76da8ffce97e579b84ed7e6d1e977c6e22b1e989c5a"
+        # -- clamd TCP port (must match TCPSocket in clamd.conf and CLAMD_PORT in validator.env)
+        port: 3310
+        # -- Mount the service account token into the clamd pod
+        automountServiceAccountToken: false
+        # -- Inject Service environment variables into the clamd pod
+        enableServiceLinks: false
+        # -- Image pull secrets for the clamd pod. Defaults to the top-level imagePullSecrets
+        imagePullSecrets: []
+        # -- Priority class for the clamd pod
+        priorityClassName: ""
+        # -- Node selector for the clamd pod. The pinned upstream image is amd64-only
+        nodeSelector: {}
+        # -- Affinity rules for the clamd pod
+        affinity: {}
+        # -- Tolerations for the clamd pod
+        tolerations: []
+        # -- Pod security context for the clamd pod
+        podSecurityContext:
+          seccompProfile:
+            type: RuntimeDefault
+        # -- Environment variables for the clamd container. TZ=UTC is required: clamd reports its signature date in
+        # local time and the validator reads it as UTC
+        env:
+          - name: TZ
+            value: "UTC"
+          - name: FRESHCLAM_CHECKS
+            value: "4"
+        # -- Security context for the clamd container
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+            add: ["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"]
+        # -- Startup probe for the clamd container. Signature load takes minutes after every start
+        startupProbe:
+          exec:
+            command: ["clamdscan", "--config-file=/etc/clamav/clamd.conf", "--ping=1"]
+          periodSeconds: 10
+          failureThreshold: 60
+        # -- Liveness probe for the clamd container. Checks that clamd answers and freshclam is running
+        livenessProbe:
+          initialDelaySeconds: 60
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                clamdscan --config-file=/etc/clamav/clamd.conf --ping=1 || { echo "clamd is not responding"; exit 1; }
+                live=0
+                for pid in $(pgrep freshclam); do
+                  stat=$(cat /proc/$pid/stat 2>/dev/null) || continue
+                  state=$(printf '%s' "$stat" | awk '{print $3}')
+                  if [ "$state" != "Z" ]; then
+                    live=1
+                    break
+                  fi
+                done
+                [ "$live" = "1" ] || { echo "freshclam is not running"; exit 1; }
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        # -- Resources for the clamd container
+        resources:
+          requests:
+            cpu: "1"
+            memory: 1536Mi
+          limits:
+            cpu: "1"
+            memory: 3Gi
+        # -- Extra volume mounts for the clamd container
+        volumeMounts:
+          - name: signatures
+            mountPath: /var/lib/clamav
+          - name: clamd-run
+            mountPath: /run/clamav
+        # -- Extra volumes for the clamd pod
+        volumes:
+          - name: signatures
+            emptyDir:
+              sizeLimit: 2Gi
+          - name: clamd-run
+            emptyDir:
+              sizeLimit: 1Mi
+      # Ingress for the content domain, created in the release namespace
+      ingress:
+        # -- Create the hosted applications content Ingress
+        enabled: true
+        # -- Ingress class name
+        ingressClassName: "nginx"
+        # -- Wildcard host of the content domain, e.g. "*.apps-content.example.net"
+        host: ""
+        # -- Additional ingress annotations
+        annotations: {}
+        # -- Ingress TLS configuration
+        tls: []
+      networkPolicy:
+        # -- Create NetworkPolicies for the validator pod and clamd egress, plus a default-deny ingress policy when
+        # the hosted applications namespace differs from the release namespace. The policy that admits only the
+        # validator to clamd's unauthenticated port is created whenever hosted-apps is enabled. Needs a CNI that
+        # enforces NetworkPolicy
+        enabled: true
+        egress:
+          # -- Where the validator and clamd may send DNS queries (port 53). Empty allows any destination,
+          # which also covers GKE NodeLocal DNSCache
+          dns: []
+          # -- Where clamd may download signatures from (port 443). Defaults to the internet without the cluster
+          # ranges and link-local addresses
+          clamd:
+            - ipBlock:
+                cidr: 0.0.0.0/0
+                except:
+                  - "10.92.249.0/26"
+                  - "10.92.202.160/28"
+                  - "172.20.0.0/16"
+                  - "172.21.0.0/17"
+                  - "172.30.0.0/16"
+                  - "169.254.0.0/16"
 
 serviceAccount:
   # -- Specifies whether a service account should be created
@@ -271,6 +515,8 @@ ingress:
     nginx.ingress.kubernetes.io/rewrite-target: /$1
     nginx.ingress.kubernetes.io/proxy-body-size: 900m
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    # Hosted applications artifact uploads need proxy-read-timeout and proxy-send-timeout of at least
+    # 900 seconds and proxy-body-size of at least 110m.
     nginx.ingress.kubernetes.io/proxy-buffer-size: "64k"
   # -- Ingress path type
   pathType: ImplementationSpecific
@@ -533,6 +779,9 @@ proxyPool:
 
 ## Probes for the AI/Run API
 # Ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+#
+# Hosted applications: with HOSTED_APPS_CONTENT_DOMAIN set, the API routes by Host. Kubelet probes address
+# the pod IP, which is outside the content namespace, so these httpGet probes keep reaching the API.
 #
 # Is used to avoid pod restarts when the pod is starting when we are executing the migration script.
 # Pod has 2400 seconds to start and execute the migration script.

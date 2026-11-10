@@ -223,6 +223,22 @@ SCHEDULERS = SettingDeclaration(
     ],
 )
 
+HOSTED_APPLICATIONS = SettingDeclaration(
+    component_id="features:hostedApplications",
+    label="Custom applications",
+    description=(
+        "Upload, share and open custom static web applications on the Applications page. "
+        "The deployment must also enable application hosting (FEATURE_HOSTED_APPLICATIONS)."
+    ),
+    fields=[
+        FieldDeclaration(
+            name="enabled",
+            type=FieldType.SWITCH,
+            label="Enable custom applications",
+        ),
+    ],
+)
+
 CLI_ANALYTICS = SettingDeclaration(
     component_id="features:cliAnalytics",
     label="CLI analytics",
@@ -475,6 +491,7 @@ DECLARATIONS: tuple[SettingDeclaration, ...] = (
     BANNER,
     WEB_SEARCH,
     SCHEDULERS,
+    HOSTED_APPLICATIONS,
     MCP_CUSTOM_SERVERS_DISABLED,
     WORKSPACE_SCRIPT_BRIDGE,
     CLI_ANALYTICS,

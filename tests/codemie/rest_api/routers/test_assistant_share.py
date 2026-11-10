@@ -203,3 +203,60 @@ def test_create_assistant_is_not_guarded_by_share_checks():
     from codemie.rest_api.routers.assistant import management as mod
 
     assert "has_named_grants" not in inspect.getsource(mod.create_assistant)
+
+
+# ---- seam: the central assistant access check reads preloaded grants (fail closed without them) --------------------
+
+
+def _grantee_and_private_assistant():
+    from codemie.rest_api.models.assistant import Assistant
+
+    assistant = Assistant(
+        id="00000000-0000-0000-0000-0000000000a1",
+        name="n",
+        description="d",
+        system_prompt="s",
+        project="other",
+        shared=False,
+        is_global=False,
+        creator="owner",
+    )
+    user = User(id="grantee", username="grantee", project_names=[])
+    user.is_admin = False
+    return user, assistant
+
+
+@pytest.mark.parametrize("granted", [True, False])
+def test_access_check_admits_a_grantee_through_the_grants_ability_loads(granted):
+    """No preload at the call site: ``Ability`` reads the user's assistant grants itself (finding 2)."""
+    from codemie.core.ability import Action, PreloadedGrants
+    from codemie.rest_api.routers.utils import check_user_can_access_assistant
+
+    user, assistant = _grantee_and_private_assistant()
+    grants = PreloadedGrants("Assistant", {assistant.id: Action.READ} if granted else {})
+    with patch("codemie.core.ability.load_class_grants", return_value=grants) as load:
+        if granted:
+            check_user_can_access_assistant(user, assistant, "view", Action.READ)
+        else:
+            with pytest.raises(ExtendedHTTPException):
+                check_user_can_access_assistant(user, assistant, "view", Action.READ)
+    load.assert_called_once_with(user, "Assistant")
+
+
+def test_access_check_for_write_reads_no_grants():
+    from codemie.core.ability import Action
+    from codemie.rest_api.routers.utils import check_user_can_access_assistant
+
+    user, assistant = _grantee_and_private_assistant()
+    with patch("codemie.core.ability.load_class_grants") as load:
+        with pytest.raises(ExtendedHTTPException):
+            check_user_can_access_assistant(user, assistant, "update", Action.WRITE)
+    load.assert_not_called()
+
+
+def test_shared_with_items_add_grant_source_and_keep_the_assistant_shape(client):
+    listed = [{"id": "u1", "username": "u", "email": "e", "name": "U", "picture": None, "grant_source": "name"}]
+    with patch(_FIND, return_value=MagicMock()), patch(f"{_SVC}.list_for_owner", return_value=listed):
+        response = client.get("/v1/assistants/asst-1/shared-with")
+    assert response.status_code == 200
+    assert response.json() == {"shared_with": listed}

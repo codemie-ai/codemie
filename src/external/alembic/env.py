@@ -84,6 +84,8 @@ from codemie.rest_api.models.skill import Skill
 from codemie.rest_api.models.usage.skill_user_interaction import SkillUserInteraction
 from codemie.rest_api.models.category import Category
 from codemie.rest_api.models.user import UserData
+from codemie.rest_api.models.hosted_application import HOSTED_APP_MODELS
+from codemie.rest_api.models.hosted_application_cover import HostedApplicationCovers
 from codemie.rest_api.models.user_management import UserDB, UserProject, UserKnowledgeBase, EmailVerificationToken
 from codemie.core.workflow_models.workflow_config import WorkflowConfig
 from codemie.rest_api.models.conversation_folder import ConversationFolder

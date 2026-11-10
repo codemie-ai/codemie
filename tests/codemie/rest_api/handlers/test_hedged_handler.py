@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+import threading
 from datetime import datetime
 from time import time
 from unittest.mock import Mock, patch
@@ -186,9 +187,17 @@ class TestHandleStreamFastPathWins:
         from codemie.core.thread import ThreadedGenerator  # lazy: avoids circular import at module level
 
         real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
+        cancellation = threading.Event()
+        original_close = real_tg.close
+
+        def close_agent(*args, **kwargs):
+            original_close(*args, **kwargs)
+            cancellation.set()
 
         mock_agent = Mock()
-        mock_agent.stream = Mock()
+        # A fast-path win requires an agent that is still running. Returning
+        # immediately makes this fixture race the scheduler instead of testing cancellation.
+        mock_agent.stream = Mock(side_effect=lambda **_kwargs: cancellation.wait(timeout=5))
 
         with (
             patch(
@@ -199,6 +208,7 @@ class TestHandleStreamFastPathWins:
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
+            patch.object(real_tg, "close", side_effect=close_agent),
             patch.object(handler, "save_chat_history") as mock_save,
         ):
             response = handler._handle_stream(request_, raw_request, time())

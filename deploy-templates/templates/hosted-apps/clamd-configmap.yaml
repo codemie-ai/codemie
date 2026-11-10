@@ -1,0 +1,40 @@
+{{- $hostedApps := index .Values.features.tools "hosted-apps" }}
+{{- if and $hostedApps.enabled (not $hostedApps.clamdConfig.existingConfigMap) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "codemie.hostedClamd.configMapName" . }}
+  namespace: {{ $hostedApps.namespace.name | default .Release.Namespace }}
+  labels:
+    {{- include "codemie.labels" . | nindent 4 }}
+# clamd runs in its own Deployment and listens on the pod network; clamd-networkpolicy.yaml admits only the
+# validator pods to it.
+data:
+  clamd.conf: |
+    Foreground yes
+    LocalSocket /run/clamav/clamd.sock
+    LocalSocketMode 660
+    LocalSocketGroup clamav
+    TCPSocket 3310
+    TCPAddr 0.0.0.0
+    DatabaseDirectory /var/lib/clamav
+    TemporaryDirectory /tmp
+    User clamav
+    StreamMaxLength 100M
+    MaxFileSize 100M
+    MaxScanSize 600M
+    MaxRecursion 20
+    MaxFiles 5102
+    AlertExceedsMax yes
+    ScanArchive yes
+    ScanHTML yes
+    ScanPE yes
+    MaxScanTime 300000
+    MaxThreads 2
+    MaxQueue 8
+    CommandReadTimeout 10
+    ReadTimeout 15
+    SendBufTimeout 10000
+    SelfCheck 3600
+    ConcurrentDatabaseReload no
+{{- end }}

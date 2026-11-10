@@ -1,0 +1,89 @@
+{{- $hostedApps := index .Values.features.tools "hosted-apps" }}
+{{- if $hostedApps.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "codemie.hostedClamd.name" . }}
+  namespace: {{ $hostedApps.namespace.name | default .Release.Namespace }}
+  labels:
+    {{- include "codemie.hostedClamd.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "codemie.hostedClamd.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "codemie.hostedClamd.labels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: {{ $hostedApps.clamd.automountServiceAccountToken }}
+      enableServiceLinks: {{ $hostedApps.clamd.enableServiceLinks }}
+      {{- with ($hostedApps.clamd.imagePullSecrets | default .Values.imagePullSecrets) }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $hostedApps.clamd.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $hostedApps.clamd.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $hostedApps.clamd.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $hostedApps.clamd.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $hostedApps.clamd.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: clamd
+          image: "{{ $hostedApps.clamd.image.repository }}:{{ $hostedApps.clamd.image.tag }}"
+          imagePullPolicy: {{ $hostedApps.clamd.image.pullPolicy }}
+          ports:
+            - name: clamd
+              containerPort: {{ $hostedApps.clamd.port }}
+          {{- with $hostedApps.clamd.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $hostedApps.clamd.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $hostedApps.clamd.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $hostedApps.clamd.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $hostedApps.clamd.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: clamd-config
+              mountPath: /etc/clamav/clamd.conf
+              subPath: clamd.conf
+              readOnly: true
+            {{- with $hostedApps.clamd.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: clamd-config
+          configMap:
+            name: {{ include "codemie.hostedClamd.configMapName" . }}
+        {{- with $hostedApps.clamd.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
