@@ -343,14 +343,14 @@ Controls context store clearing behavior after this state executes.
 
 **Supported values:**
 - `false` (default): Don't clear context store, merge new values with existing context
-- `true`: Clear entire context store (all keys removed, including new values from this state)
+- `true`: Clear entire context store (all keys removed, including new values from this state). If the same transition sets `output_key`, the output key is still written after the reset, so the store holds only `{output_key: value}`
 - `"keep_current"`: Keep only new values from this state, discard all previous context
 
 **When to use `true`:**
 - Starting a completely new workflow phase
 - Preventing data leakage between workflow sections
 - Freeing memory in long-running workflows
-- You don't need any context (including current state output) in subsequent states
+- You don't need any context (including current state output) in subsequent states, except the one value you name with `output_key`
 
 **When to use `"keep_current"`:**
 - You want a fresh context but still need the current state's output
@@ -397,6 +397,19 @@ states:
       state_id: end
 ```
 
+**Example: Complete Clear with an output key**
+```yaml
+states:
+  - id: summarize-phase
+    assistant_id: summarizer
+    task: "Summarize the current phase"
+    next:
+      state_id: new-phase
+      clear_context_store: true  # Remove ALL prior context...
+      output_key: summary        # ...but keep this state's output under "summary"
+```
+After the state runs, the context store contains only `summary`. With `append_to_context: true` it holds `summary` as a one-element list.
+
 **Comparison: `true` vs `"keep_current"`**
 ```yaml
 # Scenario: State outputs {"result": "success", "data": [1,2,3]}
@@ -404,6 +417,9 @@ states:
 
 # With clear_context_store: true
 # → Context after state: {} (empty, everything cleared)
+
+# With clear_context_store: true and output_key: summary
+# → Context after state: {"summary": <state output>} (everything cleared except the output key)
 
 # With clear_context_store: "keep_current"
 # → Context after state: {"result": "success", "data": [1,2,3]} (only new values)
@@ -463,7 +479,7 @@ next:
   clear_prior_messages: true
   clear_context_store: true
 ```
-Use case: Starting a completely new workflow phase with no carried context.
+Use case: Starting a completely new workflow phase with no carried context. Add `output_key` to carry exactly one value across the reset.
 
 **Pattern 4: Selective Cleanup**
 ```yaml

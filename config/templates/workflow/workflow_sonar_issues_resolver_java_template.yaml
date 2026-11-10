@@ -142,6 +142,17 @@ execution_config:
         MUST.
         Github context:
         1. git project id - ${input:git_project_id}, default branch - ${input:default_branch}
+  custom_nodes:
+    - id: dispatch_issues
+      custom_node_id: transform_node
+      name: Dispatch issues
+      config:
+        input_source: context_store
+        mappings:
+          - output_field: issues
+            type: extract
+            source_path: issues
+
   states:
     - assistant_id: git-operator
       id: git-preparation
@@ -163,8 +174,7 @@ execution_config:
         condition:
           expression: len(issues)<=35
           otherwise: issue-searcher
-          then: issue-resolver
-        iter_key: issues
+          then: issues-dispatcher
       output_schema: |
         {
           "issues": "List of issues, that must contain description, rule,
@@ -179,6 +189,13 @@ execution_config:
       retry_policy:
         max_interval_seconds: 5.0
         max_attempts: 2
+    # Condition and iter_key cannot share a next block, so this no-LLM state re-emits the issues list
+    # and fans it out, one issue-resolver run per issue.
+    - custom_node_id: dispatch_issues
+      id: issues-dispatcher
+      next:
+        state_id: issue-resolver
+        iter_key: issues
     - assistant_id: resolver
       id: issue-resolver
       next:

@@ -234,7 +234,8 @@ class WorkflowNextState(BaseModel):
 
     Supported values:
     - False (default): Don't clear context store, merge new values with existing context
-    - True: Clear entire context store (all keys removed)
+    - True: Clear entire context store (all keys removed). When the transition also sets output_key,
+      the output key is written after the reset, so the store holds only {output_key: value}
     - "keep_current": Keep only new values from this state, discard all previous context
 
     This allows resetting the context while optionally preserving message history.

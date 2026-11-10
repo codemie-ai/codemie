@@ -454,7 +454,10 @@ class GeneratedNextState(BaseModel):
     )
     clear_context_store: Optional[Union[bool, Literal["keep_current"]]] = Field(
         default=None,
-        description="False=keep all (default), True=clear all, 'keep_current'=keep only this state's output",
+        description=(
+            "False=keep all (default), True=clear all (only output_key survives when it is set), "
+            "'keep_current'=keep only this state's output"
+        ),
     )
     reset_keys_in_context_store: Optional[list[str]] = Field(
         default=None,

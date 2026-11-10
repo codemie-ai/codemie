@@ -670,7 +670,8 @@ class BaseNode(ABC, Generic[StateSchemaType]):
             processed_output: The processed output string
 
         Returns:
-            dict[str, str] | None: Resolved context store, or None if cleared
+            dict[str, str] | None: Resolved context store, or None if fully cleared without an output key.
+            A full clear with an output key returns only the keep-new-only flag so the output key can be added.
         """
         if not self.workflow_state:
             return {}
@@ -680,7 +681,8 @@ class BaseNode(ABC, Generic[StateSchemaType]):
         # Handle clear context store flag
         clear_context_store = state_next.clear_context_store
         if isinstance(clear_context_store, bool) and clear_context_store:
-            return None
+            # Keep-new-only flag makes the reducer replace the prior store, leaving room for the output key
+            return {CONTEXT_STORE_KEEP_NEW_ONLY_FLAG: True} if state_next.output_key else None
 
         if not state_next.store_in_context:
             return {}

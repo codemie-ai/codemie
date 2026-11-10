@@ -40,6 +40,17 @@ execution_config:
     - id: dev
       assistant_id: PRECONFIGURED:amna-aice-java-dev-migration-assistant
 
+  custom_nodes:
+    - id: dispatch_files
+      custom_node_id: transform_node
+      name: Dispatch files
+      config:
+        input_source: context_store
+        mappings:
+          - output_field: files
+            type: extract
+            source_path: files
+
   states:
     - id: initializer
       assistant_id: mason
@@ -120,11 +131,18 @@ execution_config:
           ]
         }
       next:
-        iter_key: files
         condition:
           expression: "to_double_check==True"
-          then: double-checker-dev
+          then: files-dispatcher
           otherwise: finalizer
+
+    # Condition and iter_key cannot share a next block, so this no-LLM state re-emits the files list
+    # and fans it out, one double-checker-dev run per file.
+    - id: files-dispatcher
+      custom_node_id: dispatch_files
+      next:
+        state_id: double-checker-dev
+        iter_key: files
 
     - id: double-checker-dev
       assistant_id: dev

@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "task": "Fix the BaseNode crash when a full context reset (clear_context_store) is combined with an explicit output key so the context holds only the output key, and add an offline pytest harness that runs all 64 built-in workflow templates through WorkflowExecutor.validate_workflow and fails on any error (codemie backend only).",
+  "generated": "2026-10-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 14,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "BaseNode (_prepare_resolved_context_store / _add_output_key / finalize_and_update_state) plus the add_or_replace_context_store reducer in workflows/models.py, and a test-only harness over WorkflowExecutor.validate_workflow. Two closely coupled runtime components and a test module, all in the workflow package." },
+    { "dimension": "requirements_clarity", "reason": "Both ACs are concrete, but how 'only the output key survives' is expressed through the reducer (None vs keep-new-only flag), and its interaction with append_to_context, store_in_context and reset_keys_in_context_store, is unsettled. Whether the compile step is in scope for the harness, and how the autonomous (no states) and placeholder templates are treated, is also open." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the keep_current keep-new-only sentinel flow and tests/codemie/workflows/test_placeholder_no_rejection.py for offline validation. Neither covers the exact combination. Existing TC_FI_006/TC_FI_010 pin the no-output-key full-reset contract. The harness could surface currently failing templates (not run). No security, auth or performance sensitivity." },
+    { "dimension": "file_change_estimate", "reason": "About 1-2 source files (base_node.py, possibly models.py) and 1-2 existing test files extended, plus 1-2 new test modules (reset+output_key tests, template corpus harness). Roughly 5-6 files across src/ and tests/. No migration, schema or template edits expected, unless the harness finds failing templates." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

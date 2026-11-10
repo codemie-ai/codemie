@@ -57,8 +57,14 @@ def add_or_replace_context_store(left: dict[str, Any], right: dict[str, Any] | N
         return {}
 
     if right.get(CONTEXT_STORE_KEEP_NEW_ONLY_FLAG, False):
-        right.pop(CONTEXT_STORE_KEEP_NEW_ONLY_FLAG)
-        merged = right
+        # Never mutate `right`: a conditional edge makes LangGraph apply the same update twice (a temporary state for
+        # routing, then the real one), and the second pass must still see the flag to discard the prior store.
+        # The prior store is discarded, so an append marker starts a fresh list instead of staying a raw marker dict
+        merged = {
+            k: list(v[CONTEXT_STORE_APPEND_MARKER]) if isinstance(v, dict) and CONTEXT_STORE_APPEND_MARKER in v else v
+            for k, v in right.items()
+            if k != CONTEXT_STORE_KEEP_NEW_ONLY_FLAG
+        }
     else:
         merged = {**left}
         for k, v in right.items():
