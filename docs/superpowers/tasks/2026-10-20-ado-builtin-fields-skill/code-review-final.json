@@ -1,0 +1,87 @@
+{
+  "decision": "request-changes",
+  "rationale": "Edge-case lens surfaced 4 candidates; verified against src/external/deployment_scripts/preconfigured_skills.py and the downstream ToolkitService merge/init code. 2 are real defects kept as blocking: CR-001 (no ToolSet validation on a skill template's toolkit name, so a future typo silently no-ops the skill-toolkit coupling with no log) and CR-002 (toolkits unconditionally overwritten with [] on update when parsing fails, unlike the companion_files update beside it, which preserves on failure). 2 dismissed as already handled: both match the function's own documented per-skill fallback design (malformed/wrong-shaped toolkits entries degrade to [] for that one skill and log an error, by design). Acceptance: 5/6 criteria pass, 1 pending-stage-7 (table transcription fidelity against the live Learn page, outside lens reach) which does not block. Standards review is out of scope for the compact profile (intentional omission, not a coverage gap). No decision_needed items, no deferred findings.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Template file exists, matches the shape of existing templates, and loads without error through the skill loader",
+      "status": "pass",
+      "notes": "New YAML matches existing template shape; TestAdoWorkItemFieldsTemplate loads it via yaml.safe_load through create_or_update_skill without error."
+    },
+    {
+      "kind": "spec",
+      "item": "Content is a markdown table of built-in ADO work-item fields transcribed from the cited Microsoft Learn page",
+      "status": "pending-stage-7",
+      "notes": "~89-row two-column table present citing the correct Learn URL; verifying transcription fidelity against the live page needs network/browser access unavailable to this lens."
+    },
+    {
+      "kind": "spec",
+      "item": "Toolkits field carries the Azure DevOps Work Item toolkit's ToolKitDetails, merged onto the assistant when the skill is attached",
+      "status": "pass",
+      "notes": "Template declares toolkit 'Azure DevOps Work Item'; tests confirm it parses to ToolSet.AZURE_DEVOPS_WORK_ITEM and reaches ToolkitService._merge_skill_toolkits."
+    },
+    {
+      "kind": "spec",
+      "item": "SkillTool.execute('azure-devops-work-item-fields') returns the table content wrapped as today",
+      "status": "pass",
+      "notes": "Test drives SkillTool.execute end-to-end and asserts 'System.Title' appears in the output."
+    },
+    {
+      "kind": "spec",
+      "item": "A template-loading test exists for this specific template",
+      "status": "pass",
+      "notes": "TestAdoWorkItemFieldsTemplate covers this template's shape, content size, and create_or_update_skill pass-through."
+    },
+    {
+      "kind": "spec",
+      "item": "No changes to src/codemie_tools/azure_devops/work_item/ or assistant_service.py's prompt assembly",
+      "status": "pass",
+      "notes": "Diff's changed files are limited to the new template YAML, preconfigured_skills.py, and test files."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards review not run; compact profile intentionally omits it for this round."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards review not run; compact profile intentionally omits it for this round."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards review not run; compact profile intentionally omits it for this round."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/external/deployment_scripts/preconfigured_skills.py",
+      "line": 186,
+      "title": "No ToolSet validation on skill toolkit name",
+      "problem": "_parse_template_toolkits accepts any string for a template's `toolkit` field; ToolKitDetails.toolkit is a bare str with no check against the ToolSet enum, so a misspelled or retired toolkit name (e.g. a future typo of 'Azure DevOps Work Item') parses successfully instead of being rejected.",
+      "impact": "ToolkitService._merge_skill_toolkits merges purely by matching the toolkit string, and get_core_tools/_initialize_toolkit_tools never re-validates it, so an invalid toolkit name silently reaches the assistant's merged toolkit list and never maps to any real tool: the skill-to-toolkit auto-attach this change exists to deliver no-ops with no error or log line anywhere.",
+      "recommendation": "In _parse_template_toolkits, reject (and log, matching the function's existing error-handling pattern) any entry whose 'toolkit' value is not a member of {t.value for t in ToolSet}, instead of letting ToolKitDetails accept an arbitrary string."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/external/deployment_scripts/preconfigured_skills.py",
+      "line": 224,
+      "title": "Toolkits overwritten with [] when parsing fails",
+      "problem": "On the update path, `updates['toolkits'] = _parse_template_toolkits(template)` is assigned unconditionally; _parse_template_toolkits returns [] both when a template legitimately has no toolkits and when parsing raises. Unlike the companion_files update two lines below, which only writes the key when _store_companion_files returns non-None, there is no equivalent guard for toolkits.",
+      "impact": "If a previously-valid template's toolkits entry ever becomes unparseable on a later deploy (bad YAML edit, a ToolKitDetails field change, etc.), the next startup's create_or_update_skill call silently replaces the existing skill's stored toolkits with an empty list, severing the skill-to-toolkit coupling this change introduces, with only a single error log line and no indication the stored value changed.",
+      "recommendation": "Make _parse_template_toolkits distinguish 'no toolkits' from 'parse failure' (e.g. return None on failure, like _store_companion_files), and only set updates['toolkits'] when the result is not None, preserving the existing stored value otherwise."
+    }
+  ]
+}

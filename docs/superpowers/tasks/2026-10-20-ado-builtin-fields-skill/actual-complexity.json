@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-21T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 11,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 5,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "Diffstat shows 5 files changed (1 new skill template YAML, 4 modified: the preconfigured-skills loader and 3 test files), mapping to the 4-6 file M band." },
+    { "dimension": "component_scope", "reason": "Production change is concentrated in one component — the preconfigured-skill loader's new _parse_template_toolkits validation path in src/external/deployment_scripts/preconfigured_skills.py — plus a declarative companion data file (the ADO work-item-fields skill template YAML). No other production files (e.g. SkillTool, ToolkitService) were modified; the related test files only exercise behavior those modules already supported." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

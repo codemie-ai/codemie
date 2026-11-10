@@ -15,11 +15,15 @@
 """Tests for preconfigured skills loader."""
 
 import pytest
+import yaml
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from codemie.core.models import SYSTEM_USER
+from codemie.rest_api.models.assistant import ToolKitDetails
 from codemie.rest_api.models.skill import Skill, SkillVisibility
+from codemie_tools.base.models import ToolSet
 from external.deployment_scripts.preconfigured_skills import (
     create_or_update_skill,
     get_preconfigured_skill_id_by_name,
@@ -166,6 +170,95 @@ class TestCreateOrUpdateSkill:
         assert 'project_management' in call_args['categories']
         assert 'invalid_category' not in call_args['categories']
         assert 'another_invalid' not in call_args['categories']
+
+    @patch('external.deployment_scripts.preconfigured_skills.SkillRepository.get_by_name_author_project')
+    @patch('external.deployment_scripts.preconfigured_skills.SkillRepository.create')
+    def test_create_passes_toolkits_through(self, mock_create, mock_get_by_name, mock_skill, skill_template):
+        """Test that a template's toolkits key is parsed and passed through on create."""
+        mock_get_by_name.return_value = None
+        mock_skill.id = 'new-skill-id'
+        mock_create.return_value = mock_skill
+
+        template = {
+            **skill_template,
+            'toolkits': [{"toolkit": "Azure DevOps Work Item", "tools": [], "label": "Azure DevOps Work Item"}],
+        }
+
+        create_or_update_skill(template)
+
+        call_args = mock_create.call_args[0][0]
+        assert call_args['toolkits'][0].toolkit == ToolSet.AZURE_DEVOPS_WORK_ITEM
+
+    @patch('external.deployment_scripts.preconfigured_skills.SkillRepository.get_by_name_author_project')
+    @patch('external.deployment_scripts.preconfigured_skills.SkillRepository.update')
+    def test_update_passes_toolkits_through(self, mock_update, mock_get_by_name, mock_skill, skill_template):
+        """Test that a template's toolkits key is parsed and passed through on update."""
+        mock_get_by_name.return_value = mock_skill
+        mock_update.return_value = mock_skill
+
+        template = {
+            **skill_template,
+            'toolkits': [{"toolkit": "Azure DevOps Work Item", "tools": [], "label": "Azure DevOps Work Item"}],
+        }
+
+        create_or_update_skill(template)
+
+        call_args = mock_update.call_args[0][1]
+        assert call_args['toolkits'][0].toolkit == ToolSet.AZURE_DEVOPS_WORK_ITEM
+
+    @patch('external.deployment_scripts.preconfigured_skills.SkillRepository.get_by_name_author_project')
+    @patch('external.deployment_scripts.preconfigured_skills.SkillRepository.create')
+    def test_a_malformed_toolkit_entry_falls_back_to_empty_instead_of_raising(
+        self, mock_create, mock_get_by_name, mock_skill, skill_template
+    ):
+        """A malformed toolkits entry must not raise and abort the whole startup pass."""
+        mock_get_by_name.return_value = None
+        mock_skill.id = 'new-skill-id'
+        mock_create.return_value = mock_skill
+
+        template = {**skill_template, 'toolkits': [{'not_a_valid_field': True}]}
+
+        skill_id = create_or_update_skill(template)
+
+        assert skill_id == mock_skill.id
+        assert mock_create.call_args[0][0]['toolkits'] == []
+
+    @patch('external.deployment_scripts.preconfigured_skills.SkillRepository.get_by_name_author_project')
+    @patch('external.deployment_scripts.preconfigured_skills.SkillRepository.create')
+    def test_an_unknown_toolkit_name_falls_back_to_empty_instead_of_being_accepted(
+        self, mock_create, mock_get_by_name, mock_skill, skill_template
+    ):
+        """A toolkit name that is not a real ToolSet member must not reach the merged toolkit list unnoticed."""
+        mock_get_by_name.return_value = None
+        mock_skill.id = 'new-skill-id'
+        mock_create.return_value = mock_skill
+
+        template = {
+            **skill_template,
+            'toolkits': [{"toolkit": "Azure Devops Work Itm", "tools": [], "label": "Typo'd toolkit"}],
+        }
+
+        skill_id = create_or_update_skill(template)
+
+        assert skill_id == mock_skill.id
+        assert mock_create.call_args[0][0]['toolkits'] == []
+
+    @patch('external.deployment_scripts.preconfigured_skills.SkillRepository.get_by_name_author_project')
+    @patch('external.deployment_scripts.preconfigured_skills.SkillRepository.update')
+    def test_update_preserves_existing_toolkits_when_template_toolkits_fail_to_parse(
+        self, mock_update, mock_get_by_name, mock_skill, skill_template
+    ):
+        """A later-broken toolkits entry must not wipe the skill's already-stored toolkits, matching the
+        companion_files update beside it which preserves the existing value on failure."""
+        mock_get_by_name.return_value = mock_skill
+        mock_update.return_value = mock_skill
+
+        template = {**skill_template, 'toolkits': [{'not_a_valid_field': True}]}
+
+        create_or_update_skill(template)
+
+        call_args = mock_update.call_args[0][1]
+        assert 'toolkits' not in call_args
 
 
 class TestManagePreconfiguredSkills:
@@ -321,3 +414,35 @@ class TestCompanionFilesAreStoredAsBlobs:
 
         mock_upload.assert_not_called()
         assert mock_update.call_args[0][1]['companion_files'] == []
+
+
+class TestAdoWorkItemFieldsTemplate:
+    """Tests for the azure-devops-work-item-fields preconfigured skill template."""
+
+    TEMPLATE_PATH = Path(__file__).resolve().parents[3] / "config/templates/skill/azure-devops-work-item-fields.yaml"
+
+    @pytest.fixture
+    def template(self):
+        with self.TEMPLATE_PATH.open(encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+    def test_template_declares_the_ado_work_item_toolkit(self, template):
+        assert template["name"] == "azure-devops-work-item-fields"
+        assert ToolKitDetails(**template["toolkits"][0]).toolkit == ToolSet.AZURE_DEVOPS_WORK_ITEM
+
+    def test_content_is_the_full_field_table_not_a_small_partial_list(self, template):
+        # Markdown table rows, discounting the header separator row.
+        assert template["content"].count("\n|") - 1 > 20
+
+    @patch(f'{_P}.SkillRepository.get_by_name_author_project')
+    @patch(f'{_P}.SkillRepository.create')
+    def test_create_or_update_skill_passes_the_template_toolkits_through(
+        self, mock_create, mock_get_by_name, mock_skill, template
+    ):
+        mock_get_by_name.return_value = None
+        mock_skill.id = 'ado-fields-skill-id'
+        mock_create.return_value = mock_skill
+
+        create_or_update_skill(template)
+
+        assert mock_create.call_args[0][0]['toolkits'][0].toolkit == ToolSet.AZURE_DEVOPS_WORK_ITEM

@@ -15,9 +15,11 @@
 """Unit tests for SkillTool: name-collision handling and the workspace path hint."""
 
 import inspect
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import yaml
 
 import codemie.agents.tools.skill.skill_tool as skill_tool_module
 from codemie.agents.tools.skill.skill_tool import SkillTool, create_skill_tool_if_needed
@@ -128,6 +130,26 @@ class TestWorkspaceHint:
             output = tool.execute("new-name")
 
         assert "body" in output
+
+
+def test_the_ado_fields_skill_returns_its_real_field_table():
+    """SkillTool.execute delivers the real, on-disk template content end-to-end."""
+    template_path = Path(__file__).resolve().parents[5] / "config/templates/skill/azure-devops-work-item-fields.yaml"
+    with template_path.open(encoding="utf-8") as f:
+        content = yaml.safe_load(f)["content"]
+
+    tool = _make_tool()
+    tool.available_skills = [{"id": "ado-1", "name": "azure-devops-work-item-fields", "description": "d"}]
+    skill = SimpleNamespace(id="ado-1", name="azure-devops-work-item-fields", content=content)
+
+    with (
+        patch("codemie.repository.skill_repository.SkillRepository.get_by_id", return_value=skill),
+        patch.object(SkillTool, "_send_metric"),
+        patch("codemie.agents.tools.skill.skill_tool.skill_location_hint", return_value=None),
+    ):
+        output = tool.execute("azure-devops-work-item-fields")
+
+    assert "System.Title" in output
 
 
 def test_the_skill_tool_module_does_not_reach_into_the_repository_or_the_seeder():

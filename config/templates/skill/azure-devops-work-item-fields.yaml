@@ -1,0 +1,133 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: azure-devops-work-item-fields
+description: >-
+  Reference table of built-in Azure DevOps work-item field REST names (e.g.
+  System.Title, System.AssignedTo) for constructing or updating the `fields`
+  object passed to Azure DevOps work-item create/update calls. Attaching this
+  skill automatically adds the Azure DevOps Work Item toolkit; enabling that
+  toolkit on its own does not attach this skill, so pair them explicitly when
+  configuring an assistant. Use when creating or updating an ADO work item, or
+  when the exact REST reference name of a field is needed.
+content: |-
+  ## Usage
+  Consult this table whenever building or updating the `fields` object for
+  `CreateWorkItemTool`/`UpdateWorkItemTool`. Field keys sent to Azure DevOps
+  must match the "REST Reference Name" column exactly.
+
+  Source: https://learn.microsoft.com/en-us/azure/devops/boards/work-items/guidance/work-item-field?view=azure-devops
+
+  | Display Name | REST Reference Name |
+  |---|---|
+  | Acceptance Criteria | `Microsoft.VSTS.Common.AcceptanceCriteria` |
+  | Activated By | `Microsoft.VSTS.Common.ActivatedBy` |
+  | Activated Date | `Microsoft.VSTS.Common.ActivatedDate` |
+  | Activity | `Microsoft.VSTS.Common.Activity` |
+  | Area ID | `System.AreaId` |
+  | Area Path | `System.AreaPath` |
+  | Assigned To | `System.AssignedTo` |
+  | Attached File Count | `System.AttachedFileCount` |
+  | Automated Test Storage | `Microsoft.VSTS.TCM.AutomatedTestStorage` |
+  | Automated Test Type | `Microsoft.VSTS.TCM.AutomatedTestType` |
+  | AutomatedTestId | `Microsoft.VSTS.TCM.AutomatedTestId` |
+  | AutomatedTestName | `Microsoft.VSTS.TCM.AutomatedTestName` |
+  | Automation Status | `Microsoft.VSTS.TCM.AutomationStatus` |
+  | Backlog Priority | `Microsoft.VSTS.Common.BacklogPriority` |
+  | Blocked | `Microsoft.VSTS.CMMI.Blocked` |
+  | Board Column | `System.BoardColumn` |
+  | Board Column Done | `System.BoardColumnDone` |
+  | Board Lane | `System.BoardLane` |
+  | Business Value | `Microsoft.VSTS.Common.BusinessValue` |
+  | Change Date | `System.ChangedDate` |
+  | Changed By | `System.ChangedBy` |
+  | Closed By | `Microsoft.VSTS.Common.ClosedBy` |
+  | Closed Date | `Microsoft.VSTS.Common.ClosedDate` |
+  | Comment Count | `System.CommentCount` |
+  | Committed | `Microsoft.VSTS.CMMI.Committed` |
+  | Completed Work | `Microsoft.VSTS.Scheduling.CompletedWork` |
+  | Created By | `System.CreatedBy` |
+  | Created Date | `System.CreatedDate` |
+  | Description | `System.Description` |
+  | Discipline | `Microsoft.VSTS.Common.Discipline` |
+  | Due Date | `Microsoft.VSTS.Scheduling.DueDate` |
+  | Effort | `Microsoft.VSTS.Scheduling.Effort` |
+  | Escalate | `Microsoft.VSTS.CMMI.Escalate` |
+  | External Link Count | `System.ExternalLinkCount` |
+  | Finish Date | `Microsoft.VSTS.Scheduling.FinishDate` |
+  | Found In | `Microsoft.VSTS.Build.FoundIn` |
+  | History | `System.History` |
+  | Hyperlink Count | `System.HyperLinkCount` |
+  | ID | `System.Id` |
+  | Integration Build | `Microsoft.VSTS.Build.IntegrationBuild` |
+  | Issue | `Microsoft.VSTS.Common.Issue` |
+  | Iteration ID | `System.IterationId` |
+  | Iteration Path | `System.IterationPath` |
+  | Link Comment | `System.Links.Comment` |
+  | Link Description | `System.Links.Description` |
+  | LocalDataSource | `Microsoft.VSTS.TCM.LocalDataSource` |
+  | Node Name | `System.NodeName` |
+  | Original Estimate | `Microsoft.VSTS.Scheduling.OriginalEstimate` |
+  | Parameters | `Microsoft.VSTS.TCM.Parameters` |
+  | Parent | `System.Parent` |
+  | Priority | `Microsoft.VSTS.Common.Priority` |
+  | Query Text | `Microsoft.VSTS.TCM.QueryText` |
+  | Reason | `System.Reason` |
+  | Related Link Count | `System.RelatedLinkCount` |
+  | Remaining Work | `Microsoft.VSTS.Scheduling.RemainingWork` |
+  | Remote Link Count | `System.RemoteLinkCount` |
+  | Repro Steps (or Steps to reproduce) | `Microsoft.VSTS.TCM.ReproSteps` |
+  | Requires Review | `Microsoft.VSTS.CMMI.RequiresReview` |
+  | Requires Test | `Microsoft.VSTS.CMMI.RequiresTest` |
+  | Resolution | `Microsoft.VSTS.Common.Resolution` |
+  | Resolved By | `Microsoft.VSTS.Common.ResolvedBy` |
+  | Resolved Date | `Microsoft.VSTS.Common.ResolvedDate` |
+  | Resolved Reason | `Microsoft.VSTS.Common.ResolvedReason` |
+  | Rev | `System.Rev` |
+  | Reviewed By | `Microsoft.VSTS.Common.ReviewedBy` |
+  | Revised Date | `System.RevisedDate` |
+  | Risk | `Microsoft.VSTS.Common.Risk` |
+  | Severity | `Microsoft.VSTS.Common.Severity` |
+  | Size | `Microsoft.VSTS.Scheduling.Size` |
+  | Stack Rank | `Microsoft.VSTS.Common.StackRank` |
+  | Start Date | `Microsoft.VSTS.Scheduling.StartDate` |
+  | State | `System.State` |
+  | State Change Date | `Microsoft.VSTS.Common.StateChangeDate` |
+  | Steps | `Microsoft.VSTS.TCM.Steps` |
+  | Story Points | `Microsoft.VSTS.Scheduling.StoryPoints` |
+  | System Info | `Microsoft.VSTS.TCM.SystemInfo` |
+  | Tags | `System.Tags` |
+  | Target Date | `Microsoft.VSTS.Scheduling.TargetDate` |
+  | Task Type | `Microsoft.VSTS.CMMI.TaskType` |
+  | Team Project | `System.TeamProject` |
+  | Test Suite Audit | `Microsoft.VSTS.TCM.TestSuiteAudit` |
+  | Test Suite Type | `Microsoft.VSTS.TCM.TestSuiteType` |
+  | Test Suite Type ID | `Microsoft.VSTS.TCM.TestSuiteTypeId` |
+  | Time Criticality | `Microsoft.VSTS.Common.TimeCriticality` |
+  | Title | `System.Title` |
+  | Triage | `Microsoft.VSTS.Common.Triage` |
+  | Value Area | `Microsoft.VSTS.Common.ValueArea` |
+  | Watermark | `System.Watermark` |
+  | Work Item Type | `System.WorkItemType` |
+
+project: codemie
+visibility: public
+categories:
+  - development
+  - project_management
+toolkits:
+  - toolkit: "Azure DevOps Work Item"
+    tools: []
+    label: "Azure DevOps Work Item"
+    settings_config: true

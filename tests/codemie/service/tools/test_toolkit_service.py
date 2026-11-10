@@ -1935,6 +1935,22 @@ class TestMergeSkillToolkits:
         # Smart lookup should NOT be called because selected_toolkits is non-empty
         mock_lookup.get_tools_by_query.assert_not_called()
 
+    def test_merges_the_real_ado_work_item_toolkit_from_an_attached_skill(self):
+        """A real ToolKitDetails/ToolSet pair attached via a skill reaches the merge output.
+
+        Unlike this class's other tests, this uses a real ToolKitDetails/ToolSet pair (not a
+        bare Mock), so the test actually fails if the enum value or the merge logic drifts.
+        """
+        ado_toolkit = ToolKitDetails(toolkit=ToolSet.AZURE_DEVOPS_WORK_ITEM, tools=[], label="Azure DevOps Work Item")
+        assistant = self._make_assistant(skill_ids=["skill-1"], toolkits=[])
+        skill = self._make_skill("skill-1", toolkits=[ado_toolkit])
+
+        with patch("codemie.service.skills.skill_contributions.SkillRepository") as mock_repo:
+            mock_repo.get_by_ids.return_value = [skill]
+            result = ToolkitService._merge_skill_toolkits(assistant)
+
+        assert any(tk.toolkit == ToolSet.AZURE_DEVOPS_WORK_ITEM for tk in result)
+
 
 # =============================================================================
 # Merge Skill MCP Servers Tests

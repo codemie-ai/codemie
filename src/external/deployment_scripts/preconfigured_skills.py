@@ -32,9 +32,11 @@ from codemie.configs import config, logger
 from codemie.core.models import SYSTEM_USER
 from codemie.repository.repository_factory import FileRepositoryFactory
 from codemie.repository.skill_repository import SkillRepository
+from codemie.rest_api.models.assistant import ToolKitDetails
 from codemie.rest_api.models.skill import SkillCategory, SkillCompanionFilePayload, SkillVisibility
 from codemie.rest_api.utils.default_applications import CODEMIE_PROJECT_NAME
 from codemie.service.skill_service import SkillService
+from codemie_tools.base.models import ToolSet
 
 # skill_name -> UUID of skills created/updated from templates (for later use if needed)
 preconfigured_skill_ids: dict[str, str] = {}
@@ -175,6 +177,29 @@ def _store_companion_files(
         return None
 
 
+def _parse_template_toolkits(template: dict) -> list[ToolKitDetails] | None:
+    """Parse a template's `toolkits` key into validated ToolKitDetails, never raising.
+
+    Returns None when parsing fails (malformed entry, or a toolkit name that is not a
+    known ToolSet member), so the caller can keep whatever the skill already has instead
+    of silently wiping it — the same contract as ``_store_companion_files``. A malformed
+    entry must not abort the whole preconfigured-skills startup pass either way: it is
+    logged here, and the caller falls back to an empty list for this one skill on create.
+    """
+    valid_toolkit_names = {toolset.value for toolset in ToolSet}
+    try:
+        parsed_toolkits = []
+        for tk in template.get('toolkits', []):
+            toolkit_details = ToolKitDetails(**tk)
+            if toolkit_details.toolkit not in valid_toolkit_names:
+                raise ValueError(f"Unknown toolkit '{toolkit_details.toolkit}'")
+            parsed_toolkits.append(toolkit_details)
+        return parsed_toolkits
+    except Exception as e:
+        logger.error(f"Invalid 'toolkits' entry for skill '{template.get('name')}': {e}")
+        return None
+
+
 def create_or_update_skill(template: dict) -> str | None:
     """
     Create a preconfigured skill from template if it doesn't exist, or update if it does.
@@ -208,6 +233,9 @@ def create_or_update_skill(template: dict) -> str | None:
             "visibility": SkillVisibility(template.get("visibility", "public")),
             "categories": categories,
         }
+        parsed_toolkits = _parse_template_toolkits(template)
+        if parsed_toolkits is not None:
+            updates["toolkits"] = parsed_toolkits
         companion_files = _store_companion_files(existing_skill.id, template, existing_skill.companion_files)
         if companion_files is not None:
             updates["companion_files"] = companion_files
@@ -231,6 +259,7 @@ def create_or_update_skill(template: dict) -> str | None:
         "created_by": SYSTEM_USER,
         "categories": categories,
         "companion_files": [],
+        "toolkits": _parse_template_toolkits(template) or [],
     }
 
     try:

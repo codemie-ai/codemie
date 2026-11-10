@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "task": "Ship the ADO built-in work-item field name table as a Skill (paired with the existing ADO work-item toolkit) instead of pasting it into the system prompt.",
+  "generated": "2026-10-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "requirements_clarity", "reason": "Two real design gaps are open, not just minor confirmations: (1) the ticket's authoritative field list comes from an external Microsoft Learn page that could not be fetched during research, so the exact content is unsourced; (2) the 'tools and skill must be provided together' requirement has no existing toolkit→skill enforcement mechanism in the codebase (only skill→toolkit exists via Skill.toolkits) — whether this is enforced in code or left as documentation is an unmade decision that carries rework risk." },
+    { "dimension": "component_scope", "reason": "Deliverable is a single new preconfigured-skill template (config/templates/skill/) following an established 7-template pattern and the unmodified Skill→SkillTool runtime path; no new tool or toolkit code is required for the core ask." },
+    { "dimension": "technical_risk", "reason": "Closest existing pattern is the 7 existing YAML skill templates seeded via manage_preconfigured_skills() — a mature, well-tested mechanism. Content-only change, no auth/authz, no performance-critical path, easy rollback (revert the template file)." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
