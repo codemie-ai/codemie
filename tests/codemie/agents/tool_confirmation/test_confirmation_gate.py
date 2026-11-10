@@ -32,12 +32,11 @@ from langgraph.prebuilt import create_react_agent
 from langgraph.types import Command
 from langgraph_supervisor import create_supervisor
 
-from codemie.agents.tool_confirmation.call_identity import assign_call_identities
+from codemie.agents.tool_confirmation.call_identity import CallIdentity
 from codemie.agents.tool_confirmation.models import DecisionItem, applied_decisions
 from codemie.agents.tool_confirmation.confirmation_gate import (
     DECISIONS_CONFIG_KEY,
     GateInterrupt,
-    _with_wire_ids,
     build_confirmation_hook,
     build_decision_carrier,
 )
@@ -306,7 +305,7 @@ def test_nested_pending_event_carries_the_agent_location_and_its_handoff_contain
     assert by_id["w3"].event.location.parent_thought_id == str(uuid.uuid5(uuid.NAMESPACE_URL, "sup_b"))
 
 
-def test_identity_only_hook_rewrites_repeated_ids_in_place_and_never_pauses():
+def test_identity_only_hook_never_rewrites_repeated_ids_and_never_pauses():
     saver, thread = InMemorySaver(), str(uuid.uuid4())
     graph = _root(ToolCallPolicy.ASK_FOR_APPROVAL, [("write_tool", "c0"), ("write2_tool", "c0")], saver, False)
 
@@ -317,14 +316,74 @@ def test_identity_only_hook_rewrites_repeated_ids_in_place_and_never_pauses():
     messages = _messages(graph, thread)
     ai_messages = [m for m in messages if isinstance(m, AIMessage) and m.tool_calls]
     assert len(ai_messages) == 1
-    expected = [i.wire_id for i in assign_call_identities([], ai_messages[0], "")]
-    wire_ids = [c["id"] for c in ai_messages[0].tool_calls]
-    assert wire_ids == expected
-    assert wire_ids[0] == "c0" and wire_ids[1] != "c0"
-    assert sorted(m.tool_call_id for m in messages if isinstance(m, ToolMessage)) == sorted(wire_ids)
+    assert [c["id"] for c in ai_messages[0].tool_calls] == ["c0", "c0"]
+    assert [m.tool_call_id for m in messages if isinstance(m, ToolMessage)] == ["c0", "c0"]
 
 
-def test_pausing_gate_shows_rewritten_ids_and_resume_runs_each_once():
+LITELLM_ID = "call_3f2a9c1e-7b4d-4e8a-9c2f-1d6b5a8e0f11__thought__AbC123"
+
+
+def test_identity_only_hook_never_touches_the_ai_message_whatever_its_ids():
+    ai = AIMessage(
+        content="",
+        id="m1",
+        tool_calls=[
+            {"name": "write_tool", "args": {}, "id": "", "type": "tool_call"},
+            {"name": "write2_tool", "args": {}, "id": LITELLM_ID, "type": "tool_call"},
+        ],
+    )
+    hook = build_confirmation_hook(
+        ToolCallPolicy.ASK_FOR_APPROVAL, _tools(), is_subagent=False, pauses_own_calls=False, resumable=True
+    )
+
+    result = hook({"messages": [HumanMessage("go"), ai]}, {"configurable": {}})
+
+    assert result.get("messages") == []
+    assert [c["id"] for c in ai.tool_calls] == ["", LITELLM_ID]
+
+
+def test_gemini_shaped_ids_are_never_rewritten_and_each_decision_resolves_through_its_carrier_key():
+    from unittest.mock import patch
+
+    ai = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "write_tool", "args": {}, "id": "call_g1_thought_sigAAA", "type": "tool_call"},
+            {"name": "read_tool", "args": {}, "id": "call_g2_thought_sigBBB", "type": "tool_call"},
+        ],
+    )
+    hook = build_confirmation_hook(
+        ToolCallPolicy.APPROVE_FOR_ME, _tools(), is_subagent=False, pauses_own_calls=True, resumable=True
+    )
+    captured: list = []
+    with patch(
+        "codemie.agents.tool_confirmation.confirmation_gate.interrupt",
+        side_effect=lambda value: captured.append(value) or "ack",
+    ):
+        hook({"messages": [HumanMessage("go"), ai]}, {"configurable": {}})
+
+    gate_calls = GateInterrupt.model_validate(captured[0]).calls
+    assert [(c.tool_call_id, c.decision) for c in gate_calls] == [
+        ("call_g1_thought_sigAAA", None),
+        ("call_g2_thought_sigBBB", "allow"),
+    ]
+    assert gate_calls[0].carrier_key == CallIdentity(wire_id="call_g1_thought_sigAAA", location_key="").carrier_key
+
+    carrier = _carrier(gate_calls, lambda c: "deny")
+    result = hook({"messages": [HumanMessage("go"), ai]}, {"configurable": {DECISIONS_CONFIG_KEY: carrier}})
+
+    assert [(m.tool_call_id, m.name) for m in result["messages"]] == [("call_g1_thought_sigAAA", "write_tool")]
+    assert [c["id"] for c in ai.tool_calls] == ["call_g1_thought_sigAAA", "call_g2_thought_sigBBB"]
+
+
+def test_pausing_gate_never_rewrites_colliding_ids_and_decides_each_call_by_its_identity():
+    """AC7d: the gate itself never rewrites colliding ids and decides each by its own identity.
+
+    LangGraph's own ``post_model_hook_router`` then matches a pending call to a ``ToolMessage`` by raw id
+    (spec Open risk): once one of two colliding calls is denied, the router sees the shared raw id as
+    already answered and routes neither call to "tools". That router behavior, not the gate's, is why
+    ``write_tool`` never runs here.
+    """
     saver, thread = InMemorySaver(), str(uuid.uuid4())
     calls = [("write_tool", "c0"), ("write2_tool", "c0")]
     graph = _root(ToolCallPolicy.ASK_FOR_APPROVAL, calls, saver)
@@ -334,12 +393,35 @@ def test_pausing_gate_shows_rewritten_ids_and_resume_runs_each_once():
     ids = [c.tool_call_id for c in gate_calls]
     assert ids[0] == "c0" and ids[1] != "c0"
     assert gate_calls[0].event.all_tool_call_ids == ids
+    assert [c["id"] for c in _messages(graph, thread)[-1].tool_calls] == ["c0", "c0"]
 
     resumed = _root(ToolCallPolicy.ASK_FOR_APPROVAL, calls, saver)
     carrier = _carrier(gate_calls, lambda c: "allow" if c.tool_call_id == "c0" else "deny")
     _run(resumed, Command(resume={i.id: "ack" for i in pending}), _cfg(thread, carrier))
 
+    assert _tool_counts() == {}
+    denial = [m for m in _messages(resumed, thread) if isinstance(m, ToolMessage) and m.content == DENIED_MESSAGE]
+    assert [m.tool_call_id for m in denial] == ["c0"]
+
+
+def test_gemini_shaped_id_pauses_resumes_and_is_never_rewritten():
+    saver, thread = InMemorySaver(), str(uuid.uuid4())
+    calls = [("write_tool", "call_g3_thought_sigCCC")]
+    graph = _root(ToolCallPolicy.ASK_FOR_APPROVAL, calls, saver)
+    _run(graph, {"messages": [HumanMessage("go")]}, _cfg(thread))
+    pending = _pending(graph, thread)
+    gate_calls = _gate_calls(pending)
+    assert [c.tool_call_id for c in gate_calls] == ["call_g3_thought_sigCCC"]
+
+    resumed = _root(ToolCallPolicy.ASK_FOR_APPROVAL, calls, saver)
+    _run(resumed, Command(resume={i.id: "ack" for i in pending}), _cfg(thread, _carrier(gate_calls, lambda c: "allow")))
+
     assert _tool_counts() == {"tool:write_tool": 1}
+    messages = _messages(resumed, thread)
+    ai_message = next(m for m in messages if isinstance(m, AIMessage) and m.tool_calls)
+    assert [c["id"] for c in ai_message.tool_calls] == ["call_g3_thought_sigCCC"]
+    tool_result = next(m for m in messages if isinstance(m, ToolMessage))
+    assert tool_result.tool_call_id == "call_g3_thought_sigCCC"
 
 
 def test_replayed_handoff_puts_the_pause_under_the_latest_delegation_step():
@@ -393,42 +475,3 @@ def test_replayed_handoff_puts_the_pause_under_the_latest_delegation_step():
         event=call.event,
     )
     assert _container_id(item) == latest  # the waiting step's parent_id
-
-
-def _use(block_id: str) -> dict:
-    return {"type": "tool_use", "id": block_id, "name": "t", "input": {}}
-
-
-def _call(call_id: str) -> dict:
-    return {"name": "t", "args": {}, "id": call_id, "type": "tool_call"}
-
-
-def test_tool_use_blocks_are_rewritten_by_id_and_unrelated_blocks_stay():
-    unrelated = _use("other")
-    ai = AIMessage(
-        content=[{"type": "text", "text": "x"}, _use("a"), unrelated, _use("b")],
-        tool_calls=[_call("a"), _call("b")],
-    )
-
-    result = _with_wire_ids(ai, ["w1", "w2"])
-
-    assert [c["id"] for c in result.tool_calls] == ["w1", "w2"]
-    assert [b.get("id") for b in result.content[1:]] == ["w1", "other", "w2"]
-    assert result.content[2] == unrelated
-
-
-def test_tool_use_blocks_in_another_order_are_matched_by_id_not_position():
-    ai = AIMessage(content=[_use("b"), _use("a")], tool_calls=[_call("a"), _call("b")])
-
-    result = _with_wire_ids(ai, ["w1", "w2"])
-
-    assert [b["id"] for b in result.content] == ["w2", "w1"]
-
-
-def test_tool_use_blocks_sharing_one_raw_id_take_the_wire_ids_of_their_calls_in_order():
-    ai = AIMessage(content=[_use("a"), _use("a")], tool_calls=[_call("a"), _call("a")])
-
-    result = _with_wire_ids(ai, ["w1", "w2"])
-
-    assert [c["id"] for c in result.tool_calls] == ["w1", "w2"]
-    assert [b["id"] for b in result.content] == ["w1", "w2"]

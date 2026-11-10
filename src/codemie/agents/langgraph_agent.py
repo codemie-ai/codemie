@@ -52,6 +52,7 @@ from codemie.agents.langgraph_event_adapter import (
     LangGraphEventAdapter,
     get_truncation_indicator,
 )
+from codemie.agents.tool_confirmation.call_identity import confirmation_state_schema
 from codemie.agents.tool_confirmation.models import ToolCallPendingEvent
 from codemie.agents.tool_confirmation.tool_call_confirmation_mixin import ToolCallConfirmationMixin
 from codemie.agents.tools.agent import WorkspaceAwareAgent
@@ -369,6 +370,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 _build_truncation_abort_pre_model_hook(self),
             ),
             post_model_hook=self._confirmation_hook(all_tools),
+            # The gate's call identities must survive the graph's update reducer (see ConfirmationAgentState).
+            state_schema=confirmation_state_schema(self.output_schema),
         )
 
         if self.is_subagent:
@@ -1724,8 +1727,10 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             truncation_reason=truncation_indicator,
         )
 
-    def _parse_tool_message(self, action: ToolMessage, author: str | None = None, location_key: str = ""):
-        self._event_adapter.parse_tool_message(action, author=author, location_key=location_key)
+    def _parse_tool_message(
+        self, action: ToolMessage, author: str | None = None, location_key: str = "", wire_id: str | None = None
+    ):
+        self._event_adapter.parse_tool_message(action, author=author, location_key=location_key, wire_id=wire_id)
 
     def _process_agent_streaming(self, token, chunks_collector: list[str], run_id: str, author: str | None = None):
         self._event_adapter.process_agent_streaming(token, chunks_collector, run_id, author=author)

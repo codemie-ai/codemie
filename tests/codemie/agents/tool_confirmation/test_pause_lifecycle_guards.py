@@ -24,10 +24,12 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from codemie.agents.langgraph_agent import LangGraphAgent
 from codemie.agents.langgraph_event_adapter import LangGraphEventAdapter
+from codemie.agents.tool_confirmation.call_identity import CallIdentity, RoutedCall, assign_call_identities
 from codemie.agents.tool_confirmation.confirmation_gate import GateCall
 from codemie.agents.tool_confirmation.models import ToolCallPendingEvent, applied_decisions
 from codemie.agents.tool_confirmation.stream_steps import ConfirmationStepRouter
 from codemie.agents.tool_confirmation.tool_call_confirmation_mixin import ToolCallConfirmationMixin
+from codemie.core.tool_step_states import DENIED_MESSAGE
 from codemie.core.thread import ThreadedGenerator
 
 _LG = "codemie.agents.langgraph_agent"
@@ -112,11 +114,17 @@ def test_a_plain_agents_tool_result_replays_the_resumed_tool_start():
 
     adapter.parse_update_type({"tools": {"messages": [result]}})
 
-    agent._replay_tool_start_on_resume.assert_called_once_with(result)
-    agent._parse_tool_message.assert_called_once_with(result)
+    agent._replay_tool_start_on_resume.assert_called_once_with(result, wire_id="call_1")
+    agent._parse_tool_message.assert_called_once_with(result, wire_id="call_1")
 
 
 # --- CR-005: deferred steps are never overwritten or lost ----------------------------------------------------
+
+
+def _routed(ai: AIMessage, location_key: str) -> list[RoutedCall]:
+    """The gate's ``codemie_call_identities`` for ``ai``: each raw id beside its identity."""
+    identities = assign_call_identities([], ai, location_key)
+    return [RoutedCall(raw_id=call["id"], identity=identity) for call, identity in zip(ai.tool_calls, identities)]
 
 
 def _router():
@@ -155,6 +163,115 @@ def test_steps_still_deferred_when_the_stream_ends_are_started():
     assert started == [["c1"]]
     router.flush_deferred()
     assert started == [["c1"]], "a flushed step is started once"
+
+
+def test_a_shared_raw_id_still_gets_distinct_step_run_ids():
+    router, started = _router()
+    ai = AIMessage(
+        content="",
+        id="m1",
+        tool_calls=[
+            {"name": "w", "args": {}, "id": "c0", "type": "tool_call"},
+            {"name": "w", "args": {}, "id": "c0", "type": "tool_call"},
+        ],
+    )
+    router.defer((), ai, None, "", supervisor=False)
+    routed = _routed(ai, "")
+    identities = [call.identity for call in routed]
+
+    router.consume_identity_chunk(
+        {"post_model_hook": {"messages": [], "codemie_call_identities": routed}}, namespace_key=""
+    )
+
+    assert started == [[i.wire_id for i in identities]]
+    assert started[0][0] != started[0][1]
+    assert router.resolve_wire_id("c0") == identities[0].wire_id
+    assert router.resolve_wire_id("c0") == identities[1].wire_id
+
+
+def test_a_raw_id_shared_by_two_agents_resolves_within_each_agents_own_location():
+    """CR-002: the wire-id queue is per location, so another agent's call with the same raw id never shifts it."""
+    router, _ = _router()
+    root_ai = _ai("m1", "c0")
+    sub_ai = _ai("m2", "c0")
+    router.defer((), root_ai, None, "", supervisor=False)
+    router.defer(("sub:1",), sub_ai, "sub", "loc-sub", supervisor=True)
+    root_identities = _routed(root_ai, "")
+    sub_identities = _routed(sub_ai, "loc-sub")
+
+    router.consume_identity_chunk(
+        {"post_model_hook": {"messages": [], "codemie_call_identities": root_identities}}, namespace_key=""
+    )
+    router.consume_identity_chunk(
+        {"post_model_hook": {"messages": [], "codemie_call_identities": sub_identities}},
+        namespace_key=router.namespace_key(("sub:1",)),
+    )
+
+    # The subagent's result arrives first; it must not take the root's wire id queued earlier.
+    assert router.resolve_wire_id("c0", "loc-sub") == sub_identities[0].identity.wire_id
+    assert router.resolve_wire_id("c0", "") == root_identities[0].identity.wire_id
+
+
+def test_a_denied_calls_wire_id_is_not_left_for_a_later_round_with_the_same_raw_id():
+    """CR-004: a denied call never reaches tools, so its queued wire id must not outlive its round."""
+    router, _ = _router()
+    denied_ai = _ai("m1", "c0")
+    router.defer((), denied_ai, None, "", supervisor=False)
+    router.consume_identity_chunk(
+        {
+            "post_model_hook": {
+                "messages": [ToolMessage(content=DENIED_MESSAGE, tool_call_id="c0", name="w")],
+                "codemie_call_identities": [
+                    RoutedCall(raw_id="c0", identity=CallIdentity(wire_id="w1", location_key=""))
+                ],
+            }
+        },
+        namespace_key="",
+    )
+
+    allowed_ai = _ai("m2", "c0")
+    router.defer((), allowed_ai, None, "", supervisor=False)
+    router.consume_identity_chunk(
+        {
+            "post_model_hook": {
+                "messages": [],
+                "codemie_call_identities": [
+                    RoutedCall(raw_id="c0", identity=CallIdentity(wire_id="w2", location_key=""))
+                ],
+            }
+        },
+        namespace_key="",
+    )
+
+    assert router.resolve_wire_id("c0") == "w2"
+
+
+def test_a_gate_output_with_no_deferred_step_still_maps_its_raw_ids_to_wire_ids():
+    """A resume re-runs the gate but never re-streams the AI message: the tool result still resolves to the wire id."""
+    router, started = _router()
+    routed = [RoutedCall(raw_id="raw-long", identity=CallIdentity(wire_id="wire_1", location_key="loc-s"))]
+
+    router.consume_identity_chunk(
+        {"post_model_hook": {"messages": [], "codemie_call_identities": routed}},
+        namespace_key=router.namespace_key(("s:1",)),
+    )
+
+    assert started == [], "no step to start"
+    assert router.resolve_wire_id("raw-long", "loc-s") == "wire_1"
+    assert router.resolve_wire_id("raw-long", "loc-s") == "raw-long", "queued once"
+
+
+def test_a_gate_output_with_a_deferred_step_queues_each_wire_id_once():
+    router, started = _router()
+    ai = _ai("m1", "raw-long")
+    router.defer((), ai, None, "", supervisor=False)
+    routed = [RoutedCall(raw_id="raw-long", identity=CallIdentity(wire_id="wire_1", location_key=""))]
+
+    router.consume_identity_chunk({"post_model_hook": {"messages": [], "codemie_call_identities": routed}}, "")
+
+    assert started == [["wire_1"]]
+    assert router.resolve_wire_id("raw-long") == "wire_1"
+    assert router.resolve_wire_id("raw-long") == "raw-long", "the step start does not queue it a second time"
 
 
 # --- CR-006 / CR-007: the gate's items --------------------------------------------------------------------

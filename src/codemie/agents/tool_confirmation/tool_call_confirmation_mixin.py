@@ -357,15 +357,21 @@ class ToolCallConfirmationMixin:
             "thread_id": "thread",
         }
 
-    def _replay_tool_start_on_resume(self, action: Any, author: str | None = None, location_key: str = "") -> None:
+    def _replay_tool_start_on_resume(
+        self, action: Any, author: str | None = None, location_key: str = "", wire_id: str | None = None
+    ) -> None:
         """Fire _on_tool_start retroactively for an allowed call on the resume path.
 
         On resume LangGraph doesn't re-emit the agent chunk with tool_calls, so
         _on_tool_start is never called. We fire it here from the allowed call's stored
         event so that _on_tool_end can find and close the thought. The step id is the call
         identity's step key, so a nested call's step is the one the paused turn streamed.
+
+        ``wire_id`` is the call's wire id, which the stored events are keyed by; the tool message keeps the raw id,
+        so the caller resolves it first. ``None`` means the raw id is the wire id.
         """
-        step_key = CallIdentity(wire_id=action.tool_call_id or "", location_key=location_key).step_key
+        wire_id = (action.tool_call_id or "") if wire_id is None else wire_id
+        step_key = CallIdentity(wire_id=wire_id, location_key=location_key).step_key
         event = (self.tool_pending_events or {}).pop(step_key, None)
         if event is None:
             return

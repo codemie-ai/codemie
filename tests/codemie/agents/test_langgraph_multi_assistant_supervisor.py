@@ -737,7 +737,7 @@ class TestLangGraphMultiAssistantSupervisor:
 
         supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
 
-        supervisor_agent._parse_tool_message.assert_called_once_with(tool_message, author=None)
+        supervisor_agent._parse_tool_message.assert_called_once_with(tool_message, author=None, wire_id="call-123")
 
     def test_parse_supervisor_update_type_dedups_subagent_echo_by_name(self, supervisor_agent):
         """CR-007: the top-level echo of a completed subagent branch must be recognized by
@@ -770,7 +770,7 @@ class TestLangGraphMultiAssistantSupervisor:
 
         supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
 
-        supervisor_agent._parse_tool_message.assert_called_once_with(tool_message, author=None)
+        supervisor_agent._parse_tool_message.assert_called_once_with(tool_message, author=None, wire_id="call-123")
 
     def test_parse_supervisor_update_type_echo_only_still_returns_early(self, supervisor_agent):
         """Companion to R3-CR-006: when the update carries nothing but subagent echoes

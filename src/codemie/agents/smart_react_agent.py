@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from codemie.agents.langgraph_patches import _patch_generate_structured_response_node
 from codemie.agents.smart_tool_selector import SmartToolSelector
 from codemie.agents.smart_tool_state import SmartToolState, ToolRegistry
+from codemie.agents.tool_confirmation.call_identity import confirmation_state_schema
 from codemie.configs import config
 from codemie.configs.logger import logger
 
@@ -160,6 +161,8 @@ def _create_standard_react_agent(
         name=name,
         pre_model_hook=pre_model_hook,
         post_model_hook=post_model_hook,
+        # The gate's call identities must survive the graph's update reducer (see ConfirmationAgentState).
+        state_schema=confirmation_state_schema(response_format),
     )
     _patch_generate_structured_response_node(compiled)
     return compiled
@@ -386,6 +389,8 @@ def _create_sub_agent(
         name=name,
         pre_model_hook=pre_model_hook,
         post_model_hook=post_model_hook,
+        # The gate's call identities must survive the graph's update reducer (see ConfirmationAgentState).
+        state_schema=confirmation_state_schema(response_format),
     )
     _patch_generate_structured_response_node(compiled)
     return compiled

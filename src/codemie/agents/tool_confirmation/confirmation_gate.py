@@ -17,7 +17,7 @@
 The hook runs after the model and before routing, so before any tool task of the AI message is scheduled.
 It re-runs from the top on resume, so it is deterministic and has no side effects before ``interrupt()``:
 
-1. assign call identities and rewrite the AI message in place (same message id);
+1. assign call identities on the side, never rewriting the AI message (its ids go back to the provider as sent);
 2. read each call's carried decision, used only when its ``ns`` is this gate's own ``checkpoint_ns``;
 3. classify with the policy and ``is_safe`` only the calls without a carried decision;
 4. ``interrupt()`` once with every call of the message if any call is undecided;
@@ -33,7 +33,6 @@ never in the resume value, which is ``"ack"`` for every pending interrupt id.
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Callable, Literal
 
@@ -45,6 +44,7 @@ from pydantic import BaseModel
 
 from codemie.agents.tool_confirmation.call_identity import (
     CallIdentity,
+    RoutedCall,
     assign_call_identities,
     location_key_from_namespace,
 )
@@ -156,23 +156,53 @@ def _gate_update(
     configurable = config.get("configurable") or {}
     checkpoint_ns = configurable.get("checkpoint_ns") or ""
     location_key = location_key_from_namespace(checkpoint_ns) if is_subagent else ""
+    calls = ai_message.tool_calls
     identities = assign_call_identities(messages, ai_message, location_key)
-    identified = _with_wire_ids(ai_message, [identity.wire_id for identity in identities])
-    update: list[BaseMessage] = [identified] if identified is not ai_message else []
-    if not pauses_own_calls:
-        return {"messages": update} if update else {}
+    denials: list[BaseMessage] = []
 
-    carried = _carried_decisions(configurable.get(DECISIONS_CONFIG_KEY), identities, checkpoint_ns)
-    calls = identified.tool_calls
-    decisions: list[_Outcome] = list(_call_decisions(policy, tools_by_name, calls, carried))
-    if not resumable:
-        decisions = ["unavailable" if decision is None else decision for decision in decisions]
-    if any(decision is None for decision in decisions):
-        gate_interrupt = _gate_interrupt(calls, decisions, messages, is_subagent, location_key, checkpoint_ns)
-        interrupt(gate_interrupt.model_dump(mode="json"))
+    if pauses_own_calls:
+        carrier = configurable.get(DECISIONS_CONFIG_KEY)
+        decisions = _gate_decisions(policy, tools_by_name, calls, identities, carrier, checkpoint_ns, resumable)
+        if any(decision is None for decision in decisions):
+            gate_interrupt = _gate_interrupt(
+                calls, identities, decisions, messages, is_subagent, location_key, checkpoint_ns
+            )
+            interrupt(gate_interrupt.model_dump(mode="json"))
+        denials = _denials(calls, decisions)
 
-    update.extend(_denials(calls, decisions))
-    return {"messages": update} if update else {}
+    return _hook_update(calls, identities, denials)
+
+
+def _gate_decisions(
+    policy: ToolCallPolicy,
+    tools_by_name: Mapping[str, BaseTool],
+    calls: list[dict[str, Any]],
+    identities: Sequence[CallIdentity],
+    carrier: Any,
+    checkpoint_ns: str,
+    resumable: bool,
+) -> list[_Outcome]:
+    """Each call's outcome in this pass; in a run that cannot be resumed an undecided call is unavailable."""
+    carried = _carried_decisions(carrier, identities, checkpoint_ns)
+    decisions: list[_Outcome] = list(_call_decisions(policy, tools_by_name, calls, identities, carried))
+    if resumable:
+        return decisions
+    return ["unavailable" if decision is None else decision for decision in decisions]
+
+
+def _hook_update(
+    calls: list[dict[str, Any]], identities: Sequence[CallIdentity], denials: list[BaseMessage]
+) -> dict[str, Any]:
+    """The hook's state update: its denials and each call's identity, or nothing when there is neither to report.
+
+    Each raw id travels beside its identity, so the stream can read a tool result's raw id back to its wire id on any
+    pass, including a resume, where no AI message is re-streamed.
+    """
+    raw_ids = [call.get("id") or "" for call in calls]
+    if not denials and all(identity.wire_id == raw for raw, identity in zip(raw_ids, identities, strict=True)):
+        return {}
+    routed = [RoutedCall(raw_id=raw, identity=identity) for raw, identity in zip(raw_ids, identities, strict=True)]
+    return {"messages": denials, "codemie_call_identities": routed}
 
 
 def _denials(calls: list[dict[str, Any]], decisions: list[_Outcome]) -> list[ToolMessage]:
@@ -192,12 +222,16 @@ def _call_decisions(
     policy: ToolCallPolicy,
     tools_by_name: Mapping[str, BaseTool],
     calls: list[dict[str, Any]],
+    identities: Sequence[CallIdentity],
     carried: Mapping[str, Decision],
 ) -> list[Decision | None]:
-    """Each call's carried decision, else ``"allow"`` when it needs no confirmation, else ``None`` (undecided)."""
+    """Each call's carried decision, else ``"allow"`` when it needs no confirmation, else ``None`` (undecided).
+
+    A call is looked up by its identity's wire id, so two calls sharing one raw id get their own decisions.
+    """
     return [
-        carried.get(call["id"]) or (None if call_needs_confirmation(policy, tools_by_name, call) else "allow")
-        for call in calls
+        carried.get(identity.wire_id) or (None if call_needs_confirmation(policy, tools_by_name, call) else "allow")
+        for call, identity in zip(calls, identities, strict=True)
     ]
 
 
@@ -219,38 +253,9 @@ def _carried_decisions(carrier: Any, identities: Sequence[CallIdentity], checkpo
     return decisions
 
 
-def _with_wire_ids(ai_message: AIMessage, wire_ids: list[str]) -> AIMessage:
-    """Return the AI message with its calls carrying ``wire_ids`` (same message id), or itself if unchanged."""
-    raw_ids = [call.get("id") for call in ai_message.tool_calls]
-    if raw_ids == wire_ids:
-        return ai_message
-    tool_calls = [{**call, "id": wire_id} for call, wire_id in zip(ai_message.tool_calls, wire_ids, strict=True)]
-    content = _content_with_ids(ai_message, raw_ids, wire_ids)
-    return ai_message.model_copy(update={"tool_calls": tool_calls, "content": content})
-
-
-def _content_with_ids(ai_message: AIMessage, raw_ids: list[str | None], wire_ids: list[str]) -> Any:
-    """Rewrite each provider ``tool_use`` content block to the wire id of the call it belongs to.
-
-    A block takes the wire id of the first call with its raw id not yet taken, so blocks sharing one raw id get
-    their calls' wire ids in order and every block keeps the id of its ``tool_calls`` entry.
-    """
-    content = ai_message.content
-    if not isinstance(content, list):
-        return content
-    untaken: dict[str | None, deque[str]] = {}
-    for raw_id, wire_id in zip(raw_ids, wire_ids, strict=True):
-        untaken.setdefault(raw_id, deque()).append(wire_id)
-    rewritten = []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "tool_use" and untaken.get(block.get("id")):
-            block = {**block, "id": untaken[block["id"]].popleft()}
-        rewritten.append(block)
-    return rewritten
-
-
 def _gate_interrupt(
     calls: list[dict[str, Any]],
+    identities: Sequence[CallIdentity],
     decisions: list[Decision | None],
     messages: Sequence[BaseMessage],
     is_subagent: bool,
@@ -258,25 +263,25 @@ def _gate_interrupt(
     checkpoint_ns: str,
 ) -> GateInterrupt:
     pending_location = _pending_location(messages, is_subagent)
-    all_ids = [call["id"] for call in calls]
+    all_ids = [identity.wire_id for identity in identities]
     return GateInterrupt(
         checkpoint_ns=checkpoint_ns,
         location_key=location_key,
         calls=[
             GateCall(
-                tool_call_id=call["id"],
+                tool_call_id=identity.wire_id,
                 location_key=location_key,
                 checkpoint_ns=checkpoint_ns,
                 decision=decision,
                 event=ToolCallPendingEvent(
-                    pending_tool_call_id=call["id"],
+                    pending_tool_call_id=identity.wire_id,
                     tool_name=call["name"],
                     tool_args=call.get("args") or {},
                     all_tool_call_ids=all_ids,
                     location=pending_location,
                 ),
             )
-            for call, decision in zip(calls, decisions, strict=True)
+            for call, identity, decision in zip(calls, identities, decisions, strict=True)
         ],
     )
 

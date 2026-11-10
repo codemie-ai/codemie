@@ -21,6 +21,7 @@ through the adapter's own step starters.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -28,7 +29,7 @@ from uuid import UUID
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from codemie.agents.tool_confirmation.call_identity import CallIdentity, agent_location_key
+from codemie.agents.tool_confirmation.call_identity import CallIdentity, RoutedCall, agent_location_key
 from codemie.agents.tool_confirmation.confirmation_gate import GATE_INTERRUPT_KIND
 from codemie.core.tool_step_states import UNAVAILABLE_MESSAGE
 
@@ -68,6 +69,10 @@ class ConfirmationStepRouter:
         self._started_interrupts: set[str] = set()
         # Root calls already streamed as unavailable: a smart-selection wrapper's node update repeats its messages.
         self._unavailable_ids: set[str] = set()
+        # (location key, raw id) -> the wire ids the gate assigned to that location's calls, in call order. The message
+        # keeps the raw id, so a tool's result is resolved to its own wire id here, in the order its step was started.
+        # Keyed by location so two agents whose raw ids collide never share a queue.
+        self._wire_ids: dict[tuple[str, str], deque[str]] = {}
 
     @staticmethod
     def namespace_key(namespace: tuple[str, ...]) -> str:
@@ -107,10 +112,11 @@ class ConfirmationStepRouter:
     def consume_identity_chunk(self, value: Any, namespace_key: str) -> bool:
         """Start deferred steps from the gate's output; ``True`` when the chunk is the gate's own.
 
-        The gate (``post_model_hook``) writes the call identities into the AI message, or keeps the message when
-        nothing changes (``None`` update). On a pausing pass it interrupts first, and its payload lists the same
-        identities. Either way the steps start from the identity the gate assigned, never from a second
-        derivation. The hook's other messages (denials on resume) are not tool results of the stream.
+        The gate (``post_model_hook``) never changes the AI message: it returns each call's identity beside its raw id
+        (``codemie_call_identities``), or nothing when every raw id is kept (``None`` update). On a pausing pass it
+        interrupts first, and its payload lists the same identities. Either way the steps start from the identity the
+        gate assigned, never from a second derivation. The hook's other messages (denials on resume) are not tool
+        results of the stream.
         """
         if not isinstance(value, dict):
             return False
@@ -126,23 +132,61 @@ class ConfirmationStepRouter:
             self._start_wrapped_unavailable_steps(value)
         return False
 
+    def resolve_wire_id(self, raw_id: str, location_key: str = "") -> str:
+        """The wire id of the next started call with this raw id at this location; the raw id when none is queued.
+
+        Results are popped in start order. That holds because LangGraph's ``ToolNode`` runs a turn's calls under
+        ``asyncio.gather``, which returns them in call order whatever order they finish in, and the adapter reads
+        that list in the same order. So calls sharing a raw id at one location resolve to the wire ids they
+        started with.
+        """
+        key = (location_key, raw_id)
+        queue = self._wire_ids.get(key)
+        if not queue:
+            return raw_id
+        wire_id = queue.popleft()
+        if not queue:
+            del self._wire_ids[key]
+        return wire_id
+
     def _start_deferred_steps(self, namespace_key: str, hook_update: Any) -> None:
+        routed = _routed_calls(hook_update)
         messages = hook_update.get("messages", []) if isinstance(hook_update, dict) else []
+        answers = [m for m in messages if isinstance(m, ToolMessage)]
         # Calls the gate answered as unavailable (a run that cannot be resumed): their steps start stopped.
-        unavailable_ids = {
-            m.tool_call_id for m in messages if isinstance(m, ToolMessage) and m.content == UNAVAILABLE_MESSAGE
-        }
+        unavailable_ids = {m.tool_call_id for m in answers if m.content == UNAVAILABLE_MESSAGE}
+        # Registered once per gate output, whether or not a step is deferred: a resume re-runs the gate but never
+        # re-streams the AI message, and its tool results must still resolve to the wire ids the pause stored.
+        self._register_wire_ids(routed, {m.tool_call_id for m in answers})
         for deferred in self._deferred_steps.pop(namespace_key, []):
-            identified = next(
-                (m for m in messages if isinstance(m, AIMessage) and m.id == deferred.message.id), deferred.message
-            )
-            self._start_deferred(deferred, identified.tool_calls)
-            location_key = deferred.location_key if deferred.supervisor else ""
-            for call in identified.tool_calls:
-                if call.get("id") in unavailable_ids:
-                    if not location_key:
-                        self._unavailable_ids.add(call["id"])
-                    self.agent._send_unavailable_step(str(self.step_run_id(call["id"], location_key)))
+            self._start_identified(deferred, routed, unavailable_ids)
+
+    def _start_identified(self, deferred: _DeferredSteps, routed: list[RoutedCall], unavailable_ids: set[str]) -> None:
+        """Start a deferred message's steps under the gate's wire ids; unavailable calls start stopped."""
+        raw_calls = deferred.message.tool_calls
+        wire_calls = _calls_with_wire_ids(raw_calls, routed)
+        self._start_deferred(deferred, wire_calls)
+        location_key = deferred.location_key if deferred.supervisor else ""
+        for raw_call, wire_call in zip(raw_calls, wire_calls, strict=True):
+            if (raw_call.get("id") or "") in unavailable_ids:
+                self._send_unavailable(wire_call["id"], location_key)
+
+    def _send_unavailable(self, wire_id: str, location_key: str) -> None:
+        if not location_key:
+            self._unavailable_ids.add(wire_id)
+        self.agent._send_unavailable_step(str(self.step_run_id(wire_id, location_key)))
+
+    def _register_wire_ids(self, routed: list[RoutedCall], answered_ids: set[str]) -> None:
+        """Queue each call's wire id under its location and raw id, in call order, for its tool result to resolve.
+
+        A call the gate already answered (denied or unavailable) never reaches tools, so no tool result would drain its
+        wire id: only the calls that will run are queued. The location is the identity's own, which is the one the
+        adapter derives for that agent's tool results (``agent_location_key`` matches the gate's derivation).
+        """
+        for call in routed:
+            if call.raw_id not in answered_ids:
+                key = (call.identity.location_key, call.raw_id)
+                self._wire_ids.setdefault(key, deque()).append(call.identity.wire_id)
 
     def _start_wrapped_unavailable_steps(self, update: dict[str, Any]) -> None:
         """Start the unavailable calls of a smart-selection root as stopped steps.
@@ -157,13 +201,16 @@ class ConfirmationStepRouter:
                 m.tool_call_id for m in turn if isinstance(m, ToolMessage) and m.content == UNAVAILABLE_MESSAGE
             } - self._unavailable_ids
             for message in turn:
-                calls = [c for c in getattr(message, "tool_calls", None) or [] if c.get("id") in unavailable_ids]
-                if not isinstance(message, AIMessage) or not calls:
-                    continue
-                self._start_tool_steps(calls, author=None, location_key="", with_author=False)
-                for call in calls:
-                    self._unavailable_ids.add(call["id"])
-                    self.agent._send_unavailable_step(str(self.step_run_id(call["id"], "")))
+                self._start_unavailable_calls(message, unavailable_ids)
+
+    def _start_unavailable_calls(self, message: Any, unavailable_ids: set[str]) -> None:
+        """Start a root AI message's calls answered as unavailable, each as a stopped step."""
+        calls = [c for c in getattr(message, "tool_calls", None) or [] if c.get("id") in unavailable_ids]
+        if not isinstance(message, AIMessage) or not calls:
+            return
+        self._start_tool_steps(calls, author=None, location_key="", with_author=False)
+        for call in calls:
+            self._send_unavailable(call["id"], "")
 
     def _start_interrupted_steps(self, interrupts: Any) -> None:
         for interrupt in interrupts or ():
@@ -206,6 +253,20 @@ class ConfirmationStepRouter:
             self._start_supervisor_steps(tool_calls, author=deferred.author, location_key=deferred.location_key)
         else:
             self._start_tool_steps(tool_calls, author=None, location_key="", with_author=False)
+
+
+def _routed_calls(hook_update: Any) -> list[RoutedCall]:
+    """The gate's routed calls in a hook update; none for a gate that kept every raw id (or no gate)."""
+    if not isinstance(hook_update, dict):
+        return []
+    return list(hook_update.get("codemie_call_identities") or [])
+
+
+def _calls_with_wire_ids(raw_calls: list[dict[str, Any]], routed: list[RoutedCall]) -> list[dict[str, Any]]:
+    """Copies of the message's calls carrying the gate's wire ids; the message itself keeps its raw ids."""
+    if not routed or len(routed) != len(raw_calls):
+        return raw_calls
+    return [{**raw_call, "id": call.identity.wire_id} for raw_call, call in zip(raw_calls, routed, strict=True)]
 
 
 def _last_human_index(messages: list[Any]) -> int:

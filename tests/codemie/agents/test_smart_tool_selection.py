@@ -335,6 +335,24 @@ class TestSmartReactAgent:
         # Should call standard create_react_agent
         assert mock_create_react.called
 
+    @patch('codemie.agents.smart_react_agent.create_react_agent')
+    def test_create_sub_agent_passes_state_schema_like_the_standard_agent(self, mock_create_react):
+        """CR-001: the smart-selection sub-agent must carry the gate's identities too, or the state schema drops
+        ``codemie_call_identities`` and the stream falls back to raw ids on that path."""
+        from codemie.agents import smart_react_agent as module
+        from codemie.agents.tool_confirmation.call_identity import ConfirmationAgentState
+
+        module._create_sub_agent(
+            model=Mock(),
+            available_tools=[search_code],
+            prompt=None,
+            response_format=None,
+            name="a",
+            parallel_tool_calls=None,
+        )
+
+        assert mock_create_react.call_args.kwargs["state_schema"] is ConfirmationAgentState
+
     @patch('codemie.agents.smart_react_agent.config')
     def test_smart_agent_with_structured_output(self, mock_config):
         """Test that smart agent preserves structured output capability."""

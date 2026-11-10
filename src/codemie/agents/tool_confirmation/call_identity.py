@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import BaseMessage, ToolMessage
+from langgraph.prebuilt.chat_agent_executor import AgentState, AgentStateWithStructuredResponse
+from typing_extensions import NotRequired
 
 _UNSAFE_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
 _WIRE_ID = re.compile(r"^[a-zA-Z0-9_-]{1,40}$")
@@ -57,6 +59,42 @@ class CallIdentity:
         included, so two siblings whose calls share an id get two steps.
         """
         return self.carrier_key if self.location_key else self.wire_id
+
+
+@dataclass(frozen=True)
+class RoutedCall:
+    """One call of the gate's output: the raw id the AI message keeps, beside the call's identity.
+
+    The raw id is kept beside the identity, never inside it, so the carrier and step keys stay those of the wire id.
+    The stream reads a tool result's raw id back to its wire id from this pair.
+    """
+
+    raw_id: str
+    identity: CallIdentity
+
+
+class ConfirmationAgentState(AgentState):
+    """``AgentState`` plus the gate's identities: LangGraph drops an update key the state schema does not declare.
+
+    Without the key a ``post_model_hook`` update reaches the stream as messages only, so the steps could not start
+    from the identities the gate assigned.
+    """
+
+    codemie_call_identities: NotRequired[list[RoutedCall]]
+
+
+class ConfirmationAgentStateWithStructuredResponse(AgentStateWithStructuredResponse):
+    """``ConfirmationAgentState`` for an agent with a structured response (``create_react_agent`` requires that key)."""
+
+    codemie_call_identities: NotRequired[list[RoutedCall]]
+
+
+def confirmation_state_schema(response_format: Any) -> type:
+    """The state schema of a ReAct agent or supervisor that carries the gate's identities.
+
+    The structured-response key is required by LangGraph whenever a response format is set, so the schema follows it.
+    """
+    return ConfirmationAgentStateWithStructuredResponse if response_format is not None else ConfirmationAgentState
 
 
 def _short_hash(*parts: object) -> str:

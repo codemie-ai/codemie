@@ -81,12 +81,14 @@ def _args(tool_name: str) -> dict:
 class ScriptedModel(BaseChatModel):
     """Asks for ``calls`` once (``rounds`` times); once its calls are answered it reports the results.
 
-    Records the messages it saw (``SEEN``) and the tools bound to it (``BOUND``).
+    ``round_ids`` gives each round its own call ids (one list per round, matching ``calls``); without it every round
+    reuses the ids of ``calls``. Records the messages it saw (``SEEN``) and the tools bound to it (``BOUND``).
     """
 
     role: str
     calls: list[tuple[str, str]]
     rounds: int = 1
+    round_ids: Optional[list[list[str]]] = None
 
     @property
     def _llm_type(self) -> str:
@@ -116,9 +118,13 @@ class ScriptedModel(BaseChatModel):
             answered = [str(m.content) for m in messages if isinstance(m, ToolMessage) and m.name in own_names]
             message = AIMessage(content=f"{self.role} done: " + " | ".join(answered))
         else:
+            ids = self.round_ids[asked] if self.round_ids else [i for _, i in self.calls]
             message = AIMessage(
                 content="",
-                tool_calls=[{"name": n, "args": _args(n), "id": i, "type": "tool_call"} for n, i in self.calls],
+                tool_calls=[
+                    {"name": n, "args": _args(n), "id": i, "type": "tool_call"}
+                    for (n, _), i in zip(self.calls, ids, strict=True)
+                ],
             )
         return ChatResult(generations=[ChatGeneration(message=message)])
 
@@ -234,9 +240,10 @@ def build_agent(
     tree_requires_confirmation: bool = True,
     can_resume_pause: bool = True,
     output_schema: Optional[dict] = None,
+    round_ids: Optional[list[list[str]]] = None,
 ) -> LangGraphAgent:
     """One agent of a tree (confirming unless told otherwise): the root unless ``subagent``, else a sub-assistant."""
-    model = ScriptedModel(role=name, calls=calls, rounds=rounds)
+    model = ScriptedModel(role=name, calls=calls, rounds=rounds, round_ids=round_ids)
     subs = subs or []
     with patch.object(LangGraphAgent, "_initialize_llm", return_value=model):
         return LangGraphAgent(

@@ -61,10 +61,12 @@ _ASK = ToolCallPolicy.ASK_FOR_APPROVAL
 _AUTO = ToolCallPolicy.AUTO_APPROVE
 
 
-def _o_over_s(generator=None, *, s_policy=_ASK, s_calls=(("write_tool", "s_w"),), o_calls=None, s_rounds=1):
-    """O (auto-approve) delegating to S."""
+def _o_over_s(
+    generator=None, *, s_policy=_ASK, s_calls=(("write_tool", "s_w"),), o_calls=None, s_rounds=1, s_round_ids=None
+):
+    """O (auto-approve) delegating to S; ``s_round_ids`` gives each of S's rounds its own call ids."""
     generator = generator if generator is not None else ThreadedGenerator(conversation_id=CONV_ID)
-    sub = _agent("s", list(s_calls), generator, policy=s_policy, subagent=True, rounds=s_rounds)
+    sub = _agent("s", list(s_calls), generator, policy=s_policy, subagent=True, rounds=s_rounds, round_ids=s_round_ids)
     return _agent("o", o_calls or [("transfer_to_s", "o_s")], generator, subs=[sub])
 
 
@@ -477,18 +479,20 @@ def test_two_parallel_handoffs_to_one_sub_assistant_pause_on_one_id_and_resume_a
 def test_nested_two_round_call_converts_for_every_provider_family(service):
     import re
 
-    _o_over_s(s_rounds=2)._agent_streaming([])
-    first = service.record().items[0]
-    _resume(_o_over_s(s_rounds=2), service, {"s_w": "allow"})
-    second = service.record().items[0]
-    assert second.tool_call_id != first.tool_call_id, "the answered id is rewritten"
-    _resume(_o_over_s(s_rounds=2), service, {second.tool_call_id: "allow"})
+    def two_rounds():
+        """S asks for one write in each of two rounds, with a new call id per round, as a provider does."""
+        return _o_over_s(s_rounds=2, s_round_ids=[["s_w"], ["s_w_r2"]])
+
+    two_rounds()._agent_streaming([])
+    _resume(two_rounds(), service, {"s_w": "allow"})
+    assert service.record().items[0].tool_call_id == "s_w_r2"
+    _resume(two_rounds(), service, {"s_w_r2": "allow"})
     assert CALLS["tool:write_tool"] == 2
 
     messages = SEEN["s"]
     call_ids = [call["id"] for m in messages if isinstance(m, AIMessage) for call in m.tool_calls]
     result_ids = [m.tool_call_id for m in messages if isinstance(m, ToolMessage)]
-    assert call_ids == result_ids == ["s_w", second.tool_call_id]
+    assert call_ids == result_ids == ["s_w", "s_w_r2"]
     assert all(re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", wire_id) for wire_id in call_ids)
 
     from langchain_anthropic.chat_models import _format_messages

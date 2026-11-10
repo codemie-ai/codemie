@@ -261,9 +261,11 @@ class LangGraphEventAdapter:
         elif "tools" in value:
             for action in value["tools"]["messages"]:
                 if isinstance(action, ToolMessage):
-                    self.agent._replay_tool_start_on_resume(action)
+                    # Resolved once (it pops the call's queued wire id); both the replayed start and the end use it.
+                    wire_id = self._steps.resolve_wire_id(action.tool_call_id or "")
+                    self.agent._replay_tool_start_on_resume(action, wire_id=wire_id)
                     logger.debug(f"Tool {action.name} call result: {action.content}")
-                    self.agent._parse_tool_message(action)
+                    self.agent._parse_tool_message(action, wire_id=wire_id)
 
     def _parse_agent_update(self, last_message: Any) -> None:
         if self.agent.is_finish_reason_tool_calls(last_message):
@@ -377,13 +379,17 @@ class LangGraphEventAdapter:
     ) -> None:
         logger.debug(f"Tool {last_message.name} call result: {last_message.content}")
         location_key = self._steps.location_key(namespace)
+        # Resolved once (it pops the call's queued wire id); both the replayed start and the end use it.
+        wire_id = self._steps.resolve_wire_id(last_message.tool_call_id or "", location_key)
         pending_events = getattr(self.agent, "tool_pending_events", None)
         if isinstance(pending_events, dict) and pending_events:
-            self.agent._replay_tool_start_on_resume(last_message, author=author, location_key=location_key)
+            self.agent._replay_tool_start_on_resume(
+                last_message, author=author, location_key=location_key, wire_id=wire_id
+            )
         if location_key:
-            self.agent._parse_tool_message(last_message, author=author, location_key=location_key)
+            self.agent._parse_tool_message(last_message, author=author, location_key=location_key, wire_id=wire_id)
         else:
-            self.agent._parse_tool_message(last_message, author=author)
+            self.agent._parse_tool_message(last_message, author=author, wire_id=wire_id)
 
     def handle_supervisor_tool_calls(
         self, last_message: AIMessage, author: str | None = None, namespace: tuple[str, ...] = ()
@@ -471,8 +477,12 @@ class LangGraphEventAdapter:
         else:
             self.process_chunk_for_agent(chunk, chunks_collector)
 
-    def parse_tool_message(self, action: ToolMessage, author: str | None = None, location_key: str = "") -> None:
-        run_id = self._steps.step_run_id(action.tool_call_id or "", location_key)
+    def parse_tool_message(
+        self, action: ToolMessage, author: str | None = None, location_key: str = "", wire_id: str | None = None
+    ) -> None:
+        """End the call's step. ``wire_id`` is the one its caller resolved from the raw id; the raw id when ``None``."""
+        wire_id = (action.tool_call_id or "") if wire_id is None else wire_id
+        run_id = self._steps.step_run_id(wire_id, location_key)
         if action.status == "error":
             self.agent._on_tool_error(action.content, run_id=run_id, author=author)
             return
