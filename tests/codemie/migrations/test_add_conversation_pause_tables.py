@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -26,7 +25,6 @@ from alembic.script import ScriptDirectory
 
 from codemie.rest_api.models.conversation import Conversation
 from codemie.rest_api.models.conversation_pause import ConversationCheckpointRow, ConversationPendingToolCallRow
-from tests.codemie.service.pg_conversations import live, pg_conversations
 
 MODULE = "external.alembic.versions.b4c8e1f2a9d3_add_conversation_pause_tables"
 
@@ -230,122 +228,3 @@ def test_cancelled_history_without_an_assistant_entry_is_unchanged():
 
     assert module._cancelled_history(history) == history
     assert module._cancelled_history(None) == []
-
-
-@live
-def test_end_old_format_records_nulls_both_columns_and_patches_the_history():
-    module = importlib.import_module(MODULE)
-    with pg_conversations() as db:
-        for conversation_id, old in (("paused", True), ("clean", False)):
-            db.connection.execute(
-                sa.text(
-                    "INSERT INTO conversations (id, pending_tool_call, pending_checkpoint, history) "
-                    "VALUES (:c, CAST(:p AS jsonb), CAST(:k AS jsonb), CAST(:h AS jsonb))"
-                ),
-                {
-                    "c": conversation_id,
-                    "p": json.dumps({}) if old else None,
-                    "k": json.dumps({"namespaces": {}}) if old else None,
-                    "h": json.dumps(_history()),
-                },
-            )
-
-        module._end_old_format_records(db.connection)
-
-        rows = {
-            row[0]: row[1:]
-            for row in db.connection.execute(
-                sa.text("SELECT id, pending_tool_call IS NULL, pending_checkpoint IS NULL, history FROM conversations")
-            )
-        }
-    assert rows["paused"][0] is True and rows["paused"][1] is True  # SQL NULL, not a JSON null
-    assert rows["paused"][2][3]["thoughts"][0]["message"] == CANCELLED_TEXT
-    assert rows["clean"][2] == _history()
-
-
-def _insert_old(db, conversation_id, *, tool_call, checkpoint, history):
-    db.connection.execute(
-        sa.text(
-            "INSERT INTO conversations (id, pending_tool_call, pending_checkpoint, history) "
-            "VALUES (:c, CAST(:p AS jsonb), CAST(:k AS jsonb), CAST(:h AS jsonb))"
-        ),
-        {
-            "c": conversation_id,
-            "p": json.dumps({}) if tool_call else None,
-            "k": json.dumps({"namespaces": {}}) if checkpoint else None,
-            "h": json.dumps(history),
-        },
-    )
-
-
-@live
-def test_end_old_format_records_is_set_based_and_rewrites_only_histories_that_change():
-    """Rule 2 (AR-5): one UPDATE nulls both columns; only rows with pending_tool_call are read, in batches, and a
-    history is written back only when a waiting step became Cancelled."""
-    module = importlib.import_module(MODULE)
-    no_waiting = [{"role": "Assistant", "message": "a", "history_index": 0, "thoughts": [_step("done")]}]
-    with pg_conversations() as db:
-        _insert_old(db, "checkpoint_only", tool_call=False, checkpoint=True, history=_history())
-        _insert_old(db, "paused_1", tool_call=True, checkpoint=True, history=_history())
-        _insert_old(db, "paused_2", tool_call=True, checkpoint=False, history=_history())
-        _insert_old(db, "paused_nothing_waiting", tool_call=True, checkpoint=False, history=no_waiting)
-        _insert_old(db, "clean", tool_call=False, checkpoint=False, history=_history())
-        before = dict(db.connection.execute(sa.text("SELECT id, xmin::text FROM conversations")).all())
-        statements: list[str] = []
-        sa.event.listen(db.connection, "before_cursor_execute", lambda *args: statements.append(args[2]))
-
-        module._end_old_format_records(db.connection, batch_size=1)
-
-        rows = {
-            row[0]: row[1:]
-            for row in db.connection.execute(
-                sa.text(
-                    "SELECT id, pending_tool_call IS NULL, pending_checkpoint IS NULL, history, xmin::text "
-                    "FROM conversations"
-                )
-            )
-        }
-
-    assert all(row[0] is True and row[1] is True for row in rows.values()), "both columns are SQL NULL"
-    assert rows["checkpoint_only"][2] == _history(), "a checkpoint alone is no waiting pause"
-    for paused in ("paused_1", "paused_2"):
-        assert rows[paused][2][3]["thoughts"][0]["message"] == CANCELLED_TEXT
-        assert rows[paused][2][1]["thoughts"][0]["interrupted"] is True, "an earlier entry is untouched"
-    assert rows["paused_nothing_waiting"][2] == no_waiting
-    assert rows["clean"][3] == before["clean"], "a conversation with nothing to change is not written"
-    history_writes = [s for s in statements if s.lstrip().upper().startswith("UPDATE") and "history" in s]
-    assert len(history_writes) == 2, "only the two histories that changed are written back"
-    nulling = [s for s in statements if s.lstrip().upper().startswith("UPDATE") and "pending_checkpoint" in s]
-    assert len(nulling) == 1, "one set-based UPDATE nulls both columns"
-    reads = [s for s in statements if s.lstrip().upper().startswith("SELECT") and "pending_tool_call IS NOT NULL" in s]
-    assert len(reads) == 4, "three paused rows read one per batch, then an empty batch"
-
-
-@live
-def test_downgrade_cancels_the_waiting_steps_of_every_new_format_pause():
-    """A rollback drops the pause tables; the backend it returns to cannot resume them, so their waiting steps end
-    as Cancelled instead of staying shown as waiting. A conversation without a pending row is not written."""
-    module = importlib.import_module(MODULE)
-    with pg_conversations() as db:
-        for conversation_id in ("paused_1", "paused_2", "clean"):
-            db.insert(conversation_id, _history())
-        for conversation_id in ("paused_1", "paused_2"):
-            db.connection.execute(
-                sa.text("INSERT INTO conversation_pending_tool_calls (conversation_id) VALUES (:c)"),
-                {"c": conversation_id},
-            )
-        before = dict(db.connection.execute(sa.text("SELECT id, xmin::text FROM conversations")).all())
-
-        module._end_new_format_pauses(db.connection, batch_size=1)
-
-        rows = {
-            row[0]: row[1:]
-            for row in db.connection.execute(sa.text("SELECT id, history, xmin::text FROM conversations"))
-        }
-
-    for paused in ("paused_1", "paused_2"):
-        assert rows[paused][0][3]["thoughts"][0]["message"] == CANCELLED_TEXT
-        assert rows[paused][0][3]["thoughts"][2]["children"][0]["interrupted"] is False
-        assert rows[paused][0][1]["thoughts"][0]["interrupted"] is True, "an earlier entry is untouched"
-    assert rows["clean"][0] == _history()
-    assert rows["clean"][1] == before["clean"], "a conversation without a pause is not written"

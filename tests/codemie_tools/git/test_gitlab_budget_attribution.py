@@ -21,6 +21,14 @@ from codemie_tools.git.utils import GitCredentials
 from codemie.core.constants import REQUEST_ID
 
 
+@pytest.fixture(autouse=True)
+def no_gitlab_network():
+    """Keep `get_toolkit` off gitlab.com: the real wrapper authenticates on construction, and a rate-limited
+    IP answers 429 with a Retry-After of up to an hour, which python-gitlab sleeps through."""
+    with patch("codemie_tools.git.gitlab.gitlab_toolkit.init_gitlab_api_wrapper", return_value=Mock()) as mock_init:
+        yield mock_init
+
+
 def test_update_file_diff_tool_creates_llm_at_execution_time():
     """Test that OpenAIUpdateFileDiffTool creates LLM at execution time using get_llm_by_credentials."""
     # Arrange

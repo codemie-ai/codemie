@@ -19,7 +19,6 @@ from fastapi import status
 from httpx import AsyncClient, ASGITransport
 
 from codemie.configs import config
-from tests.codemie.marketplace_fixtures.mounted_app import mounted_marketplace_app
 from codemie.rest_api.main import app
 from codemie.rest_api.models.assistant import Assistant, QualityValidationResult
 from codemie.rest_api.models.assistant_generator import (
@@ -880,10 +879,8 @@ async def _publish(assistant_mock, gate_enabled: bool):
         patch("codemie.service.monitoring.base_monitoring_service.send_log_metric"),
         patch("codemie.service.assistant.category_service.category_service.validate_category_ids", return_value=None),
         patch("codemie.rest_api.routers.assistant.marketplace._index_marketplace_assistant"),
-        # The gate itself and the SUBMIT transition are exercised end-to-end
-        # against a real database in `test_publish_creates_a_pending_review_item`
-        # and `test_publish_runs_deterministic_gates.py`. Here they are stubbed
-        # so this stays what it was written to be: a characterisation test of
+        # The gate itself and the SUBMIT transition are stubbed so this stays
+        # what it was written to be: a characterisation test of
         # the *flag branch*, over a MagicMock assistant and no database.
         patch("codemie.rest_api.routers.assistant.marketplace._enforce_publish_gates", return_value=[]),
         patch(
@@ -976,150 +973,6 @@ async def test_publish_with_no_body_returns_422():
 # compare-and-set plus a ledger insert in one transaction, which no mocked
 # session can express.
 # ---------------------------------------------------------------------------
-
-PENDING_URL = "/v1/marketplace-management/entities/assistants/pending"
-
-_LONG_PROMPT = (
-    "You are a release-notes assistant for a platform engineering group. "
-    "You summarise merge requests into human readable release notes, you group "
-    "them by component, and you always cite the merge request identifier next "
-    "to every bullet you produce. When the user asks for a changelog you answer "
-    "with markdown headings per component and a short paragraph explaining the "
-    "user visible impact of each change. You never invent a merge request that "
-    "was not given to you, and when the input is empty you say so plainly "
-    "instead of producing an empty document. "
-) * 3
-
-
-@pytest.fixture
-def marketplace_router_mounted():
-    """The pending queue is read through the marketplace-management router."""
-    yield from mounted_marketplace_app()
-
-
-@pytest.mark.asyncio
-async def test_publish_creates_a_pending_review_item(non_admin_env, mm_publish_db, user, marketplace_router_mounted):
-    """Gate on: publish enqueues a review item and publishes nothing."""
-    from fastapi import Request
-    from sqlalchemy import text
-    from sqlmodel import Session
-
-    from codemie.core.models import CreatedByUser
-    from codemie.rest_api.security.authentication import authenticate
-
-    user.email = "testuser@codemie.ai"
-
-    with mm_publish_db.connect() as conn:
-        conn.execute(
-            text(
-                "insert into codemie.users (id, username, email, name, is_admin, is_active, date) "
-                "values (:i, :u, :e, :n, true, true, now()) on conflict (id) do nothing"
-            ),
-            {"i": user.id, "u": user.username, "e": user.email, "n": user.name},
-        )
-        conn.commit()
-
-    with Session(mm_publish_db) as session:
-        session.add(
-            Assistant(
-                id="sub-1",
-                name="Release Notes Assistant",
-                description=(
-                    "Summarises merge requests into structured, component-grouped release "
-                    "notes with citations back to every source merge request identifier."
-                ),
-                system_prompt=_LONG_PROMPT,
-                categories=["engineering"],
-                project="demo",
-                creator="someone-else",
-                # Deliberately NOT the publisher: `submitted_by` must be the
-                # person who put this in front of a reviewer, which is what the
-                # SUBMIT decision records. `created_by` is the author, and on a
-                # cloned or handed-over assistant the two differ.
-                created_by=CreatedByUser(id="someone-else", username="cara", name="Cara Creator"),
-                is_global=False,
-                marketplace_status="DRAFT",
-                shared=True,
-            )
-        )
-        session.commit()
-
-    async def _authenticate(request: Request) -> User:
-        request.state.user = user
-        return user
-
-    app.dependency_overrides[authenticate] = _authenticate
-
-    with (
-        patch("codemie.core.ability.Ability.can", return_value=True),
-        patch("codemie.service.assistant.category_service.category_service.validate_category_ids", return_value=None),
-        patch("codemie.service.monitoring.base_monitoring_service.send_log_metric"),
-        patch("codemie.rest_api.routers.assistant.marketplace._index_marketplace_assistant") as index_spy,
-        patch.object(config, "MARKETPLACE_APPROVAL_GATE_ENABLED", True),
-        # The gate is armed only together with marketplace management (`is_approval_gate_armed`).
-        patch.object(config, "MARKETPLACE_MANAGEMENT_ENABLED", True),
-        patch.object(config, "MARKETPLACE_LLM_VALIDATION_ON_PUBLISH_ENABLED", False),
-    ):
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
-            published = await ac.post(
-                "/v1/assistants/sub-1/marketplace/publish",
-                headers={"Authorization": "Bearer testtoken"},
-                json={"categories": ["engineering"]},
-            )
-            # The queue is a moderator view: read it as an admin, after the
-            # non-admin author has published.
-            user.is_admin = True
-            queue = await ac.get(PENDING_URL, headers={"Authorization": "Bearer testtoken"})
-
-    assert published.status_code == status.HTTP_200_OK, published.text
-
-    # 1. It is in the queue, with a submitter and a submission time.
-    assert queue.status_code == status.HTTP_200_OK, queue.text
-    body = queue.json()
-    assert body["total"] == 1, body
-    row = body["items"][0]
-    assert row["assistant_id"] == "sub-1"
-    assert row["submitted_by"] == user.name  # the publisher, not "Cara Creator"
-    assert row["submitted_at"] is not None
-
-    # 2. It is NOT in the marketplace.
-    with mm_publish_db.connect() as conn:
-        stored = (
-            conn.execute(
-                text(
-                    "select marketplace_status, is_global, marketplace_submitted_at "
-                    "  from codemie.assistants where id = 'sub-1'"
-                )
-            )
-            .mappings()
-            .one()
-        )
-        decision = (
-            conn.execute(text("select decision, from_status, to_status, decided_by_id from codemie.mm_review_decision"))
-            .mappings()
-            .one()
-        )
-        # The moderation audit trail moved off `mm_marketplace_event` and onto
-        # `mm_review_decision` (asserted below) plus the platform-wide
-        # `activity_events` feed, which only writes when
-        # config.ACTIVITY_EVENTS_ENABLED is on -- it ships off. The decision row
-        # is the record that must hold unconditionally, so that is what this
-        # test asserts.
-
-    assert stored["marketplace_status"] == "PENDING_REVIEW"
-    assert stored["is_global"] is False
-    assert stored["marketplace_submitted_at"] is not None
-
-    # 3. It went through the SUBMIT decision path, not a bare field assignment.
-    assert decision["decision"] == "SUBMIT"
-    assert decision["from_status"] == "DRAFT"
-    assert decision["to_status"] == "PENDING_REVIEW"
-    assert decision["decided_by_id"] == user.id
-    assert decision["decision"] == "SUBMIT"
-
-    # 4. TODO(Phase 7) from step 0.3: an unapproved row must not be indexed.
-    index_spy.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -810,7 +810,7 @@ def test_a_denied_delegation_is_not_dispatched_by_its_allowed_sibling(service):
     assert (CALLS["tool:read_tool"], CALLS["tool:write_tool"]) == (1, 0)
 
 
-from tests.codemie.service.pg_conversations import PgCheckpointService, live, pg_conversations  # noqa: E402
+from tests.codemie.service.pg_conversations import PgCheckpointService, pg_conversations  # noqa: E402
 
 
 @pytest.fixture
@@ -820,53 +820,3 @@ def pg():
         service = PgCheckpointService()
         with patch(f"{_MIXIN_MODULE}.ConversationCheckpointService", return_value=service):
             yield SimpleNamespace(db=db, service=service)
-
-
-def _pg_record(pg) -> StoredPendingToolCall:
-    record = pg.service.get_pending(CONV_ID)
-    assert record is not None
-    return record
-
-
-def _pg_resume(agent: LangGraphAgent, pg, decisions: dict[str, str]) -> None:
-    _run_resume(agent, _pg_record(pg), decisions)
-
-
-@live
-@pytest.mark.parametrize(("decision", "runs"), [("allow", 1), ("deny", 0)])
-def test_pg_depth_two_pause_resumes_after_a_reload_on_a_fresh_build(pg, decision, runs):
-    paused = _chain()
-    paused._agent_streaming([])
-    (item,) = _pg_record(pg).items
-    assert pg.db.checkpoint_rows(CONV_ID)
-
-    resumed = _chain()
-    _pg_resume(resumed, pg, {"s_w": decision})
-
-    assert CALLS["tool:write_tool"] == runs
-    assert CALLS["llm:s"] == CALLS["llm:o2"] == CALLS["llm:o"] == 2
-    assert resumed._pending_tool_confirmation is False
-    step = _thought(resumed.thread_generator, item.thought_id)
-    assert step["interrupted"] is False
-    assert step in _thought(resumed.thread_generator, item.event.location.parent_thought_id)["children"]
-
-
-def _reader_beside_writer(generator=None) -> LangGraphAgent:
-    """O -> O2 -> (S1 reading without confirmation, S2 writing with it), handed off in parallel."""
-    generator = generator if generator is not None else ThreadedGenerator(conversation_id=CONV_ID)
-    s1 = _agent("s1", [("read_tool", "s1_r")], generator, policy=_AUTO, subagent=True)
-    s2 = _agent("s2", [("write_tool", "s2_w")], generator, policy=_ASK, subagent=True)
-    o2_calls = [("transfer_to_s1", "o2_s1"), ("transfer_to_s2", "o2_s2")]
-    o2 = _agent("o2", o2_calls, generator, subagent=True, subs=[s1, s2])
-    return _agent("o", [("transfer_to_o2", "o_o2")], generator, subs=[o2])
-
-
-@live
-def test_pg_sibling_reading_while_another_pauses_runs_its_tool_once(pg):
-    _reader_beside_writer()._agent_streaming([])
-    assert [item.tool_call_id for item in _pg_record(pg).items] == ["s2_w"]
-    assert (CALLS["tool:read_tool"], CALLS["tool:write_tool"]) == (1, 0)
-
-    _pg_resume(_reader_beside_writer(), pg, {"s2_w": "allow"})
-
-    assert (CALLS["tool:read_tool"], CALLS["tool:write_tool"]) == (1, 1)

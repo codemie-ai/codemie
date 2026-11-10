@@ -37,11 +37,8 @@ TRACKED_TREES = [
     "src/external/alembic/versions",
     "tests/codemie/rest_api/routers",
     "tests/codemie/marketplace_fixtures",
-    # Widened a second time, for a sharper reason than the first. A later wave
-    # left tests/codemie/external/alembic/_alembic_worker.py untracked — a
-    # helper spawned as a subprocess by 35 *tracked* tests. Those tests pass
-    # locally and fail on a fresh clone, which is the worst failure mode a
-    # suite can have: green for the author, red for everyone else.
+    # Widened a second time: a later wave left a helper spawned as a subprocess
+    # by tracked tests untracked, so they passed locally and failed on a fresh clone.
     "tests/codemie/external",
 ]
 

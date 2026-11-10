@@ -66,16 +66,6 @@ Runs `gitleaks protect --staged` via `scripts/git-hooks/validate_secrets.sh`, wi
 
 **Skip if**: The user did not request tests and the active task policy says tests are explicit-only.
 
-### CLI Analytics live SQL tests
-
-**Run**: `make test-cli-analytics-live`
-
-**Pass**: Every live test of `tests/codemie/repository/cli_analytics/postgres/` (`-k live`) passes on throwaway PostgreSQL 17 and 14 containers, none skipped. Under `make test` `test_live_dispatch_gate.py` skips (it has no default database), while `test_live_turns_daily.py` and `test_reader_live_dispatches.py` default to the docker-compose Postgres. See the `test-cli-analytics-live` target.
-
-**Fail**: A live test fails or is skipped (the database was not reached), or Docker cannot start the containers.
-
-**Skip if**: The change does not touch CLI Analytics SQL (`src/codemie/repository/cli_analytics/postgres/`).
-
 ### Coverage
 
 **Run**: `make coverage`

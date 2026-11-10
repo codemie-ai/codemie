@@ -28,7 +28,7 @@ connection and skips the run. So the day rows of one session are written, and it
 a time. The refresher can overlap the maintenance backfill (lock "maintenance"), and that is safe in both orders: the
 backfill locks the rows it takes (FOR UPDATE SKIP LOCKED), so it skips a session whose row the refresher holds, and a
 refresher derive that waits for a backfill's row lock then writes facts computed from its own snapshot, which contains
-its own uncommitted rows, over the backfill's (`test_live_session_activity.py`, both orders).
+its own uncommitted rows, over the backfill's.
 
 Writers. The facts depend on two things only: the day rows of the five tables and `session_dims.started_at` (the start
 day decides `resumed`). Both are written by the rollup refresher alone, in `RollupRefresher._recompute`, and the
