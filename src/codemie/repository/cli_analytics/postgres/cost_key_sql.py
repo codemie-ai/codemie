@@ -30,22 +30,32 @@ from codemie.repository.cli_analytics.scope import sql_personal_billed
 
 
 def normalized_model_name(column: str) -> str:
-    """Strip an optional leading LiteLLM Bedrock provider wrapper ('bedrock/'), a routing
-    prefix ('converse/' or 'invoke/'), an optional region token plus 'anthropic.' provider
-    prefix (e.g. 'us.anthropic.', 'us-gov-west-1.anthropic.', 'anthropic.'), and a trailing
+    """First drop a trailing Bedrock version '-v1' with no colon that follows 'anthropic.claude-…' (a Bedrock id,
+    case-insensitive), e.g. 'bedrock/eu.anthropic.claude-opus-4-6-v1' -> '…anthropic.claude-opus-4-6'; the colon form
+    '-v1:0' keeps the date-stamp rule below. Then strip a LiteLLM route prefix ('bedrock/[<region>.]anthropic.',
+    'vertex_ai/', 'anthropic/anthropic.', 'anthropic/', case-insensitive), then an optional leading LiteLLM Bedrock
+    provider wrapper ('bedrock/'), a routing prefix ('converse/' or 'invoke/'), an optional region token plus
+    'anthropic.' provider prefix (e.g. 'us.anthropic.', 'us-gov-west-1.anthropic.', 'anthropic.'), and a trailing
     Bedrock inference-profile version tag ('-v1:0'-style) when it immediately follows an
-    8-digit date stamp, e.g. '-20251001-v1:0'.
-    CR-002: LiteLLM's own Bedrock provider convention nests an API-path marker behind the
+    8-digit date stamp, e.g. '-20251001-v1:0'. Last, Vertex's '@YYYYMMDD' becomes '-YYYYMMDD'
+    (e.g. 'vertex_ai/claude-haiku-4-5@20251001' -> 'claude-haiku-4-5-20251001').
+    LiteLLM's own Bedrock provider convention nests an API-path marker behind the
     'bedrock/' provider prefix (e.g. 'bedrock/converse/...'); not yet observed in this
     telemetry source, but a documented real pattern, so the wrapper is stripped defensively.
-    The routing-prefix and provider-prefix strips are case-insensitive (CR-001: a routing
+    The routing-prefix and provider-prefix strips are case-insensitive (a routing
     layer that emits a different case for these tokens must still normalize the same way).
     Never touches a date stamp on its own, a model's own version dash inside the id,
     or a trailing '-v\\d+:\\d+' shape that is not preceded by that date stamp.
     """
-    without_routing_prefix = f"regexp_replace({column}, '^(bedrock/)?(converse|invoke)/', '', 'i')"
+    without_bedrock_version = f"regexp_replace({column}, '(anthropic\\.claude-[a-z0-9.-]*?)-v1$', '\\1', 'i')"
+    without_route_prefix = (
+        f"regexp_replace({without_bedrock_version}, "
+        "'^(bedrock/([a-z0-9-]+\\.)?anthropic\\.|vertex_ai/|anthropic/(anthropic\\.)?)', '', 'i')"
+    )
+    without_routing_prefix = f"regexp_replace({without_route_prefix}, '^(bedrock/)?(converse|invoke)/', '', 'i')"
     without_prefix = f"regexp_replace({without_routing_prefix}, '^([a-z0-9-]+\\.)?anthropic\\.', '', 'i')"
-    return f"regexp_replace({without_prefix}, '(\\d{{8}})-v\\d+:\\d+$', '\\1')"
+    without_version_tag = f"regexp_replace({without_prefix}, '(\\d{{8}})-v\\d+:\\d+$', '\\1')"
+    return f"regexp_replace({without_version_tag}, '@(\\d{{8}})$', '-\\1')"
 
 
 # Spend is what the company or a project pays: the cost of a Personal-paid session (also one stored under a work

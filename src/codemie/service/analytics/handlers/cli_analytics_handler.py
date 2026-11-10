@@ -45,7 +45,12 @@ from codemie.service.analytics.cli_analytics_project_gate import (
     ORIGIN_DEFAULT,
 )
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
-from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, model_rates_for, normalize_model
+from codemie.service.analytics.handlers.coding_agent_pricing import (
+    CatalogPricer,
+    model_rates_for,
+    normalize_model,
+    unpriced_display_names,
+)
 from codemie.service.analytics.handlers.funding_buckets import buckets, models_without_spend, price_bucket_rows
 from codemie.service.analytics.handlers.session_money import (
     dispatch_money,
@@ -1142,7 +1147,7 @@ class LocalAnalyticsHandler:
         skill_names = _first(skill_rows).get("skill_names") or []
         detail["delivery_framework"] = classify_delivery_framework(skill_names)
         detail["harness_name"] = humanize_harness_name(meta.get("harness_service_name"))
-        return detail, pricer.unpriced, pricer.catalog_source
+        return detail, unpriced_display_names(pricer.unpriced), pricer.catalog_source
 
     @staticmethod
     def _session_event(row: dict[str, Any], pricer: CatalogPricer) -> dict[str, Any]:

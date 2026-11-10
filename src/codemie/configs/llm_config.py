@@ -285,6 +285,8 @@ class LiteLLMModels(BaseModel):
     chat_models: list[LLMModel] = Field(default_factory=list)
     embedding_models: list[LLMModel] = Field(default_factory=list)
     audio_transcription_models: list[LLMModel] = Field(default_factory=list)
+    # Chat deployment price keyed by its exact `litellm_params.model`, kept before the base_name dedup
+    route_costs: dict[str, CostConfig] = Field(default_factory=dict)
 
 
 class LLMYamlSettings(BaseSettings):

@@ -1,0 +1,293 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "request-changes",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Approved over CR-001: out of scope of the ticket"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Fix-ups requested after the final round: a live PostgreSQL test file for the route-pricing SQL"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Approved over CR-001: out of scope of the ticket"
+    }
+  ],
+  "reviewed_head": "618a20d8695d5885b3cf1b386273ce0587629eff",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "Targeted check of 5 prior blocking findings: CR-002/003/004 resolved by the new Postgres-backed test_live_route_pricing.py (skip-gated on TEST_LOCAL_PG_URL; the 14-passed runs are self-reported, no command evidence mapped) and CR-005 resolved by a recorded owner decision. CR-001 stays unresolved: it is a kind code finding, reader.py is unchanged, and an accepted-limitation decision cannot resolve a code finding, so re-triage it to decision/defer or fix the name split. No new findings on this round.",
+  "confidence": "low",
+  "check_confidence": "medium",
+  "risk_flags": [
+    "breaking-change",
+    "public-api"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 4,
+    "wont_fix": 1
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "title": "Routed and unrouted model listed twice",
+      "problem": "A routed request normalises to the route's undated name (claude-sonnet-4-5 for vertex_ai/claude-sonnet-4-5) while an unrouted request of the same model keeps its dated transcript name (claude-sonnet-4-5-20250929). The reader's _GRAIN/_TOP_MODEL, the rollup models/primary_model counters and unpriced_models therefore list one model under two names; the storage guide documents the split instead of fixing it and its 'one name in every row' sentence now carries an exception.",
+      "impact": "top_model and session primary_model rank by calls per name, so a model's calls split across two names and the wrong model can be reported as primary; model lists repeat a model. Reachability (how often one grain mixes routed and unrouted rows of a model, e.g. other clients beside Claude Code) was not confirmed in code.",
+      "recommendation": "Group and display by the undated normalised name (strip a trailing -YYYYMMDD after normalized_model_name / normalize_model) in _GRAIN/_TOP_MODEL, the rollup models/primary_model counters and unpriced_display_names, so a route and its dated plain name count as one model; update the storage guide rows that document the split.",
+      "status": "wont-fix",
+      "check_notes": "kind code; reader.py unchanged at HEAD 618a20d8. fix_evidence carries only a decision (accepted limitation), which cannot resolve a code finding; re-triage as decision or defer to clear",
+      "decision": {
+        "outcome": "accepted by the story owner as a documented limitation; merging the two names is out of scope of EPMCDME-16633 and EPMCDME-16928",
+        "rationale": "Pricing by the route is done with the backend alone: the name the user chose reaches the backend in no event, and the normaliser is not changed to drop dates because that would move the price tiers (a dated name must not match another date). Showing one name would mean changing how model names are displayed on every screen of the CLI Analytics tab together with the UI's own copy of the normaliser, which neither ticket asks for. The split is stated in .ai-run/guides/integration/cli-analytics-storage.md (the models row and the unpriced_models paragraph) and in the MR description, Deviations. It needs a route whose name is undated while the transcript name is dated, mixed with requests of the same model that carry no route header: among 16 distinct (message.model, x-litellm-model-name) pairs of real Claude Code transcripts one pair is such (claude-sonnet-4-5-20250929 on vertex_ai/claude-sonnet-4-5)."
+      },
+      "disposition": {
+        "rationale": "Out of scope of the ticket: merging the two names means changing how model names are displayed on the whole CLI Analytics tab and in the UI's copy of the normaliser.",
+        "source": "hitl"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/request_routes.py",
+      "title": "Session-detail route pairing never executed",
+      "problem": "Regression gap: session detail now prices each OTel api_request by the route of its paired transcript request through per-day array indexes (oa.okeys[p.oid], ta.routes[p.tid]) and a tableoid||ctid row key, used in reader events, _model_sums, dispatch per-model sums and inline skill attribution. test_rollups.py and test_reader.py only assert SQL substrings; test_cli_analytics_handler.py mocks reader rows; no test runs this SQL on Postgres.",
+      "impact": "Consumer: LocalAnalyticsHandler.get_session_detail serving GET session detail. An off-by-one, a dropped t_day = day filter or an okey expression diverging from o.okey would leave OTel records under their plain names while cost_daily keys them by route, so Session Detail money disagrees with the Sessions list cost of the same session, undetected.",
+      "recommendation": "Add a Postgres-backed reader test that seeds a session with a routed usage_requests row and its paired log_events api_request, runs get_session_detail_model_costs and the session events query, and asserts model_name is the route for the paired record and the record's own model for an unpaired one, and that the session-detail cost equals the cost the Sessions list prices from cost_daily.",
+      "status": "decided",
+      "check_notes": "test_live_route_pricing.py executes session-detail pairing on Postgres (paired/unpaired, midnight, two-line, other-model, routed dispatches); skip-gated on TEST_LOCAL_PG_URL",
+      "decision": {
+        "outcome": "fixed in code (commit 618a20d869, EPMCDME-16633: Keep the route-pricing live tests in one self-contained file)",
+        "rationale": "tests/codemie/repository/cli_analytics/postgres/test_live_route_pricing.py runs the read-time pairing of session detail on PostgreSQL: test_a_routed_session_prices_its_events_by_the_route_cost_daily_keys_them_by (a paired and an unpaired record in one session), test_routed_pairs_across_midnight_add_up_to_the_session_cost, test_a_request_with_a_routed_and_a_plain_transcript_line_is_priced_at_the_route and test_a_request_with_lines_on_two_routes_of_the_model_is_priced_at_the_plain_name (each paired and transcript-only), test_a_proxy_name_of_another_model_is_no_route_and_its_event_is_priced_by_the_plain_name, and test_live_dispatches_on_a_routed_session_are_priced_by_the_route_their_requests_ran_on for the dispatch per-model sums and the inline skill attribution. Each asserts the event costs, the session cost_usd priced from cost_daily and that the growth line ends at it. The file is skipped without TEST_LOCAL_PG_URL; run on one-off PostgreSQL 17 and 14 it gives 14 passed on both versions, none skipped (the MR description, Verified locally). With routed_model_name returning the plain name 7 of the 14 fail on both versions: the route key, the routed session detail on one day, across midnight and with a plain line, the Opus 4.6 route case and the routed dispatch."
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/rollups.py",
+      "title": "Session model list dedup only text-tested",
+      "problem": "Regression gap: session_dims.models, primary_model and the reader's top_model now merge routes and plain names under the normalised name and keep the first position on dedup (_SUMMARY_MODELS min(pos), fallback GROUP BY, primary_model normalisation). test_rollups.py checks startswith/endswith/equality of the SQL text and test_reader.py a PARTITION BY substring; nothing executes the expressions.",
+      "impact": "Consumer: session_dims.models / primary_model refreshed by RollupRefresher and top_model on the Sessions list. A broken ordering (by name instead of position) or grouping before normalising would show a wrong primary model or a repeated model with every test still green.",
+      "recommendation": "Add an executing test (recompute against Postgres, or the SQL run on sample jsonb) asserting a summary models array ['vertex_ai/claude-x', 'claude-x', 'bedrock/eu.anthropic.claude-y'] is stored as ['claude-x', 'claude-y'] in that order, primary_model 'vertex_ai/claude-x' is stored as 'claude-x', and top_model sums calls across a route and its plain name.",
+      "status": "decided",
+      "check_notes": "same file executes session_dims models/primary_model dedup, users top_model, and SQL-vs-Python normaliser parity on Postgres; skip-gated on TEST_LOCAL_PG_URL",
+      "decision": {
+        "outcome": "fixed in code (commit 618a20d869, EPMCDME-16633: Keep the route-pricing live tests in one self-contained file)",
+        "rationale": "tests/codemie/repository/cli_analytics/postgres/test_live_route_pricing.py executes the model-list SQL on PostgreSQL: test_a_summary_listing_routes_stores_the_normalised_models (a session summary whose models array and primary_model hold routes is stored in session_dims as the normalised names, deduplicated in their first position) and test_the_users_top_model_and_the_session_model_list_are_the_normalised_name (get_users top_model and the session model list count a route and its plain name as one name); test_the_sql_normaliser_equals_the_python_one_on_the_route_forms runs normalized_model_name on PostgreSQL against normalize_model. The file is skipped without TEST_LOCAL_PG_URL; run on one-off PostgreSQL 17 and 14 it gives 14 passed on both versions, none skipped (the MR description, Verified locally)."
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/route_identity.py",
+      "line": 24,
+      "title": "Route keying has no Postgres integration test",
+      "problem": "EPMCDME-16928 developer AC 2 requires an integration test on a disposable analytics Postgres ingesting a claude-opus-4-6 session and asserting cost_usd equals the catalog calculation, cost_available true, absence from unpriced_models and inclusion in Overview/Cost totals. The diff has none: routed_predicate, _undated, group_model and routed_model_name are only compared as generated SQL text in test_rollups.py (the expected string is built with the same escaping as the builder), and the only live test, test_live_session_subagent_cost.py, does not cover routes. The committed docs/superpowers/reviews/2026-11-10-epmcdme-16633/code-review-final.json and code-review-check.json mark this AC pass citing test_live_catalog_money / test_live_route_cost_key.py, which the merge of main removed.",
+      "impact": "A required spec criterion is unmet. Consumer: cost_daily rows read by get_session_model_costs / get_session_detail_model_costs and priced through lookup_cost_config's route-map tier. If regex escaping, NULL semantics of min/max FILTER or a dated/undated mismatch evaluate differently in Postgres, routed requests stay keyed by their plain name and price at the plain-name tariff, the exact regression EPMCDME-16928 exists to prevent, and the committed review records would still report it as covered.",
+      "recommendation": "Add the EPMCDME-16928 dev AC 2 integration test on a disposable analytics Postgres: ingest a claude-opus-4-6 session (input 4, output 137, cache write 68.8K) and a routed Claude Code request (model_raw claude-sonnet-4-5-20250929, model vertex_ai/claude-sonnet-4-5) plus a request group naming two routes, run the rollup recompute, and assert cost_daily.model_name is the route for the routed request and the plain name for the others, cost_usd equals the catalog calculation, cost_available is true, the model is absent from unpriced_models and Overview/Cost totals include it. Correct or drop docs/superpowers/reviews/2026-11-10-epmcdme-16633/code-review-final.json and code-review-check.json, which mark this AC pass on test_live_catalog_money / test_live_route_cost_key.py that no longer exist.",
+      "status": "decided",
+      "check_notes": "Opus 4.6 session test asserts 0.433445, cost_available, not unpriced, Overview/Cost totals; cost_daily route keying test; stale docs/superpowers/reviews JSON deleted",
+      "decision": {
+        "outcome": "fixed in code (commit 618a20d869, EPMCDME-16633: Keep the route-pricing live tests in one self-contained file)",
+        "rationale": "tests/codemie/repository/cli_analytics/postgres/test_live_route_pricing.py is the integration test of EPMCDME-16928 developer criterion 2 on a disposable PostgreSQL: test_an_undated_opus_46_session_is_priced_at_the_one_tariff_of_its_deployments seeds a session recorded as claude-opus-4-6 (input 4, output 137, cache write 68 800) and asserts cost_usd 0.433445, cost_available true, the model absent from unpriced_models and the Overview and Cost totals; test_an_opus_46_session_on_a_bedrock_route_is_priced_at_the_route_when_the_deployments_disagree asserts the route price 0.4767895. test_cost_daily_keys_a_routed_transcript_request_by_its_route_and_every_other_by_its_own_name runs routed_predicate, group_model and routed_model_name through the real rollup: dated and undated routes, a deployment of another model, and a request group naming two routes (keyed by the plain name). The file is skipped without TEST_LOCAL_PG_URL; run on one-off PostgreSQL 17 and 14 it gives 14 passed on both versions, none skipped (the MR description, Verified locally). With group_model put back to the largest route 3 tests fail on both versions, with routed_model_name returning the plain name 7 fail. docs/superpowers/reviews/2026-11-10-epmcdme-16633/ (code-review-final.json, code-review-check.json), which cited the removed live tests, is deleted in the same commit."
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/service/analytics/handlers/coding_agent_pricing.py",
+      "line": 86,
+      "title": "Vertex uplift and unmapped dated route unpriced",
+      "problem": "The 2026-11-10 scope comment says MR !4774 removes the Est. Cost divergences of the 2026-11-05 table, including the -vertex aliases. It is partly met: by the MR's own deviation note Vertex requests stay about x1.05 below the charge (x-litellm-model-name carries no location, so the route price is the base one), and a counted route missing from the route map for a dated model whose catalog entries differ in tariff (Opus 4.6 on preview) now goes unpriced and into unpriced_models until a reload, where before it priced by its dated name (test_a_bedrock_v1_route_in_the_route_map_prices_at_its_deployment_and_outside_it_as_its_model_raw asserts lookup_cost_config(route) is None with an empty map).",
+      "impact": "Est. Cost keeps a known gap against the charged amount for Vertex, and a previously priced dated model can drop to unpriced after deploy until the next catalog reload, contrary to the scope comment the story was amended to.",
+      "recommendation": "Get a product decision on the 2026-11-10 scope comment: either accept and record in the ticket that Vertex requests stay ~x1.05 below the charge and that a dated model with conflicting tariffs whose route is missing from the map is unpriced until a reload, or carry the regional uplift / fall back to the dated name for routes outside the map; then implement and test the chosen behaviour.",
+      "status": "decided",
+      "check_notes": "id-mapped decision: story owner accepts Vertex ~x1.05 gap (tracked EPMCDME-17065) and unmapped dated route unpriced until reload; non-empty rationale",
+      "decision": {
+        "outcome": "accepted by the story owner as known limitations of this MR; the regional Vertex uplift is tracked as the separate bug EPMCDME-17065",
+        "rationale": "Vertex: LiteLLM adds a regional uplift on non-global Vertex locations and one route (vertex_ai/claude-sonnet-4-6) spans a global and regional deployments; the forwarded x-litellm-model-name carries no location, so pricing it needs the deployment's location carried from the proxy through the plugin into the stored request, which is EPMCDME-17065 and not this MR. A counted route missing from the route map (the catalog not yet reloaded after a LiteLLM deployment change) prices by its plain name; for a dated model whose catalog entries differ in tariff that is unpriced and listed in unpriced_models until the reload: the rule of EPMCDME-16928 that a conflicting-tariff case stays unpriced, no guessing across prices, pinned by test_an_undated_name_with_different_tariffs_stays_unpriced. Both are stated in the MR description, Deviations from the ticket/spec."
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "EPMCDME-16633 AC1: reconcile affected sessions' records against authoritative charged amounts",
+      "status": "pass",
+      "notes": "investigation AC; reconciliation recorded in the 2026-11-05 Jira comment"
+    },
+    {
+      "kind": "story-ac",
+      "item": "EPMCDME-16633 AC2: explain why the Haiku 5.5 run is not reflected in the displayed total",
+      "status": "pass",
+      "notes": "explained in Jira; no code obligation"
+    },
+    {
+      "kind": "story-ac",
+      "item": "EPMCDME-16633 AC3 (amended): correct cost collection/aggregation if it omits attributable spend",
+      "status": "pass",
+      "notes": "Opus 4.6 $0 fixed by route map and undated catalog-variant tier"
+    },
+    {
+      "kind": "story-ac",
+      "item": "EPMCDME-16633 AC4: verify budget consumption uses correct charged amounts",
+      "status": "pass",
+      "notes": "verified in Jira; no fix required"
+    },
+    {
+      "kind": "story-ac",
+      "item": "EPMCDME-16633 AC5: regression coverage for Haiku 4.5, Haiku 5.5 and unknown-model-warning sessions",
+      "status": "pass",
+      "notes": "unit-level coverage only; no session-level test"
+    },
+    {
+      "kind": "spec",
+      "item": "EPMCDME-16633 scope comment: route pricing removes the Est. Cost divergences of the 2026-11-05 table",
+      "status": "partial",
+      "notes": "Vertex stays ~x1.05 off; dated conflicting-tariff route outside the map now unpriced (CR-005)"
+    },
+    {
+      "kind": "spec",
+      "item": "EPMCDME-16928 expected: Opus 4.6 session priced from its catalog entry, not in unpriced_models",
+      "status": "pass",
+      "notes": "route map plus undated last tier"
+    },
+    {
+      "kind": "spec",
+      "item": "EPMCDME-16928 dev AC 1 (unit): claude-opus-4-6 tariff, opus-4-7 unchanged, conflicting tariff unpriced",
+      "status": "pass",
+      "notes": "test_an_undated_name_takes_the_one_tariff_of_its_dated_and_vertex_entries"
+    },
+    {
+      "kind": "spec",
+      "item": "EPMCDME-16928 dev AC 2 (integration on disposable analytics Postgres): claude-opus-4-6 session priced, cost_available, in totals",
+      "status": "fail",
+      "notes": "no executing Postgres test in the diff; cited live tests were removed (CR-004)"
+    },
+    {
+      "kind": "spec",
+      "item": "EPMCDME-16928 constraint: a price is exact or absent",
+      "status": "pass",
+      "notes": "conflicting tariffs stay unpriced; conflicting routes dropped from the map"
+    },
+    {
+      "kind": "spec",
+      "item": "MR: route -> price map of enabled chat deployments, replaced on startup/recovery/reload",
+      "status": "pass",
+      "notes": "LiteLLMModels.route_costs, _map_raw_models, llm_service._litellm_route_costs"
+    },
+    {
+      "kind": "spec",
+      "item": "MR: Claude Code transcript request on a route of its own model keyed in cost_daily by the route",
+      "status": "pass",
+      "notes": "routed_predicate/routed_model_name; SQL text-tested only"
+    },
+    {
+      "kind": "spec",
+      "item": "MR: a request whose transcript lines name more than one route keeps its plain name",
+      "status": "pass",
+      "notes": "route_identity.group_model"
+    },
+    {
+      "kind": "spec",
+      "item": "MR: lookup_cost_config prices a route from the map first, LiteLLM catalog only",
+      "status": "pass",
+      "notes": "get_route_cost returns None unless catalog_source is litellm"
+    },
+    {
+      "kind": "spec",
+      "item": "MR: Python normaliser and SQL twin strip route prefixes, Bedrock -v1 and Vertex @YYYYMMDD",
+      "status": "pass",
+      "notes": "parity pinned in test_reader"
+    },
+    {
+      "kind": "spec",
+      "item": "MR: last lookup tier prices an undated name when its dated/-vertex entries share one tariff",
+      "status": "pass",
+      "notes": "_CATALOG_VARIANT_SUFFIX tier with tests"
+    },
+    {
+      "kind": "spec",
+      "item": "MR: session detail prices events and dispatch money by the cost_daily name",
+      "status": "pass",
+      "notes": "request_routes used at all call sites; not executed in tests (CR-002)"
+    },
+    {
+      "kind": "spec",
+      "item": "MR: top_model, session model list and unpriced_models leave the API normalised",
+      "status": "pass",
+      "notes": "normalised; dated/undated split remains (CR-001)"
+    },
+    {
+      "kind": "spec",
+      "item": "MR rollout: history rebuilt by backfill; rollback is revert plus backfill",
+      "status": "pass",
+      "notes": "runbook row added"
+    },
+    {
+      "kind": "spec",
+      "item": "MR documentation: cli-analytics-storage.md and cli-analytics-events.md updated",
+      "status": "pass",
+      "notes": "both guides changed"
+    },
+    {
+      "kind": "spec",
+      "item": "MR test harness: make test-harness against a local uvicorn of this branch",
+      "status": "pending-stage-7",
+      "notes": "runtime evidence owned by Stage 7"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 5 subjects in bf59279304..HEAD (including the merge-main commit) follow the documented EPMCDME-####: Description format with ticket EPMCDME-16633"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new modules request_routes.py and route_identity.py carry the Apache 2.0 header and from __future__ import annotations; all newly added functions (request_route, _unpaired, _candidates, request_pairing_ctes, routed_predicate, _undated, group_model, routed_model_name, unpriced_display_names, get_route_cost) have explicit parameter and return types with X | None and parameterized generics; no Optional[] introduced; module cohesion respected: route identity SQL extracted to its own modules rather than appended to rollups.py (2512 lines), and additions to rollups.py, reader.py and dependencies.py._map_raw_models extend each file's existing request-pairing / model-mapping responsibility; _map_raw_models remains unannotated but is pre-existing, not new code"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no auth surface changed (router only adds a metadata field); new SQL binds the session id as $sid parameter and interpolates only internal column expressions and constants; new log lines in dependencies.py and coding_agent_pricing.py log LiteLLM route/model names only, no keys or tokens; no lossy parsing of untrusted input introduced"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "All four lenses and the standards audit ran (no truncation, no failure); EPMCDME-16928 dev AC 2 (Postgres integration test) fails and one decision_needed remains on the scope comment (Vertex ~x1.05 divergence, dated route outside the map now unpriced), so confidence is low. Reachability of CR-001 was unconfirmed in code; 0 deferred; 12 lens candidates dismissed as handled, unreachable or speculative (committed review JSON folded into CR-004).",
+    "confidence": "low",
+    "risk_flags": [
+      "breaking-change",
+      "public-api"
+    ]
+  }
+}

@@ -73,7 +73,9 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
 )
 from codemie.repository.cli_analytics.postgres.inline_skill_attribution import INLINE_SKILL_CTES
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
+from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES_CTE, request_route
 from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms, _has_totals
+from codemie.repository.cli_analytics.postgres.route_identity import group_model, routed_predicate
 from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.session_page_sql import (
     FRAMEWORK_NAMES_TABLE,
@@ -387,17 +389,21 @@ def _session_developer(lines_email: str) -> str:
 # way, instead of silently depending on which row alias happens to be in scope.
 _DEVELOPER = _session_developer(_LINES_EMAIL)
 
+_GROUP_MODEL = group_model("u.model")
+
 
 # The model of the row with the most calls, over the rows of the original grain of cost_daily:
 # (day, session, user, model, query_source). cost_daily now has several rows per
 # such key (speed, geo, scope, agent type), so their calls are summed back to that grain first (window
 # `w`), then the largest row wins; ties go to the earliest day, then the key columns, as before. On
-# days without plugin data cost_daily has one row per such key and the answer is unchanged.
+# days without plugin data cost_daily has one row per such key and the answer is unchanged. The model is the
+# normalised name, so a model run on several routes ranks and is returned as one.
 _GRAIN_CALLS = "sum(c.api_call_count) OVER w AS grain_calls"
-_GRAIN = "c.day, c.session_id, c.user_email, c.model_name, c.query_source"
+_GRAIN_MODEL = normalized_model_name("c.model_name")
+_GRAIN = f"c.day, c.session_id, c.user_email, {_GRAIN_MODEL}, c.query_source"
 _TOP_MODEL = (
-    f"(array_agg(c.model_name ORDER BY c.grain_calls DESC NULLS LAST, c.day, c.session_id {_C}, c.user_email {_C}, "
-    f"c.model_name {_C}, c.query_source {_C}))[1]"
+    f"(array_agg({_GRAIN_MODEL} ORDER BY c.grain_calls DESC NULLS LAST, c.day, c.session_id {_C}, "
+    f"c.user_email {_C}, {_GRAIN_MODEL} {_C}, c.query_source {_C}))[1]"
 )
 
 
@@ -520,10 +526,11 @@ def _ms(column: str) -> str:
 
 
 def _model_sums(requests: str) -> str:
-    """Token sums per model of the session's API requests `r` matching `requests`, as a JSON array of
-    objects with the column names of get_session_detail_model_costs; NULL when none matches."""
+    """Token sums per price name (the CTE `request_routes`, else the record's model) of the session's API requests
+    `r` matching `requests`, as a JSON array of objects with the column names of get_session_detail_model_costs;
+    NULL when none matches."""
     return f"""(SELECT jsonb_agg(m ORDER BY m.model_name {_C}) FROM (
-        SELECT coalesce(r.model, '') AS model_name,
+        SELECT coalesce({request_route("r.tableoid::text || r.ctid::text")}, r.model, '') AS model_name,
                sum(coalesce(r.input_tokens, 0)) AS input_tokens,
                sum(coalesce(r.output_tokens, 0)) AS output_tokens,
                sum(coalesce(r.cache_read_tokens, 0)) AS cache_read_tokens,
@@ -1741,10 +1748,15 @@ class PostgresCliAnalyticsReader:
 
         The requests are the session's OTel api_request records. A session with none (hooks only: GitHub Copilot,
         Claude Code without telemetry) takes its `usage_requests` instead, grouped as the cost rollup groups its
-        transcript requests (by request id, else message id, and raw model: the largest value of every field, the
-        latest time; a row with neither id alone), under the raw model cost_daily keys its tokens by, so each
-        request is priced as cost_daily prices it. A session with both keeps its OTel requests: a transcript request
-        and its OTel record are one request, and the pairing is the rollup's alone.
+        transcript requests (by request id, else message id, and raw model: the largest value of every field, its one
+        route over a plain model, the plain model when its rows name more than one route, the latest time; a row with
+        neither id alone). A session with both keeps its OTel
+        requests: a transcript request and its OTel record are one request, and the pairing is the rollup's alone.
+        Every request's `model_name` is the name cost_daily keys its tokens by, so each request is priced as
+        cost_daily prices it: the route of a transcript request run on a route of its own model, one that normalises
+        to its raw model up to a trailing date (`routed_predicate`) (an OTel record takes the route of the transcript
+        request the rollup pairs it with, see `request_routes`), else the OTel name, or the raw model of a transcript
+        request.
 
         Known limitation of that per-session switch: a session with any OTel api_request lists only the OTel
         requests, so a transcript request the rollup leaves unpaired (for example OTel enabled mid-session) is priced
@@ -1763,17 +1775,23 @@ class PostgresCliAnalyticsReader:
         gate, gate_params = detail_gate(scope)
         return await self._q(
             f"""
+        WITH {REQUEST_ROUTES_CTE}
         SELECT * FROM (
-            SELECT ts AS timestamp, 'api_request' AS event_type, coalesce(model, '') AS model_name,
+            SELECT ts AS timestamp, 'api_request' AS event_type,
+                   coalesce({request_route("log_events.tableoid::text || log_events.ctid::text")}, model, '')
+                       AS model_name,
                    coalesce(input_tokens, 0) AS input_tokens, coalesce(output_tokens, 0) AS output_tokens,
                    coalesce(cache_read_tokens, 0) AS cache_read_tokens,
                    coalesce(cache_creation_tokens, 0) AS cache_creation_tokens,
                    {_attr_ms("log_events", "cache_creation_5m_tokens")} AS cache_creation_5m_tokens,
                    {_attr_ms("log_events", "cache_creation_1h_tokens")} AS cache_creation_1h_tokens,
                    '' AS tool_name
-            FROM log_events WHERE session_id = $sid::text AND event_kind = {_API_REQUEST} AND {gate}
+            FROM log_events
+            WHERE session_id = $sid::text AND event_kind = {_API_REQUEST} AND {gate}
             UNION ALL
-            SELECT max(u.ts), 'api_request', coalesce(u.model_raw, ''),
+            SELECT max(u.ts), 'api_request',
+                   CASE WHEN {routed_predicate(_GROUP_MODEL, "max(u.model_raw)")} THEN {_GROUP_MODEL}
+                        ELSE coalesce(u.model_raw, '') END,
                    coalesce(max(u.input_tokens), 0), coalesce(max(u.output_tokens), 0),
                    coalesce(max(u.cache_read_tokens), 0),
                    coalesce(max(u.cache_creation_5m_tokens), 0) + coalesce(max(u.cache_creation_1h_tokens), 0),
@@ -1986,7 +2004,7 @@ class PostgresCliAnalyticsReader:
                    sum(coalesce(g.cache_read_tokens, 0)) AS cache_read_tokens,
                    sum(coalesce(g.cache_creation_tokens, 0)) AS cache_creation_tokens,
                    (SELECT jsonb_agg(m ORDER BY m.model_name {_C}) FROM (
-                        SELECT coalesce(r.model, '') AS model_name,
+                        SELECT coalesce({request_route("r.okey")}, r.model, '') AS model_name,
                                sum(coalesce(r.input_tokens, 0)) AS input_tokens,
                                sum(coalesce(r.output_tokens, 0)) AS output_tokens,
                                sum(coalesce(r.cache_read_tokens, 0)) AS cache_read_tokens,

@@ -15,8 +15,8 @@
 """Transcript-to-OTel request pairing, inline slash-skill attribution and per-dispatch usage SQL.
 
 The CTEs extend the reader's ``dispatch_fork`` and ``t`` (Skill spans) CTEs, bind ``$sid``, and expose
-``paired_requests`` (every paired API request with the scope and agentId the plugin sent for it) and
-``inline_usage`` for the final timeline projection.
+``request_routes`` (see REQUEST_ROUTES), ``paired_requests`` (every paired API request with the scope and agentId
+the plugin sent for it) and ``inline_usage`` for the final timeline projection.
 """
 
 from codemie.repository.cli_analytics.postgres.rollups import (
@@ -30,6 +30,7 @@ from codemie.repository.cli_analytics.postgres.rollups import (
     _one_to_one,
     _resolved,
 )
+from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES_CTE, request_route
 from codemie.repository.cli_analytics.vocabulary import SKILL_DISPATCH_EVENT, EventKind
 
 _API_REQUEST = int(EventKind.API_REQUEST)
@@ -80,13 +81,13 @@ _PAIRED_REQUESTS = f"""WITH RECURSIVE
                 JOIN (SELECT day, session_id, request_id, oid,
                              row_number() OVER (PARTITION BY request_id ORDER BY oid) AS n
                       FROM o WHERE request_id IS NOT NULL) b USING (day, session_id, request_id, n)
-            ), {_candidates("c", _MATCH, _TIER_2_MATCH, "t1")},
+            ), {_candidates("c", _MATCH, _TIER_2_MATCH, "t1", hashed_cut=True)},
             {_one_to_one("c", "")},
             p2 AS (
                 SELECT day, session_id, tid, oid FROM t1
                 UNION ALL
                 {_resolved("")}
-            ), {_candidates("c3", _MATCH_PARTIAL, _TIER_3_MATCH, "p2", _TIER_3_RANKING)},
+            ), {_candidates("c3", _MATCH_PARTIAL, _TIER_3_MATCH, "p2", _TIER_3_RANKING, hashed_cut=True)},
             {_one_to_one("c3", "3", "d.totals_equal DESC, d.name_match DESC, d.gap, d.oid")},
             p AS (
                 SELECT day, session_id, tid, oid FROM p2
@@ -100,7 +101,7 @@ _PAIRED_REQUESTS = f"""WITH RECURSIVE
             JOIN o ON o.oid = p.oid"""
 
 
-INLINE_SKILL_CTES = f"""paired_requests AS MATERIALIZED (
+INLINE_SKILL_CTES = f"""{REQUEST_ROUTES_CTE}, paired_requests AS MATERIALIZED (
             {_PAIRED_REQUESTS}
         ), inline_attributed AS (
             -- the paired main-thread requests the plugin attributed to a skill
@@ -124,8 +125,10 @@ INLINE_SKILL_CTES = f"""paired_requests AS MATERIALIZED (
             -- start of the same skill (another dispatch or a Skill call), that the plugin attributed to this skill
             -- (usage_requests scope_kind = skill) and the rollups' pairing matched (see inline_attributed). Read once
             -- here, so the sums and the per-model sums below never scan the session again per dispatch
-            SELECT w.ts AS dispatch_ts, w.skill_name, w.prompt_id, x.ts, coalesce(x.model, '') AS model, x.cost_usd,
-                   x.input_tokens, x.output_tokens, x.cache_read_tokens, x.cache_creation_tokens, x.attrs
+            -- `model`: the price name (see request_routes)
+            SELECT w.ts AS dispatch_ts, w.skill_name, w.prompt_id, x.ts,
+                   coalesce({request_route("x.okey")}, x.model, '') AS model,
+                   x.cost_usd, x.input_tokens, x.output_tokens, x.cache_read_tokens, x.cache_creation_tokens, x.attrs
             FROM inline_window w
             JOIN inline_attributed x ON x.skill_name = w.skill_name AND x.prompt_id = w.prompt_id AND x.ts >= w.ts
                                     AND (w.next_start IS NULL OR x.ts < w.next_start)

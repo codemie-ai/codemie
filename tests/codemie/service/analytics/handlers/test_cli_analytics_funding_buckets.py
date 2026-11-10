@@ -183,6 +183,18 @@ async def test_an_unpriced_model_flags_only_its_own_buckets():
 
 
 @pytest.mark.asyncio
+async def test_a_bucket_names_an_unpriced_model_and_its_route_once_by_the_plain_name():
+    sessions = {
+        **SESSIONS,
+        "pers1": {**SESSIONS["pers1"], "model": "claude-x"},
+        "pers2": {**SESSIONS["pers2"], "model": "vertex_ai/claude-x"},
+    }
+    data, _, _ = await _call("cost", sessions)
+
+    assert data["personal_billed"]["unpriced_models"] == ["claude-x"]
+
+
+@pytest.mark.asyncio
 async def test_a_personal_only_model_is_served_apart_from_cost_by_model_and_a_blank_model_is_never_a_row():
     data, pricer, model = await _call("cost", EXTRA_MODELS)
 

@@ -29,6 +29,8 @@ import pytest
 from codemie.repository.cli_analytics.postgres import dirty, rollups, session_derived
 from codemie.repository.cli_analytics.postgres.dirty import RollupFamily
 from codemie.repository.cli_analytics.postgres.fork_attribution import executed_tool_span, executed_tool_start
+from codemie.repository.cli_analytics.postgres.inline_skill_attribution import _PAIRED_REQUESTS
+from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES
 from codemie.repository.cli_analytics.postgres.rollups import RECOMPUTE, RollupRefresher
 from codemie.repository.cli_analytics.postgres.session_activity import DERIVE_SQL
 from codemie.repository.cli_analytics.vocabulary import (
@@ -1270,11 +1272,22 @@ def test_a_leftover_partial_request_is_paired_by_a_third_tier() -> None:
     assert "ORDER BY d.totals_equal DESC, d.name_match DESC, d.gap, d.oid" in " ".join(sql.split())
     assert "ORDER BY d.gap, d.oid" in " ".join(sql.split())  # tier 2 keeps the nearest
     # neither side may be in a pair of tier 1 or 2
-    for side, key in (("a", "tid"), ("b", "oid")):
+    for side, key in (("x", "tid"), ("y", "oid")):
         assert (
-            f"NOT EXISTS (SELECT 1 FROM p2 WHERE p2.day = {side}.day AND p2.session_id = {side}.session_id "
-            f"AND p2.{key} = {side}.{key})"
-        ) in tier_3
+            f"WHERE NOT EXISTS (SELECT 1 FROM p2 q WHERE q.day = {side}.day AND q.session_id = {side}.session_id "
+            f"AND q.{key} = {side}.{key}) OFFSET 0" in tier_3
+        )
+    # one session's pairings (the reader's request routes and paired requests) cut both tiers by a hashed NOT IN,
+    # linear over its requests
+    for statement in (REQUEST_ROUTES, _PAIRED_REQUESTS):
+        flat = " ".join(statement.split())
+        for paired in ("t1", "p2"):
+            for side, key in (("x", "tid"), ("y", "oid")):
+                assert (
+                    f"WHERE ({side}.day, {side}.session_id, {side}.{key}) "
+                    f"NOT IN (SELECT day, session_id, {key} FROM {paired}) OFFSET 0"
+                ) in flat
+        assert "NOT EXISTS (SELECT 1 FROM t1 q" not in flat and "NOT EXISTS (SELECT 1 FROM p2 q" not in flat
     # one to one like tier 2, then the tier-3 pairs join `p`, which the matched/transcript/unmatched rows read
     assert "\nwalk3 (day, session_id, n, used, tid, oid) AS (" in sql
     assert "FROM d3 d WHERE d.day = q.day" in " ".join(sql.split())
@@ -1303,6 +1316,77 @@ def test_a_matched_partial_request_takes_the_larger_output() -> None:
     assert "CASE WHEN a.partial THEN greatest(a.output_tokens, b.output_tokens) ELSE a.output_tokens END" in matched
     assert "greatest(a.output_tokens" not in transcript
     assert "a.input_tokens, a.output_tokens, a.cache_read_tokens" in transcript
+
+
+def test_a_transcript_request_run_on_a_route_is_keyed_by_the_route() -> None:
+    # The plugin stores LiteLLM's x-litellm-model-name as `model`: a matched or transcript-only request whose
+    # model differs from model_raw, contains '/' and normalises to model_raw up to a trailing 8-digit date on either
+    # side keys cost_daily by it, so it is priced at its own deployment; any other request keeps the OTel name
+    # (matched) or model_raw (transcript-only).
+    parts = rollups._BUILD_REQUESTS.split("-- A matched request takes", 1)[1].split("UNION ALL")
+    matched, transcript = " ".join(parts[0].split()), " ".join(parts[1].split())
+
+    def normalized(column: str) -> str:
+        return (
+            f"regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace({column}, "
+            "'(anthropic\\.claude-[a-z0-9.-]*?)-v1$', '\\1', 'i'), "
+            "'^(bedrock/([a-z0-9-]+\\.)?anthropic\\.|vertex_ai/|anthropic/(anthropic\\.)?)', '', 'i'), "
+            "'^(bedrock/)?(converse|invoke)/', '', 'i'), "
+            "'^([a-z0-9-]+\\.)?anthropic\\.', '', 'i'), '(\\d{8})-v\\d+:\\d+$', '\\1'), "
+            "'@(\\d{8})$', '-\\1')"
+        )
+
+    routed = (
+        "CASE WHEN a.model <> a.model_raw AND strpos(a.model, '/') > 0"
+        f" THEN regexp_replace({normalized('a.model')}, '-\\d{{8}}$', '')"
+        f" = regexp_replace({normalized('a.model_raw')}, '-\\d{{8}}$', '') ELSE false END"
+    )
+    assert (
+        f"'matched', coalesce(a.model, ''), CASE WHEN {routed} THEN a.model ELSE coalesce(b.model, '') END," in matched
+    )
+    assert (
+        f"'transcript', coalesce(a.model, ''), CASE WHEN {routed} THEN a.model ELSE coalesce(a.model_raw, '') END,"
+        in transcript
+    )
+    # session_dims.models, rebuilt from cost_daily, lists a model run on several routes once
+    assert (
+        "SELECT regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(c.model_name, "
+        "'(anthropic\\.claude-[a-z0-9.-]*?)-v1$', '\\1', 'i'), "
+        "'^(bedrock/([a-z0-9-]+\\.)?anthropic\\.|vertex_ai/|anthropic/(anthropic\\.)?)', '', 'i')"
+        in rollups._COUNTER_JOINS
+    )
+    assert "GROUP BY c.model_name) x) AS models" not in " ".join(rollups._COUNTER_JOINS.split())
+    # a summary's models and primary model are stored under the normalised name too; the fallback is unchanged
+    counters = dict(rollups._COUNTERS_FROM_ROLLUPS)
+    element = "(e.v #>> '{}')"
+    assert counters["models"].startswith(
+        "CASE WHEN sm.ts IS NOT NULL THEN CASE WHEN jsonb_typeof(sm.attrs->'models') = 'array' THEN coalesce(("
+        "SELECT jsonb_agg(x.v ORDER BY x.pos) FROM (SELECT n.v, min(n.pos) AS pos FROM ("
+        f"SELECT CASE WHEN jsonb_typeof(e.v) = 'string' THEN to_jsonb({normalized(element)}) ELSE e.v END"
+    )
+    assert counters["models"].endswith(" ELSE fb.models END")
+    summary_primary = (
+        "CASE WHEN jsonb_typeof(sm.attrs->'primary_model') = 'string' THEN nullif(sm.attrs->>'primary_model', '') END"
+    )
+    assert counters["primary_model"] == (
+        f"CASE WHEN sm.ts IS NOT NULL THEN {normalized(summary_primary)} ELSE fb.models->>0 END"
+    )
+
+
+def test_a_request_group_naming_more_than_one_route_has_no_route() -> None:
+    # A transcript request group's model is its one route (a name with '/') over a plain name; when its rows name
+    # more than one route it has none and takes the largest plain name (NULL when no row is plain), so it is keyed
+    # by the OTel name of its paired record, else by model_raw; with no route the largest name.
+    from codemie.repository.cli_analytics.postgres import reader
+    from codemie.repository.cli_analytics.postgres.route_identity import group_model
+
+    assert group_model("m") == (
+        "CASE WHEN min(m) FILTER (WHERE strpos(m, '/') > 0) <> max(m) FILTER (WHERE strpos(m, '/') > 0)"
+        " THEN max(m) FILTER (WHERE strpos(m, '/') = 0)"
+        " ELSE coalesce(max(m) FILTER (WHERE strpos(m, '/') > 0), max(m)) END"
+    )
+    assert f"{group_model('u.model')} AS model" in rollups._BUILD_REQUESTS
+    assert group_model("u.model") == reader._GROUP_MODEL
 
 
 def _plugin_model(raw: str) -> str:

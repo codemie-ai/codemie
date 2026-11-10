@@ -99,6 +99,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.analytics.cli_analytics_project_gate import build_ingest_gate
 from codemie.service.analytics.delivery_framework import get_framework_labels
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler, now_iso
+from codemie.service.analytics.handlers.coding_agent_pricing import unpriced_display_names
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.time_parser import TimeParser
 from codemie.utils.datetime_utils import to_utc
@@ -430,6 +431,7 @@ class FilterParams:
 def _metadata(
     start_ns: int, data_as_of: str | None, unpriced: list[str], catalog_source: str | None, fallback: datetime
 ) -> dict[str, Any]:
+    unpriced = unpriced_display_names(unpriced)
     return {
         "timestamp": now_iso(),
         "data_as_of": data_as_of or fallback.date().isoformat(),

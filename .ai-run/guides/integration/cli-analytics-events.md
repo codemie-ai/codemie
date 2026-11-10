@@ -179,7 +179,7 @@ One event per request to the model: one group of transcript lines with the same 
 | `scope_kind` | string: `main`, `skill`, `agent` | where the request was made | `scope_kind` |
 | `scope_name` | string | the skill name or the agent type; `""` for `main`, never `main` | `scope_name` |
 | `model_raw` | string | the model as the API names it | `model_raw` |
-| `model` | string | normalised, without speed or region suffixes | `model` |
+| `model` | string | the LiteLLM route the request ran on when the response carries `x-litellm-model-name` (Claude Code through the proxy), else normalised, without speed or region suffixes | `model` |
 | `speed` | string: `standard`, `fast` | sent explicitly; OTel says `normal` for `standard` | `speed` |
 | `inference_geo`, `service_tier` | string | as the API reports them | same names |
 | `input_tokens`, `output_tokens`, `cache_read_tokens` | int | token counts of the request | same names |

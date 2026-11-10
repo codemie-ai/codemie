@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer
+from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, unpriced_display_names
 from codemie.service.analytics.handlers.session_money import token_counts
 
 FUNDING_ROUTES = ("api_based", "subscription", "unknown")
@@ -55,8 +55,9 @@ def price_bucket_rows(rows: list[dict]) -> list[dict]:
 
 
 def _bucket(rows: list[dict]) -> dict:
-    """One bucket's money: a partial figure carries `cost_incomplete` and its own unpriced models, never a bare 0."""
-    unpriced = sorted({r["model"] for r in rows if r["missing"]})
+    """One bucket's money: a partial figure carries `cost_incomplete` and its own unpriced models (normalised),
+    never a bare 0."""
+    unpriced = unpriced_display_names(r["model"] for r in rows if r["missing"])
     return {
         "cost_usd": sum(r["cost_usd"] for r in rows),
         "session_count": len({r["session_id"] for r in rows}),

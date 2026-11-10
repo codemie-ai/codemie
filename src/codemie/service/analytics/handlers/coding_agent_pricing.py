@@ -17,6 +17,7 @@ import logging
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from itertools import product
 
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.ports import ModelRates
@@ -25,17 +26,34 @@ from codemie.service.llm_service.llm_service import llm_service
 logger = logging.getLogger(__name__)
 
 
+_BEDROCK_CLAUDE_VERSION = re.compile(r"(anthropic\.claude-[a-z0-9.-]*?)-v1$", re.IGNORECASE)
+_ROUTE_PREFIX = re.compile(r"^(bedrock/([a-z0-9-]+\.)?anthropic\.|vertex_ai/|anthropic/(anthropic\.)?)", re.IGNORECASE)
 _ROUTING_PREFIX = re.compile(r"^(bedrock/)?(converse|invoke)/", re.IGNORECASE)
 _PROVIDER_PREFIX = re.compile(r"^([a-z0-9-]+\.)?anthropic\.", re.IGNORECASE)
 _VERSION_TAG = re.compile(r"(\d{8})-v\d+:\d+$")
+_VERTEX_DATE = re.compile(r"@(\d{8})$")
+_DATE_STAMP = re.compile(r"\d{8}")
+_CATALOG_VARIANT_SUFFIX = re.compile(r"(-\d{8})?(-vertex)?$")
 
 
 def normalize_model(model: str) -> str:
-    """Canonical model id: same rules as the SQL reader's `_normalized_model_name` (Bedrock wrapper, routing and
-    region/provider prefixes, and a '-v1:0' tag that follows an 8-digit date stamp)."""
+    """Canonical model id: same rules as its SQL twin `normalized_model_name` (first a trailing '-v1' with no colon
+    after a Bedrock id `anthropic.claude-…`, so `bedrock/eu.anthropic.claude-opus-4-6-v1` becomes `claude-opus-4-6`;
+    then LiteLLM route prefixes `bedrock/[<region>.]anthropic.`, `vertex_ai/`, `anthropic/anthropic.`, `anthropic/`, the
+    Bedrock wrapper, routing and region/provider prefixes, a '-v1:0' tag that follows an 8-digit date stamp, and last
+    Vertex's `@YYYYMMDD` becomes `-YYYYMMDD`)."""
+    model = _BEDROCK_CLAUDE_VERSION.sub(r"\g<1>", model)
+    model = _ROUTE_PREFIX.sub("", model)
     model = _ROUTING_PREFIX.sub("", model)
     model = _PROVIDER_PREFIX.sub("", model)
-    return _VERSION_TAG.sub(r"\g<1>", model)
+    model = _VERSION_TAG.sub(r"\g<1>", model)
+    return _VERTEX_DATE.sub(r"-\g<1>", model)
+
+
+def unpriced_display_names(models: Iterable[str]) -> list[str]:
+    """Unpriced model names as the API reports them: normalised (a route becomes its plain name), deduplicated,
+    sorted; an empty name stays empty."""
+    return sorted({normalize_model(model) for model in models})
 
 
 def _identity_cost(costs: list[CostConfig | None], model: str, tier: str, field: str) -> CostConfig | None:
@@ -53,34 +71,72 @@ def _identity_cost(costs: list[CostConfig | None], model: str, tier: str, field:
 def lookup_cost_config(model: str) -> CostConfig | None:
     """Return the CostConfig for the model from the runtime catalog, or None if not priced.
 
-    The catalog is ``llm_service.get_all_llm_model_info()``: the LiteLLM proxy's models when the proxy is on, the
-    YAML config otherwise. Resolve the raw, unwrapped, then normalised name, preferring exact deployment names
-    over shared base names. A shared base name retains the catalog's first-priced-entry order; missing tariffs
-    for that same identity do not hide a priced duplicate. A matched identity with no tariff never falls through
-    to another identity. Only the final normalised-alias tier compares different deployments, so all its tariffs
-    must agree (including missing tariffs). Conflicting exact deployment tariffs are also left unpriced.
-    No fallback to another price list or to the default model: a price is exact or absent.
+    A name with `/` is first matched exactly against the LiteLLM route map (each deployment's own price); a route
+    outside it prices at its plain name below, as does a route whose price in the map has no usable rate. The catalog
+    is ``llm_service.get_all_llm_model_info()``: the LiteLLM proxy's models when the proxy is on, the YAML config
+    otherwise. Resolve the raw, unwrapped, then normalised name, preferring exact deployment names over shared base
+    names. A shared base name retains the catalog's first-priced-entry order; missing tariffs for that same identity
+    do not hide a priced duplicate. A matched catalog identity with no tariff never falls through to another catalog
+    identity. Only the normalised-alias tiers compare
+    different deployments, so all their tariffs must agree (including missing tariffs). The last tier, reached only
+    when no alias matched and the name carries no 8-digit date, also matches catalog names with their trailing date
+    or `-vertex` removed (the catalog side only, so a dated name never prices at another date). Conflicting exact
+    deployment tariffs are also left unpriced. No fallback to another price list or to the default model: a price
+    is exact or absent.
     """
+    route_cost = _route_cost(model)
+    if route_cost is not None:
+        return route_cost
     catalog = llm_service.get_all_llm_model_info()
     unwrapped = _ROUTING_PREFIX.sub("", model)
     normalized = normalize_model(model)
-    for tier, name in (("raw", model), ("unwrapped", unwrapped), ("normalized", normalized)):
-        for field in ("deployment_name", "base_name"):
-            matches = [m for m in catalog if getattr(m, field) == name]
-            if not matches:
-                continue
+    names = (("raw", model), ("unwrapped", unwrapped), ("normalized", normalized))
+    for (tier, name), field in product(names, ("deployment_name", "base_name")):
+        matches = [m for m in catalog if getattr(m, field) == name]
+        if matches:
             return _identity_cost([m.cost for m in matches], model, tier, field)
+    costs = _alias_costs(catalog, normalized)
+    if not costs:
+        return None
+    if any(cost != costs[0] for cost in costs):
+        logger.warning("cli_analytics: ambiguous catalog tariffs for model %s at normalized_alias", model)
+        return None
+    return costs[0]
+
+
+def _route_cost(model: str) -> CostConfig | None:
+    """The route's own price from the LiteLLM route map; None for a plain name, a route outside the map and a
+    route whose price there has no usable rate."""
+    if "/" not in model:
+        return None
+    route_cost = llm_service.get_route_cost(model)
+    if route_cost is None:
+        return None
+    if _has_usable_rate(route_cost):
+        return route_cost
+    logger.debug("cli_analytics: route %s has no usable rate in the route map, priced by its plain name", model)
+    return None
+
+
+def _alias_costs(catalog: list, normalized: str) -> list[CostConfig | None]:
+    """Tariffs of the catalog entries whose normalised name is `normalized`; when there is none and the name
+    carries no 8-digit date, of the entries that match with their trailing date or `-vertex` removed."""
     costs = [
         m.cost
         for m in catalog
         if normalized in (normalize_model(m.base_name or ""), normalize_model(m.deployment_name or ""))
     ]
-    if costs:
-        if any(cost != costs[0] for cost in costs):
-            logger.warning("cli_analytics: ambiguous catalog tariffs for model %s at normalized_alias", model)
-            return None
-        return costs[0]
-    return None
+    if costs or _DATE_STAMP.search(normalized):
+        return costs
+    return [
+        m.cost
+        for m in catalog
+        if normalized
+        in (
+            _CATALOG_VARIANT_SUFFIX.sub("", normalize_model(m.base_name or "")),
+            _CATALOG_VARIANT_SUFFIX.sub("", normalize_model(m.deployment_name or "")),
+        )
+    ]
 
 
 def _has_usable_rate(cost: CostConfig) -> bool:

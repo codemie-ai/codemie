@@ -156,6 +156,36 @@ class TestLiteLLMModelFallback:
         with patch.object(config, "LLM_PROXY_ENABLED", proxy_enabled):
             assert llm_service.catalog_source() == expected
 
+    def test_get_route_cost_reads_the_litellm_route_map_only(self, llm_service, mock_litellm_models):
+        from codemie.configs.config import config
+        from codemie.configs.llm_config import CostConfig
+
+        route = "bedrock/eu.anthropic.claude-opus-4-8"
+        cost = CostConfig(input=5.5e-06, output=2.75e-05)
+        llm_service.initialize_default_litellm_models(
+            mock_litellm_models.model_copy(update={"route_costs": {route: cost}})
+        )
+
+        with patch.object(config, "LLM_PROXY_ENABLED", True):
+            assert llm_service.get_route_cost(route) == cost
+            assert llm_service.get_route_cost("bedrock/global.anthropic.claude-opus-4-8") is None
+        with patch.object(config, "LLM_PROXY_ENABLED", False):
+            assert llm_service.get_route_cost(route) is None
+
+    def test_a_reload_replaces_the_route_map(self, llm_service, mock_litellm_models):
+        from codemie.configs.config import config
+        from codemie.configs.llm_config import CostConfig
+
+        removed, kept = "bedrock/eu.anthropic.claude-opus-4-8", "vertex_ai/claude-sonnet-4-6"
+        first = {removed: CostConfig(input=5.5e-06, output=2.75e-05), kept: CostConfig(input=3e-06, output=1.5e-05)}
+        llm_service.initialize_default_litellm_models(mock_litellm_models.model_copy(update={"route_costs": first}))
+        second = {kept: CostConfig(input=3.3e-06, output=1.65e-05)}
+        llm_service.initialize_default_litellm_models(mock_litellm_models.model_copy(update={"route_costs": second}))
+
+        with patch.object(config, "LLM_PROXY_ENABLED", True):
+            assert llm_service.get_route_cost(removed) is None
+            assert llm_service.get_route_cost(kept).input == 3.3e-06
+
     def test_get_all_embedding_model_info_uses_litellm_when_enabled(self, llm_service, mock_litellm_models):
         """Test that get_all_embedding_model_info returns LiteLLM embeddings when initialized."""
         from codemie.configs.config import config

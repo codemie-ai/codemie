@@ -48,6 +48,7 @@ from datetime import date, timedelta
 
 import asyncpg
 
+from codemie.repository.cli_analytics.postgres.cost_key_sql import normalized_model_name
 from codemie.repository.cli_analytics.postgres.dirty import (
     _CROSS_MIDNIGHT,
     _PROMPT_SUBMIT,
@@ -58,6 +59,7 @@ from codemie.repository.cli_analytics.postgres.dirty import (
 from codemie.repository.cli_analytics.postgres.engine import CLIENT_TIMEOUT_MARGIN_S, AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.maintenance import TODAY_UTC_SQL
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES, MAX_PATH_BYTES
+from codemie.repository.cli_analytics.postgres.route_identity import group_model, routed_model_name
 from codemie.repository.cli_analytics.postgres.session_activity import derive_session_activity
 from codemie.repository.cli_analytics.postgres.session_derived import update_session_derived
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
@@ -364,23 +366,39 @@ def _normalised_model(value: str) -> str:
     return expression
 
 
-def _candidates(name: str, window: str, conditions: str, paired: str, ranking: str = "") -> str:
+def _unpaired(side: str, key: str, paired: str, hashed_cut: bool) -> str:
+    """The rows of CTE `t` or `o` (alias `side`, row id `key`) that no pair of `paired` holds."""
+    if hashed_cut:
+        return (
+            f"WHERE ({side}.day, {side}.session_id, {side}.{key}) NOT IN (SELECT day, session_id, {key} FROM {paired})"
+        )
+    return f"""WHERE NOT EXISTS (SELECT 1 FROM {paired} q
+                            WHERE q.day = {side}.day AND q.session_id = {side}.session_id AND q.{key} = {side}.{key})"""
+
+
+def _candidates(
+    name: str, window: str, conditions: str, paired: str, ranking: str = "", *, hashed_cut: bool = False
+) -> str:
     """The CTE `name` of fingerprint candidates among what the pairs `paired` left: same session and day,
     both records inside their day widened by 5 s and at most `window` apart, not both ids present, the raw
-    model equal, plus `conditions`. `gap` is the distance in time; `ranking` adds columns to select."""
+    model equal, plus `conditions`. `gap` is the distance in time; `ranking` adds columns to select.
+    Both sides are cut to what `paired` left before the join (OFFSET 0 keeps the cut there): the join's only
+    selective condition is the time window, so over a whole session-day it is quadratic in the requests it reads.
+    The cut is an anti-join (it spills to disk over a rollup batch), or with `hashed_cut` a hashed NOT IN, which
+    stays linear over one session's requests where the anti-join is planned as a merge on (day, session) alone,
+    quadratic there; `paired` holds no NULL key, so both keep the same rows."""
     return f"""{name} AS (
     SELECT a.day, a.session_id, a.tid, b.oid, greatest(b.ts - a.ts, a.ts - b.ts) AS gap{ranking}
-    FROM t a
-    JOIN o b ON b.day = a.day AND b.session_id = a.session_id
+    FROM (SELECT x.* FROM t x
+          {_unpaired("x", "tid", paired, hashed_cut)} OFFSET 0) a
+    JOIN (SELECT y.* FROM o y
+          {_unpaired("y", "oid", paired, hashed_cut)} OFFSET 0) b
+      ON b.day = a.day AND b.session_id = a.session_id
      AND b.ts >= a.ts - {window} AND b.ts <= a.ts + {window}
     WHERE a.ts >= a.lo AND a.ts < a.hi AND b.ts >= b.lo AND b.ts < b.hi
       AND (a.request_id IS NULL OR b.request_id IS NULL)
       AND b.model = a.model_raw
       {conditions}
-      AND NOT EXISTS (SELECT 1 FROM {paired}
-                      WHERE {paired}.day = a.day AND {paired}.session_id = a.session_id AND {paired}.tid = a.tid)
-      AND NOT EXISTS (SELECT 1 FROM {paired}
-                      WHERE {paired}.day = b.day AND {paired}.session_id = b.session_id AND {paired}.oid = b.oid)
 )"""
 
 
@@ -447,27 +465,28 @@ _TIER_3_RANKING = """,
                     false) AS name_match"""
 
 
-_BUILD_REQUESTS = f"""INSERT INTO {_REQUESTS} (day, hour, ts, session_id, req_kind, model, model_name, user_email,
-    query_source, speed, inference_geo, service_tier, scope_kind, scope_name, agent_id, agent_type, input_tokens,
-    output_tokens, cache_read_tokens, cache_creation_tokens, cache_5m, cache_1h, thinking_tokens,
-    web_search_requests, web_fetch_requests, cost_usd, duration_ms, ttft_ms)
-WITH RECURSIVE
--- Each key's day widened by 5 s (lo, hi: the fingerprint tier) and by 1 h (id_lo, id_hi: the identifier
--- tier); `plugin`: the session has usage_requests rows in the day widened by 5 s (per day).
-rk AS (
-    SELECT w.day, w.session_id, w.lo, w.hi, w.id_lo, w.id_hi,
-           EXISTS (SELECT 1 FROM usage_requests u WHERE u.session_id = w.session_id AND u.ts >= w.lo AND u.ts < w.hi)
-               AS plugin
-    FROM (SELECT k.day, k.session_id, {_DAY_LO} - {_MATCH} AS lo, {_DAY_HI} + {_MATCH} AS hi,
-                 {_DAY_LO} - {_GROUP_REACH} AS id_lo, {_DAY_HI} + {_GROUP_REACH} AS id_hi
-          FROM {_KEYS} k WHERE k.kinds & {_LOG | _USAGE} <> 0) w
-),
--- Transcript requests: rows grouped by (session, request id or else message id, raw model), the
--- maximum of every field (never the sum), the latest ts. A row with neither id is a group of its own.
+# Each (day, session) key `k`'s day widened by 5 s (lo, hi: the fingerprint tier) and by 1 h (id_lo, id_hi: the
+# identifier tier).
+KEY_WINDOWS = (
+    f"{_DAY_LO} - {_MATCH} AS lo, {_DAY_HI} + {_MATCH} AS hi, "
+    f"{_DAY_LO} - {_GROUP_REACH} AS id_lo, {_DAY_HI} + {_GROUP_REACH} AS id_hi"
+)
+
+
+def request_pairing_ctes(*, hashed_cut: bool = False) -> str:
+    """The pairing of transcript requests `t` with OTel api_request records `o` per (day, session) of the CTE `rk`
+    (day, session_id, lo, hi, id_lo, id_hi, see KEY_WINDOWS), resolved as the pairs `p` (day, session_id, tid,
+    oid). `o.okey` is the record's row identity. A pair is the cost rollup's when `t.t_day = t.day`. `hashed_cut`
+    picks the fingerprint tiers' cut of what an earlier tier paired (see `_candidates`)."""
+    return f"""-- Transcript requests: rows grouped by (session, request id or else message id, raw model),
+-- the maximum of every field (never the sum; the model: its one route over a plain name, the plain name when its
+-- rows name more than one route, no model when none of those rows is plain), the latest ts. A row with
+-- neither id is a group of its own.
 -- Those of the day widened by 1 h: only the day's own are written, the rest are pairing candidates.
 tr AS (
     SELECT r.day, r.session_id, r.lo, r.hi, max(u.ts) AS ts, max(nullif(u.request_id, '')) AS request_id,
-           max(nullif(u.message_id, '')) AS message_id, max(u.model_raw) AS model_raw, max(u.model) AS model,
+           max(nullif(u.message_id, '')) AS message_id, max(u.model_raw) AS model_raw,
+           {group_model("u.model")} AS model,
            max({_bounded("u.user_email")}) AS user_email, max(u.speed) AS speed, max(u.inference_geo) AS inference_geo,
            max(u.service_tier) AS service_tier, max(u.scope_kind) AS scope_kind, max(u.scope_name) AS scope_name,
            max(u.agent_id) AS agent_id, max(u.agent_type) AS agent_type, max(u.input_tokens) AS input_tokens,
@@ -508,7 +527,8 @@ o AS (
                ORDER BY l.ts, l.request_id, l.model, l.user_email, l.query_source, l.input_tokens, l.output_tokens,
                         l.cache_read_tokens, l.cache_creation_tokens, l.cost_usd, l.prompt_id, l.attrs::text,
                         l.tableoid, l.ctid
-           ) AS oid
+           ) AS oid,
+           l.tableoid::text || l.ctid::text AS okey
     FROM rk r
     JOIN log_events l ON l.session_id = r.session_id AND l.ts >= r.id_lo AND l.ts < r.id_hi
     WHERE l.event_kind = {int(EventKind.API_REQUEST)}
@@ -529,7 +549,7 @@ t1 AS (
 ),
 -- Tier 2 candidates among what tier 1 left, both within the day widened by 5 s: not both ids present,
 -- the raw model, input, output, cache-read and cache-write totals equal, at most 5 s apart.
-{_candidates("c", _MATCH, _TIER_2_MATCH, "t1")},
+{_candidates("c", _MATCH, _TIER_2_MATCH, "t1", hashed_cut=hashed_cut)},
 {_one_to_one("c", "")},
 p2 AS (
     SELECT day, session_id, tid, oid FROM t1
@@ -541,16 +561,39 @@ p2 AS (
 -- record's, as in Claude Desktop): not both ids present, the raw model equal, the OTel output at least
 -- its own, at most 30 s apart, on one UTC day, of the same class (main thread or subagent). Resolved one
 -- to one like tier 2, the first free record by: totals equal, agent name equal, nearest.
-{_candidates("c3", _MATCH_PARTIAL, _TIER_3_MATCH, "p2", _TIER_3_RANKING)},
+{_candidates("c3", _MATCH_PARTIAL, _TIER_3_MATCH, "p2", _TIER_3_RANKING, hashed_cut=hashed_cut)},
 {_one_to_one("c3", "3", "d.totals_equal DESC, d.name_match DESC, d.gap, d.oid")},
 p AS (
     SELECT day, session_id, tid, oid FROM p2
     UNION ALL
     {_resolved("3")}
-)
+)"""
+
+
+# The rollup's pairing over a batch of keys.
+REQUEST_PAIRING_CTES = request_pairing_ctes()
+
+
+_BUILD_REQUESTS = f"""INSERT INTO {_REQUESTS} (day, hour, ts, session_id, req_kind, model, model_name, user_email,
+    query_source, speed, inference_geo, service_tier, scope_kind, scope_name, agent_id, agent_type, input_tokens,
+    output_tokens, cache_read_tokens, cache_creation_tokens, cache_5m, cache_1h, thinking_tokens,
+    web_search_requests, web_fetch_requests, cost_usd, duration_ms, ttft_ms)
+WITH RECURSIVE
+-- Each key's day windows (see KEY_WINDOWS); `plugin`: the session has usage_requests rows in the day widened by
+-- 5 s (per day).
+rk AS (
+    SELECT w.day, w.session_id, w.lo, w.hi, w.id_lo, w.id_hi,
+           EXISTS (SELECT 1 FROM usage_requests u WHERE u.session_id = w.session_id AND u.ts >= w.lo AND u.ts < w.hi)
+               AS plugin
+    FROM (SELECT k.day, k.session_id, {KEY_WINDOWS}
+          FROM {_KEYS} k WHERE k.kinds & {_LOG | _USAGE} <> 0) w
+),
+{REQUEST_PAIRING_CTES}
 -- A matched request takes the day and hour of its transcript time, wherever its OTel record lies.
+-- `model_name` of a transcript request (matched or not) is its route when it ran on one, else the OTel
+-- name (matched) or model_raw (transcript-only).
 SELECT a.day, date_trunc('hour', a.ts, 'UTC'), a.ts, a.session_id, 'matched', coalesce(a.model, ''),
-       coalesce(b.model, ''), coalesce(b.user_email, ''), coalesce(b.query_source, ''),
+       {routed_model_name("coalesce(b.model, '')")}, coalesce(b.user_email, ''), coalesce(b.query_source, ''),
        {_transcript_columns(_MATCHED_OUTPUT, _MATCHED_CACHE)},
        b.cost_usd, b.duration_ms, b.ttft_ms
 FROM p
@@ -559,7 +602,7 @@ JOIN o b ON b.day = p.day AND b.session_id = p.session_id AND b.oid = p.oid
 WHERE a.t_day = a.day
 UNION ALL
 SELECT a.day, date_trunc('hour', a.ts, 'UTC'), a.ts, a.session_id, 'transcript', coalesce(a.model, ''),
-       coalesce(a.model_raw, ''), coalesce(a.user_email, ''), '',
+       {routed_model_name("coalesce(a.model_raw, '')")}, coalesce(a.user_email, ''), '',
        {_transcript_columns('a.output_tokens', _TRANSCRIPT_CACHE)},
        NULL, NULL, NULL
 FROM t a
@@ -768,11 +811,12 @@ def _cost_key(column: str) -> str:
 
 
 # cost_daily, per (day, session), from the requests of the key day. `_cli_requests` already
-# holds each kind's identity: OTel model, sender and query source for matched and service requests,
-# model_raw, the transcript's sender and '' for transcript-only ones. An OTel-only day has
-# only 'otel_only' requests, which are exactly the day's OTel api_request records: grouped by the
-# original key, with the five new key columns '' and the 5m/1h split from the records' attributes (NULL
-# without them). A missing cost counts as 0.
+# holds each kind's identity: the route a transcript request ran on when it is a route of the request's own
+# model, i.e. normalises to its model_raw up to a trailing date (`routed_predicate`), else the OTel model for matched
+# and service requests and model_raw for transcript-only ones; sender and query source from OTel for matched and service
+# requests, the transcript's sender and '' for transcript-only ones. An OTel-only day has only 'otel_only' requests,
+# which are exactly the day's OTel api_request records: grouped by the original key, with the five new key columns
+# '' and the 5m/1h split from the records' attributes (NULL without them). A missing cost counts as 0.
 _COST_DAILY = _replace_daily(
     "cost_daily",
     _LOG,
@@ -1113,9 +1157,12 @@ _COUNTER_JOINS = f"""LEFT JOIN session_dims cur ON cur.session_id = k.session_id
                (SELECT sum(x.lines_added) FROM lines_daily x WHERE x.session_id = k.session_id) AS lines_added,
                (SELECT sum(x.lines_removed) FROM lines_daily x WHERE x.session_id = k.session_id) AS lines_removed,
                -- Models by sum(api_call_count), ties by name: the first is primary_model (rollup).
+               -- Normalised names, so a model run on several routes is one entry.
                (SELECT jsonb_agg(x.model_name ORDER BY x.calls DESC, x.model_name COLLATE "C")
-                FROM (SELECT c.model_name, sum(c.api_call_count) AS calls FROM cost_daily c
-                      WHERE c.session_id = k.session_id AND c.model_name <> '' GROUP BY c.model_name) x) AS models,
+                FROM (SELECT {normalized_model_name("c.model_name")} AS model_name, sum(c.api_call_count) AS calls
+                      FROM cost_daily c
+                      WHERE c.session_id = k.session_id AND c.model_name <> ''
+                      GROUP BY 1) x) AS models,
                (SELECT jsonb_object_agg(x.name, x.calls)
                 FROM (SELECT i.name, sum(i.calls) AS calls FROM invocations_hourly i
                       WHERE i.session_id = k.session_id AND i.kind = 3 GROUP BY i.name) x) AS agents,
@@ -1207,6 +1254,18 @@ _COUNTER_JOINS = f"""LEFT JOIN session_dims cur ON cur.session_id = k.session_id
 
 _COMPACTION_COUNT = "coalesce(jsonb_array_length(fb.compactions), 0)"
 _SUMMARY_ATTRS = "sm.attrs"  # the latest summary's attrs (`sm` in _COUNTER_JOINS)
+# A summary lists the route a request ran on where its transcript carries one: its models are stored under the
+# normalised name, like the cost_daily fallback, deduplicated with the first position kept (the primary first);
+# a non-string element is kept as is.
+_SUMMARY_MODEL = "to_jsonb(" + normalized_model_name("(e.v #>> '{}')") + ")"
+_SUMMARY_MODELS = (
+    f"CASE WHEN jsonb_typeof({_SUMMARY_ATTRS}->'models') = 'array' THEN coalesce(("
+    "SELECT jsonb_agg(x.v ORDER BY x.pos) FROM ("
+    "SELECT n.v, min(n.pos) AS pos FROM ("
+    f"SELECT CASE WHEN {_is_string('e.v')} THEN {_SUMMARY_MODEL} ELSE e.v END AS v, e.pos "
+    f"FROM jsonb_array_elements({_SUMMARY_ATTRS}->'models') WITH ORDINALITY AS e(v, pos)"
+    ") n GROUP BY n.v) x), '[]'::jsonb) END"
+)
 _CLIENT_VERSION = f"coalesce(lv.v->>'client_version', {_otel_session_text('app.version')})"
 
 
@@ -1249,8 +1308,8 @@ _COUNTERS_FROM_ROLLUPS: tuple[tuple[str, str], ...] = (
     ("files_written", _summary_or(_summary_count("files_written"), _fits("fl.files_written"))),
     ("files_edited", _summary_or(_summary_count("files_edited"), _fits("fl.files_edited"))),
     ("agents", _summary_or(_json_typed(_SUMMARY_ATTRS, "agents", "object"), "fb.agents")),
-    ("models", _summary_or(_json_typed(_SUMMARY_ATTRS, "models", "array"), "fb.models")),
-    ("primary_model", _summary_or(_json_text(_SUMMARY_ATTRS, "primary_model"), "fb.models->>0")),
+    ("models", _summary_or(_SUMMARY_MODELS, "fb.models")),
+    ("primary_model", _summary_or(normalized_model_name(_json_text(_SUMMARY_ATTRS, "primary_model")), "fb.models->>0")),
     # No fallback source: only a summary fills them.
     ("commands", _summary_or(_json_typed(_SUMMARY_ATTRS, "commands", "array"), "NULL::jsonb")),
     ("primary_command", _summary_or(_json_text(_SUMMARY_ATTRS, "primary_command"), "NULL::text")),

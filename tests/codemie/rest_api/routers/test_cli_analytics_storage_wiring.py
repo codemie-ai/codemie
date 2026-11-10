@@ -459,8 +459,16 @@ async def test_get_sessions_forwards_is_project_unattributed_to_the_resolved_fil
 
 
 @pytest.mark.asyncio
-async def test_users_and_repositories_metadata_carry_the_handler_pricing():
-    pricer = MagicMock(unpriced=["", "mystery-model"], catalog_source="litellm")
+@pytest.mark.parametrize(
+    ("unpriced", "served"),
+    [
+        (["", "mystery-model"], ["", "mystery-model"]),
+        # a route and its plain name are one model to the client
+        (["claude-x", "vertex_ai/claude-x"], ["claude-x"]),
+    ],
+)
+async def test_users_and_repositories_metadata_carry_the_handler_pricing(unpriced, served):
+    pricer = MagicMock(unpriced=unpriced, catalog_source="litellm")
     handler = MagicMock()
     handler.get_users = AsyncMock(
         return_value=({"rows": [], "avg_session_duration_ms": None, "total_count": 0}, pricer)
@@ -493,7 +501,7 @@ async def test_users_and_repositories_metadata_carry_the_handler_pricing():
     for response in responses:
         body = json.loads(response.body)
         metadata = body["metadata"]
-        assert (metadata["unpriced_models"], metadata["catalog_source"]) == (["", "mystery-model"], "litellm")
+        assert (metadata["unpriced_models"], metadata["catalog_source"]) == (served, "litellm")
         assert metadata["cost_incomplete"] is True
         # the real _respond renders the additive buckets even when the handler sent none
         assert body["data"]["personal_billed"] == empty_bucket

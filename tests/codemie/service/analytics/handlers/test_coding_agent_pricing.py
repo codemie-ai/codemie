@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,6 +38,19 @@ def _patch_config(models: list) -> patch:
     return patch(f"{_MODULE}.llm_service.get_all_llm_model_info", return_value=models)
 
 
+@contextmanager
+def _patch_catalog(models: list, routes: dict[str, CostConfig], source: str = "litellm"):
+    """The runtime catalog: its chat models, its route -> price map as LiteLLM's catalog stores it, and its source."""
+    from codemie.service.llm_service.llm_service import llm_service
+
+    with (
+        _patch_config(models),
+        patch.object(llm_service, "_litellm_route_costs", routes),
+        patch.object(llm_service, "catalog_source", return_value=source),
+    ):
+        yield
+
+
 class TestNormalizeModel:
     def test_passthrough_bare_id(self):
         from codemie.service.analytics.handlers.coding_agent_pricing import normalize_model
@@ -52,6 +66,51 @@ class TestNormalizeModel:
         from codemie.service.analytics.handlers.coding_agent_pricing import normalize_model
 
         assert normalize_model("us.anthropic.claude-opus-4-8") == "claude-opus-4-8"
+
+    @pytest.mark.parametrize(
+        ("route", "plain"),
+        [
+            ("bedrock/eu.anthropic.claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4-5-20251001"),
+            ("bedrock/global.anthropic.claude-fable-5-1", "claude-fable-5-1"),
+            ("vertex_ai/claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("anthropic/anthropic.claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("bedrock/anthropic.claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("BEDROCK/EU.ANTHROPIC.claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("bedrock/converse/us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4-5-20251001"),
+            ("bedrock/eu.anthropic.claude-haiku-5-5", "claude-haiku-5-5"),
+            ("anthropic/claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("vertex_ai/claude-haiku-4-5@20251001", "claude-haiku-4-5-20251001"),
+            ("vertex_ai/claude-sonnet-4-5@20250929", "claude-sonnet-4-5-20250929"),
+            ("claude-sonnet-4-5@2025", "claude-sonnet-4-5@2025"),
+            ("vertex_ai/claude-sonnet-4-5@20250929-foo", "claude-sonnet-4-5@20250929-foo"),
+        ],
+    )
+    def test_strips_litellm_route_prefixes(self, route, plain):
+        from codemie.service.analytics.handlers.coding_agent_pricing import normalize_model
+
+        assert normalize_model(route) == plain
+
+    @pytest.mark.parametrize(
+        ("raw", "plain"),
+        [
+            ("bedrock/eu.anthropic.claude-opus-4-6-v1", "claude-opus-4-6"),
+            ("bedrock/us.anthropic.claude-opus-4-6-v1", "claude-opus-4-6"),
+            ("anthropic.claude-opus-4-6-v1", "claude-opus-4-6"),
+            ("us.anthropic.claude-opus-4-6-v1", "claude-opus-4-6"),
+            ("claude-3-5-sonnet-v2", "claude-3-5-sonnet-v2"),
+            ("claude-opus-router-v1", "claude-opus-router-v1"),
+            ("qwen.qwen3-coder-30b-a3b-v1", "qwen.qwen3-coder-30b-a3b-v1"),
+            ("anthropic.claude-3-5-sonnet-20241022-v2:0", "claude-3-5-sonnet-20241022"),
+            ("anthropic.claude-v2", "claude-v2"),
+            ("anthropic.claude-opus-4-6-v2", "claude-opus-4-6-v2"),
+            ("bedrock/eu.anthropic.claude-opus-4-6-v2", "claude-opus-4-6-v2"),
+        ],
+    )
+    def test_drops_the_bedrock_version_of_a_claude_id_only(self, raw, plain):
+        from codemie.service.analytics.handlers.coding_agent_pricing import normalize_model
+
+        assert normalize_model(raw) == plain
 
 
 class TestNormalizeBedrockForms:
@@ -125,6 +184,16 @@ class TestBedrockAliasPricing:
         with _patch_config([_alias_model("claude-haiku-4-5-20251001", None, 1e-6, 5e-6)]):
             assert lookup_cost_config("anthropic.claude-haiku-4-5-20260101-v1:0") is None
             assert lookup_cost_config("anthropic.claude-haiku-4-5-v1:0") is None
+
+    def test_a_dial_alias_prices_at_its_own_catalog_entry_and_is_unpriced_without_one(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        plain = _alias_model("claude-sonnet-4-6", None, 3.3e-06, 1.65e-05)
+        dial = _alias_model("claude-sonnet-4-6-dial", None, 3.0e-06, 1.5e-05)
+        with _patch_config([plain, dial]):
+            assert lookup_cost_config("claude-sonnet-4-6-dial").input == 3.0e-06
+        with _patch_config([plain]):
+            assert lookup_cost_config("claude-sonnet-4-6-dial") is None
 
     @pytest.mark.parametrize(
         "raw",
@@ -258,6 +327,122 @@ class TestBedrockAliasPricing:
         with _patch_config([a, b]), patch(f"{_MODULE}.logger.warning") as warning:
             assert lookup_cost_config("converse/global.anthropic.claude-haiku-4-5-20251001-v1:0") is None
         assert "normalized_alias" in warning.call_args.args[0]
+
+    @pytest.mark.parametrize(
+        ("route", "name", "route_rates", "plain_rates"),
+        [
+            ("bedrock/eu.anthropic.claude-opus-4-8", "claude-opus-4-8", (5.5e-06, 2.75e-05), (5.0e-06, 2.5e-05)),
+            ("bedrock/eu.anthropic.claude-haiku-5-5", "claude-haiku-5-5", (1.1e-07, 5.5e-07), (1.0e-07, 5.0e-07)),
+        ],
+    )
+    def test_a_route_in_the_route_map_prices_at_its_own_deployment_price(self, route, name, route_rates, plain_rates):
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        plain = _alias_model(name, None, *plain_rates)
+        routes = {route: CostConfig(input=route_rates[0], output=route_rates[1])}
+        with _patch_catalog([plain], routes), patch(f"{_MODULE}.logger.debug") as debug:
+            assert lookup_cost_config(route).input == route_rates[0]
+            assert lookup_cost_config(name).input == plain_rates[0]
+        debug.assert_not_called()
+
+    def test_a_zero_rate_route_prices_at_its_plain_name(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        plain = _alias_model("claude-opus-4-8", None, 5.0e-06, 2.5e-05)
+        routes = {"bedrock/eu.anthropic.claude-opus-4-8": CostConfig(input=0.0, output=0.0)}
+        with _patch_catalog([plain], routes), patch(f"{_MODULE}.logger.debug") as debug:
+            assert lookup_cost_config("bedrock/eu.anthropic.claude-opus-4-8").input == 5.0e-06
+        debug.assert_called_once_with(
+            "cli_analytics: route %s has no usable rate in the route map, priced by its plain name",
+            "bedrock/eu.anthropic.claude-opus-4-8",
+        )
+
+    def test_a_route_outside_the_route_map_prices_at_its_plain_name(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        plain = _alias_model("claude-sonnet-4-6", None, 3.3e-06, 1.65e-05)
+        dated = _alias_model("claude-haiku-4-5-20251001", None, 1.0e-06, 5.0e-06)
+        routes = {"bedrock/eu.anthropic.claude-sonnet-4-6": CostConfig(input=9e-06, output=9e-06)}
+        with _patch_catalog([plain, dated], routes):
+            assert lookup_cost_config("anthropic/anthropic.claude-sonnet-4-6").input == 3.3e-06
+            assert lookup_cost_config("vertex_ai/claude-haiku-4-5@20251001").input == 1.0e-06
+
+    def test_with_the_yaml_catalog_a_route_prices_at_its_plain_name(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        plain = _alias_model("claude-opus-4-8", None, 5.0e-06, 2.5e-05)
+        routes = {"bedrock/eu.anthropic.claude-opus-4-8": CostConfig(input=5.5e-06, output=2.75e-05)}
+        with _patch_catalog([plain], routes, source="yaml"):
+            assert lookup_cost_config("bedrock/eu.anthropic.claude-opus-4-8").input == 5.0e-06
+
+    def test_an_undated_name_takes_the_one_tariff_of_its_dated_and_vertex_entries(self):
+        # EPMCDME-16928: no `claude-opus-4-6` entry; its dated and -vertex entries share one tariff
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        catalog = [
+            _alias_model("claude-opus-4-6-20260205", None, 5.0e-06, 2.5e-05),
+            _alias_model("claude-opus-4-6-vertex", None, 5.0e-06, 2.5e-05),
+            _alias_model("claude-opus-4-7", None, 6.0e-06, 3.0e-05),
+            _alias_model("claude-opus-4-9-20260301", None, 1.0e-06, 5.0e-06),
+            _alias_model("claude-opus-4-9-vertex", None, 2.0e-06, 5.0e-06),
+        ]
+        with _patch_catalog(catalog, {}), patch(f"{_MODULE}.logger.warning") as warning:
+            assert lookup_cost_config("claude-opus-4-6").input == 5.0e-06
+            assert lookup_cost_config("claude-opus-4-7").input == 6.0e-06
+            assert lookup_cost_config("claude-opus-4-9") is None
+        assert "normalized_alias" in warning.call_args.args[0]
+
+    def test_a_name_priced_by_alias_keeps_its_price_beside_a_vertex_sibling(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        alias = _alias_model("claude-x-label", "anthropic.claude-x", 1e-06, 5e-06)
+        sibling = _alias_model("claude-x-vertex", None, 2e-06, 5e-06)
+        with _patch_catalog([alias, sibling], {}):
+            assert lookup_cost_config("claude-x").input == 1e-06
+
+    def test_an_undated_name_with_different_tariffs_stays_unpriced(self):
+        # preview's catalog: Opus 4.6 dated at 5.5e-06, -vertex at 5.0e-06
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
+
+        catalog = [
+            _alias_model("claude-opus-4-6-20260205", None, 5.5e-06, 2.75e-05),
+            _alias_model("claude-opus-4-6-vertex", None, 5.0e-06, 2.5e-05),
+        ]
+        with _patch_catalog(catalog, {}):
+            pricer = CatalogPricer()
+            assert pricer.price("claude-opus-4-6", TokenCounts(input=1_000)) == 0.0
+            assert pricer.unpriced == ["claude-opus-4-6"]
+
+    def test_a_bedrock_v1_route_in_the_route_map_prices_at_its_deployment_and_outside_it_as_its_model_raw(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        route = "bedrock/eu.anthropic.claude-opus-4-6-v1"
+        catalog = [
+            _alias_model("claude-opus-4-6-20260205", None, 5.5e-06, 2.75e-05),
+            _alias_model("claude-opus-4-6-vertex", None, 5.0e-06, 2.5e-05),
+        ]
+        with _patch_catalog(catalog, {route: CostConfig(input=5.5e-06, output=2.75e-05)}):
+            assert lookup_cost_config(route).input == 5.5e-06
+            assert lookup_cost_config("claude-opus-4-6") is None
+        with _patch_catalog(catalog, {}):
+            assert lookup_cost_config(route) is None
+            assert lookup_cost_config("claude-opus-4-6") is None
+        one_tariff = [
+            _alias_model("claude-opus-4-6-20260205", None, 5.0e-06, 2.5e-05),
+            _alias_model("claude-opus-4-6-vertex", None, 5.0e-06, 2.5e-05),
+        ]
+        with _patch_catalog(one_tariff, {}):
+            assert lookup_cost_config(route).input == 5.0e-06
+            assert lookup_cost_config("claude-opus-4-6").input == 5.0e-06
+
+    def test_the_yaml_bedrock_v1_deployment_prices_its_plain_bedrock_and_route_names(self):
+        # keeps: the price `claude-opus-4-6` has on config/llms/llm-aws-config.yaml
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        catalog = [_alias_model("claude-opus-4-6-20260205", "us.anthropic.claude-opus-4-6-v1", 5.5e-06, 2.75e-05)]
+        with _patch_catalog(catalog, {}, source="yaml"):
+            for name in ("claude-opus-4-6", "anthropic.claude-opus-4-6-v1", "bedrock/us.anthropic.claude-opus-4-6-v1"):
+                assert lookup_cost_config(name).input == 5.5e-06
 
     def test_unknown_bedrock_model_stays_unpriced(self):
         from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
@@ -468,6 +653,12 @@ PRICING_CASES = [
         "unknown-negative-model", {"cache_creation": -100}, 0.0, False, id="uncatalogued-negative-cache-write"
     ),
     pytest.param("unknown-mixed-model", {"input": -5, "output": 7}, 0.0, True, id="uncatalogued-negative-and-positive"),
+    # LiteLLM routes outside the route map price at their plain name
+    pytest.param(
+        "bedrock/eu.anthropic.claude-haiku-4-5", {"input": 10, "output": 100}, 0.00051, False, id="route-bedrock"
+    ),
+    pytest.param("vertex_ai/claude-haiku-4-5", {"input": 10, "output": 100}, 0.00051, False, id="route-vertex"),
+    pytest.param("anthropic/anthropic.claude-haiku-4-5", {"input": 10}, 0.00001, False, id="route-anthropic"),
 ]
 
 

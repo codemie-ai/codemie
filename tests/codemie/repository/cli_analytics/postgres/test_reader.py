@@ -657,8 +657,12 @@ async def test_cost_methods_have_no_day_window_and_are_bound_to_sel(method):
 
 
 _NORMALIZED_MODEL_NAME_SQL = (
-    "regexp_replace(regexp_replace(regexp_replace(d.model_name, '^(bedrock/)?(converse|invoke)/', '', 'i'), "
-    "'^([a-z0-9-]+\\.)?anthropic\\.', '', 'i'), '(\\d{8})-v\\d+:\\d+$', '\\1')"
+    "regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(d.model_name, "
+    "'(anthropic\\.claude-[a-z0-9.-]*?)-v1$', '\\1', 'i'), "
+    "'^(bedrock/([a-z0-9-]+\\.)?anthropic\\.|vertex_ai/|anthropic/(anthropic\\.)?)', '', 'i'), "
+    "'^(bedrock/)?(converse|invoke)/', '', 'i'), "
+    "'^([a-z0-9-]+\\.)?anthropic\\.', '', 'i'), '(\\d{8})-v\\d+:\\d+$', '\\1'), "
+    "'@(\\d{8})$', '-\\1')"
 )
 
 
@@ -692,9 +696,12 @@ async def test_model_breakdown_order_by_repeats_the_full_normalized_expression()
 
 
 def _apply(raw: str) -> str:
-    s = re.sub(r"^(bedrock/)?(converse|invoke)/", "", raw, flags=re.IGNORECASE)
+    s = re.sub(r"(anthropic\.claude-[a-z0-9.-]*?)-v1$", r"\1", raw, flags=re.IGNORECASE)
+    s = re.sub(r"^(bedrock/([a-z0-9-]+\.)?anthropic\.|vertex_ai/|anthropic/(anthropic\.)?)", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^(bedrock/)?(converse|invoke)/", "", s, flags=re.IGNORECASE)
     s = re.sub(r"^([a-z0-9-]+\.)?anthropic\.", "", s, flags=re.IGNORECASE)
-    return re.sub(r"(\d{8})-v\d+:\d+$", r"\1", s)
+    s = re.sub(r"(\d{8})-v\d+:\d+$", r"\1", s)
+    return re.sub(r"@(\d{8})$", r"-\1", s)
 
 
 def test_normalization_collapses_known_bug_variants_but_not_distinct_models():
@@ -711,6 +718,9 @@ def test_normalization_collapses_known_bug_variants_but_not_distinct_models():
     assert _apply("claude-sonnet-5") == "claude-sonnet-5"
     assert _apply("claude-sonnet-5-5") == "claude-sonnet-5-5"
     assert _apply("claude-sonnet-5") != _apply("claude-sonnet-5-5")
+    assert _apply("anthropic/claude-sonnet-4-6") == "claude-sonnet-4-6"
+    assert _apply("vertex_ai/claude-haiku-4-5@20251001") == "claude-haiku-4-5-20251001"
+    assert _apply("vertex_ai/claude-sonnet-4-5@20250929") == "claude-sonnet-4-5-20250929"
 
 
 def test_normalization_handles_invoke_routing_prefix_and_hyphenated_digit_region_tokens():
@@ -1166,9 +1176,11 @@ async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(metho
     (statement,) = recorder.statements
     sql = " ".join(statement.split())
 
+    # the model of the grain is the normalised name: a model run on several routes ranks and is returned as one
+    model = _NORMALIZED_MODEL_NAME_SQL.replace("d.model_name", "c.model_name")
     assert "sum(c.api_call_count) OVER w AS grain_calls" in sql
-    assert "WINDOW w AS (PARTITION BY c.day, c.session_id, c.user_email, c.model_name, c.query_source)) c" in sql
-    assert "(array_agg(c.model_name ORDER BY c.grain_calls DESC NULLS LAST, c.day, c.session_id" in sql
+    assert f"WINDOW w AS (PARTITION BY c.day, c.session_id, c.user_email, {model}, c.query_source)) c" in sql
+    assert f"(array_agg({model} ORDER BY c.grain_calls DESC NULLS LAST, c.day, c.session_id" in sql
     assert "ORDER BY c.api_call_count" not in sql
     # cost_daily is read for the grain_calls subquery, again inside sel's own activity-window checks (seven times:
     # the any-time probe of the underived started arm, and the whole-day and window-day probes of each of the
@@ -1687,8 +1699,8 @@ async def test_an_agent_dispatch_falls_back_to_its_parent_span_only_when_it_has_
     # the full even-split/time-window mechanism (row_number dispatch_id,
     # per-event active_n division, an unconditional sibling_count divisor) must still never come back —
     # only the narrower, next-sibling-start-bounded split below, scoped to the no-agentId fallback alone
-    # (the paired_requests CTE runs the rollups' request pairing, which is no cost split)
-    dispatch_sql = sql.split("paired_requests AS MATERIALIZED")[0] + sql.split("inline_window AS")[1]
+    # (the request_routes and paired_requests CTEs run the rollups' request pairing, which is no cost split)
+    dispatch_sql = sql.split("request_routes AS MATERIALIZED")[0] + sql.split("inline_window AS")[1]
     for removed in ("windows AS", "matches AS", "active_n", "sibling_count", "row_number() OVER"):
         assert removed not in dispatch_sql
 

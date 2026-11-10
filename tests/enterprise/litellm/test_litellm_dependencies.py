@@ -378,7 +378,21 @@ class TestGetAvailableModels:
             assert result.embedding_models == []
 
     def test_maps_and_deduplicates_models(self):
-        """Test maps LiteLLM models to LLMModel and deduplicates by base_name."""
+        """Test maps LiteLLM models to LLMModel and deduplicates by base_name; every enabled chat deployment's price
+        is kept under its exact `litellm_params.model`, before the dedup."""
+        from codemie import configs
+
+        def chat(name: str, route: str, input_cost: float, **info) -> dict:
+            return {
+                "model_name": name,
+                "model_info": {"mode": "chat", "input_cost_per_token": input_cost, "output_cost_per_token": 2.5e-05}
+                | info,
+                "litellm_params": {"model": route},
+            }
+
+        def unpriced(name: str, route: str) -> dict:
+            return {"model_name": name, "model_info": {"mode": "chat"}, "litellm_params": {"model": route}}
+
         # Mock raw model data from enterprise service
         raw_models = [
             {
@@ -396,12 +410,27 @@ class TestGetAvailableModels:
                 "model_info": {"mode": "embedding", "base_model": "text-embedding-ada-002"},
                 "litellm_params": {"model": "azure/text-embedding-ada-002"},
             },
+            chat("claude-opus-4-8", "bedrock/eu.anthropic.claude-opus-4-8", 5.5e-06),
+            chat("claude-opus-4-8", "bedrock/global.anthropic.claude-opus-4-8", 5.0e-06),
+            chat("claude-sonnet-4-6", "bedrock/eu.anthropic.claude-sonnet-4-6", 1e-06),
+            chat("claude-sonnet-4-6-dial", "bedrock/eu.anthropic.claude-sonnet-4-6", 2e-06),
+            # a third deployment priced like the first does not bring the conflicting route back
+            chat("claude-sonnet-4-6-eu", "bedrock/eu.anthropic.claude-sonnet-4-6", 1e-06),
+            chat("claude-fable-5", "bedrock/us.anthropic.claude-fable-5", 1.1e-05, enabled=False),
+            # a deployment with no price differs from a priced one, in either order
+            chat("claude-haiku-4-5", "bedrock/eu.anthropic.claude-haiku-4-5", 1e-06),
+            unpriced("claude-haiku-4-5-dial", "bedrock/eu.anthropic.claude-haiku-4-5"),
+            unpriced("claude-haiku-4-5-us", "bedrock/us.anthropic.claude-haiku-4-5"),
+            chat("claude-haiku-4-5-us-dial", "bedrock/us.anthropic.claude-haiku-4-5", 1e-06),
         ]
 
         mock_service = MagicMock()
         mock_service.get_available_models.return_value = raw_models
 
-        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+        with (
+            patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service),
+            patch.object(configs.logger, "warning") as warning,
+        ):
             from codemie.enterprise.litellm.dependencies import get_available_models
 
             result = get_available_models(user_id="test-user")
@@ -412,6 +441,74 @@ class TestGetAvailableModels:
 
             # Verify service was called with correct params
             mock_service.get_available_models.assert_called_once_with(user_id="test-user", api_key=None)
+
+        # one chat model per base name; each route keeps its own price, a route priced twice differently has none
+        assert [m.base_name for m in result.chat_models if m.base_name.startswith("claude")] == [
+            "claude-opus-4-8",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-6-dial",
+            "claude-sonnet-4-6-eu",
+            "claude-haiku-4-5",
+            "claude-haiku-4-5-dial",
+            "claude-haiku-4-5-us",
+            "claude-haiku-4-5-us-dial",
+        ]
+        assert {route: cost.input for route, cost in result.route_costs.items()} == {
+            "bedrock/eu.anthropic.claude-opus-4-8": 5.5e-06,
+            "bedrock/global.anthropic.claude-opus-4-8": 5.0e-06,
+        }
+        conflict = [c.args[0] for c in warning.call_args_list if "bedrock/eu.anthropic.claude-sonnet-4-6" in c.args[0]]
+        assert len(conflict) == 1
+        for route in ("bedrock/eu.anthropic.claude-haiku-4-5", "bedrock/us.anthropic.claude-haiku-4-5"):
+            assert [c.args[0] for c in warning.call_args_list if route in c.args[0]] == [
+                f"LiteLLM route {route} has different prices across deployments; "
+                "left out of the route map, priced by its plain name"
+            ]
+
+    @pytest.mark.parametrize("with_priced_sibling", [True, False])
+    def test_a_route_with_a_deployment_that_fails_mapping_is_left_out(self, with_priced_sibling):
+        """A deployment that fails mapping leaves its route out of the route map whatever its other deployments are
+        priced at, with one warning of its own and no different-prices warning."""
+        from codemie import configs
+
+        def chat(name: str, route: str, input_cost: float) -> dict:
+            return {
+                "model_name": name,
+                "model_info": {"mode": "chat", "input_cost_per_token": input_cost, "output_cost_per_token": 2.5e-05},
+                "litellm_params": {"model": route},
+            }
+
+        failing = {
+            "model_name": "claude-a-codex",
+            "model_info": {"mode": "chat", "input_cost_per_token": 1e-06, "supported_openai_params": None},
+            "litellm_params": {"model": "bedrock/eu.anthropic.claude-a"},
+        }
+        # a failing deployment whose route is not a string is skipped like any other, the catalog still loads
+        malformed = {**failing, "model_name": "claude-c-codex", "litellm_params": {"model": ["not-a-route"]}}
+        raw_models = [failing, malformed, chat("claude-b", "bedrock/eu.anthropic.claude-b", 2e-06)]
+        if with_priced_sibling:
+            raw_models.insert(0, chat("claude-a", "bedrock/eu.anthropic.claude-a", 1e-06))
+
+        mock_service = MagicMock()
+        mock_service.get_available_models.return_value = raw_models
+
+        with (
+            patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service),
+            patch.object(configs.logger, "warning") as warning,
+        ):
+            from codemie.enterprise.litellm.dependencies import get_available_models
+
+            result = get_available_models()
+
+        assert {route: cost.input for route, cost in result.route_costs.items()} == {
+            "bedrock/eu.anthropic.claude-b": 2e-06
+        }
+        if with_priced_sibling:
+            assert "claude-a" in [m.base_name for m in result.chat_models]
+        assert [c.args[0] for c in warning.call_args_list if "bedrock/eu.anthropic.claude-a" in c.args[0]] == [
+            "LiteLLM route bedrock/eu.anthropic.claude-a has a deployment that failed mapping; "
+            "left out of the route map, priced by its plain name"
+        ]
 
     def test_raise_on_error_reraises_service_failure(self):
         """Fetch failure propagates when raise_on_error=True."""

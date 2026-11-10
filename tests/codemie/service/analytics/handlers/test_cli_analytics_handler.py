@@ -1220,7 +1220,7 @@ async def test_get_session_detail_resolves_bedrock_ids_in_detail_money_events_an
     assert (
         detail["model_name"] == f"claude-haiku-4-5-20251001, {unknown.removeprefix('anthropic.').removesuffix('-v1:0')}"
     )
-    assert unpriced == [unknown]
+    assert unpriced == ["claude-unknown-9-20251001"]
 
 
 def _models_row(**counts) -> dict:

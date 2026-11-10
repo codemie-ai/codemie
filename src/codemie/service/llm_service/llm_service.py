@@ -52,6 +52,7 @@ class LLMService:
         self._default_litellm_models: List[LLMModel] = []
         self._default_litellm_embeddings: List[LLMModel] = []
         self._default_litellm_audio_transcription_models: list[LLMModel] = []
+        self._litellm_route_costs: dict[str, CostConfig] = {}
 
     def get_model_info(self, models: List[LLMModel]) -> List[LLMModel]:
         """Retrieve all labels and base names from models."""
@@ -73,6 +74,12 @@ class LLMService:
     def catalog_source(self) -> Literal["litellm", "yaml"]:
         """Name the source get_all_llm_model_info reads the chat models from."""
         return "litellm" if config.LLM_PROXY_ENABLED and self._default_litellm_models else "yaml"
+
+    def get_route_cost(self, route: str) -> CostConfig | None:
+        """Price of the LiteLLM deployment named exactly `route` (its `litellm_params.model`), LiteLLM catalog only."""
+        if self.catalog_source() != "litellm":
+            return None
+        return self._litellm_route_costs.get(route)
 
     def get_all_embedding_model_info(self) -> List[LLMModel]:
         """Retrieve all labels and base names from embedding models across all providers.
@@ -737,6 +744,7 @@ class LLMService:
         self._default_litellm_models = user_models.chat_models
         self._default_litellm_embeddings = user_models.embedding_models
         self._default_litellm_audio_transcription_models = user_models.audio_transcription_models
+        self._litellm_route_costs = user_models.route_costs
 
         logger.info(
             f"Initialized {len(self._default_litellm_models)} unique LiteLLM chat models, "

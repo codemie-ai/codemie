@@ -839,7 +839,13 @@ def get_user_keys_spending(
 
 
 def _map_raw_models(raw_models):
-    """Map raw LiteLLM model dicts to enabled LLMModel objects, deduplicated by base_name."""
+    """Map raw LiteLLM model dicts to enabled LLMModel objects, deduplicated by base_name.
+
+    Beside the chat list, every enabled chat deployment's price is kept under its exact
+    `litellm_params.model` (the route); a route whose deployments are not all priced the same — one
+    with no price counting as different — is left out, as is a route with no price at all and a route
+    with a deployment that failed mapping.
+    """
     from codemie.configs import logger
     from codemie.configs.llm_config import LiteLLMModels, ModelType
 
@@ -848,25 +854,26 @@ def _map_raw_models(raw_models):
     chat_models = {}
     embedding_models = {}
     audio_transcription_models = {}
+    typed_models = {ModelType.EMBEDDING: embedding_models, ModelType.AUDIO_TRANSCRIPTION: audio_transcription_models}
+    route_deployment_costs = {}
+    failed = []  # the route of every deployment that failed mapping, as read: any type, None included
 
     for raw_model in raw_models:
+        route = None
         try:
+            route = (raw_model.get("litellm_params") or {}).get("model")
             llm_model = map_litellm_to_llm_model(raw_model)
-            if not llm_model.enabled:
-                continue
-
-            model_type = get_model_type(raw_model)
+            model_type = get_model_type(raw_model) if llm_model.enabled else None
             if model_type is None:
                 continue
 
-            if model_type == ModelType.EMBEDDING:
-                embedding_models[llm_model.base_name] = llm_model
-            elif model_type == ModelType.AUDIO_TRANSCRIPTION:
-                audio_transcription_models[llm_model.base_name] = llm_model
-            else:
-                chat_models[llm_model.base_name] = llm_model
+            models = typed_models.get(model_type, chat_models)
+            models[llm_model.base_name] = llm_model
+            if route and models is chat_models:
+                route_deployment_costs.setdefault(route, []).append(llm_model.cost)
 
         except Exception as e:
+            failed.append(route)
             logger.error(f"Error mapping model {raw_model.get('model_name')}: {e}")
             continue
 
@@ -874,7 +881,34 @@ def _map_raw_models(raw_models):
         chat_models=list(chat_models.values()),
         embedding_models=list(embedding_models.values()),
         audio_transcription_models=list(audio_transcription_models.values()),
+        route_costs=_route_costs(route_deployment_costs, failed),
     )
+
+
+def _route_costs(deployment_costs: dict, failed: list) -> dict:
+    """The price of every route whose deployments are all priced the same and none of which failed mapping;
+    `failed` holds the routes of the failed deployments as read, of which only a non-empty string names a route."""
+    from codemie.configs import logger
+
+    failed_routes = {route for route in failed if isinstance(route, str) and route}
+    for route in sorted(failed_routes):
+        logger.warning(
+            f"LiteLLM route {route} has a deployment that failed mapping; "
+            "left out of the route map, priced by its plain name"
+        )
+
+    route_costs = {}
+    for route, costs in deployment_costs.items():
+        if route in failed_routes:
+            continue
+        if any(cost != costs[0] for cost in costs[1:]):
+            logger.warning(
+                f"LiteLLM route {route} has different prices across deployments; "
+                "left out of the route map, priced by its plain name"
+            )
+        elif costs[0] is not None:
+            route_costs[route] = costs[0]
+    return route_costs
 
 
 def get_available_models(user_id: str | None = None, api_key: str | None = None, *, raise_on_error: bool = False):
