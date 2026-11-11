@@ -15,43 +15,51 @@
 from codemie.configs import config, logger
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.index import IndexInfo
-from codemie.rest_api.security.user import User
+from codemie.rest_api.security.user import User, stand_in_user
 from codemie.service.constants import FullDatasourceTypes
+from codemie.service.user.user_by_id_loader import UserLookup, load_user_by_id
 from codemie.triggers.trigger_exceptions import DatasourceNotValidated, NotImplementedDatasource
 
 
 def resolve_trigger_user(user_id: str) -> User | None:
-    """Return the trigger owner, or None when the owner is not active so the job is skipped.
+    """Return the trigger owner as an interactive request would see them, or None when the owner is not active.
 
-    A stand-in user is only used for an owner with no user row on ENV local, or when user
-    management is off: that mode keeps no user rows and has no deactivation.
+    Budget attribution needs the owner's real projects and default project (EPMCDME-16625 D7). The owner is loaded
+    as LocalIdp loads a signed loopback call (AR-10), so a run and its callbacks see the same owner. A stand-in is
+    only used for an owner with no user row on ENV local, or when user management is off: that mode keeps no user
+    rows and has no deactivation, so the owner's last login (claims snapshot) stands in when it is fresh.
     """
-    from codemie.clients.postgres import get_session
-    from codemie.repository.user_repository import user_repository
-
-    has_row = False
-    try:
-        with get_session() as session:
-            db_user = user_repository.get_active_by_id(session, user_id)
-            if db_user:
-                return User(
-                    id=db_user.id,
-                    username=db_user.username,
-                    name=db_user.name or "",
-                    email=db_user.email,
-                )
-            has_row = user_repository.get_by_id(session, user_id) is not None
-    except Exception:
-        logger.warning("resolve_trigger_user: DB lookup failed for user_id=%r", user_id)
-
-    if (config.ENV == "local" or not config.ENABLE_USER_MANAGEMENT) and not has_row:
-        return User(id=user_id)
+    lookup = _load_trigger_owner(user_id)
+    if lookup.user is not None:
+        return lookup.user
+    if _may_stand_in(lookup):
+        return stand_in_user(user_id, component="trigger_owner")
     logger.warning("resolve_trigger_user: owner user_id=%r is not active, skipping the job", user_id)
     return None
 
 
 def is_trigger_owner_active(user_id: str) -> bool:
-    return resolve_trigger_user(user_id) is not None
+    """Whether the owner may run a job. Checks only: no stand-in is built or logged, so it is counted once."""
+    lookup = _load_trigger_owner(user_id)
+    if lookup.user is not None or _may_stand_in(lookup):
+        return True
+    logger.warning("is_trigger_owner_active: owner user_id=%r is not active, skipping the job", user_id)
+    return False
+
+
+def _load_trigger_owner(user_id: str) -> UserLookup:
+    from codemie.clients.postgres import get_session
+
+    try:
+        with get_session() as session:
+            return load_user_by_id(session, user_id, with_snapshot=True)
+    except Exception:
+        logger.warning("resolve_trigger_user: DB lookup failed for user_id=%r", user_id)
+        return UserLookup(None, has_row=False)
+
+
+def _may_stand_in(lookup: UserLookup) -> bool:
+    return (config.ENV == "local" or not config.ENABLE_USER_MANAGEMENT) and not lookup.has_row
 
 
 def validate_assistant(assistant_id):

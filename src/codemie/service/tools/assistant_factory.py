@@ -19,6 +19,7 @@ from codemie.configs.logger import logger
 from codemie.core.thread import MessageQueue
 from codemie.core.models import AssistantChatRequest
 from codemie.core.constants import UniqueThoughtParentIds
+from codemie.core.dependecies import scoped_llm_context
 from codemie.core.exception_formatting import describe_exception
 from codemie.service.assistant.assistant_engine_builder import (
     SubagentBuildContext,
@@ -81,17 +82,19 @@ class AssistantFactory:
             # Import here to avoid circular imports
             from codemie.service.assistant_service import AssistantService
 
-            # Pre-build the agent
-            handle = AssistantService.build_agent_handle(
-                assistant=self.assistant,
-                request=self.request.model_copy(),
-                user=self.user,
-                request_uuid=self.request_uuid,
-                thread_generator=self.thread_generator,
-                tool_callbacks=[AgentStreamingCallback(self.thread_generator)],
-                is_subagent=True,
-                build_context=self.build_context,
-            )
+            # Pre-build the agent. Its billing context must not leak: the orchestrator builds its own
+            # model after its sub-assistants and would otherwise be charged by the last one (EPMCDME-16625).
+            with scoped_llm_context():
+                handle = AssistantService.build_agent_handle(
+                    assistant=self.assistant,
+                    request=self.request.model_copy(),
+                    user=self.user,
+                    request_uuid=self.request_uuid,
+                    thread_generator=self.thread_generator,
+                    tool_callbacks=[AgentStreamingCallback(self.thread_generator)],
+                    is_subagent=True,
+                    build_context=self.build_context,
+                )
             handle.agent.set_thread_context({}, UniqueThoughtParentIds.LATEST.value)
 
             return handle

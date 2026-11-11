@@ -14,6 +14,7 @@
 
 from typing import Optional, List
 from collections import defaultdict
+from codemie.core.dependecies import get_current_project
 from codemie.core.models import TokensUsage
 from codemie.rest_api.models.index import IndexInfo
 from codemie.rest_api.security.user import User
@@ -84,7 +85,8 @@ class DatasourceMonitoringService(BaseMonitoringService):
         """
         attributes = {
             MetricsAttributes.DATASOURCE_TYPE: index_info.index_type,
-            MetricsAttributes.PROJECT: index_info.project_name,
+            # Spend goes to the project whose budget paid (EPMCDME-16625), as in the other spend metrics.
+            MetricsAttributes.PROJECT: get_current_project(fallback=index_info.project_name),
             MetricsAttributes.REPO_NAME: index_info.repo_name,
             MetricsAttributes.EMBEDDINGS_MODEL: index_info.embeddings_model,
             MetricsAttributes.USER_ID: user.id if user else index_info.created_by.id,
@@ -154,7 +156,7 @@ class DatasourceMonitoringService(BaseMonitoringService):
         for model, usage in model_usage.items():
             attributes = {
                 MetricsAttributes.DATASOURCE_TYPE: index_info.index_type,
-                MetricsAttributes.PROJECT: index_info.project_name,
+                MetricsAttributes.PROJECT: get_current_project(fallback=index_info.project_name),
                 MetricsAttributes.REPO_NAME: index_info.repo_name,
                 MetricsAttributes.EMBEDDINGS_MODEL: index_info.embeddings_model,
                 MetricsAttributes.USER_ID: user.id if user else index_info.created_by.id,

@@ -18,7 +18,9 @@ All requests are read-only aggregations (``size: 0``). Who pays is decided per r
 
 - charged back: the LiteLLM customer is a project customer and there is no ``budget_fallback_from``;
 - shared project without a budget: ``budget_fallback_from`` exists, or the customer is personal and the project is in
-  the app DB's shared list;
+  the app DB's shared list. Since EPMCDME-16625 ``budget_fallback_from`` names the project the request was aimed at
+  (a member's project, else their default project), not necessarily the project of the asset that ran: a
+  non-member's run of another project's asset is aimed at, and reported under, their own default project;
 - personal project: the customer is personal and the project is not shared (or missing);
 - no customer: neither a customer nor a fallback; not billed through CodeMie budgets.
 """
@@ -37,6 +39,8 @@ from codemie.service.usage_attribution.constants import (
     F_CUSTOMER,
     F_DATASOURCE,
     F_FALLBACK,
+    F_FALLBACK_KIND,
+    FALLBACK_KIND_DEFAULT_PROJECT,
     F_LINES_ADDED,
     F_LINES_REMOVED,
     F_MCP_PROJECT,
@@ -147,7 +151,17 @@ def name_agg() -> dict:
 
 
 def has_fb() -> dict:
-    return {"exists": {"field": F_FALLBACK}}
+    """Records paid personally after their project could not pay (budget_fallback_from).
+
+    A fallback charged to the user's default project is charged back there, so it does not count (EPMCDME-16625);
+    records written before the kind existed have none and still count.
+    """
+    return {
+        "bool": {
+            "filter": [{"exists": {"field": F_FALLBACK}}],
+            "must_not": [{"term": {F_FALLBACK_KIND: FALLBACK_KIND_DEFAULT_PROJECT}}],
+        }
+    }
 
 
 def no_fb() -> dict:
@@ -327,9 +341,9 @@ def persons_body(start: datetime, end: datetime, shared: list[str], part: Part, 
         # Records without a repository field join the empty value: no repository, not outside the limits.
         "repos": {"terms": terms(F_REPOSITORY, repos, missing=""), "aggs": dict(money(), **wp_aggs(shared))},
         "projects": {"terms": terms(F_PROJECT, 3), "aggs": dict(money(), **wp_aggs(shared, ("cb", "sh")))},
-        # Since release 2.57.0 a record paid personally inside a shared project carries the person's own project; the
-        # shared project is kept only in budget_fallback_from.
-        "fallback": {"terms": terms(F_FALLBACK, 3), "aggs": money()},
+        # Since release 2.57.0 a record paid personally carries the person's own project; the project it was aimed at
+        # is kept only in budget_fallback_from (since EPMCDME-16625: a member's project or the default project).
+        "fallback": {"filter": has_fb(), "aggs": {"t": {"terms": terms(F_FALLBACK, 3), "aggs": money()}}},
     }
     sub.update(wp_aggs(shared))
     sub.update(name_agg())
@@ -426,7 +440,11 @@ def web_projects_body(start: datetime, end: datetime, part: Part, size: int) -> 
 
 
 def web_fb_body(start: datetime, end: datetime, part: Part, size: int) -> dict:
-    """A7b: Web Platform fallback records, by the shared project they ran in."""
+    """A7b: Web Platform fallback records, by the project they were aimed at (budget_fallback_from).
+
+    Since EPMCDME-16625 that is the asset's project only for its members; a non-member's run is aimed at their own
+    default project, so another project's shared asset does not show its non-member users here.
+    """
     sub = dict(money(), people=card(F_USER_ID))
     sub.update(web_types())
     return {
@@ -485,7 +503,10 @@ def shared_cli_body(start: datetime, end: datetime, shared: list[str], part: Par
 
 
 def shared_cli_fb_body(start: datetime, end: datetime, shared: list[str], part: Part, size: int, repos: int) -> dict:
-    """A6b: CLI fallback records, by the shared project they ran in."""
+    """A6b: CLI fallback records, by the project they were aimed at (budget_fallback_from).
+
+    Since EPMCDME-16625 that is the header project only for its members; otherwise it is the default project.
+    """
     return {
         "size": 0,
         "query": cli_query(start, end, has_fb()),
@@ -600,6 +621,6 @@ def project_web_detail_body(start: datetime, end: datetime, project: str) -> dic
         ),
         "aggs": {
             "p": {"filter": {"bool": {"filter": [no_fb(), {"term": {F_PROJECT: project}}]}}, "aggs": subs()},
-            "f": {"filter": {"term": {F_FALLBACK: project}}, "aggs": subs()},
+            "f": {"filter": {"bool": {"filter": [has_fb(), {"term": {F_FALLBACK: project}}]}}, "aggs": subs()},
         },
     }

@@ -296,6 +296,7 @@ class BaseDatasourceProcessor(ABC):
             set_logging_info(
                 uuid=self.request_uuid,
                 user_id=self.user.id,
+                # The personal LiteLLM customer is the username on every path (EPMCDME-16625 D9).
                 username=getattr(self.user, 'username', None) or getattr(self.user, 'email', None) or self.user.id,
             )
 

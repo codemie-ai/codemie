@@ -331,7 +331,8 @@ def web_funded(an: Analysis, project: str, uid: str) -> float:
 def web_money(an: Analysis) -> None:
     """Web Platform who pays (funding.py).
 
-    - Records with budget_fallback_from were paid personally inside that shared project.
+    - Records with budget_fallback_from were paid personally after the project they were aimed at could not pay
+      (since EPMCDME-16625 a member's project or the default project, not necessarily the asset's project).
     - Other records in a shared project were charged back for the part the project's platform budget paid: while the
       member had an allocation of it and the budget was active. The rest was paid personally inside the project.
     - Records in personal projects were paid personally.

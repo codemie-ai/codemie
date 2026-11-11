@@ -101,8 +101,8 @@ def parse_persons(buckets: list[dict], into: dict[str, dict] | None = None) -> d
             "nc": num(b, "nc", "s"),
             "pairs": {},
             "projects": {},
-            # Shared projects of records paid personally since release 2.57.0 (budget_fallback_from): {project: spend}
-            "fallback": spend_map(b, "fallback"),
+            # Projects that records paid personally were aimed at (budget_fallback_from): {project: spend}
+            "fallback": spend_map(b, "fallback", "t"),
         }
         for r in bucket_list(b, "repos"):
             p["pairs"][str(r["key"])] = [num(r, "spend"), num(r, "cb", "s"), num(r, "sh", "s"), num(r, "nc", "s")]

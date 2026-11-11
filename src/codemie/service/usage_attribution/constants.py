@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from codemie.service.budget.attribution_resolver import FallbackKind
+
 FEATURE_KEY = "usageAttribution"
 USAGE_ATTRIBUTION_COMPONENT_ID = f"features:{FEATURE_KEY}"
 
@@ -43,6 +45,9 @@ F_MODEL = "attributes.llm_model.keyword"
 F_MONEY = "attributes.money_spent"
 F_CLI_REQUEST = "attributes.cli_request"
 F_FALLBACK = "attributes.budget_fallback_from.keyword"
+# "default_project" or "personal"; absent on records written before EPMCDME-16625 (all of those were personal).
+F_FALLBACK_KIND = "attributes.budget_fallback_kind.keyword"
+FALLBACK_KIND_DEFAULT_PROJECT = FallbackKind.DEFAULT_PROJECT.value
 F_CUSTOMER = "attributes.litellm_customer_id.keyword"
 F_TOOL_NAMES = "attributes.tool_names.keyword"
 F_LINES_ADDED = "attributes.total_lines_added"
@@ -177,7 +182,8 @@ TOO_LITTLE_EVIDENCE_REASONS = (LOW_CONFIDENCE, PRODUCTION_ONE_FAMILY, NO_EVIDENC
 # Cache
 # ---------------------------------------------------------------------------------------------------------------------
 # v2: A2 reads budget_fallback_from per person and the analysis adds the production work section (People).
-CACHE_NAMESPACE = "codemie:ua:v2"
+# v3: a fallback charged to the user's default project is charged back there, not paid personally (EPMCDME-16625).
+CACHE_NAMESPACE = "codemie:ua:v3"
 DETAIL_SHARDS = 16
 # The last good analysis of a period and settings is kept a day, so a first visit in the morning shows yesterday's
 # analysis at once, marked with its time, while the new one is computed.

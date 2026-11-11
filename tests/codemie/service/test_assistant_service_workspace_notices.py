@@ -200,3 +200,64 @@ def test_chat_builder_prepares_before_building_tools_and_passes_the_notices_to_t
     assert [call[0] for call in parent.mock_calls] == ["prepare", "get_tools"]
     assert prompt_mock.call_args.args[-1] == ["n1"]
     assert prepare.call_args.args[1].conversation_id == "conv-1"
+
+
+def test_chat_builder_attributes_with_the_model_the_request_runs_on():
+    """EPMCDME-16625: a conversation's model override can change the budget category, so attribution must be
+    resolved with the actual model before tools and models (which fix their billing headers) are built."""
+    parent = Mock()
+    assistant = _workflow_assistant_mock()
+    assistant.context = []
+    assistant.temperature = 0.7
+    assistant.top_p = 0.9
+    assistant.bedrock = None
+    assistant.smart_tool_selection_enabled = False
+    assistant.prompt_variables = []
+    assistant.type = "regular"
+    assistant.llm_model_type = "claude-opus-4"
+    request = AssistantChatRequest(text="Hello", file_names=[], conversation_id="conv-1", llm_model="gpt-4.1-mini")
+
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch("codemie.service.llm.model_availability_service.Application.get_by_id", return_value=None)
+        )
+        stack.enter_context(patch("codemie.service.assistant_service.Conversation.find_by_id", return_value=None))
+        stack.enter_context(patch("codemie.service.assistant_service.AIToolsAgent", return_value=Mock()))
+        stack.enter_context(patch("codemie.service.assistant_service.LangGraphAgent"))
+        config = stack.enter_context(patch("codemie.service.assistant_service.config"))
+        config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False
+        llm = stack.enter_context(patch("codemie.service.assistant_service.llm_service"))
+        llm.get_react_llms.return_value = []
+        stack.enter_context(
+            patch(
+                "codemie.service.assistant_service.resolve_assistant_model",
+                side_effect=lambda _assistant, pick, **_kwargs: pick or _assistant.llm_model_type,
+            )
+        )
+        set_ctx = stack.enter_context(patch("codemie.service.assistant_service.set_llm_context"))
+        stack.enter_context(patch("codemie.service.assistant_service.build_unique_file_objects", return_value={}))
+        stack.enter_context(
+            patch("codemie.service.assistant_service.AssistantService.drop_missing_context", return_value=[])
+        )
+        stack.enter_context(
+            patch(
+                "codemie.service.assistant_service.BedrockOrchestratorService.is_bedrock_assistant", return_value=False
+            )
+        )
+        stack.enter_context(patch.object(AssistantService, "_prepare_system_prompt", Mock(return_value="prompt")))
+        stack.enter_context(patch("codemie.service.assistant_service.prepare_skill_workspace", return_value=[]))
+        get_tools = stack.enter_context(
+            patch(
+                "codemie.service.assistant_service.ToolkitService.collect_agent_tools",
+                return_value=AgentToolsResult(tools=[]),
+            )
+        )
+        parent.attach_mock(set_ctx, "set_llm_context")
+        parent.attach_mock(get_tools, "get_tools")
+
+        AssistantService.build_agent(assistant=assistant, request=request, user=_user(), request_uuid="req-1")
+
+    names = [call[0] for call in parent.mock_calls]
+    last_context = max(i for i, name in enumerate(names) if name == "set_llm_context")
+    assert last_context < names.index("get_tools")
+    assert parent.mock_calls[last_context].args[3] == "gpt-4.1-mini"

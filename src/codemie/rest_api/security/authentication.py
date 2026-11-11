@@ -130,7 +130,9 @@ async def authenticate(
                 raise _create_auth_error("Missing required headers for internal auth.")
             _verify_internal_request(bind_key, nonce, timestamp, internal_user_id)
             # With user management off there are no user rows, so the stand-in has to stay
-            user = await LocalIdp().authenticate(request, allow_stand_in=not config.ENABLE_USER_MANAGEMENT)
+            user = await LocalIdp().authenticate(
+                request, allow_stand_in=not config.ENABLE_USER_MANAGEMENT, signed_loopback=True
+            )
         else:
             # Standard external authentication flow
             # 1. Get provider based on feature flag (EPMCDME-10160)

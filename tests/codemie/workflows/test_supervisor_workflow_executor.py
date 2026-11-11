@@ -46,6 +46,23 @@ class TestSupervisorWorkflowExecutor(unittest.TestCase):
         state_graph = self.executor.init_state_graph()
         self.assertIsNotNone(state_graph)
 
+    @patch('codemie.workflows.workflow.initialize_assistant')
+    def test_member_assistant_build_keeps_workflow_attribution(self, mock_initialize):
+        """EPMCDME-16625: the supervisor's model is built after its members and must keep the workflow's billing."""
+        from codemie.core.dependecies import get_current_project, set_litellm_context
+        from codemie.rest_api.models.settings import LiteLLMContext
+
+        def build_member(**_kwargs):
+            set_litellm_context(LiteLLMContext(credentials=None, current_project="member-project"))
+            return MagicMock()
+
+        mock_initialize.side_effect = build_member
+        set_litellm_context(LiteLLMContext(credentials=None, current_project="workflow-project"))
+
+        self.executor.initialize_assistant(assistant=MagicMock())
+
+        self.assertEqual(get_current_project(), "workflow-project")
+
     @patch('codemie.service.workflow_execution.WorkflowExecutionService._refresh_workflow_execution')
     def test_build_workflow(self, _mock_refresh):
         state_graph = self.executor.init_state_graph()

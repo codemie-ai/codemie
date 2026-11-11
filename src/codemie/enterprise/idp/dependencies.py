@@ -57,6 +57,10 @@ def _wrap_enterprise_idp(enterprise_provider_class, provider_name: str):
     class EnterpriseIdpWrapper(BaseIdp):
         """Adapter: wraps enterprise IDP provider as BaseIdp."""
 
+        # Enterprise providers authenticate a bearer token; deployments must verify its signature (JWKS validation
+        # or a validating gateway), as the budget attribution guide states.
+        validates_token = True
+
         def __init__(self):
             self._provider = enterprise_provider_class()
 
@@ -157,6 +161,23 @@ def _wrap_enterprise_idp(enterprise_provider_class, provider_name: str):
     return EnterpriseIdpWrapper
 
 
+def _warn_if_snapshots_rely_on_a_gateway() -> None:
+    """Say at startup when IDP-claims snapshots trust a token nothing in this process verified (EPMCDME-16625).
+
+    Enterprise providers declare validates_token, so their sign-ins store claims that scheduled and webhook runs
+    replay. Without JWKS validation that holds only behind a gateway that verifies the token signature; the code
+    cannot check the gateway, so it says so once instead of refusing to start.
+    """
+    from codemie.configs import config
+
+    if config.ENABLE_USER_MANAGEMENT or config.JWKS_VALIDATION_ENABLED:
+        return
+    logger.warning(
+        "idp_snapshot_trust: IDP-claims mode with JWKS_VALIDATION_ENABLED=false. Sign-in claims are stored and "
+        "replayed into users' scheduled runs; this is safe only behind a gateway that verifies token signatures."
+    )
+
+
 def register_enterprise_idps() -> None:
     """Register enterprise IDP providers with the IdpFactory.
 
@@ -186,6 +207,7 @@ def register_enterprise_idps() -> None:
             registered.append(provider_type)
 
         logger.info(f"Enterprise IDP providers registered: {', '.join(registered)}")
+        _warn_if_snapshots_rely_on_a_gateway()
 
     except Exception as e:
         logger.error(f"Failed to register enterprise IDP providers: {e}", exc_info=True)

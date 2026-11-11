@@ -191,7 +191,7 @@ class ToolCallConfirmationMixin:
             conversation_id=self.conversation_id,
             username=self.user.username,
         )
-        set_llm_context(self.assistant, None, self.user, self.llm_model)
+        set_llm_context(self.llm_context_asset, None, self.user, self.llm_model, credentials_asset=self.assistant)
         execution_start = time()
         chunks_collector: list[str] = []
 

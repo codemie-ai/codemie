@@ -794,6 +794,9 @@ class AssistantBase(CommonBaseModel, Owned):
     # Request-scoped precomputed skill contributions (resolved once per request).
     # Kept untyped to avoid service-layer imports in REST API models.
     _runtime_skill_contributions: Any = None
+    # A virtual assistant the caller named no project for: its project only selects credentials, and its LLM
+    # requests are billed as asset-less, to the user's default project (EPMCDME-16625 rows 12 and 14).
+    _runtime_bills_as_asset_less: bool = False
 
     # Custom PostgreSQL indexes
     __table_args__ = (

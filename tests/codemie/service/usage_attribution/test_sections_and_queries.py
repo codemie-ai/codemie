@@ -185,26 +185,44 @@ class TestQueries:
     def test_who_pays_filters_are_exclusive(self):
         filters = queries.who_pays_filters(["p1", "p2"])
         assert set(filters) == {"charged_back", "shared_no_budget", "personal", "no_customer"}
-        assert filters["charged_back"]["bool"]["must_not"] == [
-            {"exists": {"field": "attributes.budget_fallback_from.keyword"}}
-        ]
+        assert filters["charged_back"]["bool"]["must_not"] == [queries.has_fb()]
         assert {"terms": {"attributes.project.keyword": ["p1", "p2"]}} in filters["personal"]["bool"]["filter"][1][
             "bool"
         ]["must_not"]
 
     def test_persons_body_reads_the_fallback_project(self):
         aggs = queries.persons_body(S, E, ["p"], (0, 1), 100, 10)["aggs"]["users"]["aggs"]
-        assert aggs["fallback"]["terms"]["field"] == "attributes.budget_fallback_from.keyword"
-        assert aggs["fallback"]["terms"]["size"] == 3
-        assert "spend" in aggs["fallback"]["aggs"]
+        assert aggs["fallback"]["filter"] == queries.has_fb()
+        assert aggs["fallback"]["aggs"]["t"]["terms"]["field"] == "attributes.budget_fallback_from.keyword"
+        assert aggs["fallback"]["aggs"]["t"]["terms"]["size"] == 3
+        assert "spend" in aggs["fallback"]["aggs"]["t"]["aggs"]
 
     def test_parse_persons_keeps_fallback_projects(self):
         bucket = {"key": "u1", "spend": {"value": 30.0}, "repos": {"buckets": []}, "projects": {"buckets": []},
-                  "fallback": {"buckets": [{"key": "nwnd-pay", "spend": {"value": 12.5}}]}}  # fmt: skip
+                  "fallback": {"t": {"buckets": [{"key": "nwnd-pay", "spend": {"value": 12.5}}]}}}  # fmt: skip
         assert parsing.parse_persons([bucket])["u1"]["fallback"] == {"nwnd-pay": 12.5}
-        assert parsing.parse_persons([{**bucket, "fallback": {"buckets": []}}])["u1"]["fallback"] == {}
+        assert parsing.parse_persons([{**bucket, "fallback": {"t": {"buckets": []}}}])["u1"]["fallback"] == {}
         without = {k: v for k, v in bucket.items() if k != "fallback"}  # inputs read before the field existed
         assert parsing.parse_persons([without])["u1"]["fallback"] == {}
+
+    def test_paid_personally_fallback_excludes_default_project_charges(self):
+        """EPMCDME-16625: a fallback charged to the default project is charged back there, not paid personally."""
+        fb = queries.has_fb()
+        assert {"exists": {"field": "attributes.budget_fallback_from.keyword"}} in fb["bool"]["filter"]
+        # Records written before the kind existed have no kind and still count as paid personally.
+        assert fb["bool"]["must_not"] == [{"term": {"attributes.budget_fallback_kind.keyword": "default_project"}}]
+        assert queries.no_fb() == {"bool": {"must_not": [fb]}}
+
+    def test_project_popup_counts_only_personal_fallbacks_of_the_project(self):
+        aggs = queries.project_web_detail_body(S, E, "team-a")["aggs"]
+        assert aggs["f"]["filter"] == {
+            "bool": {"filter": [queries.has_fb(), {"term": {"attributes.budget_fallback_from.keyword": "team-a"}}]}
+        }
+
+    def test_cache_namespace_is_bumped_for_the_fallback_kind(self):
+        from codemie.service.usage_attribution.constants import CACHE_NAMESPACE
+
+        assert CACHE_NAMESPACE == "codemie:ua:v3"
 
     def test_no_shared_projects(self):
         assert queries.shared_clause([]) == {"match_none": {}}
