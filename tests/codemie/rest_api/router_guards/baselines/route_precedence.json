@@ -1,7 +1,27 @@
 [
   {
+    "earlier": "/v1/index/users",
+    "later": "/v1/index/{index_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/index/find_id",
+    "later": "/v1/index/{index_id}",
+    "method": "GET"
+  },
+  {
     "earlier": "/v1/assistants/{assistant_id}/users/mapping",
     "later": "/v1/assistants/slug/{assistant_slug:path}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/id/{assistant_id}",
+    "later": "/v1/assistants/{assistant_id}/shared-with",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/id/{assistant_id}",
+    "later": "/v1/assistants/{assistant_id}/sharable-users",
     "method": "GET"
   },
   {
@@ -12,6 +32,16 @@
   {
     "earlier": "/v1/assistants/id/{assistant_id}",
     "later": "/v1/assistants/{assistant_id}/skills",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/slug/{assistant_slug:path}",
+    "later": "/v1/assistants/{assistant_id}/shared-with",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/slug/{assistant_slug:path}",
+    "later": "/v1/assistants/{assistant_id}/sharable-users",
     "method": "GET"
   },
   {
@@ -41,12 +71,47 @@
   },
   {
     "earlier": "/v1/assistants/prebuilt/{slug}",
+    "later": "/v1/assistants/{assistant_id}/shared-with",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/prebuilt/{slug}",
+    "later": "/v1/assistants/{assistant_id}/sharable-users",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/prebuilt/{slug}",
     "later": "/v1/assistants/{assistant_id}/versions",
     "method": "GET"
   },
   {
     "earlier": "/v1/assistants/prebuilt/{slug}",
     "later": "/v1/assistants/{assistant_id}/skills",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/{assistant_id}/shared-with",
+    "later": "/v1/assistants/metrics/{conversation_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/{assistant_id}/shared-with",
+    "later": "/v1/assistants/categories/{id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/{assistant_id}/share",
+    "later": "/v1/assistants/categories/{id}",
+    "method": "DELETE"
+  },
+  {
+    "earlier": "/v1/assistants/{assistant_id}/sharable-users",
+    "later": "/v1/assistants/metrics/{conversation_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/{assistant_id}/sharable-users",
+    "later": "/v1/assistants/categories/{id}",
     "method": "GET"
   },
   {
@@ -82,16 +147,6 @@
   {
     "earlier": "/v1/assistants/categories/{id}",
     "later": "/v1/assistants/{assistant_id}/skills",
-    "method": "GET"
-  },
-  {
-    "earlier": "/v1/index/users",
-    "later": "/v1/index/{index_id}",
-    "method": "GET"
-  },
-  {
-    "earlier": "/v1/index/find_id",
-    "later": "/v1/index/{index_id}",
     "method": "GET"
   },
   {
@@ -155,6 +210,31 @@
     "method": "GET"
   },
   {
+    "earlier": "/v1/skills/events",
+    "later": "/v1/skills/{skill_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/skills/categories",
+    "later": "/v1/skills/{skill_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/skills/users",
+    "later": "/v1/skills/{skill_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/skills/config",
+    "later": "/v1/skills/{skill_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/scheduler-runs/stats",
+    "later": "/v1/scheduler-runs/{run_id}",
+    "method": "GET"
+  },
+  {
     "earlier": "/v1/guardrails/assignments",
     "later": "/v1/guardrails/{guardrail_id}",
     "method": "GET"
@@ -210,26 +290,6 @@
     "method": "GET"
   },
   {
-    "earlier": "/v1/skills/events",
-    "later": "/v1/skills/{skill_id}",
-    "method": "GET"
-  },
-  {
-    "earlier": "/v1/skills/categories",
-    "later": "/v1/skills/{skill_id}",
-    "method": "GET"
-  },
-  {
-    "earlier": "/v1/skills/users",
-    "later": "/v1/skills/{skill_id}",
-    "method": "GET"
-  },
-  {
-    "earlier": "/v1/skills/config",
-    "later": "/v1/skills/{skill_id}",
-    "method": "GET"
-  },
-  {
     "earlier": "/v1/hosted-applications/capabilities",
     "later": "/v1/hosted-applications/{app_id}",
     "method": "GET"
@@ -242,11 +302,6 @@
   {
     "earlier": "/v1/hosted-applications/users",
     "later": "/v1/hosted-applications/{app_id}",
-    "method": "GET"
-  },
-  {
-    "earlier": "/v1/scheduler-runs/stats",
-    "later": "/v1/scheduler-runs/{run_id}",
     "method": "GET"
   }
 ]

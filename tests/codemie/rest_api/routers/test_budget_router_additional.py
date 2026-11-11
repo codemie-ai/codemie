@@ -77,9 +77,22 @@ def test_build_budget_response_marks_preconfigured_budget():
         "codemie.rest_api.routers.budget_router.budget_config.predefined_budgets",
         [SimpleNamespace(budget_id="platform-default")],
     ):
-        result = _build_budget_response(budget)
+        result = _build_budget_response(budget, {})
 
     assert result.is_preconfigured is True
+
+
+def test_build_budget_response_nulls_creator_name_for_preconfigured_budget():
+    budget = _make_budget_row(budget_id="platform-default", created_by="admin-1")
+
+    with patch(
+        "codemie.rest_api.routers.budget_router.budget_config.predefined_budgets",
+        [SimpleNamespace(budget_id="platform-default")],
+    ):
+        result = _build_budget_response(budget, {"admin-1": "Admin User"})
+
+    assert result.is_preconfigured is True
+    assert result.created_by_name is None
 
 
 @pytest.mark.asyncio

@@ -39,6 +39,7 @@ from codemie.rest_api.routers.budget_router import (
     create_budget,
     get_budget,
     list_budgets,
+    sync_budgets,
     update_budget,
 )
 from codemie.rest_api.security.user import User
@@ -487,3 +488,200 @@ class TestBudgetNotificationOwnerEmail:
                 _=None,
             )
         assert result_cleared.notification_owner_email is None
+
+
+# ---------------------------------------------------------------------------
+# TestCreatedByName (EPMCDME-15628)
+# ---------------------------------------------------------------------------
+
+
+def _patch_resolve_creator_names(mapping: dict):
+    return patch(
+        "codemie.rest_api.routers.budget_router.budget_service.resolve_creator_names",
+        new=AsyncMock(return_value=mapping),
+    )
+
+
+class TestCreatedByName:
+    @pytest.mark.asyncio
+    async def test_list_budgets_returns_created_by_name_for_human_creator(self):
+        mock_session = AsyncMock()
+        budgets = [_make_budget_row(created_by="user-1")]
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.list_budgets",
+                new=AsyncMock(return_value=(budgets, 1)),
+            ),
+            _patch_resolve_creator_names({"user-1": "Alice Smith"}),
+        ):
+            result = await list_budgets(page=0, per_page=20, category=None, user=_admin_user(), _=None)
+
+        assert result.data[0].created_by_name == "Alice Smith"
+        assert result.data[0].created_by == "user-1"
+
+    @pytest.mark.asyncio
+    async def test_list_budgets_system_creator_returns_null(self):
+        mock_session = AsyncMock()
+        budgets = [_make_budget_row(created_by="system")]
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.list_budgets",
+                new=AsyncMock(return_value=(budgets, 1)),
+            ),
+            _patch_resolve_creator_names({}),
+        ):
+            result = await list_budgets(page=0, per_page=20, category=None, user=_admin_user(), _=None)
+
+        assert result.data[0].created_by_name is None
+        assert result.data[0].created_by == "system"
+
+    @pytest.mark.asyncio
+    async def test_list_budgets_unknown_creator_returns_null(self):
+        mock_session = AsyncMock()
+        budgets = [_make_budget_row(created_by="user-ghost")]
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.list_budgets",
+                new=AsyncMock(return_value=(budgets, 1)),
+            ),
+            _patch_resolve_creator_names({}),
+        ):
+            result = await list_budgets(page=0, per_page=20, category=None, user=_admin_user(), _=None)
+
+        assert result.data[0].created_by_name is None
+
+    @pytest.mark.asyncio
+    async def test_list_budgets_resolves_creator_names_once_per_request(self):
+        mock_session = AsyncMock()
+        budgets = [
+            _make_budget_row(budget_id="b1", created_by="user-1"),
+            _make_budget_row(budget_id="b2", created_by="user-1"),
+        ]
+        resolve_mock = AsyncMock(return_value={"user-1": "Alice Smith"})
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.list_budgets",
+                new=AsyncMock(return_value=(budgets, 2)),
+            ),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.resolve_creator_names",
+                new=resolve_mock,
+            ),
+        ):
+            result = await list_budgets(page=0, per_page=20, category=None, user=_admin_user(), _=None)
+
+        resolve_mock.assert_called_once()
+        assert all(b.created_by_name == "Alice Smith" for b in result.data)
+
+    @pytest.mark.asyncio
+    async def test_get_budget_includes_created_by_name(self):
+        mock_session = AsyncMock()
+        budget_row = _make_budget_row(created_by="user-1")
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.get_budget",
+                new=AsyncMock(return_value=budget_row),
+            ),
+            _patch_resolve_creator_names({"user-1": "Alice Smith"}),
+        ):
+            result = await get_budget(budgetId="test-budget", user=_admin_user(), _=None)
+
+        assert result.created_by_name == "Alice Smith"
+        assert result.created_by == "user-1"
+
+    @pytest.mark.asyncio
+    async def test_create_budget_includes_created_by_name(self):
+        mock_session = AsyncMock()
+        mock_session.commit = AsyncMock()
+        budget_row = _make_budget_row(created_by="admin-1")
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.create_budget",
+                new=AsyncMock(return_value=budget_row),
+            ),
+            _patch_resolve_creator_names({"admin-1": "Admin User"}),
+        ):
+            payload = BudgetCreateRequest(
+                budget_id="test-budget",
+                name="Test Budget",
+                soft_budget=10.0,
+                max_budget=100.0,
+                budget_duration="30d",
+                budget_category=BudgetCategory.PLATFORM,
+            )
+            result = await create_budget(payload=payload, user=_admin_user(), _=None)
+
+        assert result.created_by_name == "Admin User"
+        assert result.created_by == "admin-1"
+
+    @pytest.mark.asyncio
+    async def test_update_budget_includes_created_by_name(self):
+        mock_session = AsyncMock()
+        mock_session.commit = AsyncMock()
+        updated_row = _make_budget_row(created_by="user-1", name="Updated Name")
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.update_budget",
+                new=AsyncMock(return_value=updated_row),
+            ),
+            _patch_resolve_creator_names({"user-1": "Alice Smith"}),
+        ):
+            result = await update_budget(
+                budgetId="test-budget",
+                payload=BudgetUpdateRequest(name="Updated Name"),
+                user=_admin_user(),
+                _=None,
+            )
+
+        assert result.created_by_name == "Alice Smith"
+        assert result.created_by == "user-1"
+
+    @pytest.mark.asyncio
+    async def test_sync_budgets_includes_created_by_name(self):
+        from codemie.rest_api.models.budget import BudgetSyncResult
+
+        mock_session = AsyncMock()
+        budget_row = _make_budget_row(created_by="user-1")
+        sync_result = BudgetSyncResult(
+            created=1,
+            updated=0,
+            unchanged=0,
+            deleted=0,
+            total_in_litellm=1,
+            budgets=[budget_row],
+        )
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.sync_budgets_from_litellm",
+                new=AsyncMock(return_value=sync_result),
+            ),
+            _patch_resolve_creator_names({"user-1": "Alice Smith"}),
+        ):
+            result = await sync_budgets(user=_admin_user(), _=None)
+
+        assert result.budgets[0].created_by_name == "Alice Smith"
+        assert result.budgets[0].created_by == "user-1"

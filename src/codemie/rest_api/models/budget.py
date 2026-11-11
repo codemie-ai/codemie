@@ -73,6 +73,7 @@ class BudgetResponse(BaseModel):
     budget_category: BudgetCategory
     budget_reset_at: Optional[str]
     created_by: str
+    created_by_name: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime]
     is_preconfigured: bool = False

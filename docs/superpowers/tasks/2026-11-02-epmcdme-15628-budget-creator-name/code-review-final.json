@@ -1,0 +1,61 @@
+{
+  "decision": "approve",
+  "rationale": "High-effort code review of branch EPMCDME-15628_budget-creator-name against main found zero findings. The change is additive-only: BudgetResponse gains created_by_name (Optional[str] = None); created_by is unchanged. resolve_creator_names makes one batched call to UserRepository.aget_users_by_ids per request across list/get/create/update/sync, so N budgets from the same creator trigger one lookup, not N. aget_users_by_ids filters deleted_at IS NULL, so unknown and soft-deleted creators both resolve to null, matching the TL-confirmed decision. An earlier automated-review finding (soft-deleted creators still resolving to a name via query_users_by_uuid_batched, which has no deleted_at filter) was fixed in commit 1eba8e306 and is re-verified below in the finding_status check.",
+  "findings": [],
+  "business_review": [
+    {
+      "criterion": "The budget API returns the creator's display name so the FE no longer has to fetch users one by one",
+      "status": "pass",
+      "notes": "created_by_name is present on BudgetResponse and populated by resolve_creator_names for list_budgets, get_budget, create_budget, update_budget and sync_budgets."
+    },
+    {
+      "criterion": "created_by is left unchanged",
+      "status": "pass",
+      "notes": "created_by field and its value are untouched; only created_by_name is added."
+    },
+    {
+      "criterion": "resolve_creator_names skips \"system\" and empty created_by values and makes a single batched lookup",
+      "status": "pass",
+      "notes": "creator_ids set-comprehension excludes falsy and \"system\" values before the one aget_users_by_ids call; covered by test_skips_system_and_empty_created_by and test_duplicate_creators_trigger_single_batched_lookup_with_one_id."
+    },
+    {
+      "criterion": "Unknown ids are left out of the result",
+      "status": "pass",
+      "notes": "Covered by test_unknown_creator_id_is_omitted."
+    },
+    {
+      "criterion": "Deleted users resolve to null (TL decision)",
+      "status": "pass",
+      "notes": "aget_users_by_ids filters deleted_at IS NULL; covered by test_soft_deleted_creator_is_omitted."
+    },
+    {
+      "criterion": "get, create, update and sync responses include the field",
+      "status": "pass",
+      "notes": "Covered by test_get_budget_includes_created_by_name, test_create_budget_includes_created_by_name, test_update_budget_includes_created_by_name, test_sync_budgets_includes_created_by_name."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "Commit format (EPMCDME-####: Description)",
+      "status": "pass",
+      "notes": "All three commits on this branch use the EPMCDME-15628: prefix."
+    },
+    {
+      "standard": "Branch naming (<TICKET-ID>_short-description)",
+      "status": "pass",
+      "notes": "EPMCDME-15628_budget-creator-name matches the convention."
+    },
+    {
+      "standard": "Code quality (Ruff)",
+      "status": "pass",
+      "notes": "make ruff clean after every change in this branch."
+    },
+    {
+      "standard": "Security",
+      "status": "pass",
+      "notes": "No new auth, PII exposure, or injection surface; created_by_name only ever resolves from an id already present on the Budget row."
+    }
+  ],
+  "risk_flags": [],
+  "confidence": "high"
+}

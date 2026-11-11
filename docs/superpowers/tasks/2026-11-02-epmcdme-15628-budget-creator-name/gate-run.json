@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15628_budget-creator-name",
+  "head": "1eba8e30630164c485a62d0f3a0ece49cd84dd67",
+  "post_rebase_target": "cf48791b477c99f54881322b9f5095060080c392",
+  "runner": "poetry",
+  "started_at": "2026-10-30T04:00:00Z",
+  "completed_at": "2026-11-02T05:00:00Z",
+  "status": "FAIL-accepted",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Ran after every source/test change on this branch; final run clean, no violations."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make build",
+      "exit_code": null,
+      "notes": "Not run this session — scope was additive response-field + service/router wiring, no packaging-relevant change."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make license-check",
+      "exit_code": null,
+      "notes": "Not run this session — no new files added that would need a license header beyond existing ones."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Not run this session — change touches no secrets, credentials or config; CI/local pre-commit hook still covers it."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "classification": "pre-existing-unrelated-failures",
+      "command": "poetry run pytest tests/",
+      "exit_code": 1,
+      "baseline_reproduces": true,
+      "baseline_evidence": "git stash on this branch before any of these edits reproduces the identical failure set (64 failed) in tests/enterprise/mcp_auth/*, tests/codemie/rest_api/routers/test_marketplace_management_smoke.py and tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py, plus the OpenAPI snapshot guard (also failing on main due to local environment/package drift).",
+      "targeted_tests": "324 passed, 0 failed — tests/codemie/rest_api/routers/test_budget_router.py, test_budget_router_additional.py, test_budget_router_auditor.py, tests/codemie/service/budget/, tests/codemie/repository/test_user_repository_crud.py",
+      "notes": "Full suite: 61 failed / 23842 passed — all pre-existing and unrelated, down from the 64 reproduced on a clean stash of this branch (the 3 extra were budget-router tests this branch's own _build_budget_response signature change broke, and are now fixed and green)."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "PASS",
+      "command": "uvx codemie-test-harness run sanity-api -n 2 --reruns 2",
+      "exit_code": 0,
+      "notes": "196 passed, 4 skipped, 2 rerun (passed on retry) in 838.62s (0:13:58). Run against local backend restarted with ENV=local for dev-header auth per the setup guide's Bearer-hijack pattern; .env restored to ENV=development immediately after."
+    },
+    {
+      "id": "live-verification",
+      "source": "manual-follow-up",
+      "status": "PASS",
+      "notes": "DB-level check of resolve_creator_names against real local Postgres: real admin UUID -> real display name, \"system\" and an unknown UUID both omitted. Live HTTP call to GET /v1/admin/budgets confirmed created_by_name populated for a human-created budget and null for system-created ones, with created_by unchanged."
+    },
+    {
+      "id": "ci-wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "command": "N/A — waits for external GitLab CI contexts: ci-pipeline, compliance-report",
+      "exit_code": null,
+      "notes": "Defined in .gitlab-ci.yml; runs only on GitLab MR pipelines. Cannot execute locally."
+    }
+  ],
+  "failures": {
+    "unit": "61 pre-existing failures across tests/enterprise/mcp_auth/*, tests/codemie/rest_api/routers/test_marketplace_management_smoke.py, tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py, and tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline. None touch budget code or user_repository; all reproduce identically on a clean stash of this branch before these edits."
+  }
+}

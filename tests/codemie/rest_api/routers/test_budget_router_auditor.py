@@ -47,6 +47,7 @@ class TestBudgetRouterAuditor:
         mock_session.__aexit__ = AsyncMock(return_value=None)
         mock_session_ctx.return_value = mock_session
         mock_service.list_budgets = AsyncMock(return_value=([], 0))
+        mock_service.resolve_creator_names = AsyncMock(return_value={})
 
         auditor = _make_auditor()
         result = await list_budgets(page=0, per_page=20, category=None, user=auditor)
@@ -82,7 +83,9 @@ class TestBudgetRouterAuditor:
         # must be set explicitly: an unset attribute on a MagicMock resolves to
         # a child mock and fails validation.
         fake_budget.notification_owner_email = None
+        fake_budget.created_by_name = None
         mock_service.get_budget = AsyncMock(return_value=fake_budget)
+        mock_service.resolve_creator_names = AsyncMock(return_value={})
 
         auditor = _make_auditor()
         result = await get_budget(budgetId="b1", user=auditor)

@@ -31,6 +31,7 @@ from codemie.configs.budget_config import budget_config
 from codemie.configs.config import PredefinedBudgetConfig
 from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.repository.budget_repository import budget_repository
+from codemie.repository.user_repository import user_repository
 from codemie.service.activity.activity_attributes import build_change_attributes
 from codemie.service.activity.activity_models import (
     ActivityDomain,
@@ -326,6 +327,19 @@ class BudgetService:
         if budget is None:
             raise ExtendedHTTPException(code=404, message=f"Budget '{budget_id}' not found")
         return budget
+
+    async def resolve_creator_names(self, session: AsyncSession, budgets: list[Budget]) -> dict[str, str]:
+        """Batch-resolve created_by user ids to display names in a single lookup.
+
+        Skips "system" and empty created_by values. Ids that cannot be resolved to an
+        active user — unknown or soft-deleted — are left out of the returned mapping,
+        since aget_users_by_ids filters out deleted_at IS NOT NULL rows.
+        """
+        creator_ids = {b.created_by for b in budgets if b.created_by and b.created_by != "system"}
+        if not creator_ids:
+            return {}
+        users = await user_repository.aget_users_by_ids(session, creator_ids)
+        return {user_id: (user.name or user.username) for user_id, user in users.items()}
 
     async def update_budget(
         self,

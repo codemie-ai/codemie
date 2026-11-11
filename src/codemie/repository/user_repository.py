@@ -592,6 +592,17 @@ class UserRepository:
         result = await session.execute(statement)
         return result.scalars().first()
 
+    async def aget_users_by_ids(self, session: AsyncSession, user_ids: set[str]) -> dict[str, UserDB]:
+        """Get non-deleted users by IDs in batched queries (async). Non-UUID ids are ignored."""
+        valid_ids = [uid for uid in user_ids if self._is_uuid(uid)]
+        users: dict[str, UserDB] = {}
+        for start in range(0, len(valid_ids), MAX_POSTGRES_QUERY_ARGUMENTS):
+            chunk = valid_ids[start : start + MAX_POSTGRES_QUERY_ARGUMENTS]
+            statement = select(UserDB).where(UserDB.id.in_(chunk), UserDB.deleted_at.is_(None))
+            result = await session.execute(statement)
+            users.update({u.id: u for u in result.scalars().all()})
+        return users
+
     async def aget_by_email(self, session: AsyncSession, email: str) -> Optional[UserDB]:
         """Get user by email, case-insensitive (async)"""
         statement = select(UserDB).where(func.lower(UserDB.email) == email.lower())

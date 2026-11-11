@@ -1594,3 +1594,102 @@ async def test_sync_backfilled_member_allocations_keeps_override_cap_when_enforc
     )
 
     assert provider.sync_member_allocation.await_args.kwargs["effective_max_budget"] == 500.0
+
+
+# ---------------------------------------------------------------------------
+# TestResolveCreatorNames (EPMCDME-15628)
+# ---------------------------------------------------------------------------
+
+
+def _user_row(user_id: str, name: str | None, username: str) -> SimpleNamespace:
+    return SimpleNamespace(id=user_id, email=f"{username}@example.com", username=username, name=name)
+
+
+class TestResolveCreatorNames:
+    @pytest.mark.asyncio
+    async def test_maps_creator_id_to_display_name(self):
+        svc = _make_service()
+        budgets = [_make_budget(created_by="user-1")]
+        with patch(
+            "codemie.service.budget.budget_service.user_repository.aget_users_by_ids",
+            new=AsyncMock(return_value={"user-1": _user_row("user-1", "Alice Smith", "alice")}),
+        ):
+            result = await svc.resolve_creator_names(AsyncMock(), budgets)
+
+        assert result == {"user-1": "Alice Smith"}
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_username_when_name_missing(self):
+        svc = _make_service()
+        budgets = [_make_budget(created_by="user-1")]
+        with patch(
+            "codemie.service.budget.budget_service.user_repository.aget_users_by_ids",
+            new=AsyncMock(return_value={"user-1": _user_row("user-1", None, "alice")}),
+        ):
+            result = await svc.resolve_creator_names(AsyncMock(), budgets)
+
+        assert result == {"user-1": "alice"}
+
+    @pytest.mark.asyncio
+    async def test_skips_system_and_empty_created_by(self):
+        svc = _make_service()
+        budgets = [
+            _make_budget(created_by="system"),
+            _make_budget(budget_id="b2", created_by=""),
+        ]
+        query_mock = AsyncMock(return_value={})
+        with patch(
+            "codemie.service.budget.budget_service.user_repository.aget_users_by_ids",
+            new=query_mock,
+        ):
+            result = await svc.resolve_creator_names(AsyncMock(), budgets)
+
+        query_mock.assert_not_called()
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_unknown_creator_id_is_omitted(self):
+        svc = _make_service()
+        budgets = [_make_budget(created_by="user-missing")]
+        with patch(
+            "codemie.service.budget.budget_service.user_repository.aget_users_by_ids",
+            new=AsyncMock(return_value={}),
+        ):
+            result = await svc.resolve_creator_names(AsyncMock(), budgets)
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_soft_deleted_creator_is_omitted(self):
+        """aget_users_by_ids filters deleted_at IS NULL, so a soft-deleted creator
+        never appears in the returned map and created_by_name resolves to null."""
+        svc = _make_service()
+        budgets = [_make_budget(created_by="deleted-user-1")]
+        with patch(
+            "codemie.service.budget.budget_service.user_repository.aget_users_by_ids",
+            new=AsyncMock(return_value={}),
+        ) as query_mock:
+            result = await svc.resolve_creator_names(AsyncMock(), budgets)
+
+        query_mock.assert_called_once()
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_duplicate_creators_trigger_single_batched_lookup_with_one_id(self):
+        svc = _make_service()
+        budgets = [
+            _make_budget(budget_id="b1", created_by="user-1"),
+            _make_budget(budget_id="b2", created_by="user-1"),
+        ]
+        query_mock = AsyncMock(return_value={"user-1": _user_row("user-1", "Alice Smith", "alice")})
+        with patch(
+            "codemie.service.budget.budget_service.user_repository.aget_users_by_ids",
+            new=query_mock,
+        ):
+            result = await svc.resolve_creator_names(AsyncMock(), budgets)
+
+        query_mock.assert_called_once()
+        _, call_args, call_kwargs = query_mock.mock_calls[0]
+        ids_arg = call_args[1] if len(call_args) > 1 else call_kwargs["user_ids"]
+        assert ids_arg == {"user-1"}
+        assert result == {"user-1": "Alice Smith"}

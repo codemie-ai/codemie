@@ -49,11 +49,12 @@ router = APIRouter(
 # ==================== Request/Response Schemas ====================
 
 
-def _build_budget_response(budget) -> BudgetResponse:
-    """Build BudgetResponse and set is_preconfigured from config."""
+def _build_budget_response(budget, creator_names: dict[str, str]) -> BudgetResponse:
+    """Build BudgetResponse, set is_preconfigured from config, and resolve created_by_name."""
     preconfigured_ids = frozenset(b.budget_id for b in budget_config.predefined_budgets)
     response = BudgetResponse.model_validate(budget)
     response.is_preconfigured = budget.budget_id in preconfigured_ids
+    response.created_by_name = None if response.is_preconfigured else creator_names.get(budget.created_by)
     return response
 
 
@@ -72,7 +73,8 @@ async def create_budget(
         budget = await budget_service.create_budget(session, payload, actor_id=user.id, actor_name=user.username)
         await session.commit()
         await session.refresh(budget)
-        return _build_budget_response(budget)
+        creator_names = await budget_service.resolve_creator_names(session, [budget])
+        return _build_budget_response(budget, creator_names)
 
 
 @router.get("", response_model=PaginatedBudgetListResponse)
@@ -92,8 +94,9 @@ async def list_budgets(
             per_page=per_page,
             category=category.value if category is not None else None,
         )
+        creator_names = await budget_service.resolve_creator_names(session, budgets)
         return PaginatedBudgetListResponse(
-            data=[_build_budget_response(b) for b in budgets],
+            data=[_build_budget_response(b, creator_names) for b in budgets],
             pagination=PaginationInfo(total=total, page=page, per_page=per_page),
         )
 
@@ -107,13 +110,14 @@ async def sync_budgets(
     require_litellm_enabled()
     async with get_async_session() as session:
         result = await budget_service.sync_budgets_from_litellm(session, actor_id=user.id)
+        creator_names = await budget_service.resolve_creator_names(session, result.budgets)
         return BudgetSyncResult(
             created=result.created,
             updated=result.updated,
             unchanged=result.unchanged,
             deleted=result.deleted,
             total_in_litellm=result.total_in_litellm,
-            budgets=[_build_budget_response(b) for b in result.budgets],
+            budgets=[_build_budget_response(b, creator_names) for b in result.budgets],
         )
 
 
@@ -138,7 +142,8 @@ async def get_budget(
     require_litellm_enabled()
     async with get_async_session() as session:
         budget = await budget_service.get_budget(session, budgetId)
-        return _build_budget_response(budget)
+        creator_names = await budget_service.resolve_creator_names(session, [budget])
+        return _build_budget_response(budget, creator_names)
 
 
 @router.patch("/{budgetId}", response_model=BudgetResponse)
@@ -156,4 +161,5 @@ async def update_budget(
         )
         await session.commit()
         await session.refresh(budget)
-        return _build_budget_response(budget)
+        creator_names = await budget_service.resolve_creator_names(session, [budget])
+        return _build_budget_response(budget, creator_names)

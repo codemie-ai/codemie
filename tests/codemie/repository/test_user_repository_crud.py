@@ -967,3 +967,29 @@ class TestUserRepositoryAsyncUpdateLastLogin:
         # Assert
         assert result is False
         async_db_session.add.assert_not_called()
+
+
+class TestUserRepositoryAsyncGetUsersByIds:
+    """Test aget_users_by_ids async batch lookup."""
+
+    @pytest.mark.asyncio
+    async def test_returns_map_and_filters_non_uuid_ids(self, user_repository, async_db_session, sample_user, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.scalars.return_value.all.return_value = [sample_user]
+        async_db_session.execute = AsyncMock(return_value=mock_result)
+
+        result = await user_repository.aget_users_by_ids(async_db_session, {sample_user.id, "system", str(uuid4())})
+
+        assert result == {sample_user.id: sample_user}
+        async_db_session.execute.assert_called_once()
+        compiled = async_db_session.execute.call_args.args[0].compile().params
+        assert "system" not in str(compiled.values())
+        assert "deleted_at" in str(async_db_session.execute.call_args.args[0])
+
+    @pytest.mark.asyncio
+    async def test_empty_or_only_invalid_ids_skip_query(self, user_repository, async_db_session):
+        async_db_session.execute = AsyncMock()
+
+        assert await user_repository.aget_users_by_ids(async_db_session, set()) == {}
+        assert await user_repository.aget_users_by_ids(async_db_session, {"system"}) == {}
+        async_db_session.execute.assert_not_called()

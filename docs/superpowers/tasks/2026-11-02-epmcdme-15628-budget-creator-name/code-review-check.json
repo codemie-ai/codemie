@@ -1,0 +1,16 @@
+{
+  "decision": "approve",
+  "rationale": "One prior finding from the human-reviewer discussion on MR !4682 is re-verified against current source and confirmed resolved. No other findings were open.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Reviewer finding: resolve_creator_names used query_users_by_uuid_batched, which has no deleted_at IS NULL filter, so a soft-deleted creator's name would still be shown instead of null. Fixed in commit 1eba8e306: resolve_creator_names now calls UserRepository.aget_users_by_ids (src/codemie/service/budget/budget_service.py), which filters deleted_at IS NULL (src/codemie/repository/user_repository.py:597). Covered by tests/codemie/service/budget/test_budget_service.py::TestResolveCreatorNames::test_soft_deleted_creator_is_omitted. Source and test confirmed."
+    }
+  ]
+}

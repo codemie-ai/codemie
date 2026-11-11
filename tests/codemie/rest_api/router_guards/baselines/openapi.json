@@ -4986,6 +4986,17 @@
             "title": "Created By",
             "type": "string"
           },
+          "created_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By Name"
+          },
           "description": {
             "anyOf": [
               {
