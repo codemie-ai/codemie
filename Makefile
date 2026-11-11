@@ -34,6 +34,15 @@ test:
 check-alembic:
 	python scripts/check_alembic_heads.py --merge-with origin/main
 
+# Fails when poetry.lock does not match pyproject.toml (Poetry's own `poetry check --lock`); fix with `poetry lock`.
+check-deps:
+	python scripts/check_poetry_lock.py
+
+# Fails on new strict ruff issues (C901,B,SIM,PL,RET,ARG,PTH,UP,S) in the Python files changed since the merge base
+# with origin/main; tests are skipped and issues the files already had are not counted.
+ruff-changed:
+	poetry run python scripts/check_ruff_changed.py --base origin/main
+
 ruff:
 	poetry run ruff format
 	poetry run ruff check --fix

@@ -162,6 +162,8 @@ docker build -t codemie:latest .
 - **License headers**: `make license` - Fix and verify Apache 2.0 license headers
 - **Check license headers**: `make license-check` - Check for missing headers (CI mode)
 - **Fix license headers**: `make license-fix` - Add missing license headers
+- **Check the Poetry lock**: `make check-deps` - Fails when `poetry.lock` does not match `pyproject.toml` (`poetry check --lock`); fix with `poetry lock`. Also runs first in the KRCI review pipeline (task `changed-checks`) when `pyproject.toml` or `poetry.lock` changes
+- **Strict ruff on changed files**: `make ruff-changed` - New issues of the strict rule set (C901, B, SIM, PL, RET, ARG, PTH, UP, S) in the Python files changed since the merge base with `origin/main`, tests skipped. Also runs first in the KRCI review pipeline (task `changed-checks`)
 - **Scan for secrets**: `make gitleaks` - Run gitleaks in Docker to scan for hardcoded secrets
 - **Run ALL checks + tests** (strictly needed before commit): `make verify` - Runs ruff, license-check, gitleaks, and tests
 - **Run local SonarQube scan**: `make sonar-local` - Generates `coverage.xml`, runs the official `sonar-scanner` using the shared `.sonarlint/connectedMode.json` binding, and prints branch Sonar details automatically if the scan fails
