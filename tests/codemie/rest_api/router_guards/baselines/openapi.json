@@ -33065,6 +33065,35 @@
         "title": "UserReactionsResponse",
         "type": "object"
       },
+      "UserRemapRequest": {
+        "description": "SuperAdmin request to remap a pre-Keycloak users.id to a Keycloak-issued id.\n\nOnly the id changes: username, name and email on the existing row are left untouched.\nThis is a PK change on the existing `old_user_id` row, never a merge of two rows.",
+        "properties": {
+          "new_user_id": {
+            "examples": [
+              "<new_user_uuid>"
+            ],
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "New User Id",
+            "type": "string"
+          },
+          "old_user_id": {
+            "examples": [
+              "<old_user_uuid>"
+            ],
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Old User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "old_user_id",
+          "new_user_id"
+        ],
+        "title": "UserRemapRequest",
+        "type": "object"
+      },
       "UserResponse": {
         "description": "User response model with snake_case JSON fields (Story 3)\n\nNote: Does NOT inherit from ConfiguredModel to avoid camelCase aliasing.\nAll fields serialize as snake_case per FR-4.1 terminology standardization.",
         "properties": {
@@ -41591,6 +41620,56 @@
           }
         ],
         "summary": "Bulk Set User Budgets",
+        "tags": [
+          "user-management"
+        ]
+      }
+    },
+    "/v1/admin/users/remap": {
+      "post": {
+        "description": "Remap a pre-Keycloak user id to the Keycloak-issued id.\n\nSuperAdmin only. Rewrites every DB reference (true FKs, denormalized user_id/created_by\ncolumns, JSONB CreatedByUser blobs, username-only columns) from old_user_id to\nnew_user_id in one atomic transaction.",
+        "operationId": "remap_user_v1_admin_users_remap_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserRemapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeMieUserDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Remap User",
         "tags": [
           "user-management"
         ]

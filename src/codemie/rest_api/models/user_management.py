@@ -252,6 +252,25 @@ class UserUpdateRequest(BaseModel):
         return data
 
 
+class UserRemapRequest(BaseModel):
+    """SuperAdmin request to remap a pre-Keycloak users.id to a Keycloak-issued id.
+
+    Only the id changes: username, name and email on the existing row are left untouched.
+    This is a PK change on the existing `old_user_id` row, never a merge of two rows.
+    """
+
+    old_user_id: str = Field(
+        min_length=1,
+        pattern=r"\S",
+        examples=["<old_user_uuid>"],
+    )
+    new_user_id: str = Field(
+        min_length=1,
+        pattern=r"\S",
+        examples=["<new_user_uuid>"],
+    )
+
+
 class ProfileUpdateRequest(BaseModel):
     """User profile update request (self-service)"""
 

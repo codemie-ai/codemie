@@ -97,6 +97,7 @@ class UserManagementEvent:
     USER_PROJECT_ASSIGNED = "user.project.assigned"
     USER_PROJECT_REMOVED = "user.project.removed"
     USER_PROJECT_ROLE_UPDATED = "user.project.role_updated"
+    USER_REMAPPED = "user.remapped"
 
 
 class BudgetManagementEvent:

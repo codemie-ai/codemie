@@ -29,9 +29,11 @@ from unittest.mock import patch, MagicMock
 
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.rest_api.routers.user_management_router import list_users, router
+from codemie.rest_api.models.user_management import UserRemapRequest
+from codemie.rest_api.routers.user_management_router import list_users, remap_user, router
 from codemie.rest_api.security.authentication import (
     admin_access_only,
+    admin_or_maintainer_access_only,
 )
 from codemie.rest_api.security.user import User
 
@@ -343,3 +345,120 @@ class TestBackwardCompatibility:
                             assert (
                                 admin_access_only in dependency_functions
                             ), f"{method} {path} should use admin_access_only"
+
+
+class TestRemapUserEndpoint:
+    """Test POST /v1/admin/users/remap endpoint (EPMCDME-16560)."""
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.security.user.config")
+    async def test_remap_user_requires_superadmin(self, mock_config, mock_request, project_admin_user):
+        """AC: a non-admin (project-admin-only) caller is rejected by the route's own dependency."""
+        mock_config.ENV = "production"
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_request.state.user = project_admin_user
+
+        remap_route = next(
+            route
+            for route in router.routes
+            if getattr(route, "path", None) == "/v1/admin/users/remap" and "POST" in getattr(route, "methods", set())
+        )
+        dependency_functions = [dep.call for dep in remap_route.dependant.dependencies]
+        assert admin_access_only in dependency_functions, "POST /remap should use admin_access_only"
+        assert admin_or_maintainer_access_only not in dependency_functions
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await admin_access_only(mock_request)
+        assert exc_info.value.code == 403
+
+    @patch("codemie.rest_api.routers.user_management_router.config")
+    @patch("codemie.rest_api.routers.user_management_router.UserRemapService")
+    def test_remap_user_delegates_to_service(self, mock_remap_service, mock_config, super_admin_user):
+        """AC: the route only validates the feature flag and delegates all logic to UserRemapService."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_remap_service.remap_user_flow.return_value = {"id": "new-1"}
+
+        data = UserRemapRequest(old_user_id="old-1", new_user_id="new-1")
+
+        result = remap_user(data=data, user=super_admin_user, _=None)
+
+        mock_remap_service.remap_user_flow.assert_called_once_with("old-1", "new-1", super_admin_user.id)
+        assert result == {"id": "new-1"}
+
+
+class TestUserRemapRequestValidation:
+    """CR-001: remap request ids must be non-empty and not whitespace-only (EPMCDME-16560)."""
+
+    @pytest.mark.parametrize("field", ["old_user_id", "new_user_id"])
+    @pytest.mark.parametrize("value", ["", "   ", "\t\n"])
+    def test_blank_ids_are_rejected(self, field, value):
+        from pydantic import ValidationError
+
+        payload = {"old_user_id": "old-1", "new_user_id": "new-1", field: value}
+        with pytest.raises(ValidationError):
+            UserRemapRequest(**payload)
+
+    def test_request_accepts_only_the_two_ids(self):
+        data = UserRemapRequest(old_user_id="old-1", new_user_id="new-1")
+        assert set(UserRemapRequest.model_fields) == {"old_user_id", "new_user_id"}
+        assert (data.old_user_id, data.new_user_id) == ("old-1", "new-1")
+
+
+class TestRemapAdminGate:
+    """CR-002: remap is gated on is_admin alone (superadmin). Maintainers resolve to is_admin=True and pass."""
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.security.user.config")
+    async def test_bootstrapped_superadmin_admin_and_maintainer_passes_remap_gate(self, mock_config, mock_request):
+        mock_config.ENV = "production"
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_request.state.user = User(
+            id="bootstrap-admin",
+            email="admin@example.com",
+            username="admin",
+            name="System Administrator",
+            is_admin=True,
+            is_maintainer=True,
+        )
+
+        await admin_access_only(mock_request)
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.security.user.config")
+    async def test_user_without_admin_flag_gets_403_on_remap(self, mock_config, mock_request):
+        mock_config.ENV = "production"
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_request.state.user = User(
+            id="plain-user",
+            email="plain@example.com",
+            username="plain",
+            name="Plain",
+            is_admin=False,
+            is_maintainer=False,
+        )
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await admin_access_only(mock_request)
+
+        assert exc_info.value.code == 403
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.security.user.config")
+    async def test_admin_passes_remap_gate(self, mock_config, mock_request, super_admin_user):
+        mock_config.ENV = "production"
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_request.state.user = super_admin_user
+
+        await admin_access_only(mock_request)
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.security.user.config")
+    async def test_project_admin_gets_403_on_remap(self, mock_config, mock_request, project_admin_user):
+        mock_config.ENV = "production"
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_request.state.user = project_admin_user
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await admin_access_only(mock_request)
+
+        assert exc_info.value.code == 403

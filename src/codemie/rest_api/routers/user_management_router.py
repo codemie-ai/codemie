@@ -37,6 +37,7 @@ from codemie.rest_api.models.user_management import (
     ProjectAccessUpdateRequest,
     UserCreateRequest,
     UserListFilters,
+    UserRemapRequest,
     UserUpdateRequest,
 )
 from codemie.rest_api.security.authentication import (
@@ -52,6 +53,7 @@ from codemie.service.budget.budget_service import budget_service
 from codemie.service.user.password_management_service import password_management_service
 from codemie.service.user.user_access_service import user_access_service
 from codemie.service.user.user_management_service import UserManagementService, user_management_service
+from codemie.service.user.user_remap_service import UserRemapService
 
 
 _USER_MGMT_NOT_ENABLED = "User management not enabled"
@@ -263,6 +265,20 @@ def update_user(
         project_limit=data.project_limit,
         project_limit_provided=data.project_limit_provided,
     )
+
+
+@router.post("/remap", response_model=CodeMieUserDetail)
+def remap_user(data: UserRemapRequest, user: User = Depends(authenticate), _: None = Depends(admin_access_only)):
+    """Remap a pre-Keycloak user id to the Keycloak-issued id.
+
+    SuperAdmin only. Rewrites every DB reference (true FKs, denormalized user_id/created_by
+    columns, JSONB CreatedByUser blobs, username-only columns) from old_user_id to
+    new_user_id in one atomic transaction.
+    """
+    if not config.ENABLE_USER_MANAGEMENT:
+        raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
+
+    return UserRemapService.remap_user_flow(data.old_user_id, data.new_user_id, user.id)
 
 
 @router.delete("/{user_id}")
