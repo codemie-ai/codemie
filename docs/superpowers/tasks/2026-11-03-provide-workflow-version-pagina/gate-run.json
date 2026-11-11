@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14431",
+  "head": "5ae71103d0d040b12bdae72d11578b86116d1100",
+  "runner": "poetry",
+  "started_at": "2026-11-03T16:00:36Z",
+  "completed_at": "2026-11-03T16:05:04Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 10000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 34000,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 214000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "104 failed, 218 errors, 28794 passed; failures in marketplace_management, enterprise/mcp_auth, cli_analytics live PG, codemie_tools/git; none in files changed by this branch. tests/codemie/rest_api/routers/test_workflow_versions.py + tests/codemie/service/test_workflow_version_service.py: 56 passed on rerun."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set. Set SONAR_TOKEN (env or .env.local) to run locally."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-cli-analytics-live",
+      "notes": "Change does not touch src/codemie/repository/cli_analytics/postgres/."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make coverage",
+      "notes": "Coverage not requested."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "Not opening an MR in this run; needs docker stack + fixtures."
+    },
+    {
+      "id": "precommit-hook",
+      "source": "hook",
+      "status": "N/A",
+      "notes": "codemie-pre-commit (ruff+license) covered by lint/license gates; codemie-gitleaks covered by make gitleaks on full tree; commit-msg is not a code gate; pre-push is opt-in (pytest+sonar) covered by unit/sonar gates."
+    }
+  ],
+  "failures": {
+    "unit": "ERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_paginates_in_sql\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_pages_do_not_overlap\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_excludes_assistants_withdrawn_since_the_audit_ran\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_excludes_assistants_rejected_since_the_audit_ran\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_catalogue_facet_scope_matches_the_adapter\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_facets_include_reason_tier_bucket_rule\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_facet_tiers_buckets_and_rules_are_filterable_too\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_row_is_flat_for_the_frontend\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[bucket]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[tier]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[reason]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[rule]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_empty_bucket_still_means_no_bucket_filter\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_verified_bucket_included_in_all\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_actor_cannot_be_spoofed\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_actor_omitted_still_records_the_real_user\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_overview_emits_pending_block\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_adapter_scope_excludes_private_approved_rows\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_bypass_is_denied_for_non_admin_on_critical\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_bypass_never_skips_deterministic_gates\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_admin_bypass_waives_only_optional_findings\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_critical_gate_blocks_publish\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_optional_gate_does_not_block\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_gate_results_are_persisted_with_the_submission\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_pending_and_detail_agree_after_a_post_submit_edit\n= 104 failed, 28794 passed, 390 skipped, 437 warnings, 218 errors in 209.10s (0:03:29) =\nmake: *** [test] Error 1"
+  }
+}

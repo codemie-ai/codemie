@@ -36882,6 +36882,51 @@
         "title": "WorkflowRetryPolicy",
         "type": "object"
       },
+      "WorkflowRevisionEntry": {
+        "properties": {
+          "change_notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Notes"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserEntity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date": {
+            "format": "date-time",
+            "title": "Date",
+            "type": "string"
+          },
+          "revision_index": {
+            "title": "Revision Index",
+            "type": "integer"
+          },
+          "yaml_config": {
+            "title": "Yaml Config",
+            "type": "string"
+          }
+        },
+        "required": [
+          "yaml_config",
+          "date",
+          "revision_index"
+        ],
+        "title": "WorkflowRevisionEntry",
+        "type": "object"
+      },
       "WorkflowRollbackRequest": {
         "properties": {
           "change_notes": {
@@ -37335,7 +37380,7 @@
         "properties": {
           "revisions": {
             "items": {
-              "$ref": "#/components/schemas/YamlConfigHistory"
+              "$ref": "#/components/schemas/WorkflowRevisionEntry"
             },
             "title": "Revisions",
             "type": "array"
@@ -84285,6 +84330,29 @@
             "schema": {
               "title": "Workflow Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
             }
           }
         ],

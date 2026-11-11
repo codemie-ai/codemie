@@ -1,0 +1,75 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved; 0 blocking findings, 1 deferred (pre-existing positional index shift)"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved; 0 blocking findings, 1 deferred (pre-existing positional index shift)"
+    }
+  ],
+  "reviewed_head": "5ae71103d0d040b12bdae72d11578b86116d1100",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No blocking defects: the only caller of the changed service is the router, which bounds page (ge=0) and per_page (1..100), and history is a typed list of YamlConfigHistory. Confidence is low because no spec/story existed (acceptance skipped). 1 deferred (positional revision_index shifting on prepend, pre-existing; see code-review-deferred.local.md), 7 dismissed as noise or intended behavior (default page=0/per_page=20 was requested).",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [
+    "public-api"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/service/workflow/workflow_version_service.py",
+      "line": 43,
+      "title": "Absolute revision_index shifts when a revision is prepended",
+      "problem": "History is newest-first and each save or rollback prepends an entry, so an index from one listing can map to a different revision by the time rollback is called or the next page is fetched.",
+      "preexisting": "rollback_to_version already addressed history by positional index and prepended entries before pagination."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "2 commit subjects in the range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "Changed source files use X | None unions, parameterized generics, explicit types, and from __future__ import annotations; constants live in owning model module."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Endpoint keeps authenticate and READ ability check; page ge=0 and per_page 1..MAX_VERSIONS_PER_PAGE bounded by Query validation."
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "No blocking defects: the only caller of the changed service is the router, which bounds page (ge=0) and per_page (1..100), and history is a typed list of YamlConfigHistory. Confidence is low because no spec/story existed (acceptance skipped). 1 deferred (positional revision_index shifting on prepend, pre-existing; see code-review-deferred.local.md), 7 dismissed as noise or intended behavior (default page=0/per_page=20 was requested).",
+    "confidence": "low",
+    "risk_flags": [
+      "public-api"
+    ]
+  }
+}

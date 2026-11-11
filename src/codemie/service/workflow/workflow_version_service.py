@@ -21,7 +21,11 @@ from fastapi import status
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException, NotFoundException, ValidationException
 from codemie.core.workflow_models.workflow_config import WorkflowConfig, YamlConfigHistory
-from codemie.rest_api.models.workflow_version import WorkflowVersionHistoryResponse
+from codemie.rest_api.models.workflow_version import (
+    DEFAULT_VERSIONS_PER_PAGE,
+    WorkflowRevisionEntry,
+    WorkflowVersionHistoryResponse,
+)
 from codemie.rest_api.security.user import User
 from codemie.service.workflow_service import WorkflowService
 
@@ -30,10 +34,19 @@ WORKFLOW_CONFIGURATION_ERROR = "Workflow Configuration error"
 
 class WorkflowVersionService:
     @classmethod
-    def get_version_history(cls, workflow: WorkflowConfig) -> WorkflowVersionHistoryResponse:
+    def get_version_history(
+        cls,
+        workflow: WorkflowConfig,
+        page: int = 0,
+        per_page: int = DEFAULT_VERSIONS_PER_PAGE,
+    ) -> WorkflowVersionHistoryResponse:
         history = workflow.yaml_config_history or []
+        start = page * per_page
         return WorkflowVersionHistoryResponse(
-            revisions=list(history),
+            revisions=[
+                WorkflowRevisionEntry(**entry.model_dump(), revision_index=start + offset)
+                for offset, entry in enumerate(history[start : start + per_page])
+            ],
             total_revisions=len(history),
             workflow_name=workflow.name,
             workflow_id=workflow.id,

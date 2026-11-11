@@ -16,7 +16,7 @@ import asyncio
 import base64
 import json
 import yaml
-from typing import Any, Dict, List, Optional, cast
+from typing import Annotated, Any, Dict, List, Optional, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -85,7 +85,12 @@ from codemie.service.workflow_config.workflow_config_index_service import Exclud
 from codemie.service.assistant.category_service import category_service
 from codemie.service.workflow_service import WorkflowService
 from codemie.service.workflow_evaluation_service import WorkflowEvaluationService
-from codemie.rest_api.models.workflow_version import WorkflowRollbackRequest, WorkflowVersionHistoryResponse
+from codemie.rest_api.models.workflow_version import (
+    DEFAULT_VERSIONS_PER_PAGE,
+    MAX_VERSIONS_PER_PAGE,
+    WorkflowRollbackRequest,
+    WorkflowVersionHistoryResponse,
+)
 from codemie.service.workflow.workflow_version_service import WorkflowVersionService, WORKFLOW_CONFIGURATION_ERROR
 from codemie.workflows.custom_node_info import CustomNodeInfoService
 from codemie.core.workflow_models import CustomNodeSchemaResponse
@@ -1009,11 +1014,16 @@ def _load_workflow_record(workflow_id: str) -> WorkflowConfig:
     response_model=WorkflowVersionHistoryResponse,
     tags=["Workflow Versioning"],
 )
-def get_workflow_versions(workflow_id: str, user: User = Depends(authenticate)) -> WorkflowVersionHistoryResponse:
+def get_workflow_versions(
+    workflow_id: str,
+    page: Annotated[int, Query(ge=0)] = 0,
+    per_page: Annotated[int, Query(ge=1, le=MAX_VERSIONS_PER_PAGE)] = DEFAULT_VERSIONS_PER_PAGE,
+    user: User = Depends(authenticate),
+) -> WorkflowVersionHistoryResponse:
     workflow = _load_workflow_record(workflow_id)
-    if not Ability(user).can(Action.READ, workflow):
+    if not Ability(user).can(Action.WRITE, workflow):
         raise_access_denied("view")
-    return WorkflowVersionService.get_version_history(workflow)
+    return WorkflowVersionService.get_version_history(workflow, page, per_page)
 
 
 @router.post(

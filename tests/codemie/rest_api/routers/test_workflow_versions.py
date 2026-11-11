@@ -81,7 +81,32 @@ class TestGetWorkflowVersions:
         result = get_workflow_versions(workflow_id="workflow-123", user=user)
 
         assert result == expected
-        mock_version_svc.get_version_history.assert_called_once_with(workflow)
+        mock_version_svc.get_version_history.assert_called_once_with(workflow, 0, 20)
+
+    @patch("codemie.rest_api.routers.workflow.WorkflowVersionService")
+    @patch("codemie.rest_api.routers.workflow.Ability")
+    @patch("codemie.rest_api.routers.workflow.WorkflowConfig.get_by_id")
+    def test_passes_page_and_per_page_to_service(self, mock_get_by_id, mock_ability, mock_version_svc, user, workflow):
+        from codemie.rest_api.routers.workflow import get_workflow_versions
+
+        mock_get_by_id.return_value = workflow
+        mock_ability.return_value.can.return_value = True
+
+        get_workflow_versions(workflow_id="workflow-123", page=2, per_page=5, user=user)
+
+        mock_version_svc.get_version_history.assert_called_once_with(workflow, 2, 5)
+
+    def test_declares_page_and_per_page_query_params(self):
+        from fastapi.routing import APIRoute
+
+        from codemie.rest_api.routers.workflow import router
+
+        route = next(
+            r
+            for r in router.routes
+            if isinstance(r, APIRoute) and r.path == "/v1/workflows/{workflow_id}/versions" and "GET" in r.methods
+        )
+        assert {p.name for p in route.dependant.query_params} == {"page", "per_page"}
 
     def test_declares_version_history_response_model(self):
         from fastapi.routing import APIRoute
@@ -139,7 +164,7 @@ class TestGetWorkflowVersions:
     @patch("codemie.rest_api.routers.workflow.WorkflowVersionService")
     @patch("codemie.rest_api.routers.workflow.Ability")
     @patch("codemie.rest_api.routers.workflow.WorkflowConfig.get_by_id")
-    def test_raises_access_denied_when_cannot_read(
+    def test_raises_access_denied_when_cannot_write(
         self, mock_get_by_id, mock_ability, mock_version_svc, user, workflow
     ):
         from codemie.rest_api.routers.workflow import get_workflow_versions
@@ -153,7 +178,58 @@ class TestGetWorkflowVersions:
             get_workflow_versions(workflow_id="workflow-123", user=user)
 
         assert exc_info.value.code == 401
-        mock_ability_instance.can.assert_called_once_with(Action.READ, workflow)
+        mock_ability_instance.can.assert_called_once_with(Action.WRITE, workflow)
+        mock_version_svc.get_version_history.assert_not_called()
+
+    @patch("codemie.rest_api.routers.workflow.WorkflowVersionService")
+    @patch("codemie.rest_api.routers.workflow.Ability")
+    @patch("codemie.rest_api.routers.workflow.WorkflowConfig.get_by_id")
+    def test_raises_access_denied_for_read_only_user(
+        self, mock_get_by_id, mock_ability, mock_version_svc, user, workflow
+    ):
+        from codemie.rest_api.routers.workflow import get_workflow_versions
+
+        mock_get_by_id.return_value = workflow
+        mock_ability.return_value.can.side_effect = lambda action, _entity: action == Action.READ
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            get_workflow_versions(workflow_id="workflow-123", user=user)
+
+        assert exc_info.value.code == 401
+        mock_version_svc.get_version_history.assert_not_called()
+
+
+class TestGetWorkflowVersionsHttp:
+    @pytest.fixture
+    def client(self, user):
+        from codemie.rest_api.security.authentication import authenticate
+
+        app.dependency_overrides = {authenticate: lambda: user}
+        yield TestClient(app)
+        app.dependency_overrides = {}
+
+    @pytest.mark.parametrize("query", ["page=-1", "per_page=0", "per_page=101"])
+    def test_rejects_out_of_bounds_params(self, client, query):
+        response = client.get(f"/v1/workflows/workflow-123/versions?{query}")
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    @patch("codemie.rest_api.routers.workflow.WorkflowVersionService")
+    @patch("codemie.rest_api.routers.workflow.Ability")
+    @patch("codemie.rest_api.routers.workflow.WorkflowConfig.get_by_id")
+    def test_omitted_params_use_defaults(self, mock_get_by_id, mock_ability, mock_version_svc, client, workflow):
+        from codemie.rest_api.models.workflow_version import WorkflowVersionHistoryResponse
+
+        mock_get_by_id.return_value = workflow
+        mock_ability.return_value.can.return_value = True
+        mock_version_svc.get_version_history.return_value = WorkflowVersionHistoryResponse(
+            revisions=[], total_revisions=0, workflow_name="Test Workflow", workflow_id="workflow-123"
+        )
+
+        response = client.get("/v1/workflows/workflow-123/versions")
+
+        assert response.status_code == status.HTTP_200_OK
+        mock_version_svc.get_version_history.assert_called_once_with(workflow, 0, 20)
 
 
 class TestRollbackWorkflowVersion:

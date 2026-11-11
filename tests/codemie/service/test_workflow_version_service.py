@@ -41,6 +41,10 @@ def _make_entry(yaml_config: str, when: str = "2026-01-01T00:00:00") -> YamlConf
     return YamlConfigHistory(yaml_config=yaml_config, date=datetime.fromisoformat(when))
 
 
+def _make_history(count: int) -> list[YamlConfigHistory]:
+    return [_make_entry(f"rev-{i}") for i in range(count)]
+
+
 def _make_workflow(yaml_config: str = "current: yaml", history=None):
     wf = MagicMock()
     wf.id = "workflow-123"
@@ -66,7 +70,63 @@ class TestGetVersionHistory:
         assert result.workflow_id == "workflow-123"
         assert result.workflow_name == "Test Workflow"
         assert result.total_revisions == 1
-        assert result.revisions == [entry]
+        assert len(result.revisions) == 1
+        assert result.revisions[0].yaml_config == "old: yaml"
+        assert result.revisions[0].revision_index == 0
+
+    def test_slices_requested_page(self):
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        workflow = _make_workflow(history=_make_history(5))
+
+        result = WorkflowVersionService.get_version_history(workflow, page=1, per_page=2)
+
+        assert [e.yaml_config for e in result.revisions] == ["rev-2", "rev-3"]
+        assert [e.revision_index for e in result.revisions] == [2, 3]
+        assert result.total_revisions == 5
+
+    def test_last_partial_page_keeps_absolute_indices(self):
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        workflow = _make_workflow(history=_make_history(5))
+
+        result = WorkflowVersionService.get_version_history(workflow, page=2, per_page=2)
+
+        assert [e.yaml_config for e in result.revisions] == ["rev-4"]
+        assert [e.revision_index for e in result.revisions] == [4]
+
+    def test_page_past_end_returns_empty_with_total(self):
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        workflow = _make_workflow(history=_make_history(5))
+
+        result = WorkflowVersionService.get_version_history(workflow, page=10, per_page=2)
+
+        assert result.revisions == []
+        assert result.total_revisions == 5
+
+    def test_defaults_to_first_twenty(self):
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        workflow = _make_workflow(history=_make_history(25))
+
+        result = WorkflowVersionService.get_version_history(workflow)
+
+        assert len(result.revisions) == 20
+        assert result.revisions[0].revision_index == 0
+        assert result.revisions[-1].revision_index == 19
+        assert result.total_revisions == 25
+
+    def test_none_history_returns_empty_page(self):
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        workflow = _make_workflow()
+        workflow.yaml_config_history = None
+
+        result = WorkflowVersionService.get_version_history(workflow)
+
+        assert result.revisions == []
+        assert result.total_revisions == 0
 
     def test_returns_empty_list_when_no_history(self):
         from codemie.service.workflow.workflow_version_service import WorkflowVersionService
@@ -107,6 +167,19 @@ class TestRollbackToVersion:
 
         assert workflow.yaml_config == "old: yaml"
         workflow.update.assert_called_once()
+
+    def test_rolls_back_to_revision_index_from_later_page(self, user_entity):
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        workflow = _make_workflow(yaml_config="current: yaml", history=_make_history(5))
+        mock_user = MagicMock()
+        mock_user.as_user_model.return_value = user_entity
+        entry = WorkflowVersionService.get_version_history(workflow, page=1, per_page=2).revisions[1]
+
+        WorkflowVersionService.rollback_to_version(workflow, revision_index=entry.revision_index, user=mock_user)
+
+        assert entry.revision_index == 3
+        assert workflow.yaml_config == entry.yaml_config == "rev-3"
 
     def test_raises_400_when_history_is_empty(self, user):
         from codemie.service.workflow.workflow_version_service import WorkflowVersionService

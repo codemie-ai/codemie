@@ -19,10 +19,16 @@ from pydantic import BaseModel, Field
 from codemie.core.workflow_models.workflow_config import YamlConfigHistory
 
 CHANGE_NOTES_MAX_LENGTH = 1000
+DEFAULT_VERSIONS_PER_PAGE = 20
+MAX_VERSIONS_PER_PAGE = 100
+
+
+class WorkflowRevisionEntry(YamlConfigHistory):
+    revision_index: int
 
 
 class WorkflowVersionHistoryResponse(BaseModel):
-    revisions: list[YamlConfigHistory]
+    revisions: list[WorkflowRevisionEntry]
     total_revisions: int
     workflow_name: str
     workflow_id: str
