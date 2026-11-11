@@ -200,8 +200,7 @@ class FileDatasourceUpdateProcessor(FileDatasourceProcessor):
                     )
                 )
                 if self.user:
-                    # An index without a project has no asset project to attribute; keep it asset-less.
-                    set_llm_context(self.index if self.index.project_name else None, None, self.user)
+                    set_llm_context(None, self.index.project_name, self.user)
                     set_logging_info(uuid=self.request_uuid, user_id=self.user.id, username=self.user.username)
 
                 # init_index() already set all counters and status flags

@@ -49,20 +49,12 @@ def limit_string(input_string, max_length: int = 500):
 
 
 def _add_budget_fallback_attribute(attributes: dict) -> None:
-    """Flag metrics of requests whose project budget fell back to personal/default (EPMCDME-15111 AC6).
-
-    The kind tells a default-project charge from a personal one (EPMCDME-16625); funding_unknown marks a fallback
-    decided while a funded check failed, so such rows can be filtered (final review AR-2).
-    """
-    from codemie.core.dependecies import get_budget_fallback_from, get_budget_fallback_kind, get_budget_funding_unknown
+    """Flag metrics of requests whose project budget fell back to personal/default (EPMCDME-15111 AC6)."""
+    from codemie.core.dependecies import get_budget_fallback_from
 
     fallback_from = get_budget_fallback_from()
     if fallback_from:
         attributes.setdefault(MetricsAttributes.BUDGET_FALLBACK_FROM, fallback_from)
-        if fallback_kind := get_budget_fallback_kind():
-            attributes.setdefault(MetricsAttributes.BUDGET_FALLBACK_KIND, fallback_kind)
-        if get_budget_funding_unknown():
-            attributes.setdefault(MetricsAttributes.BUDGET_FUNDING_UNKNOWN, True)
 
 
 def send_log_metric(name: str, attributes: dict):

@@ -122,10 +122,6 @@ class MetricsAttributes:
     REPOSITORY = "repository"
     BRANCH = "branch"
     BUDGET_FALLBACK_FROM = "budget_fallback_from"
-    # Where a fallen-back request was charged: "default_project" or "personal" (EPMCDME-16625)
-    BUDGET_FALLBACK_KIND = "budget_fallback_kind"
-    # A funded check failed when the payer was decided, so a fallback may only mean funding was unreadable
-    BUDGET_FUNDING_UNKNOWN = "budget_funding_unknown"
     REPO_NAME = "repo_name"
     DATASOURCE_TYPE = "datasource_type"
     STATUS = "status"

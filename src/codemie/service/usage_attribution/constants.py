@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from codemie.service.budget.attribution_resolver import FallbackKind
-
 FEATURE_KEY = "usageAttribution"
 USAGE_ATTRIBUTION_COMPONENT_ID = f"features:{FEATURE_KEY}"
 
@@ -45,9 +43,9 @@ F_MODEL = "attributes.llm_model.keyword"
 F_MONEY = "attributes.money_spent"
 F_CLI_REQUEST = "attributes.cli_request"
 F_FALLBACK = "attributes.budget_fallback_from.keyword"
-# "default_project" or "personal"; absent on records written before EPMCDME-16625 (all of those were personal).
+# "default_project" or "personal"; written only while EPMCDME-16625 was on main. Without it: paid personally.
 F_FALLBACK_KIND = "attributes.budget_fallback_kind.keyword"
-FALLBACK_KIND_DEFAULT_PROJECT = FallbackKind.DEFAULT_PROJECT.value
+FALLBACK_KIND_DEFAULT_PROJECT = "default_project"
 F_CUSTOMER = "attributes.litellm_customer_id.keyword"
 F_TOOL_NAMES = "attributes.tool_names.keyword"
 F_LINES_ADDED = "attributes.total_lines_added"

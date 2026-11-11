@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -50,7 +49,6 @@ from codemie.enterprise.litellm.runtime_budget_selection import RuntimeBudgetMod
 from codemie.enterprise.litellm.proxy_router import (
     LITELLM_CALL_ID_HEADER,
     LITELLM_CUSTOMER_ID_HEADER,
-    BudgetAvailability,
     _apply_proxy_counterfactual_costs,
     _augment_models_list_response,
     _build_premium_budget_error_body,
@@ -442,8 +440,6 @@ class TestExtractRequestInfo:
         headers = Headers({HEADER_CODEMIE_CLI_PROJECT: "my-project"})
         user = MagicMock()
         user.username = "user@example.com"
-        user.project_names = ["my-project"]  # a header is honoured for members only (EPMCDME-16625)
-        user.admin_project_names = []
         user.default_project = None
 
         result = _extract_request_info(headers, user)
@@ -477,8 +473,6 @@ class TestExtractRequestInfo:
         headers = Headers({HEADER_CODEMIE_CLI_PROJECT: "explicit-project"})
         user = MagicMock()
         user.username = "user@example.com"
-        user.project_names = ["explicit-project"]  # a header is honoured for members only (EPMCDME-16625)
-        user.admin_project_names = []
         user.default_project = "my-default-project"
 
         result = _extract_request_info(headers, user)
@@ -868,16 +862,15 @@ class TestProbeProjectBudgetScopes:
         }
 
         with (
-            patch("codemie.clients.postgres.get_async_session", return_value=ctx),
+            patch("codemie.enterprise.litellm.proxy_router.get_async_session", return_value=ctx),
             patch(
-                "codemie.service.budget.budget_resolution_service.project_budget_assignment_repository.get_project_budget_categories_batch",
+                "codemie.enterprise.litellm.proxy_router.project_budget_assignment_repository.get_project_budget_categories_batch",
                 new=AsyncMock(return_value=rows),
             ),
         ):
             scopes = await _probe_project_budget_scopes("proj-a", "user-1")
 
         assert scopes == {BudgetCategory.PLATFORM, BudgetCategory.CLI}
-        assert all(type(scope) is BudgetCategory for scope in scopes)
 
     @pytest.mark.parametrize("client_type", ["codemie-cli", "codemie_cli"])
     def test_cli_client_type_uses_cli_budget(self, client_type):
@@ -1450,10 +1443,6 @@ class TestResolveBudgetAttributionStream:
         user = MagicMock()
         user.id = "user-1"
         user.username = "user@example.com"
-        # No header: the request runs on the user's default project, which the attribution resolver re-derives.
-        user.project_names = ["project-a"]
-        user.admin_project_names = []
-        user.default_project = "project-a"
         request_info = {
             "llm_model": "gpt-4.1-mini",
             "session_id": "session-123",
@@ -3471,146 +3460,3 @@ class TestFlagPersonalBudgetFallback:
         _flag_personal_budget_fallback(self._user(), request_info, availability)
 
         assert "budget_fallback_from" not in request_info
-
-
-class TestCliBudgetAttribution:
-    """EPMCDME-16625 rows 14-16: CLI requests walk target -> default project -> personal like web traffic."""
-
-    @staticmethod
-    def _user(members=("team-a", "team-d"), default="team-d"):
-        return SimpleNamespace(
-            id="u-1",
-            username="alice",
-            email="alice@example.com",
-            project_names=list(members),
-            admin_project_names=[],
-            default_project=default,
-        )
-
-    @staticmethod
-    async def _apply(user, request_info, funded):
-        proxy_router = importlib.import_module("codemie.enterprise.litellm.proxy_router")
-
-        funds = AsyncMock(side_effect=lambda _user, _info, project, _budget_ids=None: project in funded)
-
-        with (
-            patch.object(proxy_router, "_project_funds_request", new=funds),
-            patch.object(proxy_router, "logger") as log,
-        ):
-            decision = await proxy_router._apply_budget_attribution(user, request_info)
-        return decision, log
-
-    @pytest.mark.asyncio
-    async def test_cli_header_project_nonmember_is_ignored_and_logged(self):
-        request_info = {PROJECT: "foreign", "cli_requested_project": "foreign"}
-
-        decision, log = await self._apply(self._user(members=("team-d",)), request_info, {"foreign", "team-d"})
-
-        assert request_info[PROJECT] == "team-d"
-        assert "budget_fallback_from" not in request_info
-        assert "cli_requested_project" not in request_info
-        assert decision.ignored_cli_project == "foreign"
-        assert any("cli_project_header_ignored" in str(call) for call in log.info.call_args_list)
-
-    @pytest.mark.asyncio
-    async def test_cli_no_project_charges_funded_default(self):
-        request_info = {PROJECT: "team-d"}
-
-        await self._apply(self._user(), request_info, {"team-d"})
-
-        assert request_info[PROJECT] == "team-d"
-        assert "budget_fallback_kind" not in request_info
-
-    @pytest.mark.asyncio
-    async def test_cli_member_project_unfunded_falls_to_default(self):
-        request_info = {PROJECT: "team-a", "cli_requested_project": "team-a"}
-
-        await self._apply(self._user(), request_info, {"team-d"})
-
-        assert request_info[PROJECT] == "team-d"
-        assert request_info["budget_fallback_from"] == "team-a"
-        assert request_info["budget_fallback_kind"] == "default_project"
-
-    @pytest.mark.asyncio
-    async def test_cli_member_project_and_default_unfunded_falls_to_personal(self):
-        request_info = {PROJECT: "team-a", "cli_requested_project": "team-a"}
-
-        await self._apply(self._user(), request_info, set())
-
-        # Same personal project name the web path reports, so analytics keep one bucket per user.
-        assert request_info[PROJECT] == "alice@example.com"
-        assert request_info["budget_fallback_from"] == "team-a"
-        assert request_info["budget_fallback_kind"] == "personal"
-
-    @pytest.mark.asyncio
-    async def test_cli_user_without_default_and_projects_stays_personal_unflagged(self):
-        request_info = {PROJECT: "alice"}
-
-        await self._apply(self._user(members=(), default=None), request_info, set())
-
-        assert request_info[PROJECT] == "alice@example.com"
-        assert "budget_fallback_from" not in request_info
-
-    def test_extract_request_info_keeps_the_raw_header_project_for_attribution(self):
-        info = _extract_request_info({HEADER_CODEMIE_CLI_PROJECT: "foreign"}, self._user())
-
-        assert info["cli_requested_project"] == "foreign"
-
-    def test_non_member_header_project_never_reaches_credentials_or_analytics(self):
-        """CR-005: credential lookup and the personal-key bypass read PROJECT before attribution runs."""
-        info = _extract_request_info({HEADER_CODEMIE_CLI_PROJECT: "foreign"}, self._user())
-
-        assert info[PROJECT] == "team-d"
-
-    def test_non_member_header_without_default_uses_the_username(self):
-        info = _extract_request_info({HEADER_CODEMIE_CLI_PROJECT: "foreign"}, self._user(members=(), default=None))
-
-        assert info[PROJECT] == "alice"
-
-    def test_member_header_project_is_kept(self):
-        info = _extract_request_info({HEADER_CODEMIE_CLI_PROJECT: "team-a"}, self._user())
-
-        assert info[PROJECT] == "team-a"
-
-    def test_case_variant_header_maps_to_the_member_spelling(self):
-        """CR-008: a header typed in another case charges the member's own project, as named in the budget."""
-        info = _extract_request_info({HEADER_CODEMIE_CLI_PROJECT: "TEAM-A"}, self._user())
-
-        assert info[PROJECT] == "team-a"
-
-    @pytest.mark.asyncio
-    async def test_case_variant_header_is_charged_in_the_member_spelling(self):
-        request_info = {PROJECT: "team-a", "cli_requested_project": "TEAM-A"}
-
-        await self._apply(self._user(), request_info, {"team-a"})
-
-        assert request_info[PROJECT] == "team-a"
-        assert "budget_fallback_from" not in request_info
-
-    @pytest.mark.asyncio
-    async def test_funded_check_uses_the_request_category(self):
-        """A CLI-only project budget does not fund a platform-category request."""
-        proxy_router = importlib.import_module("codemie.enterprise.litellm.proxy_router")
-
-        availability = BudgetAvailability(user_budget_ids={}, project_scopes={BudgetCategory.CLI})
-        with (
-            patch.object(proxy_router, "_resolve_budget_availability", new=AsyncMock(return_value=availability)),
-            patch.object(
-                proxy_router,
-                "_resolve_tracking_identity",
-                return_value=(BudgetCategory.PLATFORM, "alice", None, "gpt-4.1"),
-            ),
-        ):
-            assert await proxy_router._project_funds_request(self._user(), {}, "team-a") is False
-
-    def test_runtime_failure_keeps_the_original_target_and_marks_personal(self):
-        from codemie.enterprise.litellm.proxy_router import _flag_personal_budget_fallback
-
-        request_info = {PROJECT: "team-d", "budget_fallback_from": "team-a", "budget_fallback_kind": "default_project"}
-
-        _flag_personal_budget_fallback(
-            self._user(), request_info, BudgetAvailability(user_budget_ids={}), project_budget_used=False
-        )
-
-        assert request_info["budget_fallback_from"] == "team-a"
-        assert request_info["budget_fallback_kind"] == "personal"

@@ -25,7 +25,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from codemie.configs import config, logger
 from codemie.repository.project_budget_repository import (
-    PROJECT_BUDGET_FUNDED_SQL,
     project_budget_assignment_repository,
 )
 from codemie.service.budget.budget_enums import BudgetCategory, BudgetScope
@@ -57,137 +56,6 @@ class ResolvedBudgetContext(BaseModel):
     member_allocation_id: str | None = None
     provider_metadata: dict[str, Any] = Field(default_factory=dict)
     member_provider_metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-_PROBED_CATEGORIES = (BudgetCategory.PLATFORM, BudgetCategory.CLI, BudgetCategory.PREMIUM_MODELS)
-
-
-_CACHE_MISS = object()
-
-
-def _cached_project_budget_scopes(project_name: str, user_id: str) -> set[BudgetCategory] | None:
-    # One read per key: a TTL entry can expire between a membership check and the read (CR-009).
-    values = {
-        category: _resolution_cache.get((project_name, category.value, user_id), _CACHE_MISS)
-        for category in _PROBED_CATEGORIES
-    }
-    if any(value is _CACHE_MISS for value in values.values()):
-        return None
-    return {category for category, value in values.items() if value is not None}
-
-
-def _load_project_budget_rows_sync(
-    project_name: str, user_id: str, categories: list[str] | None = None
-) -> dict[str, dict[str, Any]]:
-    """Active project budget + this user's allocation, per category (the 'funded' definition, EPMCDME-16625 D6)."""
-    from sqlalchemy import text
-    from sqlmodel import Session
-
-    from codemie.clients.postgres import PostgresClient
-
-    with Session(PostgresClient.get_engine()) as session:
-        result = session.execute(
-            text(PROJECT_BUDGET_FUNDED_SQL),
-            {
-                "project_name": project_name,
-                "user_id": user_id,
-                "categories": categories or [category.value for category in _PROBED_CATEGORIES],
-            },
-        )
-        return {row["budget_category"]: dict(row) for row in result.mappings().all()}
-
-
-async def _load_project_budget_rows(project_name: str, user_id: str) -> dict[str, dict[str, Any]]:
-    """Async twin of :func:`_load_project_budget_rows_sync` returning the same normalized rows."""
-    from codemie.clients.postgres import get_async_session
-
-    async with get_async_session() as session:
-        rows = await project_budget_assignment_repository.get_project_budget_categories_batch(
-            session=session,
-            project_name=project_name,
-            user_id=user_id,
-            categories=[category.value for category in _PROBED_CATEGORIES],
-        )
-
-    normalized: dict[str, dict[str, Any]] = {}
-    for category in _PROBED_CATEGORIES:
-        row = rows.get(category) or rows.get(category.value)
-        if row is None:
-            continue
-        if isinstance(row, ResolvedBudgetContext):
-            normalized[category.value] = {
-                "budget_id": row.budget_id,
-                "allocation_id": row.member_allocation_id,
-                "effective_budget_id": row.effective_budget_id,
-                "shared_budget_id": row.shared_budget_id,
-                "override_budget_id": row.override_budget_id,
-                "budget_meta": row.provider_metadata,
-                "member_meta": row.member_provider_metadata,
-            }
-            continue
-        normalized[category.value] = {
-            "budget_id": row.budget_id,
-            "allocation_id": row.allocation_id,
-            "effective_budget_id": row.effective_budget_id,
-            "shared_budget_id": row.shared_budget_id,
-            "override_budget_id": row.override_budget_id,
-            "budget_meta": row.budget_provider_metadata,
-            "member_meta": row.member_provider_metadata,
-        }
-    return normalized
-
-
-def _store_project_budget_scopes(
-    project_name: str, user_id: str, rows: dict[str, dict[str, Any]]
-) -> set[BudgetCategory]:
-    scopes: set[BudgetCategory] = set()
-    for category in _PROBED_CATEGORIES:
-        cache_key = (project_name, category.value, user_id)
-        row = rows.get(category.value)
-        if row is None:
-            _resolution_cache[cache_key] = None
-            continue
-        scopes.add(category)
-        _resolution_cache[cache_key] = ResolvedBudgetContext(
-            scope=BudgetScope.PROJECT,
-            project_name=project_name,
-            budget_category=category,
-            budget_id=row["budget_id"],
-            effective_budget_id=row.get("effective_budget_id"),
-            shared_budget_id=row.get("shared_budget_id"),
-            override_budget_id=row.get("override_budget_id"),
-            member_allocation_id=row["allocation_id"],
-            provider_metadata=row.get("budget_meta") or {},
-            member_provider_metadata=row.get("member_meta") or {},
-        )
-    logger.info(
-        f"budget_event=project_budget_availability_probed component=budget_resolution "
-        f"user_id={user_id!r} project_name={project_name!r} project_scopes={sorted(s.value for s in scopes)!r}"
-    )
-    return scopes
-
-
-def probe_project_budget_scopes_sync(project_name: str | None, user_id: str) -> set[BudgetCategory]:
-    """Categories for which the project is funded for this user (active budget + allocation); cached 60 s.
-
-    Single source of the 'funded' decision shared by the web and CLI attribution paths (EPMCDME-16625).
-    """
-    if not project_name:
-        return set()
-    cached = _cached_project_budget_scopes(project_name, user_id)
-    if cached is not None:
-        return cached
-    return _store_project_budget_scopes(project_name, user_id, _load_project_budget_rows_sync(project_name, user_id))
-
-
-async def probe_project_budget_scopes(project_name: str | None, user_id: str) -> set[BudgetCategory]:
-    """Async twin of :func:`probe_project_budget_scopes_sync` sharing the same cache."""
-    if not project_name:
-        return set()
-    cached = _cached_project_budget_scopes(project_name, user_id)
-    if cached is not None:
-        return cached
-    return _store_project_budget_scopes(project_name, user_id, await _load_project_budget_rows(project_name, user_id))
 
 
 class BudgetResolutionService:
@@ -287,8 +155,8 @@ class BudgetResolutionService:
             return self._global_context(budget_category)
 
         cache_key = (project_name, budget_category.value, user_id)
-        cached = _resolution_cache.get(cache_key, _CACHE_MISS)
-        if cached is not _CACHE_MISS:
+        if cache_key in _resolution_cache:
+            cached = _resolution_cache[cache_key]
             logger.debug(
                 f"budget_event=budget_resolution_cache_hit component=budget_resolution_service path=sync "
                 f"user_id={user_id!r} project_name={project_name!r} "
@@ -302,9 +170,39 @@ class BudgetResolutionService:
             f"budget_event=budget_resolution_cache_miss component=budget_resolution_service path=sync "
             f"user_id={user_id!r} project_name={project_name!r} budget_category={budget_category.value!r}"
         )
-        row = _load_project_budget_rows_sync(project_name, user_id, categories=[budget_category.value]).get(
-            budget_category.value
-        )
+        from sqlalchemy import text
+        from sqlmodel import Session
+
+        from codemie.clients.postgres import PostgresClient
+
+        with Session(PostgresClient.get_engine()) as session:
+            result = session.execute(
+                text(
+                    """
+                    SELECT pba.budget_id,
+                           pmba.id                     AS allocation_id,
+                           pmba.effective_budget_id    AS effective_budget_id,
+                           pmba.shared_budget_id       AS shared_budget_id,
+                           pmba.override_budget_id     AS override_budget_id,
+                           b.provider_metadata         AS budget_meta,
+                           pmba.pmba_provider_metadata AS member_meta
+                    FROM   project_budget_assignments pba
+                    JOIN   project_member_budget_assignments pmba
+                             ON  pmba.project_name    = pba.project_name
+                             AND pmba.budget_category = pba.budget_category
+                             AND pmba.user_id         = :user_id
+                             AND pmba.pmba_deleted_at IS NULL
+                    JOIN   budgets b ON b.budget_id = pba.budget_id
+                    WHERE  pba.project_name    = :project_name
+                      AND  pba.budget_category = :budget_category
+                      AND  pba.deleted_at IS NULL
+                      AND  b.is_active = TRUE
+                    LIMIT 1
+                    """
+                ),
+                {"project_name": project_name, "budget_category": budget_category.value, "user_id": user_id},
+            )
+            row = result.mappings().first()
 
         if row is None:
             _resolution_cache[cache_key] = None
@@ -324,8 +222,8 @@ class BudgetResolutionService:
             shared_budget_id=row.get("shared_budget_id"),
             override_budget_id=row.get("override_budget_id"),
             member_allocation_id=row["allocation_id"],
-            provider_metadata=row.get("budget_meta") or {},
-            member_provider_metadata=row.get("member_meta") or {},
+            provider_metadata=row["budget_meta"] or {},
+            member_provider_metadata=row["member_meta"] or {},
         )
         _resolution_cache[cache_key] = resolved
         logger.info(

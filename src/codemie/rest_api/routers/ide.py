@@ -120,9 +120,6 @@ async def inference_virtual(
             temperature=request.temperature,
             top_p=request.top_p,
         )
-        # Without a named project the request is billed as asset-less, to the default the profile shows and the CLI
-        # charges (EPMCDME-16625 row 14); the project above still selects credentials as before.
-        assistant._runtime_bills_as_asset_less = not request.project
         request_uuid = raw_request.state.uuid
         assistant_user_interaction_service.record_usage(assistant=assistant, user=user)
 

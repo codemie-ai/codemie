@@ -476,25 +476,6 @@ class TestProcessExceptionHandlers:
         mock_index.set_error.assert_called_once()
         mock_on_end.assert_called_once()
 
-    def test_reindex_attributes_budget_by_the_datasource(self, make_processor, mock_index):
-        """EPMCDME-16625 row 13: indexing follows the project-asset rows, not the asset-less default."""
-        proc = make_processor()
-        with _run_process_with_exception(proc, mock_index, ValueError("unexpected")):
-            with patch("codemie.service.llm_service.utils.set_llm_context") as set_ctx, pytest.raises(ValueError):
-                proc.process()
-
-        set_ctx.assert_called_once_with(proc.index, None, proc.user)
-
-    def test_reindex_without_project_stays_asset_less(self, make_processor, mock_index):
-        """CR-003: an index with no project must not fail on attribution, as before EPMCDME-16625."""
-        proc = make_processor()
-        with _run_process_with_exception(proc, mock_index, ValueError("unexpected")):
-            mock_index.project_name = ""
-            with patch("codemie.service.llm_service.utils.set_llm_context") as set_ctx, pytest.raises(ValueError):
-                proc.process()
-
-        set_ctx.assert_called_once_with(None, None, proc.user)
-
     def test_generic_exception_reraises_and_sets_error(self, make_processor, mock_index):
         proc = make_processor()
         with _run_process_with_exception(proc, mock_index, ValueError("unexpected")) as (_, mock_on_end):

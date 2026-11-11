@@ -565,21 +565,11 @@ async def _route_proxy_call(
 
     proxy_router = importlib.import_module(PROXY_ROUTER)
 
-    # A member naming the project in the CLI header: attribution (EPMCDME-16625) targets it, and charges it when
-    # the project funds the request's category.
-    user = MagicMock(
-        id=USER_ID,
-        username="alice",
-        email="alice@example.com",
-        project_names=["project-a"],
-        admin_project_names=[],
-        default_project=None,
-    )
+    user = MagicMock(id=USER_ID, username="alice", email="alice@example.com")
     request_info = {
         proxy_router.REQUEST_ID: "req-1",
         proxy_router.LLM_MODEL: llm_model,
         proxy_router.PROJECT: "project-a",
-        proxy_router.CLI_REQUESTED_PROJECT: "project-a",
     }
     if client_type:
         request_info[proxy_router.CLIENT_TYPE] = client_type
@@ -653,8 +643,7 @@ class TestTheProxyNamesOnlyTheProjectItCharged:
 
         request_info, _ = await self._route(client_type, probe_scopes, runtime)
         assert request_info[proxy_router.SPEND_ATTRIBUTION_PROJECT] == expected_project
-        if expected_budget == "project":
-            assert request_info[proxy_router.PROJECT] == "project-a"
+        assert request_info[proxy_router.PROJECT] == "project-a"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(ROUTING_CASE_FIELDS, _routing_cases())

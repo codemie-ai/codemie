@@ -29,31 +29,6 @@ from codemie.service.budget.budget_models import (
 )
 
 
-# Active project budget plus a live allocation for the user, per category: the single definition of "funded"
-# shared by the web and CLI attribution paths (EPMCDME-16625 D6).
-PROJECT_BUDGET_FUNDED_SQL = """
-    SELECT pba.budget_category,
-           pba.budget_id,
-           pmba.id                     AS allocation_id,
-           pmba.effective_budget_id    AS effective_budget_id,
-           pmba.shared_budget_id       AS shared_budget_id,
-           pmba.override_budget_id     AS override_budget_id,
-           b.provider_metadata         AS budget_meta,
-           pmba.pmba_provider_metadata AS member_meta
-    FROM   project_budget_assignments pba
-    JOIN   project_member_budget_assignments pmba
-             ON  pmba.project_name    = pba.project_name
-             AND pmba.budget_category = pba.budget_category
-             AND pmba.user_id         = :user_id
-             AND pmba.pmba_deleted_at IS NULL
-    JOIN   budgets b ON b.budget_id = pba.budget_id
-    WHERE  pba.project_name = :project_name
-      AND  pba.budget_category = ANY(:categories)
-      AND  pba.deleted_at IS NULL
-      AND  b.is_active = TRUE
-"""
-
-
 @dataclass
 class ProjectBudgetContext:
     """Flattened result of the project budget JOIN query used by BudgetResolutionService."""
@@ -490,7 +465,29 @@ class ProjectBudgetAssignmentRepository:
         if not categories:
             return {}
 
-        stmt = text(PROJECT_BUDGET_FUNDED_SQL)
+        stmt = text(
+            """
+            SELECT pba.budget_category,
+                   pba.budget_id,
+                   pmba.id                     AS allocation_id,
+                   pmba.effective_budget_id    AS effective_budget_id,
+                   pmba.shared_budget_id       AS shared_budget_id,
+                   pmba.override_budget_id     AS override_budget_id,
+                   b.provider_metadata         AS budget_meta,
+                   pmba.pmba_provider_metadata AS member_meta
+            FROM   project_budget_assignments pba
+            JOIN   project_member_budget_assignments pmba
+                     ON  pmba.project_name    = pba.project_name
+                     AND pmba.budget_category = pba.budget_category
+                     AND pmba.user_id         = :user_id
+                     AND pmba.pmba_deleted_at IS NULL
+            JOIN   budgets b ON b.budget_id = pba.budget_id
+            WHERE  pba.project_name = :project_name
+              AND  pba.budget_category = ANY(:categories)
+              AND  pba.deleted_at IS NULL
+              AND  b.is_active = TRUE
+            """
+        )
         result = await session.execute(
             stmt,
             {

@@ -21,11 +21,6 @@ from codemie.rest_api.security.user import User
 class BaseIdp(ABC):
     """Base class for identity providers"""
 
-    # Whether authenticate() verifies the token, so its claims may be stored and replayed into the user's scheduled
-    # runs (IDP claims snapshot, EPMCDME-16625). False unless a provider says so: one that trusts a header must not
-    # write snapshots without anyone deciding it.
-    validates_token: bool = False
-
     @abstractmethod
     async def authenticate(self, request: Request) -> User:
         """Authenticate user and return User object

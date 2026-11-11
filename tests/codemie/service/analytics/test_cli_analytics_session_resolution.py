@@ -294,7 +294,7 @@ async def test_a_linked_project_that_is_unavailable_is_counted(world):
 
 @pytest.mark.asyncio
 async def test_default_project_unavailable_is_counted_as_a_retry_for_no_project_and_a_broken_default(world):
-    with patch("codemie.rest_api.security.user.User.effective_default_project", return_value=None):
+    with patch(f"{MODULE}.resolve_default_project", return_value=None):
         with pytest.raises(TelemetryStorageUnavailableError, match="default_project_unavailable"):
             await gate().resolve_session(None, None, None)
     assert DESTINATION_EVENTS["default_project_unavailable:retry"] == 1

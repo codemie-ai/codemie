@@ -168,11 +168,6 @@ def _skipped_for_inactive_owner(repo, run, started_at: datetime, scheduler_id: s
     """Record the run as skipped when the scheduler's owner is not active, checked at every run."""
     if not user_id or is_trigger_owner_active(user_id):
         return False
-    _record_inactive_owner_skip(repo, run, started_at, scheduler_id, user_id)
-    return True
-
-
-def _record_inactive_owner_skip(repo, run, started_at: datetime, scheduler_id: str, user_id: str) -> None:
     finished_at = datetime.now(timezone.utc)
     repo.update(
         run.id,
@@ -184,29 +179,15 @@ def _record_inactive_owner_skip(repo, run, started_at: datetime, scheduler_id: s
         },
     )
     logger.warning("Skipped scheduler %s: owner user_id=%s is not active", scheduler_id, user_id)
-
-
-def _owner_id(payload) -> str | None:
-    return getattr(getattr(payload, "user", None), "id", None)
-
-
-def _with_owner_resolved_now(payload, owner_id: str):
-    """The payload with its owner loaded at fire time, or None when the owner is not active (EPMCDME-16625 AR-4).
-
-    The job keeps the owner as resolved when it was scheduled; their memberships and default project may have
-    changed since. Only the owner's id is read from the payload, so jobs scheduled before this still run.
-    """
-    owner = resolve_trigger_user(owner_id)
-    return None if owner is None else payload.model_copy(update={"user": owner})
+    return True
 
 
 def _run_unless_owner_inactive(actor_fn, scheduler_id: str, payload):
-    """Run an untracked datasource actor as its owner is now, unless the owner is not active."""
-    if owner_id := _owner_id(payload):
-        payload = _with_owner_resolved_now(payload, owner_id)
-        if payload is None:
-            logger.warning("Skipped scheduler %s: owner user_id=%s is not active", scheduler_id, owner_id)
-            return None
+    """Run an untracked datasource actor unless its owner is not active, checked at every run."""
+    owner_id = getattr(getattr(payload, "user", None), "id", None)
+    if owner_id and not is_trigger_owner_active(owner_id):
+        logger.warning("Skipped scheduler %s: owner user_id=%s is not active", scheduler_id, owner_id)
+        return None
     return actor_fn(payload=payload)
 
 
@@ -259,12 +240,9 @@ def _tracked_run_sync(actor_fn, scheduler_id: str, resource_id: str | None = Non
     repo = SchedulerRunRepository()
     run = repo.create(run)
 
-    if owner_id := _owner_id(kwargs.get("payload")):
-        payload = _with_owner_resolved_now(kwargs["payload"], owner_id)
-        if payload is None:
-            _record_inactive_owner_skip(repo, run, started_at, scheduler_id, owner_id)
-            return None
-        kwargs["payload"] = payload
+    owner = getattr(kwargs.get("payload"), "user", None)
+    if _skipped_for_inactive_owner(repo, run, started_at, scheduler_id, getattr(owner, "id", None)):
+        return None
 
     try:
         outcome = actor_fn(**kwargs)

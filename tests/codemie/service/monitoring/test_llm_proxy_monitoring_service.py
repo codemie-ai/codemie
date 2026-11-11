@@ -32,7 +32,6 @@ def mock_user():
     user = MagicMock()
     user.id = "user-42"
     user.username = "test_user"
-    user.email = "test_user@example.com"
     return user
 
 
@@ -462,7 +461,7 @@ class TestTrackUsageBudgetFallback:
         self._track(mock_user, cli_request_info)
 
         attributes = mock_send.call_args.kwargs["attributes"]
-        assert attributes["project"] == "test_user@example.com"
+        assert attributes["project"] == "test_user"
         assert attributes["budget_fallback_from"] == "philips-hr"
 
     @patch.object(LLMProxyMonitoringService, "send_count_metric")
@@ -474,55 +473,3 @@ class TestTrackUsageBudgetFallback:
         attributes = mock_send.call_args.kwargs["attributes"]
         assert attributes["project"] == "philips-hr"
         assert "budget_fallback_from" not in attributes
-
-
-class TestTrackUsageFallbackKind:
-    """EPMCDME-16625: analytics show the charged project and tell default-project and personal fallbacks apart."""
-
-    _track = TestTrackUsageBudgetFallback._track
-
-    @patch.object(LLMProxyMonitoringService, "send_count_metric")
-    def test_default_project_fallback_reports_the_charged_default_project(self, mock_send, mock_user, cli_request_info):
-        cli_request_info.update(
-            {"project": "team-d", "budget_fallback_from": "team-a", "budget_fallback_kind": "default_project"}
-        )
-
-        self._track(mock_user, cli_request_info)
-
-        attributes = mock_send.call_args.kwargs["attributes"]
-        assert attributes["project"] == "team-d"
-        assert attributes["budget_fallback_from"] == "team-a"
-        assert attributes["budget_fallback_kind"] == "default_project"
-
-    @patch.object(LLMProxyMonitoringService, "send_count_metric")
-    def test_personal_fallback_reports_the_personal_identity(self, mock_send, mock_user, cli_request_info):
-        cli_request_info.update(
-            {"project": "test_user@example.com", "budget_fallback_from": "team-a", "budget_fallback_kind": "personal"}
-        )
-
-        self._track(mock_user, cli_request_info)
-
-        attributes = mock_send.call_args.kwargs["attributes"]
-        # The web path names the personal budget by the email-named personal project; CLI analytics match it.
-        assert attributes["project"] == "test_user@example.com"
-        assert attributes["budget_fallback_kind"] == "personal"
-
-    @patch.object(LLMProxyMonitoringService, "send_count_metric")
-    def test_personal_fallback_without_email_reports_the_username(self, mock_send, mock_user, cli_request_info):
-        mock_user.email = None
-        cli_request_info.update(
-            {"project": "team-a", "budget_fallback_from": "team-a", "budget_fallback_kind": "personal"}
-        )
-
-        self._track(mock_user, cli_request_info)
-
-        assert mock_send.call_args.kwargs["attributes"]["project"] == "test_user"
-
-    @patch.object(LLMProxyMonitoringService, "send_count_metric")
-    def test_ignored_header_project_is_not_reported(self, mock_send, mock_user, cli_request_info):
-        cli_request_info.update({"project": "team-d", "cli_requested_project": "foreign"})
-
-        self._track(mock_user, cli_request_info)
-
-        attributes = mock_send.call_args.kwargs["attributes"]
-        assert "foreign" not in attributes.values()

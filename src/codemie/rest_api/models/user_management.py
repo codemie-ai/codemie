@@ -21,8 +21,7 @@ from uuid import uuid4
 
 import sqlalchemy as sa
 from pydantic import BaseModel, EmailStr, Field, model_validator
-from sqlalchemy import Column, Index, UniqueConstraint, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Index, UniqueConstraint, text
 from sqlmodel import Field as SQLField, SQLModel
 
 from codemie.configs import config
@@ -91,23 +90,6 @@ class UserProject(BaseModelWithSQLSupport, table=True):
             postgresql_where=text("is_default = true"),
         ),
     )
-
-
-class IdpUserSnapshot(BaseModelWithSQLSupport, table=True):
-    """The last JWT claims seen for a user in IDP-claims mode (ENABLE_USER_MANAGEMENT=False).
-
-    That mode keeps no users rows, so scheduled and webhook runs read the owner's identity and memberships
-    from here to attribute budgets as an interactive request would (EPMCDME-16625 D7, D8).
-    """
-
-    __tablename__ = "idp_user_snapshots"
-
-    id: str = SQLField(primary_key=True, max_length=36)  # IDP JWT 'sub' claim
-    username: str = SQLField(nullable=False)
-    email: Optional[str] = SQLField(default=None)
-    name: Optional[str] = SQLField(default=None)
-    project_names: list[str] = SQLField(default_factory=list, sa_column=Column(JSONB, nullable=False))
-    admin_project_names: list[str] = SQLField(default_factory=list, sa_column=Column(JSONB, nullable=False))
 
 
 class UserKnowledgeBase(BaseModelWithSQLSupport, table=True):

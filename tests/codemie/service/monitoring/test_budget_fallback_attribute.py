@@ -51,22 +51,3 @@ def test_no_fallback_adds_nothing():
 
 def test_no_context_adds_nothing():
     assert "budget_fallback_from" not in _emit(None)
-
-
-def test_fallback_kind_is_added_with_the_marker():
-    """EPMCDME-16625: analytics tell a default-project charge from a personal one."""
-    ctx = LiteLLMContext(
-        credentials=None,
-        current_project="team-d",
-        budget_fallback_from="team-a",
-        budget_fallback_kind="default_project",
-    )
-
-    attributes = _emit(ctx)
-
-    assert attributes["budget_fallback_from"] == "team-a"
-    assert attributes["budget_fallback_kind"] == "default_project"
-
-
-def test_no_kind_without_a_fallback():
-    assert "budget_fallback_kind" not in _emit(LiteLLMContext(credentials=None, current_project="team-a"))

@@ -181,35 +181,6 @@ class TestUserProperties:
             user = User(id="test", username="test", email="u@example.com", project_names=names)
             assert user.current_project == "u@example.com"
 
-    @pytest.mark.parametrize(
-        "project_names,expected",
-        [
-            (["alpha", "jdoe"], "jdoe"),
-            (["alpha", "jdoe", "j@example.com"], "j@example.com"),
-            (["zeta", "alpha"], "alpha"),
-        ],
-        ids=["username-workspace", "email-project", "first-by-name"],
-    )
-    def test_effective_default_in_idp_claims_mode_is_the_default_billing_charges(self, project_names, expected):
-        """EPMCDME-16625 AR-7: one derivation, so the UI default and the billed default agree."""
-        from codemie.service.budget.attribution_resolver import AssetKind, attribution_input_for_user
-
-        user = User(id="test", username="jdoe", email="j@example.com", project_names=project_names)
-        with patch("codemie.rest_api.security.user.config.ENABLE_USER_MANAGEMENT", False):
-            billed = attribution_input_for_user(user, kind=AssetKind.NO_ASSET).default_project
-            assert user.effective_default_project() == billed == expected
-
-    def test_current_project_in_idp_claims_mode_keeps_the_credentials_choice(self):
-        """Matrix row 18: asset-less calls look up credentials under current_project, which must not move."""
-        user = User(id="test", username="jdoe", email="j@example.com", project_names=["alpha", "jdoe"])
-        with patch("codemie.rest_api.security.user.config.ENABLE_USER_MANAGEMENT", False):
-            assert user.current_project == "alpha"
-
-    def test_current_project_with_user_management_keeps_the_first_project_by_name(self):
-        user = User(id="test", username="jdoe", email="j@example.com", project_names=["alpha", "jdoe"])
-        with patch("codemie.rest_api.security.user.config.ENABLE_USER_MANAGEMENT", True):
-            assert user.current_project == "alpha"
-
     def test_current_project_default_beats_personal_project(self):
         user = User(
             id="test",
@@ -318,27 +289,3 @@ class TestResolveDefaultProject:
         ]
         assert resolve_membership_default(rows, "u@example.com") == "alpha"
         assert resolve_membership_default(iter(rows), None) == "alpha"
-
-
-class TestSameProjectName:
-    """Project names compare case-insensitively (EPMCDME-16625)."""
-
-    @pytest.mark.parametrize(
-        "a,b,expected",
-        [
-            ("Team-A", "team-a", True),
-            ("u@example.com", "U@Example.COM", True),
-            ("a", "b", False),
-            ("", "", False),
-            (None, "a", False),
-            ("a", None, False),
-        ],
-    )
-    def test_same_project_name(self, a, b, expected):
-        from codemie.rest_api.security.user import same_project_name
-
-        assert same_project_name(a, b) is expected
-
-    def test_resolve_default_project_matches_email_case_insensitively(self):
-        names = ["1-alpha", "Dmytro_Bondarenko5@EPAM.com"]
-        assert resolve_default_project(names, None, "dmytro_bondarenko5@epam.com") == "Dmytro_Bondarenko5@EPAM.com"

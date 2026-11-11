@@ -15,8 +15,6 @@
 import boto3
 import contextvars
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from botocore.config import Config
 from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_elasticsearch import ElasticsearchStore
@@ -142,24 +140,6 @@ def set_litellm_context(context: LiteLLMContext | None):
         litellm_context.set(context)
 
 
-@contextmanager
-def scoped_llm_context() -> Iterator[None]:
-    """Undo LLM attribution and credentials set inside the block once it exits.
-
-    A nested asset (sub-assistant prebuild, workflow node) sets its own context; without this the caller's
-    later model builds and metrics would be charged by the nested asset's attribution (EPMCDME-16625).
-    """
-    # A copy, because model construction updates the context in place (_record_direct_budget_attribution).
-    parent = litellm_context.get(None)
-    litellm_token = litellm_context.set(parent.model_copy() if parent is not None else None)
-    dial_token = dial_credentials.set(dial_credentials.get(None))
-    try:
-        yield
-    finally:
-        dial_credentials.reset(dial_token)
-        litellm_context.reset(litellm_token)
-
-
 def get_current_project(fallback: str | None = None) -> str:
     """Get the billing-aware project from the current LiteLLM context.
 
@@ -177,18 +157,6 @@ def get_budget_fallback_from() -> str | None:
     """Project whose budget was expected but that fell back to personal/default for this request."""
     ctx = litellm_context.get(None)
     return ctx.budget_fallback_from if ctx else None
-
-
-def get_budget_fallback_kind() -> str | None:
-    """Where a fallen-back request was charged: 'default_project' or 'personal' (EPMCDME-16625)."""
-    ctx = litellm_context.get(None)
-    return ctx.budget_fallback_kind if ctx else None
-
-
-def get_budget_funding_unknown() -> bool:
-    """Whether a funded check failed when this request's payer was decided (EPMCDME-16625 final review AR-2)."""
-    ctx = litellm_context.get(None)
-    return bool(ctx and ctx.budget_funding_unknown)
 
 
 def get_project_for_metric() -> str:
@@ -252,23 +220,13 @@ def _should_wrap_llm_client(llm_model_details: LLMModel, llm: Any) -> bool:
 
 
 def _resolve_username(username: str | None) -> str | None:
-    """LiteLLM personal customer id for this request: the username, as budget provisioning and the CLI use.
-
-    A caller that still logs the current user's email is mapped to their username, so both mean the same personal
-    budget (EPMCDME-16625 D9). Other identities are kept as given.
-    """
-    from codemie.rest_api.security.user_context import get_current_user
-
-    current_user = get_current_user()
     if not username or username in ("-", "unknown"):
+        from codemie.rest_api.security.user_context import get_current_user
+
+        current_user = get_current_user()
         if current_user:
             return current_user.username or current_user.email or None
-        return username
 
-    email = getattr(current_user, "email", None) if current_user else None
-    current_username = getattr(current_user, "username", None) if current_user else None
-    if current_username and email and username.casefold() == email.casefold():
-        return current_username
     return username
 
 

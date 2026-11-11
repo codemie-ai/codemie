@@ -39,7 +39,6 @@ def user_lookup():
         patch("codemie.clients.postgres.get_session") as mock_get_session,
         patch(f"{_REPO}.get_active_by_id", side_effect=lambda _s, _uid: state["active_user"]),
         patch(f"{_REPO}.get_by_id", side_effect=lambda _s, _uid: state["any_user"]),
-        patch("codemie.repository.idp_user_snapshot_repository.idp_user_snapshot_repository.get", return_value=None),
     ):
         mock_get_session.return_value.__enter__.return_value = MagicMock()
         yield state
@@ -51,10 +50,6 @@ def _db_user(user_id="owner-1"):
     user.username = "owner"
     user.name = "Owner"
     user.email = "owner@example.com"
-    user.picture = ""
-    user.user_type = "regular"
-    user.is_admin = user.is_maintainer = user.is_auditor = False
-    user.project_limit = None
     return user
 
 
@@ -169,10 +164,10 @@ def test_scheduled_datasource_run_is_skipped_for_deactivated_owner(run_repo):
     payload = MagicMock()
     payload.user.id = "owner-1"
 
-    with patch("codemie.triggers.bindings.cron.resolve_trigger_user", return_value=None) as resolve:
+    with patch("codemie.triggers.bindings.cron.is_trigger_owner_active", return_value=False) as check:
         _tracked_run_sync(actor, scheduler_id="sched-2", resource_id="res-1", payload=payload)
 
-    resolve.assert_called_once_with("owner-1")
+    check.assert_called_once_with("owner-1")
     actor.assert_not_called()
     _assert_skipped(run_repo)
 
@@ -182,38 +177,14 @@ def test_scheduled_datasource_run_goes_ahead_for_active_owner(run_repo):
     payload = MagicMock()
     payload.user.id = "owner-1"
 
-    with patch("codemie.triggers.bindings.cron._extract_datasource_metrics", return_value=None):
+    with (
+        patch("codemie.triggers.bindings.cron.is_trigger_owner_active", return_value=True),
+        patch("codemie.triggers.bindings.cron._extract_datasource_metrics", return_value=None),
+    ):
         _tracked_run_sync(actor, scheduler_id="sched-2", resource_id="res-1", payload=payload)
 
     actor.assert_called_once()
     assert run_repo.update.call_args[0][1]["status"] == "completed"
-
-
-def test_scheduled_datasource_run_uses_the_owner_as_they_are_at_fire_time(run_repo):
-    """EPMCDME-16625 AR-4: a job keeps the owner it was scheduled with; the run uses the owner loaded now, so a
-    changed default project or membership applies. Payloads scheduled before this keep working: only the id is
-    read."""
-    from codemie.rest_api.security.user import User
-    from codemie.triggers.trigger_models import CodeReindexTask
-
-    frozen = User(id="owner-1", username="owner", project_names=["old-team"], default_project="old-team")
-    now = User(id="owner-1", username="owner", project_names=["new-team"], default_project="new-team")
-    payload = CodeReindexTask.model_construct(
-        project_name="proj", resource_id="job-1", resource_name="repo", user=frozen, index_info=None, repo_id="r-1"
-    )
-    actor = MagicMock(return_value=None)
-
-    with (
-        patch("codemie.triggers.bindings.cron.resolve_trigger_user", return_value=now) as resolve,
-        patch("codemie.triggers.bindings.cron._extract_datasource_metrics", return_value=None),
-    ):
-        _tracked_run_sync(actor, scheduler_id="sched-2", resource_id="job-1", payload=payload)
-
-    resolve.assert_called_once_with("owner-1")
-    ran_with = actor.call_args.kwargs["payload"]
-    assert ran_with.user is now
-    assert (ran_with.project_name, ran_with.repo_id) == ("proj", "r-1")
-    assert payload.user is frozen
 
 
 def test_datasource_webhook_skips_owner_deactivated_after_the_entry_check():
@@ -280,15 +251,13 @@ def test_scheduled_git_faq_run_checks_its_owner(runs):
     actor = MagicMock()
     payload = MagicMock()
     payload.user.id = "owner-1"
-    owner = MagicMock(id="owner-1")
 
-    with patch("codemie.triggers.bindings.cron.resolve_trigger_user", return_value=owner if runs else None) as resolve:
+    with patch("codemie.triggers.bindings.cron.is_trigger_owner_active", return_value=runs) as check:
         _run_unless_owner_inactive(actor, scheduler_id="sched-3", payload=payload)
 
-    resolve.assert_called_once_with("owner-1")
+    check.assert_called_once_with("owner-1")
     if runs:
-        payload.model_copy.assert_called_once_with(update={"user": owner})
-        actor.assert_called_once_with(payload=payload.model_copy.return_value)
+        actor.assert_called_once_with(payload=payload)
     else:
         actor.assert_not_called()
 

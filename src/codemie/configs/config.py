@@ -282,12 +282,6 @@ class Config(BaseSettings):
     # User Management Feature Flag
     # ===========================================
     ENABLE_USER_MANAGEMENT: bool = False  # Master switch for new user management system
-    # IDP-claims mode: how long after a user's last login a trigger may still run with the project memberships seen
-    # then. Bounds how long revoked access survives in background runs; older snapshots keep only the identity.
-    IDP_USER_SNAPSHOT_MAX_AGE_HOURS: int = 24
-    # IDP-claims mode: how long a user's name and email are kept after their last login, so a stale owner's runs are
-    # still charged to their own personal budget. Older snapshots are deleted and give a bare user id.
-    IDP_USER_SNAPSHOT_IDENTITY_RETENTION_DAYS: int = 30
 
     USER_PROJECT_LIMIT: int = 3  # Max number of shared projects per user (enforced when ENABLE_USER_MANAGEMENT=True)
     COST_CENTER_NAME_PATTERN: str = r"^[a-z0-9]+-[a-z0-9]+$"
@@ -762,8 +756,7 @@ class Config(BaseSettings):
     LLM_PROXY_BUDGET_CHECK_ENABLED: bool = False
     LLM_PROXY_BUDGET_RECONCILIATION_ENABLED: bool = False  # Run budget reconciliation after app readiness
     LLM_PROXY_BUDGET_RECONCILIATION_TIMEOUT_SECONDS: int = 600  # Timeout for a single reconciliation run
-    # A shared asset never runs on the user's non-global personal key, so a budget pays (EPMCDME-16625 AR-11)
-    LLM_PROXY_SHARED_ASSET_PROJECT_BUDGET_ROUTING_ENABLED: bool = True
+    LLM_PROXY_SHARED_ASSET_PROJECT_BUDGET_ROUTING_ENABLED: bool = True  # Route shared assets to project budget
     LLM_PROXY_EMBEDDINGS_DISABLED: bool = False  # Bypass LiteLLM for embeddings, use native providers
     LITE_LLM_URL: str = ""
     LITE_LLM_APP_KEY: str = ""

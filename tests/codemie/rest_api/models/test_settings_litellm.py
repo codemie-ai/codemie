@@ -115,10 +115,5 @@ class TestLiteLLMContext:
             "principal_email": None,
             "personal_project": None,
             "budget_fallback_from": None,
-            "budget_fallback_kind": None,
-            "budget_candidates": None,
-            "routing_project": None,
-            "budget_funding_unknown": False,
-            "budget_outcome_built": False,
         }
         assert serialized == expected

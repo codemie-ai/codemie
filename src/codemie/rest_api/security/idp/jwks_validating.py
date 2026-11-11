@@ -54,8 +54,6 @@ class JwksValidatingIdp(BaseIdp):
     translation) is preserved unchanged.
     """
 
-    validates_token = True
-
     def __init__(self, inner: BaseIdp, validator: _TokenValidator | None) -> None:
         self._inner = inner
         # ``validator`` is None when the JWKS runtime could not be built (empty

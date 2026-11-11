@@ -617,35 +617,6 @@ def _apply_platform_budget(
     _mirror_budget_assignment(user_id=user_id, customer=customer, category=CoreBudgetCategory.PLATFORM)
 
 
-def _runtime_project(context: Optional["LiteLLMContext"]) -> str | None:
-    """Project the runtime resolves budgets for when no attribution walk was recorded on the context.
-
-    A charge already moved to the default project is resolved there (EPMCDME-16625). A personal fallback
-    re-tries the original project so a routed/premium model can still use a funded category there.
-    """
-    from codemie.service.budget.attribution_resolver import FallbackKind
-
-    if not context:
-        return None
-    if context.budget_fallback_kind == FallbackKind.DEFAULT_PROJECT:
-        return context.current_project
-    return context.budget_fallback_from or context.current_project
-
-
-def _runtime_candidates(context: Optional["LiteLLMContext"]) -> list[str | None]:
-    """Projects model construction tries, in order, before the personal budget.
-
-    The attribution walk (target, then default) is walked again here with the model actually built: the funded
-    check probed one model's category, and a model in another category must still reach the default project
-    rather than drop straight to the personal budget (EPMCDME-16625 D5, AR-1).
-    """
-    if context and context.budget_candidates is not None:
-        # An empty walk (no target, no default) goes straight to the personal budget, as on the CLI: the personal
-        # project is never probed as a project budget.
-        return list(context.budget_candidates)
-    return [_runtime_project(context)]
-
-
 def _project_in_context(
     litellm_context: Optional["LiteLLMContext"],
     username: Optional[str],
@@ -736,28 +707,20 @@ def _classify_direct_traffic(
 def _record_direct_budget_attribution(
     context: Optional["LiteLLMContext"], project: str | None, *, project_budget_used: bool
 ) -> None:
-    """Update analytics from the runtime outcome without losing the original routing project.
-
-    The outcome is named by the resolver's charge_outcome, as on the CLI. The context is marked as carrying a
-    built outcome, so a later re-decision that cannot read funding does not replace it (final review AR-2).
-    """
-    from codemie.service.budget.attribution_resolver import FallbackKind, charge_outcome
-
+    """Update analytics from the runtime outcome without losing the original routing project."""
     if not context or not project:
         return
-    personal = context.personal_project
-    steps = list(context.budget_candidates) if context.budget_candidates else [context.budget_fallback_from or project]
-    paying = project if (project_budget_used or not personal) and project != personal else None
-    outcome = charge_outcome([step for step in steps if step != personal], paying)
-    context.current_project = paying or personal
-    context.budget_fallback_from = outcome.fallback_from
-    context.budget_fallback_kind = outcome.fallback_kind.value if outcome.fallback_kind else None
-    context.budget_outcome_built = True
-    if paying is None and outcome.fallback_kind is FallbackKind.PERSONAL:
-        logger.info(
-            f"budget_event=budget_attribution_fallback component=litellm_llm_factory "
-            f"fallback_from_project={outcome.fallback_from!r} runtime_project={project!r} charged_scope='personal'"
-        )
+    personal_project = context.personal_project
+    if project_budget_used or not personal_project or project == personal_project:
+        context.current_project = project
+        context.budget_fallback_from = None
+        return
+    context.current_project = personal_project
+    context.budget_fallback_from = project
+    logger.info(
+        f"budget_event=budget_attribution_fallback component=litellm_llm_factory "
+        f"fallback_from_project={project!r} charged_scope='personal'"
+    )
 
 
 def _configure_direct_runtime_overrides(
@@ -802,64 +765,63 @@ def _configure_direct_runtime_overrides(
         # selection, because no budget is selected here.
         return _classify_direct_traffic(llm_model_details, username)
 
-    # Walk the attribution steps again for the model actually built: the first project whose budget covers this
-    # model's category pays, and only after every step is the personal/global budget used (AR-1).
-    candidates = _runtime_candidates(litellm_context)
-    has_real_project_context = False
-    for project in candidates:
-        runtime_context = litellm_context
-        if litellm_context and project != litellm_context.current_project:
-            runtime_context = litellm_context.model_copy(update={"current_project": project})
-        (
-            project_runtime_headers,
-            project_runtime_api_key,
-            project_runtime_base_url,
-            has_project_budget_scopes,
-            project_runtime_category,
-        ) = _resolve_direct_project_budget_runtime(
-            llm_model_details=llm_model_details,
-            litellm_context=runtime_context,
-            user_id=user_id,
-            username=username,
+    # Context creation can already flag a fallback for analytics. Resolve the original
+    # project for this model so that annotation never changes category precedence, and a
+    # routed/premium model can still use its funded project category.
+    project = (litellm_context.budget_fallback_from or litellm_context.current_project) if litellm_context else None
+    runtime_context = litellm_context
+    if litellm_context and litellm_context.budget_fallback_from:
+        runtime_context = litellm_context.model_copy(update={"current_project": project})
+    (
+        project_runtime_headers,
+        project_runtime_api_key,
+        project_runtime_base_url,
+        has_project_budget_scopes,
+        project_runtime_category,
+    ) = _resolve_direct_project_budget_runtime(
+        llm_model_details=llm_model_details,
+        litellm_context=runtime_context,
+        user_id=user_id,
+        username=username,
+    )
+
+    if _has_project_runtime_overrides(
+        project_runtime_headers,
+        project_runtime_api_key,
+        project_runtime_base_url,
+    ):
+        _record_direct_budget_attribution(litellm_context, project, project_budget_used=True)
+        _apply_project_runtime_overrides(
+            merged_headers=merged_headers,
+            request_params=request_params,
+            runtime_headers=project_runtime_headers,
+            runtime_api_key=project_runtime_api_key,
+            runtime_base_url=project_runtime_base_url,
         )
-
-        if _has_project_runtime_overrides(
-            project_runtime_headers,
-            project_runtime_api_key,
-            project_runtime_base_url,
-        ):
-            _record_direct_budget_attribution(litellm_context, project, project_budget_used=True)
-            _apply_project_runtime_overrides(
-                merged_headers=merged_headers,
-                request_params=request_params,
-                runtime_headers=project_runtime_headers,
-                runtime_api_key=project_runtime_api_key,
-                runtime_base_url=project_runtime_base_url,
-            )
-            logger.info(
-                f"budget_event=runtime_provider_overrides_applied component=litellm_llm_factory "
-                f"user_id={user_id!r} username={username!r} model={llm_model_details.base_name!r} "
-                f"api_key_present={project_runtime_api_key is not None} "
-                f"api_key_fingerprint={_anonymized_key_fingerprint(project_runtime_api_key)!r} "
-                f"base_url_present={project_runtime_base_url is not None} "
-                f"headers_applied={bool(project_runtime_headers)} "
-                f"provider_header_names={sorted(project_runtime_headers.keys())!r} "
-                f"litellm_customer_key={project_runtime_headers.get(LITELLM_CUSTOMER_ID_HEADER)!r}"
-            )
-            return project_runtime_category
-
-        # A personal project (the email) is not a real project context, and a project with no budget scopes
-        # for this user falls through to the personal/default budget like an own (no-project) assistant.
-        has_real_project_context = has_real_project_context or bool(
-            runtime_context
-            and runtime_context.current_project
-            and runtime_context.current_project != username
-            and runtime_context.current_project != runtime_context.personal_project
-            and has_project_budget_scopes
+        logger.info(
+            f"budget_event=runtime_provider_overrides_applied component=litellm_llm_factory "
+            f"user_id={user_id!r} username={username!r} model={llm_model_details.base_name!r} "
+            f"api_key_present={project_runtime_api_key is not None} "
+            f"api_key_fingerprint={_anonymized_key_fingerprint(project_runtime_api_key)!r} "
+            f"base_url_present={project_runtime_base_url is not None} "
+            f"headers_applied={bool(project_runtime_headers)} "
+            f"provider_header_names={sorted(project_runtime_headers.keys())!r} "
+            f"litellm_customer_key={project_runtime_headers.get(LITELLM_CUSTOMER_ID_HEADER)!r}"
         )
+        return project_runtime_category
 
-    context_project = litellm_context.current_project if litellm_context else None
-    project = candidates[0] if candidates else context_project
+    # current_project equals personal_project (or username when personal_project is unset) when a personal
+    # user accesses a global assistant (_resolve_effective_project returns the email-named personal project
+    # for non-members). That is not a real project context — treat it the same as current_project=None for
+    # budget routing.
+    # A project with no budget scopes (has_project_budget_scopes=False) also falls through
+    # to personal/default budget — same behaviour as an own (no-project) assistant.
+    has_real_project_context = bool(
+        runtime_context
+        and runtime_context.current_project
+        and runtime_context.current_project != (runtime_context.personal_project or username)
+        and has_project_budget_scopes
+    )
     if _try_apply_premium_budget(
         llm_model_details=llm_model_details,
         username=username,
@@ -904,11 +866,97 @@ class DirectBudgetAvailability:
     project_scopes: set["CoreBudgetCategory"] = field(default_factory=set)
 
 
-def _probe_direct_project_budget_scopes(project_name: str, user_id: str) -> set["CoreBudgetCategory"]:
-    """Delegates to the shared funded probe so web and CLI use one definition (EPMCDME-16625)."""
-    from codemie.service.budget.budget_resolution_service import probe_project_budget_scopes_sync
+def _get_cached_direct_project_budget_scopes(project_name: str, user_id: str) -> set["CoreBudgetCategory"] | None:
+    from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+    from codemie.service.budget.budget_resolution_service import _resolution_cache
 
-    return probe_project_budget_scopes_sync(project_name, user_id)
+    categories = (CoreBudgetCategory.PLATFORM, CoreBudgetCategory.CLI, CoreBudgetCategory.PREMIUM_MODELS)
+    if not all((project_name, category.value, user_id) in _resolution_cache for category in categories):
+        return None
+
+    scopes = {
+        category for category in categories if _resolution_cache[(project_name, category.value, user_id)] is not None
+    }
+    logger.debug(
+        f"budget_event=project_budget_availability_cache_hit component=litellm_llm_factory "
+        f"user_id={user_id!r} project_name={project_name!r} project_scopes={sorted(scope.value for scope in scopes)!r}"
+    )
+    return scopes
+
+
+def _probe_direct_project_budget_scopes(project_name: str, user_id: str) -> set["CoreBudgetCategory"]:
+    from sqlalchemy import text
+    from sqlmodel import Session
+
+    from codemie.clients.postgres import PostgresClient
+    from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+    from codemie.service.budget.budget_resolution_service import BudgetScope, ResolvedBudgetContext, _resolution_cache
+
+    cached_scopes = _get_cached_direct_project_budget_scopes(project_name, user_id)
+    if cached_scopes is not None:
+        return cached_scopes
+
+    categories = [
+        CoreBudgetCategory.PLATFORM.value,
+        CoreBudgetCategory.CLI.value,
+        CoreBudgetCategory.PREMIUM_MODELS.value,
+    ]
+    with Session(PostgresClient.get_engine()) as session:
+        result = session.execute(
+            text(
+                """
+                SELECT pba.budget_category,
+                       pba.budget_id,
+                       pmba.id                     AS allocation_id,
+                       pmba.effective_budget_id    AS effective_budget_id,
+                       pmba.shared_budget_id       AS shared_budget_id,
+                       pmba.override_budget_id     AS override_budget_id,
+                       b.provider_metadata         AS budget_meta,
+                       pmba.pmba_provider_metadata AS member_meta
+                FROM   project_budget_assignments pba
+                JOIN   project_member_budget_assignments pmba
+                         ON  pmba.project_name    = pba.project_name
+                         AND pmba.budget_category = pba.budget_category
+                         AND pmba.user_id         = :user_id
+                         AND pmba.pmba_deleted_at IS NULL
+                JOIN   budgets b ON b.budget_id = pba.budget_id
+                WHERE  pba.project_name = :project_name
+                  AND  pba.budget_category = ANY(:categories)
+                  AND  pba.deleted_at IS NULL
+                  AND  b.is_active = TRUE
+                """
+            ),
+            {"project_name": project_name, "user_id": user_id, "categories": categories},
+        )
+        rows = {row["budget_category"]: row for row in result.mappings().all()}
+
+    scopes: set[CoreBudgetCategory] = set()
+    for category in (CoreBudgetCategory.PLATFORM, CoreBudgetCategory.CLI, CoreBudgetCategory.PREMIUM_MODELS):
+        cache_key = (project_name, category.value, user_id)
+        row = rows.get(category.value)
+        if row is None:
+            _resolution_cache[cache_key] = None
+            continue
+
+        scopes.add(category)
+        _resolution_cache[cache_key] = ResolvedBudgetContext(
+            scope=BudgetScope.PROJECT,
+            project_name=project_name,
+            budget_category=category,
+            budget_id=row["budget_id"],
+            effective_budget_id=row.get("effective_budget_id"),
+            shared_budget_id=row.get("shared_budget_id"),
+            override_budget_id=row.get("override_budget_id"),
+            member_allocation_id=row["allocation_id"],
+            provider_metadata=row["budget_meta"] or {},
+            member_provider_metadata=row["member_meta"] or {},
+        )
+
+    logger.info(
+        f"budget_event=project_budget_availability_probed component=litellm_llm_factory "
+        f"user_id={user_id!r} project_name={project_name!r} project_scopes={sorted(scope.value for scope in scopes)!r}"
+    )
+    return scopes
 
 
 def _resolve_direct_budget_availability(project_name: str, user_id: str) -> DirectBudgetAvailability:
@@ -1167,17 +1215,15 @@ def generate_litellm_headers_from_context(
     # Determine tag value based on context
     tag_value = config.LITE_LLM_TAGS_HEADER_VALUE  # default
 
-    # Tags follow the project the request runs for, not the budget that pays for it (EPMCDME-16625).
-    tag_project = litellm_context and (litellm_context.routing_project or litellm_context.current_project)
-    if tag_project:
+    if litellm_context and litellm_context.current_project:
         # Parse allowed projects from config
         allowed_projects = [
             project.strip() for project in config.LITE_LLM_PROJECTS_TO_TAGS_LIST.split(",") if project.strip()
         ]
 
         # Use project name if it's in allowed list
-        if allowed_projects and tag_project in allowed_projects:
-            tag_value = tag_project
+        if allowed_projects and litellm_context.current_project in allowed_projects:
+            tag_value = litellm_context.current_project
 
     # Always add the header (either project name or default)
     headers["x-litellm-tags"] = tag_value

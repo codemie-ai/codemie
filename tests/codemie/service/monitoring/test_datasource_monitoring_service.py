@@ -352,51 +352,6 @@ def test_send_datasource_tokens_usage_metrics_by_model(mock_send_count_metric, m
     assert embedding_call.kwargs['attributes'][MetricsAttributes.OUTPUT_TOKENS] == 0
 
 
-@pytest.fixture
-def charged_default_project():
-    """EPMCDME-16625: attribution charged the user's default project, not the datasource's project."""
-    from codemie.core.dependecies import scoped_llm_context, set_litellm_context
-    from codemie.rest_api.models.settings import LiteLLMContext
-
-    with scoped_llm_context():
-        set_litellm_context(LiteLLMContext(credentials=None, current_project="team-d"))
-        yield "team-d"
-
-
-@patch.object(DatasourceMonitoringService, "send_count_metric")
-def test_tokens_usage_metric_reports_the_charged_project(
-    mock_send_count_metric, mock_index_info, mock_user, mock_tokens_usage, charged_default_project
-):
-    DatasourceMonitoringService.send_datasource_tokens_usage_metric(
-        index_info=mock_index_info, tokens_usage=mock_tokens_usage, user=mock_user
-    )
-
-    attributes = mock_send_count_metric.call_args.kwargs["attributes"]
-    assert attributes[MetricsAttributes.PROJECT] == charged_default_project
-
-
-@patch.object(DatasourceMonitoringService, "send_count_metric")
-def test_tokens_usage_metrics_by_model_report_the_charged_project(
-    mock_send_count_metric, mock_index_info, mock_user, charged_default_project
-):
-    run = LLMRun(
-        run_id="r1",
-        llm_model="emb-x",
-        input_tokens=1,
-        output_tokens=0,
-        cached_tokens=0,
-        money_spent=0.1,
-        cached_tokens_money_spent=0.0,
-    )
-
-    DatasourceMonitoringService.send_datasource_tokens_usage_metrics_by_model(
-        index_info=mock_index_info, llm_runs=[run], user=mock_user
-    )
-
-    attributes = mock_send_count_metric.call_args.kwargs["attributes"]
-    assert attributes[MetricsAttributes.PROJECT] == charged_default_project
-
-
 @patch.object(DatasourceMonitoringService, "send_count_metric")
 def test_send_datasource_tokens_usage_metrics_by_model_omits_money_when_a_run_is_unsettled(
     mock_send_count_metric, mock_index_info, mock_user

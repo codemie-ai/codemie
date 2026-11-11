@@ -506,25 +506,6 @@ class TestResumeStaleDataSource:
 
         mock_logger.error.assert_called()
 
-    def test_resume_runs_as_the_resolved_creator(self, mock_logger):
-        """EPMCDME-16625 D7: the watchdog reindexes as the creator with real memberships, not a bare stub."""
-        from codemie.triggers.actors import datasource as actor
-
-        index_info = _make_index_info("knowledge_base_jira")
-        owner = MagicMock()
-        handler = MagicMock()
-
-        with (
-            patch.object(actor.IndexInfo, "find_by_id", return_value=index_info),
-            patch.object(actor.IndexInfo, "stamp_reindex_triggered_at"),
-            patch.object(actor, "resolve_trigger_user", return_value=owner) as resolve,
-            patch.dict(actor._RESUME_DISPATCH, {"knowledge_base_jira": handler}),
-        ):
-            actor.resume_stale_datasource(index_info)
-
-        resolve.assert_called_once_with("user-1")
-        assert handler.call_args.args[1] is owner
-
     def test_warns_for_unrecognised_type(self, mock_logger):
         """An unrecognised (but not explicitly unsupported) type logs a warning."""
         from codemie.triggers.actors.datasource import resume_stale_datasource

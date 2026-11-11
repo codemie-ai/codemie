@@ -402,31 +402,6 @@ class TestAssistantFactory:
         mock_assistant_class.get_by_ids.assert_called_once()
 
 
-@patch("codemie.service.assistant_service.AssistantService.build_agent_handle")
-def test_sub_assistant_prebuild_restores_parent_attribution(mock_build_agent_handle):
-    """EPMCDME-16625: the orchestrator's own model is built after its sub-assistants and must keep its billing."""
-    from codemie.core.dependecies import get_current_project, set_litellm_context
-    from codemie.rest_api.models.settings import LiteLLMContext
-
-    def build_sub(**_kwargs):
-        set_litellm_context(LiteLLMContext(credentials=None, current_project="sub-project"))
-        return Mock()
-
-    mock_build_agent_handle.side_effect = build_sub
-    assistant = Mock(spec=Assistant)
-    assistant.id = "sub"
-    assistant.project = None
-    request = Mock(spec=AssistantChatRequest)
-    request.llm_model = None
-    set_litellm_context(LiteLLMContext(credentials=None, current_project="parent-project"))
-
-    AssistantFactory(
-        assistant=assistant, user=Mock(spec=User), request=request, request_uuid="u", thread_generator=None
-    ).build()
-
-    assert get_current_project() == "parent-project"
-
-
 class _PolicyPassed(Exception):
     """Sentinel raised right after the model policy step of AssistantService.build_agent.
 

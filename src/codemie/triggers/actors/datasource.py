@@ -46,7 +46,6 @@ from codemie.datasource.sharepoint.sharepoint_datasource_processor import (
 from codemie.rest_api.models.settings import SharePointCredentials
 from codemie.datasource.xray.xray_datasource_processor import XrayDatasourceProcessor
 from codemie.service.settings.settings import SettingsService
-from codemie.triggers.bindings.utils import resolve_trigger_user
 from codemie.triggers.job_lock import reindex_outcome, with_datasource_job_lock
 from codemie.triggers.trigger_models import (
     AzureDevOpsWikiReindexTask,
@@ -1162,7 +1161,7 @@ def resume_stale_datasource(index_info: IndexInfo) -> None:
 
     handler = _RESUME_DISPATCH.get(index_type)
     if handler:
-        handler(index_info, resolve_trigger_user(index_info.created_by.id), str(uuid4()))
+        handler(index_info, User(id=index_info.created_by.id), str(uuid4()))
     else:
         logger.warning(
             f"resume_stale_datasource: unrecognised index type '{index_type}', skipping (index_id={index_info.id})"

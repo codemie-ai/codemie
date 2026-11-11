@@ -69,17 +69,6 @@ from codemie.core.dependecies import litellm_context
 from codemie.core.utils import calculate_token_cost
 from codemie.rest_api.security.authentication import BEARER_AUTHORIZATION_HEADER, authenticate
 from codemie.rest_api.security.user import User
-from codemie.service.budget.attribution_resolver import (
-    AssetKind,
-    AttributionDecision,
-    ChargeOutcome,
-    FundingCheckAborted,
-    aresolve_attribution,
-    charge_outcome,
-    attribution_input_for_user,
-    member_projects,
-    member_spelling,
-)
 from codemie.enterprise.litellm.dependencies import check_user_budget
 from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
 from codemie.service.spend.spend_logs_metadata import (
@@ -87,7 +76,12 @@ from codemie.service.spend.spend_logs_metadata import (
     spend_logs_metadata_header,
 )
 from codemie.service.spend.traffic_class import TrafficOrigin
-from codemie.service.budget.budget_resolution_service import budget_resolution_service
+from codemie.service.budget.budget_resolution_service import (
+    BudgetScope,
+    ResolvedBudgetContext,
+    _resolution_cache,
+    budget_resolution_service,
+)
 from codemie.service.budget.budget_service import budget_service
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.monitoring.llm_proxy_monitoring_service import LLMProxyMonitoringService
@@ -105,6 +99,7 @@ from .dependencies import (
 from .llm_factory import generate_litellm_headers_from_context, resolve_mirrored_budget_id
 from .project_member_runtime_sync import ensure_project_member_runtime_ready
 from .runtime_budget_selection import RuntimeBudgetMode, select_runtime_budget_mode
+from codemie.repository.project_budget_repository import project_budget_assignment_repository
 
 # Import proxy utils from loader (with enterprise package availability check)
 from ..loader import parse_usage_from_response
@@ -554,11 +549,6 @@ def _validate_project_header(headers: Headers | httpx.Headers | dict, user: User
         )
 
 
-# The project named by the CLI header, kept only until attribution decides whether the user may charge it.
-# Never emitted: a project the user is not a member of must not appear in analytics (EPMCDME-16625 D3).
-CLI_REQUESTED_PROJECT = "cli_requested_project"
-
-
 async def _authorize_project_header(headers: Headers | httpx.Headers | dict, request_info: dict, user: User) -> None:
     """Reject a request whose explicit project header names a project the caller cannot use.
 
@@ -567,9 +557,7 @@ async def _authorize_project_header(headers: Headers | httpx.Headers | dict, req
     and username fallbacks come from the caller's own memberships. There is no exemption for the
     integration header, because the client chooses its value.
     On success `request_info[PROJECT]` is set to the stored project name so the exact-match budget
-    lookup is not missed on letter case - for members only. An admin or maintainer may name a project
-    they are not a member of, but its header is ignored for billing (EPMCDME-16625 D3), so it must not
-    reach the credentials lookup either, or the call runs on that project's key (AR-2).
+    lookup is not missed on letter case.
 
     Raises:
         ExtendedHTTPException: 403 when the project does not exist or the caller has no access to it.
@@ -601,8 +589,7 @@ async def _authorize_project_header(headers: Headers | httpx.Headers | dict, req
             "or ask a project admin to add you.",
         )
 
-    if member_spelling(application.name, member_projects(user)) is not None:
-        request_info[PROJECT] = application.name
+    request_info[PROJECT] = application.name
 
 
 def _extract_request_info(headers: Headers | httpx.Headers | dict, user: User | None = None) -> dict:
@@ -610,14 +597,11 @@ def _extract_request_info(headers: Headers | httpx.Headers | dict, user: User | 
 
     Note: Project header is validated by _validate_project_header before this function.
     """
-    requested_project = headers.get(HEADER_CODEMIE_CLI_PROJECT) or None
-    # Credential lookup, the personal-key bypass and analytics read PROJECT before attribution runs, so it
-    # never names a project the user is not a member of (EPMCDME-16625 D3); the raw header is kept only for
-    # attribution to log it as ignored.
-    header_project = (
-        member_spelling(requested_project, member_projects(user)) if user is not None else requested_project
+    project = (
+        headers.get(HEADER_CODEMIE_CLI_PROJECT)
+        or (user.default_project if user else None)
+        or (user.username if user else "")
     )
-    project = header_project or (user.default_project if user else None) or (user.username if user else "")
     return {
         CLIENT_TYPE: headers.get(HEADER_CODEMIE_CLIENT, UNKNOWN),
         SESSION_ID: headers.get(HEADER_CODEMIE_SESSION_ID, str(uuid.uuid4())),
@@ -629,7 +613,6 @@ def _extract_request_info(headers: Headers | httpx.Headers | dict, user: User | 
         BRANCH: decode_attribution_header(headers.get(HEADER_CODEMIE_CLI_BRANCH, "")) or "",
         REPOSITORY: decode_attribution_header(headers.get(HEADER_CODEMIE_CLI_REPOSITORY, "")) or "",
         PROJECT: project,
-        CLI_REQUESTED_PROJECT: requested_project,
         INTEGRATION: headers.get(HEADER_CODEMIE_INTEGRATION) or None,
     }
 
@@ -694,29 +677,82 @@ class BudgetAvailability:
     project_scopes: set[BudgetCategory] = field(default_factory=set)
 
 
+def _get_cached_project_budget_scopes(project_name: str | None, user_id: str) -> set[BudgetCategory] | None:
+    if not project_name:
+        return set()
+
+    categories = (BudgetCategory.PLATFORM, BudgetCategory.CLI, BudgetCategory.PREMIUM_MODELS)
+    if not all((project_name, category.value, user_id) in _resolution_cache for category in categories):
+        return None
+
+    scopes = {
+        category for category in categories if _resolution_cache[(project_name, category.value, user_id)] is not None
+    }
+    logger.debug(
+        f"budget_event=project_budget_availability_cache_hit component=proxy_router "
+        f"user_id={user_id!r} project_name={project_name!r} project_scopes={sorted(scope.value for scope in scopes)!r}"
+    )
+    return scopes
+
+
 async def _probe_project_budget_scopes(project_name: str | None, user_id: str) -> set[BudgetCategory]:
-    """Delegates to the shared funded probe so web and CLI use one definition (EPMCDME-16625)."""
-    from codemie.service.budget.budget_resolution_service import probe_project_budget_scopes
+    if not project_name:
+        return set()
 
-    # The shared probe speaks the core enum; this router compares against the LiteLLM one.
-    return {BudgetCategory(scope.value) for scope in await probe_project_budget_scopes(project_name, user_id)}
+    cached_scopes = _get_cached_project_budget_scopes(project_name, user_id)
+    if cached_scopes is not None:
+        return cached_scopes
+
+    categories = [
+        BudgetCategory.PLATFORM.value,
+        BudgetCategory.CLI.value,
+        BudgetCategory.PREMIUM_MODELS.value,
+    ]
+    async with get_async_session() as session:
+        rows = await project_budget_assignment_repository.get_project_budget_categories_batch(
+            session=session,
+            project_name=project_name,
+            user_id=user_id,
+            categories=categories,
+        )
+
+    scopes: set[BudgetCategory] = set()
+    for category in (BudgetCategory.PLATFORM, BudgetCategory.CLI, BudgetCategory.PREMIUM_MODELS):
+        cache_key = (project_name, category.value, user_id)
+        resolved_or_context = rows.get(category) or rows.get(category.value)
+        if resolved_or_context is None:
+            _resolution_cache[cache_key] = None
+            continue
+
+        scopes.add(category)
+        if isinstance(resolved_or_context, ResolvedBudgetContext):
+            _resolution_cache[cache_key] = resolved_or_context
+            continue
+
+        _resolution_cache[cache_key] = ResolvedBudgetContext(
+            scope=BudgetScope.PROJECT,
+            project_name=project_name,
+            budget_category=CoreBudgetCategory(category.value),
+            budget_id=resolved_or_context.budget_id,
+            effective_budget_id=resolved_or_context.effective_budget_id,
+            shared_budget_id=resolved_or_context.shared_budget_id,
+            override_budget_id=resolved_or_context.override_budget_id,
+            member_allocation_id=resolved_or_context.allocation_id,
+            provider_metadata=resolved_or_context.budget_provider_metadata,
+            member_provider_metadata=resolved_or_context.member_provider_metadata,
+        )
+
+    logger.debug(
+        f"budget_event=project_budget_availability_probed component=proxy_router "
+        f"user_id={user_id!r} project_name={project_name!r} project_scopes={sorted(scope.value for scope in scopes)!r}"
+    )
+    return scopes
 
 
-async def _resolve_budget_availability(
-    user: User,
-    request_info: dict,
-    *,
-    include_project: bool = True,
-    user_budget_ids: dict[str, str | None] | None = None,
-) -> BudgetAvailability:
-    """The user's budget ids and the project's funded categories; pass ``user_budget_ids`` already read once for
-    the request, so a failing lookup is not waited for again on every attribution step (final review AR-6)."""
-    project = (request_info.get(PROJECT) or None) if include_project else None
-    if user_budget_ids is None:
-        user_budget_ids = await budget_service.get_all_category_budget_ids_for_request(user.id)
+async def _resolve_budget_availability(user: User, request_info: dict) -> BudgetAvailability:
     return BudgetAvailability(
-        user_budget_ids=user_budget_ids,
-        project_scopes=await _probe_project_budget_scopes(project, user.id),
+        user_budget_ids=await budget_service.get_all_category_budget_ids_for_request(user.id),
+        project_scopes=await _probe_project_budget_scopes(request_info.get(PROJECT) or None, user.id),
     )
 
 
@@ -729,7 +765,7 @@ def _flag_personal_budget_fallback(
 ) -> None:
     """Record that a named project had no budget for this user, so spend goes to personal/default.
 
-    Monitoring reads the flag to attribute the usage to the personal project with the original
+    Monitoring reads the flag to attribute the usage to the personal identity with the original
     project kept as budget_fallback_from (EPMCDME-15111 AC6/AC10). request_info[PROJECT] is left
     untouched because credential and runtime lookups still key on it.
     """
@@ -737,136 +773,11 @@ def _flag_personal_budget_fallback(
     funded = bool(availability.project_scopes) if project_budget_used is None else project_budget_used
     if funded or not project or project in {user.username, user.email}:
         return
-    # Attribution may already have moved the charge from the requested project to the default project;
-    # keep the originally targeted project and record that the personal budget paid in the end.
-    outcome = charge_outcome([request_info.get(MetricsAttributes.BUDGET_FALLBACK_FROM) or project], None)
-    _write_charge_outcome(request_info, outcome)
+    request_info[MetricsAttributes.BUDGET_FALLBACK_FROM] = project
     logger.info(
         f"budget_event=budget_attribution_fallback component=proxy_router user_id={user.id!r} "
-        f"username={user.username!r} fallback_from_project={outcome.fallback_from!r} runtime_project={project!r} "
-        f"charged_scope='personal'"
+        f"username={user.username!r} fallback_from_project={project!r} charged_scope='personal'"
     )
-
-
-def _write_charge_outcome(request_info: dict, outcome: ChargeOutcome) -> None:
-    """Record a charge outcome on request_info, where proxy metrics read it.
-
-    No fallback also drops the funding-unknown mark: it qualifies a fallback, as on the web path, so a target that
-    paid after a failed check is not flagged.
-    """
-    if outcome.fallback_kind is None:
-        request_info.pop(MetricsAttributes.BUDGET_FALLBACK_FROM, None)
-        request_info.pop(MetricsAttributes.BUDGET_FALLBACK_KIND, None)
-        request_info.pop(MetricsAttributes.BUDGET_FUNDING_UNKNOWN, None)
-        return
-    request_info[MetricsAttributes.BUDGET_FALLBACK_FROM] = outcome.fallback_from
-    request_info[MetricsAttributes.BUDGET_FALLBACK_KIND] = outcome.fallback_kind.value
-
-
-def _budget_check_unavailable(user: User, reason: Exception) -> ExtendedHTTPException:
-    """The 503 a CLI request gets when its budget cannot be checked because the database pool is exhausted."""
-    logger.warning(
-        f"budget_event=funded_check_aborted component=proxy_router user_id={user.id!r} "
-        f"username={user.username!r} reason={reason}"
-    )
-    return ExtendedHTTPException(
-        code=503,
-        message="Budget check is temporarily unavailable",
-        details="The budget for this request could not be checked because the service is overloaded.",
-        help="Retry the request in a moment.",
-    )
-
-
-async def _runtime_step_availability(
-    user: User, request_info: dict, *, include_project: bool, user_budget_ids: dict[str, str | None]
-) -> BudgetAvailability:
-    """Availability for one step of the runtime walk; a pool checkout timeout fails as the decision walk does."""
-    from sqlalchemy.exc import TimeoutError as PoolTimeoutError
-
-    try:
-        return await _resolve_budget_availability(
-            user, request_info, include_project=include_project, user_budget_ids=user_budget_ids
-        )
-    except PoolTimeoutError as e:
-        raise _budget_check_unavailable(user, e) from e
-
-
-async def _project_funds_request(
-    user: User, request_info: dict, project: str, user_budget_ids: dict[str, str | None] | None = None
-) -> bool:
-    """Whether the project pays for this request: funded in the category the request will actually use.
-
-    A pool checkout timeout stops the walk instead of counting as unknown funding: every later step would wait for
-    the same pool again, so the request fails at once (final review AR-6).
-    """
-    from sqlalchemy.exc import TimeoutError as PoolTimeoutError
-
-    probe_info = {**request_info, PROJECT: project}
-    try:
-        availability = await _resolve_budget_availability(user, probe_info, user_budget_ids=user_budget_ids)
-    except PoolTimeoutError as e:
-        raise FundingCheckAborted(f"database pool exhausted while checking project {project!r}") from e
-    category, _username, _budget_id, _model = _resolve_tracking_identity(
-        user=user, request_info=probe_info, availability=availability
-    )
-    return category in availability.project_scopes
-
-
-async def _apply_budget_attribution(
-    user: User, request_info: dict, user_budget_ids: dict[str, str | None] | None = None
-) -> AttributionDecision:
-    """Pick the project this CLI/IDE request is charged to: target -> default project -> personal (EPMCDME-16625).
-
-    The header project is honoured only for its members; otherwise it is ignored, logged and kept out of
-    analytics. request_info[PROJECT] becomes the charged project (the personal project when the personal budget pays).
-    """
-    requested = request_info.pop(CLI_REQUESTED_PROJECT, None)
-    attribution_input = attribution_input_for_user(user, kind=AssetKind.CLI, cli_project=requested)
-
-    async def is_funded(project: str) -> bool:
-        return await _project_funds_request(user, request_info, project, user_budget_ids)
-
-    try:
-        decision = await aresolve_attribution(attribution_input, is_funded)
-    except FundingCheckAborted as e:
-        raise _budget_check_unavailable(user, e) from e
-    if decision.ignored_cli_project:
-        logger.info(
-            f"budget_event=cli_project_header_ignored component=proxy_router user_id={user.id!r} "
-            f"username={user.username!r} ignored_project={decision.ignored_cli_project!r} reason=not_a_member"
-        )
-    # When the personal budget pays, name it as the web path does (its email-named personal project), so one user's
-    # personal spend is one analytics bucket on web and CLI. The LiteLLM customer stays the username.
-    request_info[PROJECT] = decision.charged_project or user.email or user.username
-    if decision.funding_unknown and decision.fallback_kind is not None:
-        # Sent with metrics so fallbacks decided while funding was unreadable can be filtered (final review AR-2).
-        request_info[MetricsAttributes.BUDGET_FUNDING_UNKNOWN] = True
-    if decision.fallback_kind is not None:
-        request_info[MetricsAttributes.BUDGET_FALLBACK_FROM] = decision.targeted_project
-        request_info[MetricsAttributes.BUDGET_FALLBACK_KIND] = decision.fallback_kind.value
-        logger.info(
-            f"budget_event=budget_attribution_fallback component=proxy_router user_id={user.id!r} "
-            f"username={user.username!r} fallback_from_project={decision.targeted_project!r} "
-            f"charged_scope={decision.fallback_kind.value!r} charged_project={decision.charged_project!r} "
-            f"funding_unknown={decision.funding_unknown}"
-        )
-    return decision
-
-
-def _runtime_steps(decision: AttributionDecision) -> list[str]:
-    """Projects the stream may charge, in order: the charged project, then the walk's later project steps (AR-1).
-
-    When a funded check failed, every project step is checked again from the target, as model construction does on
-    web, so a passing database error does not move the charge to the personal budget.
-    """
-    if decision.funding_unknown:
-        return list(decision.candidates)
-    charged = decision.charged_project
-    if charged is None:
-        return []
-    if charged in decision.candidates:
-        return list(decision.candidates[decision.candidates.index(charged) :])
-    return [charged]
 
 
 def _resolve_tracking_identity(
@@ -1010,37 +921,6 @@ async def _resolve_bypass_mode_stream(body_bytes: bytes):
     return _stream_body_bytes(body_bytes)
 
 
-async def _resolve_step_runtime(step: str | None, *, user: User, category: BudgetCategory, request_info: dict):
-    """The project budget runtime for one step of the walk; the personal step (None) has none."""
-    if step is None:
-        return None
-    return await _resolve_project_budget_runtime(user=user, category=category, request_info=request_info)
-
-
-def _record_personal_fallback_origin(request_info: dict, decision: AttributionDecision) -> None:
-    """Every project step was tried; the personal fallback names where the request was aimed first."""
-    if not request_info.get(MetricsAttributes.BUDGET_FALLBACK_FROM):
-        request_info[MetricsAttributes.BUDGET_FALLBACK_FROM] = decision.targeted_project
-
-
-def _record_paying_step(user: User, request_info: dict, decision: AttributionDecision, *, paying_step: str) -> None:
-    """Correct the fallback fields when the runtime walk paid at another step than the decision (AR-1).
-
-    The decision's own step keeps what attribution recorded; any other step is named by charge_outcome.
-    """
-    if paying_step == decision.charged_project:
-        return
-    outcome = charge_outcome(decision.candidates, paying_step)
-    _write_charge_outcome(request_info, outcome)
-    if outcome.fallback_kind is not None:
-        logger.info(
-            f"budget_event=budget_attribution_fallback component=proxy_router user_id={user.id!r} "
-            f"username={user.username!r} fallback_from_project={outcome.fallback_from!r} "
-            f"runtime_project={decision.charged_project!r} charged_scope={outcome.fallback_kind.value!r} "
-            f"charged_project={paying_step!r}"
-        )
-
-
 async def _resolve_budget_attribution_stream(
     body_bytes: bytes,
     user: User,
@@ -1087,47 +967,37 @@ async def _resolve_budget_attribution_stream(
             f"reason=non_personal_credentials_bypass_skipped"
         )
 
-    # Read once per request: on a database failure the lookup is not cached, and each step would wait for it again.
-    user_budget_ids = await budget_service.get_all_category_budget_ids_for_request(user.id)
-    decision = await _apply_budget_attribution(user, request_info, user_budget_ids)
-    # When attribution chose the personal budget there is no project budget to resolve: request_info[PROJECT] then
-    # names the personal project only for analytics, and must never be probed or provisioned as a project budget.
-    steps = _runtime_steps(decision)
-    for step in steps or [None]:
-        if step is not None:
-            request_info[PROJECT] = step
-        availability = await _runtime_step_availability(
-            user, request_info, include_project=step is not None, user_budget_ids=user_budget_ids
-        )
-        category, username, tracking_budget_id, llm_model = _resolve_tracking_identity(
+    availability = await _resolve_budget_availability(user, request_info)
+    category, username, tracking_budget_id, llm_model = _resolve_tracking_identity(
+        user=user,
+        request_info=request_info,
+        availability=availability,
+    )
+    # Carried to the header builder on `request_info` so the attribution header names the category this
+    # routing chose rather than deriving it a second time - a second derivation is a second answer the
+    # first time either branch changes. Recorded before the project-budget branch returns: a project's
+    # call left without it would carry no identity at all, and its row would depend on the customer key
+    # being parseable to be attributed.
+    request_info[SPEND_ATTRIBUTION_CATEGORY] = category.value
+
+    project_runtime = await _resolve_project_budget_runtime(
+        user=user,
+        category=category,
+        request_info=request_info,
+    )
+    project_name = request_info.get(PROJECT) or None
+    if project_runtime is not None:
+        request_info[SPEND_ATTRIBUTION_PROJECT] = project_name
+        return await _create_project_runtime_body_stream(
+            body_bytes=body_bytes,
             user=user,
             request_info=request_info,
-            availability=availability,
+            category=category,
+            llm_model=llm_model,
+            project_name=project_name,
+            project_runtime=project_runtime,
         )
-        # Carried to the header builder on `request_info` so the attribution header names the category this
-        # routing chose rather than deriving it a second time - a second derivation is a second answer the
-        # first time either branch changes. Recorded before the project-budget branch returns: a project's
-        # call left without it would carry no identity at all, and its row would depend on the customer key
-        # being parseable to be attributed.
-        request_info[SPEND_ATTRIBUTION_CATEGORY] = category.value
 
-        project_runtime = await _resolve_step_runtime(step, user=user, category=category, request_info=request_info)
-        project_name = request_info.get(PROJECT) or None
-        if project_runtime is not None:
-            _record_paying_step(user, request_info, decision, paying_step=step)
-            request_info[SPEND_ATTRIBUTION_PROJECT] = project_name
-            return await _create_project_runtime_body_stream(
-                body_bytes=body_bytes,
-                user=user,
-                request_info=request_info,
-                category=category,
-                llm_model=llm_model,
-                project_name=project_name,
-                project_runtime=project_runtime,
-            )
-
-    if steps:
-        _record_personal_fallback_origin(request_info, decision)
     # No project runtime was selected for the actual category. An allocation in some
     # other category does not make this request project-funded, so the row names no project.
     request_info[SPEND_ATTRIBUTION_PROJECT] = None

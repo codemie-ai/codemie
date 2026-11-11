@@ -39,7 +39,6 @@ from codemie.chains.base import (
     StreamedGenerationResult,
     Thought,
 )
-from codemie.core.dependecies import scoped_llm_context
 from codemie.configs import logger, config
 from codemie.configs.customer_config import customer_config
 from codemie.enterprise.observability import get_observability_provider
@@ -680,25 +679,22 @@ class WorkflowExecutor:
         raise ImportError(f"{node.custom_node_id} class not found in {package_name} package")
 
     def initialize_assistant(self, assistant: WorkflowAssistant, workflow_state: WorkflowState = None) -> AIToolsAgent:
-        # Members are built while the graph is assembled, before the supervisor builds its own model:
-        # keep the workflow's billing context instead of the last member's (EPMCDME-16625).
-        with scoped_llm_context():
-            return initialize_assistant(
-                workflow_assistant=assistant,
-                workflow_state=workflow_state,
-                user_input=self.user_input,
-                user=self.user,
-                options=AssistantExecutionOptions(
-                    file_names=self.file_names,
-                    thought_queue=self.thought_queue,
-                    resume_execution=self.resume_execution,
-                    execution_id=self.execution_id,
-                    project_name=self.workflow_config.project,
-                    is_global=self.workflow_config.is_global,
-                    request_headers=self.request_headers,
-                    disable_cache=self.disable_cache,
-                ),
-            )
+        return initialize_assistant(
+            workflow_assistant=assistant,
+            workflow_state=workflow_state,
+            user_input=self.user_input,
+            user=self.user,
+            options=AssistantExecutionOptions(
+                file_names=self.file_names,
+                thought_queue=self.thought_queue,
+                resume_execution=self.resume_execution,
+                execution_id=self.execution_id,
+                project_name=self.workflow_config.project,
+                is_global=self.workflow_config.is_global,
+                request_headers=self.request_headers,
+                disable_cache=self.disable_cache,
+            ),
+        )
 
     @classmethod
     def get_iterable_items_by_pointer(cls, source: Any, pointer: str):

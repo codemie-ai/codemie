@@ -18,10 +18,9 @@ from fastapi import Request
 
 from codemie.configs import logger
 from codemie.rest_api.security.idp.base import BaseIdp
-from codemie.rest_api.security.user import User, idp_workspace_name
+from codemie.rest_api.security.user import User
 from codemie.rest_api.security.user_providers import UserProvider
 from codemie.service.user.authentication_service import authentication_service
-from codemie.service.user.idp_user_snapshot_service import idp_user_snapshot_service
 
 
 class LegacyJwtUserProvider(UserProvider):
@@ -54,16 +53,8 @@ class LegacyJwtUserProvider(UserProvider):
         user = await idp.authenticate(request)
 
         # 2. Ensure personal workspace exists (delegate to service)
-        if workspace := idp_workspace_name(user.project_names, user.username):
-            await authentication_service.ensure_project_exists(workspace)
-
-        # No default is stored in IDP-claims mode. Budget attribution derives one (attribution_resolver); it is not
-        # set here because credential lookup reads user.default_project and must stay as it was (EPMCDME-16625).
-
-        # Scheduled and webhook runs start without a token; they read the owner's claims from this snapshot.
-        # Only a token-validating sign-in may write it: LocalIdp trusts a bare user-id header (EPMCDME-16625 AR-5).
-        if idp.validates_token:
-            await idp_user_snapshot_service.remember(user)
+        if user.username and user.username in user.project_names:
+            await authentication_service.ensure_project_exists(user.username)
 
         logger.debug(f"User authenticated (legacy): user_id={user.id}")
         return user

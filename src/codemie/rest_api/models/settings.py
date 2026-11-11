@@ -202,20 +202,6 @@ class LiteLLMContext(BaseModel):
     personal_project: str | None = None
     # Project the request was attributed to before its budget fell back to personal/default.
     budget_fallback_from: str | None = None
-    # Where the charge landed after the fallback: 'default_project' or 'personal' (EPMCDME-16625).
-    budget_fallback_kind: str | None = None
-    # The attribution walk's project steps (target, then default), personal excluded. Model construction walks them
-    # again for the model it builds before it falls to the personal budget (AR-1). None: no attribution ran.
-    budget_candidates: list[str] | None = None
-    # The project the request runs for (the asset's, as before EPMCDME-16625), which picks the deployment tags.
-    # Kept apart from current_project, which names the payer, so attribution does not move a request to another
-    # project's deployments. None: current_project is used.
-    routing_project: str | None = None
-    # A funded check failed when this charge was decided, so the payer may be a fallback only because funding could
-    # not be read (EPMCDME-16625 AR-1). Sent with metrics so such rows can be filtered (final review AR-2).
-    budget_funding_unknown: bool = False
-    # Model construction recorded the payer it actually built for; a re-decision that cannot read funding keeps it.
-    budget_outcome_built: bool = False
 
 
 class AzureDevOpsCredentials(BaseModel):
