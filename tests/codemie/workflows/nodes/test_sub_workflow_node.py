@@ -345,6 +345,30 @@ def test_execute_sets_active_sub_execution_id_before_stream(node, state_schema):
     assert kwargs.get("parent_execution_id") == "parent-exec-id"
 
 
+@pytest.mark.parametrize("parent_attributes", [{"team": "core"}, None])
+def test_execute_child_inherits_parent_run_attributes(node, state_schema, parent_attributes):
+    parent_exec = MagicMock(active_sub_execution_id=None, attributes=parent_attributes)
+    finished_child = MagicMock(overall_status=WorkflowExecutionStatusEnum.SUCCEEDED, output="done")
+
+    with (
+        patch("codemie.workflows.nodes.sub_workflow_node.customer_config") as mock_cfg,
+        patch('codemie.workflows.nodes.sub_workflow_node.WorkflowService') as mock_svc,
+        patch('codemie.workflows.workflow.WorkflowExecutor') as mock_executor,
+    ):
+        mock_cfg.is_feature_enabled.return_value = True
+        mock_cfg.SUBWORKFLOW_MAX_NESTING_DEPTH = 3
+        mock_svc.return_value.get_workflow.return_value = MagicMock(max_nesting_level=None)
+        mock_svc.get_nesting_depth.return_value = 0
+        mock_svc.create_workflow_execution.return_value = MagicMock(execution_id="child-id")
+        mock_svc.find_last_execution_state_output.return_value = ""
+        mock_svc.find_workflow_execution_by_id.side_effect = [parent_exec, finished_child, MagicMock()]
+        mock_executor.create_executor.return_value = MagicMock()
+
+        node.execute(state_schema, {})
+
+    assert mock_svc.create_workflow_execution.call_args.kwargs["attributes"] == parent_attributes
+
+
 # ── T8: INTERRUPTED child → InterruptedException raised, id not cleared ──────
 
 

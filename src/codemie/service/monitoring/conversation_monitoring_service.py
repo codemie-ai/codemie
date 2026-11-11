@@ -16,6 +16,7 @@ from typing import Optional
 
 from codemie.core.dependecies import get_current_project
 from codemie.core.models import TokensUsage
+from codemie.core.run_attributes import build_record_fields
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.feedback import MarkEnum
@@ -57,6 +58,7 @@ class ConversationMonitoringService(BaseMonitoringService):
         status: ConversationStatus,
         request_id: Optional[str] = None,
         client_source: ClientSource | None = None,
+        run_attributes: dict[str, str] | None = None,
     ):
         attributes = {
             MetricsAttributes.USER_ID: user.id,
@@ -84,7 +86,11 @@ class ConversationMonitoringService(BaseMonitoringService):
         if not (tokens_usage.money_spent_pending or tokens_usage.money_spent_unavailable):
             attributes[MetricsAttributes.MONEY_SPENT] = tokens_usage.money_spent
 
-        cls.send_count_metric(name=cls.CONVERSATION_BASE_METRIC + "_assistant_usage", attributes=attributes)
+        cls.send_count_metric(
+            name=cls.CONVERSATION_BASE_METRIC + "_assistant_usage",
+            attributes=attributes,
+            extra_log_fields=build_record_fields(run_attributes),
+        )
 
     @classmethod
     def send_share_conversation_metric(

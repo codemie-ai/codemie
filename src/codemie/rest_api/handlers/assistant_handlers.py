@@ -499,6 +499,7 @@ class AssistantRequestHandler(ToolCallResumeMixin, ABC):
                 in_progress=data.in_progress,
                 client_source=self.client_source,
                 llm_model=execution_model,
+                attributes=data.request.attributes,
             )
         )
         if not data.in_progress:

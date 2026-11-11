@@ -32,6 +32,7 @@ from sqlmodel import select, and_, delete, func, or_, text, Session
 from codemie.chains.base import Thought
 from codemie.clients.postgres import get_session
 from codemie.configs import config, logger
+from codemie.core.ability import Ability, Action
 from codemie.core.event_loop import run_coroutine_blocking
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import AssistantChatRequest, UpdateConversationRequest, UpdateAiMessageRequest, TokensUsage
@@ -273,6 +274,7 @@ class UpsertChatHistoryParams:
     client_source: ClientSource | None = None
     # The model the agent runs on (agent.llm_model); falls back to the request pick, then the assistant's own model.
     llm_model: str | None = None
+    attributes: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.tokens_usage is None:
@@ -460,6 +462,12 @@ class ConversationService:
         status: ConversationStatus,
         schedule_naming: bool,
     ) -> None:
+        # Rejected requests also reach completion through error-history persistence.
+        # Their usage records must not expose attributes from an unreadable conversation.
+        run_attributes = params.attributes
+        if Ability(params.user).can(Action.READ, conversation):
+            run_attributes = conversation.attributes
+
         ConversationMonitoringService.send_conversation_metric(
             params.user,
             params.assistant,
@@ -470,6 +478,7 @@ class ConversationService:
             status,
             request_id=params.request_id,
             client_source=params.client_source,
+            run_attributes=run_attributes,
         )
         cls._emit_routing_metrics(
             user=params.user,
@@ -515,6 +524,8 @@ class ConversationService:
         )
         if not should_create_conversation:
             _guard_finished(conversation)
+        if params.attributes and (should_create_conversation or not conversation.history):
+            conversation.attributes = params.attributes
 
         request.history_index = cls._resolve_history_index(request, conversation)
         history_index = request.history_index
@@ -2158,7 +2169,7 @@ class ConversationService:
                     user_id, user_name, assistant_ids, assistant_data, initial_assistant_id,
                     final_user_mark, final_operator_mark, project, mcp_server_single_usage,
                     is_workflow_conversation, conversation_details, assistant_details,
-                    user_abilities, date, update_date, finished_at,
+                    user_abilities, date, update_date, finished_at, attributes,
                     jsonb_array_length(COALESCE(history, '[]'::jsonb)) AS total_count,
                     (SELECT MIN((elem->>'date')::timestamptz)
                      FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem

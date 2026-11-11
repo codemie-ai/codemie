@@ -583,16 +583,20 @@ class SpendService:
         return _combined_cost(costs)
 
     async def costs_for_requests(self, request_ids: Sequence[str]) -> dict[str, RequestCost]:
-        """`cost_for_request(request_id=...)` for every id of a page, in one read per ledger.
+        """`cost_for_request(request_id=...)` for every id, in one read per ledger per batch.
 
         Each id is combined across ledgers exactly as `cost_for_request` combines one. An id a ledger
-        left out is that ledger answering unavailable for it; a ledger that failed leaves every id
-        unavailable.
+        left out is that ledger answering unavailable for it; a ledger that failed a batch leaves every
+        id of that batch unavailable.
         """
         requested = list(dict.fromkeys(request_ids))
-        if not requested:
-            return {}
+        batch_size = max(1, config.SPEND_LEDGER_REQUEST_COST_BATCH_SIZE)
+        costs: dict[str, RequestCost] = {}
+        for start in range(0, len(requested), batch_size):
+            costs.update(await self._costs_for_request_batch(requested[start : start + batch_size]))
+        return costs
 
+    async def _costs_for_request_batch(self, requested: list[str]) -> dict[str, RequestCost]:
         per_ledger: list[dict[str, RequestCost] | None] = [
             await self._ask(ledger, "costs_for_requests", None, ledger.costs_for_requests(requested), None)
             for ledger in _distinct_ledgers()

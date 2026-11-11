@@ -692,6 +692,22 @@ class TestSaveChatHistory:
             assert params is not None
             assert params.background_tasks is sentinel_background_tasks
 
+    def test_save_chat_history_forwards_request_attributes(self, handler):
+        request = AssistantChatRequest(text="Hello", attributes={"team": "core"})
+        data = ChatHistoryData(execution_start=time(), request=request, response="Response", thoughts=[])
+
+        with (
+            patch("codemie.service.llm_service.utils.set_llm_context"),
+            patch("codemie.rest_api.handlers.assistant_handlers.ConversationService") as mock_service,
+            patch("codemie.rest_api.handlers.assistant_handlers.request_summary_manager") as mock_manager,
+        ):
+            mock_manager.get_summary.return_value = Mock(tokens_usage=Mock())
+
+            handler.save_chat_history(data)
+
+        params = mock_service.upsert_chat_history.call_args.args[0]
+        assert params.attributes == {"team": "core"}
+
     def test_background_tasks_defaults_to_none_before_process_request(self, handler):
         """Handler instances start with no background_tasks until process_request sets it"""
         assert handler.background_tasks is None

@@ -58,6 +58,7 @@ do nothing but add them - which is how a $37.50 hole is reported as $450 against
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from typing import cast
 from datetime import datetime, timezone
 
@@ -259,7 +260,7 @@ def combine_rendered_spend(rendered: list[RenderedSpend]) -> RenderedSpend:
     )
 
     return RenderedSpend(
-        figure=float(sum(figures)) if figures else None,
+        figure=float(sum(Decimal(str(figure)) for figure in figures)) if figures else None,
         unavailable=any(item.unavailable for item in rendered),
         partial=bool(partials) or (bool(figures) and any(item.figure is None for item in rendered)),
         # Summed in `Decimal` over the distinct holes and floated once, like every figure here.

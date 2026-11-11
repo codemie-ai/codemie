@@ -29,6 +29,7 @@ from typing import Any, Awaitable, Callable
 
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.access_filter import AccessFilter
@@ -56,6 +57,7 @@ class AnalyticsQueryFilters:
     page: int = 0
     per_page: int = 20
     client_source: str | None = None
+    attributes: dict[str, str] | None = None
     assistant_id: str | None = None
 
 
@@ -81,6 +83,12 @@ class EnrichedRows:
 
 #: Fills row values the aggregation could not produce, given the window the query covered.
 RowEnricher = Callable[[list[dict], datetime, datetime], Awaitable[EnrichedRows]]
+
+#: Fills row values inside an aggregation snapshot, given its search, the filtered query and the rows.
+SnapshotRowEnricher = Callable[
+    [Callable[[dict[str, Any]], Awaitable[dict[str, Any]]], dict[str, Any], list[dict[str, Any]]],
+    Awaitable[EnrichedRows],
+]
 
 
 def _paginated_buckets(result: dict) -> list[dict]:
@@ -400,6 +408,74 @@ class AnalyticsQueryPipeline:
             self._repository.execute_aggregation_query(totals_agg_body),
         )
         return data_result, totals_result
+
+    async def execute_exact_tabular_query(
+        self,
+        selection_builder: Callable[[dict[str, Any], int], dict[str, Any]],
+        details_builder: Callable[[dict[str, Any], list[str]], dict[str, Any]],
+        result_parser: Callable[[dict[str, Any]], list[dict[str, Any]]],
+        columns: list[dict[str, Any]],
+        group_by_field: str,
+        filters: AnalyticsQueryFilters,
+        totals_aggs: dict[str, dict[str, Any]],
+        row_enricher: SnapshotRowEnricher | None = None,
+    ) -> dict[str, Any]:
+        """Select a page of groups, then aggregate all their documents in the same snapshot.
+
+        `row_enricher` runs inside the snapshot with its search, the full filtered query and the page's
+        rows; the footer entries it returns join the global totals.
+        """
+        start_time = time.time()
+        start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
+        query = self._build_query(start_dt, end_dt, filters)
+        fetch_size = (filters.page + 1) * filters.per_page
+        selection_body = selection_builder(query, fetch_size)
+        AggregationBuilder.add_cardinality_for_total(selection_body, field=group_by_field)
+        AggregationBuilder.inject_global_totals(selection_body, totals_aggs)
+
+        async with self._repository.aggregation_snapshot() as snapshot:
+            selection = await snapshot.search(selection_body)
+            aggs = selection.get("aggregations", {})
+            buckets = aggs.get("paginated_results", {}).get("buckets", [])
+            page_buckets = AggregationBuilder.slice_buckets_for_page(buckets, filters.page, filters.per_page)
+            group_ids = [bucket["key"] for bucket in page_buckets]
+            complete_buckets = []
+            if group_ids:
+                details = await snapshot.search(details_builder(query, group_ids))
+                by_id = {
+                    bucket["key"]: bucket
+                    for bucket in details.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
+                }
+                if any(group_id not in by_id for group_id in group_ids):
+                    raise ExtendedHTTPException(
+                        code=503,
+                        message="Incomplete workflow analytics",
+                        details="An execution selected from the snapshot is missing from its complete aggregation.",
+                    )
+                complete_buckets = [by_id[group_id] for group_id in group_ids]
+
+            total_count = int(aggs.get("total_buckets", {}).get("value", 0))
+            rows = result_parser({"aggregations": {"paginated_results": {"buckets": complete_buckets}}})
+            totals = AggregationBuilder.extract_global_totals(selection, totals_aggs) if total_count else {}
+            if row_enricher is not None and total_count:
+                enriched = await row_enricher(snapshot.search, query, rows)
+                rows = enriched.rows
+                totals = {**totals, **enriched.totals}
+
+        response = ResponseFormatter.format_tabular_response(
+            rows=rows,
+            columns=columns,
+            filters_applied=self._build_filters_applied(filters, start_dt, end_dt),
+            execution_time_ms=(time.time() - start_time) * 1000,
+            totals=totals,
+            page=filters.page,
+            per_page=filters.per_page,
+            total_count=total_count,
+        )
+        response["pagination"]["has_more"] = (
+            len(buckets) == fetch_size and (filters.page + 1) * filters.per_page < response["pagination"]["total_count"]
+        )
+        return response
 
     async def execute_tabular_query_with_flattened_rows(
         self,
@@ -797,6 +873,14 @@ class AnalyticsQueryPipeline:
         # Calculate totals from all rows
         return TotalsCalculator.calculate_totals(columns=columns, rows=all_rows_for_totals)
 
+    def secure_query(self, start_dt: datetime, end_dt: datetime, filters: AnalyticsQueryFilters) -> dict[str, Any]:
+        """The access-scoped query every table built from `filters` over this window reads."""
+        return self._build_query(start_dt, end_dt, filters)
+
+    async def search_aggregation(self, body: dict[str, Any]) -> dict[str, Any]:
+        """One aggregation search against the metrics store."""
+        return await self._repository.execute_aggregation_query(body)
+
     def _build_query(
         self,
         start_dt: datetime,
@@ -816,6 +900,8 @@ class AnalyticsQueryPipeline:
             query_builder.add_project_filter(filters.projects)
         if filters.client_source:
             query_builder.add_client_source_filter(filters.client_source)
+        if filters.attributes:
+            query_builder.add_attributes_filter(filters.attributes)
         if filters.assistant_id:
             query_builder.add_assistant_filter(filters.assistant_id)
 
@@ -862,6 +948,7 @@ def tabular_filters_applied(filters: AnalyticsQueryFilters, start_dt: datetime, 
         "projects": filters.projects,
         "client_source": filters.client_source,
         "assistant_id": filters.assistant_id,
+        "attributes": filters.attributes,
     }
 
 

@@ -480,6 +480,46 @@ class TestAPageOfRequestsIsCostedInOneReadPerLedger:
         assert only.request_ids_seen == []
 
 
+class _FailingBatchLedger(_StubLedger):
+    def __init__(self, name, failing_id, request_costs):
+        super().__init__(name, request_costs=request_costs)
+        self._failing_id = failing_id
+
+    async def costs_for_requests(self, request_ids):
+        if self._failing_id in request_ids:
+            self.request_ids_seen.append(list(request_ids))
+            raise RuntimeError("ledger down")
+        return await super().costs_for_requests(request_ids)
+
+
+class TestALargeSetOfRequestsIsCostedInBatches:
+    def test_each_ledger_is_asked_once_per_batch(self):
+        only = _StubLedger("a", request_costs={f"q-{i}": RequestCost.settled(Decimal(i)) for i in range(5)})
+        with (
+            registry({LLMCallClass.CHAT: only, LLMCallClass.EMBEDDINGS: only}),
+            patch.object(spend_service.config, "SPEND_LEDGER_REQUEST_COST_BATCH_SIZE", 2),
+        ):
+            costs = asyncio.run(SERVICE.costs_for_requests([f"q-{i}" for i in range(5)]))
+
+        assert only.request_ids_seen == [["q-0", "q-1"], ["q-2", "q-3"], ["q-4"]]
+        assert costs == {f"q-{i}": RequestCost.settled(Decimal(i)) for i in range(5)}
+
+    def test_a_failed_batch_leaves_only_its_own_requests_unavailable(self):
+        ledger = _FailingBatchLedger(
+            "a", failing_id="q-2", request_costs={f"q-{i}": RequestCost.settled(Decimal(i)) for i in range(4)}
+        )
+        with (
+            registry({LLMCallClass.CHAT: ledger, LLMCallClass.EMBEDDINGS: ledger}),
+            patch.object(spend_service.config, "SPEND_LEDGER_REQUEST_COST_BATCH_SIZE", 2),
+        ):
+            costs = asyncio.run(SERVICE.costs_for_requests(["q-0", "q-1", "q-2", "q-3"]))
+
+        assert costs["q-0"] == RequestCost.settled(Decimal("0"))
+        assert costs["q-1"] == RequestCost.settled(Decimal("1"))
+        assert costs["q-2"] == RequestCost.unavailable()
+        assert costs["q-3"] == RequestCost.unavailable()
+
+
 def _no_metric_store_ids():
     """The union class's id set, stubbed - these tests are about composition, not about resolution."""
     return patch.object(SpendService, "_metric_store_ids", return_value=())

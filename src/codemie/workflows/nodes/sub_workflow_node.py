@@ -117,6 +117,7 @@ class SubWorkflowNode(BaseNode):
             user.as_user_model(),
             child_input,
             parent_execution_id=self.execution_id,
+            attributes=parent_exec.attributes if parent_exec else None,
         )
 
         graph = workflow_pool.acquire(self.sub_workflow_id, child_config)

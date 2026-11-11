@@ -36,7 +36,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from typing import Any
 
+from codemie.core.run_attributes import PAIRS_RECORD_FIELD, attributes_from_record
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import USER_EMAIL_KEYWORD_FIELD, USER_NAME_KEYWORD_FIELD
@@ -47,6 +49,12 @@ from codemie.service.analytics.handlers.money_coverage import (
     split_at_floor,
 )
 from codemie.service.analytics.handlers.report_filter import report_filter_for
+from codemie.service.analytics.handlers.request_spend import (
+    Search,
+    collect_request_usage,
+    price_filtered_requests,
+    price_requests,
+)
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import (
     AnalyticsQueryFilters,
@@ -63,6 +71,7 @@ from codemie.service.spend.rendering import (
     combine_rendered_spend,
     render_spend,
     report_period_or_none,
+    spend_footer,
 )
 from codemie.service.spend.spend_service import spend_service
 
@@ -82,12 +91,23 @@ TIMESTAMP_FIELD = "@timestamp"
 #: What both tables group on: the only key every workflow document in the metric store carries.
 #: Mutable and not unique, so a rename is two rows and a shared name is one - see the module docstring.
 WORKFLOW_NAME_KEYWORD_FIELD = "attributes.workflow_name.keyword"
+OUTPUT_TOKENS_FIELD = "attributes.output_tokens"
+EXECUTION_LATEST_FIELDS = (
+    "workflow_name",
+    "status",
+    "user_id",
+    "user_name",
+    "user_email",
+    "project",
+    PAIRS_RECORD_FIELD,
+)
 
 # The ledger-filled columns of the two tables, named once so the enricher that writes each one and
 # the column list that displays it cannot drift apart.
 WORKFLOWS_MONEY_COLUMN = "total_cost_usd"
 WORKFLOWS_AVG_COST_COLUMN = "avg_cost_usd"
 TOP_USAGE_MONEY_COLUMN = "money_spent"
+EXECUTIONS_MONEY_COLUMN = "money_spent"
 
 #: The pre-floor money sub-aggregation, its sum, and the row key that figure travels to the enricher
 #: on. The row key is underscore-prefixed and **popped** before the row is published: it carries a
@@ -178,6 +198,7 @@ class WorkflowHandler:
         page: int = 0,
         per_page: int = 20,
         client_source: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> dict:
         """Get workflow execution analytics.
 
@@ -191,8 +212,20 @@ class WorkflowHandler:
 
         # Read **once** for the whole request and handed to both halves of the split: the
         # aggregation that scopes the pre-floor money and the enricher that decides which legs run.
-        pre_floor = self._pre_floor_boundary()
+        pre_floor = None if attributes else self._pre_floor_boundary()
         report_filter = await report_filter_for(users, projects)
+        filters = AnalyticsQueryFilters(
+            metric_filters=[MetricName.WORKFLOW_EXECUTION_TOTAL.value],
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+            client_source=client_source,
+            attributes=attributes,
+        )
 
         return await self._pipeline.execute_enriched_tabular_query(
             agg_builder=lambda query, fetch_size: self._build_workflows_aggregation(query, fetch_size, pre_floor),
@@ -200,19 +233,9 @@ class WorkflowHandler:
             columns=self._get_workflows_columns(),
             group_by_field=WORKFLOW_NAME_KEYWORD_FIELD,
             row_enricher=lambda rows, start_dt, end_dt: self._enrich_workflows_spending(
-                rows, start_dt, end_dt, pre_floor, client_source, report_filter
+                rows, start_dt, end_dt, pre_floor, client_source, report_filter, filters
             ),
-            filters=AnalyticsQueryFilters(
-                metric_filters=[MetricName.WORKFLOW_EXECUTION_TOTAL.value],
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-                client_source=client_source,
-            ),
+            filters=filters,
         )
 
     def _build_workflows_aggregation(self, query: dict, fetch_size: int, pre_floor: datetime | None = None) -> dict:
@@ -348,11 +371,30 @@ class WorkflowHandler:
         pre_floor: datetime | None = None,
         client_source: str | None = None,
         report_filter: ReportFilter | None = None,
+        filters: AnalyticsQueryFilters | None = None,
     ) -> EnrichedRows:
-        """Fill each workflow's cost and per-run cost, then order and total the table by it."""
-        rendered = await self._workflow_spend(
-            rows, report_period_or_none(start_dt, end_dt, client_source), pre_floor, report_filter
-        )
+        """Fill each workflow's cost and per-run cost, then order and total the table by it.
+
+        Under an `attributes` filter the ledger cannot narrow a workflow's spend to the labelled runs, so
+        each workflow's cost is the sum of its filtered executions, priced per execution id.
+        """
+        if filters is not None and filters.attributes and rows:
+            for row in rows:
+                row.pop(PRE_FLOOR_MONEY_KEY, None)
+            priced = await price_filtered_requests(
+                self._pipeline,
+                filters,
+                start_dt,
+                end_dt,
+                group_field=WORKFLOW_NAME_KEYWORD_FIELD,
+                id_fields=(EXECUTION_ID_KEYWORD_FIELD,),
+                cost_bearing={"exists": {"field": INPUT_TOKENS_FIELD}},
+            )
+            rendered = [priced.get(row["workflow_name"], render_spend(None)) for row in rows]
+        else:
+            rendered = await self._workflow_spend(
+                rows, report_period_or_none(start_dt, end_dt, client_source), pre_floor, report_filter
+            )
         apply_spend_cells(rows, rendered, WORKFLOWS_MONEY_COLUMN)
         for row, figure in zip(rows, rendered, strict=True):
             # No annotation of its own: the ratio is derived from the same figure as the money cell,
@@ -377,6 +419,172 @@ class WorkflowHandler:
             {"id": "avg_time_seconds", "label": "Avg Time (s)", "type": "number"},
             {"id": "users", "label": "Users", "type": "number"},
             {"id": "last_run", "label": "Last Run", "type": "string", "format": "timestamp"},
+        ]
+
+    async def get_workflows_executions(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+        client_source: str | None = None,
+        attributes: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Get one row per workflow execution (its workflow_execution_total documents grouped), newest first."""
+        logger.info("Requesting workflows-executions analytics")
+
+        return await self._pipeline.execute_exact_tabular_query(
+            selection_builder=self._build_workflows_executions_selection,
+            details_builder=self._build_workflows_executions_aggregation,
+            result_parser=self._parse_workflows_executions_result,
+            columns=self._get_workflows_executions_columns(),
+            group_by_field=EXECUTION_ID_KEYWORD_FIELD,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.WORKFLOW_EXECUTION_TOTAL.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+                client_source=client_source,
+                attributes=attributes,
+            ),
+            totals_aggs={
+                "input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
+                "output_tokens": {"sum": {"field": OUTPUT_TOKENS_FIELD}},
+            },
+            row_enricher=self._cost_workflows_executions,
+        )
+
+    @staticmethod
+    async def _cost_workflows_executions(
+        search: Search, query: dict[str, Any], rows: list[dict[str, Any]]
+    ) -> EnrichedRows:
+        """Each execution's cost, and the total over every execution in range, priced per execution id."""
+        listed = await collect_request_usage(
+            search,
+            query,
+            group_field=None,
+            id_fields=(EXECUTION_ID_KEYWORD_FIELD,),
+            cost_bearing={"exists": {"field": INPUT_TOKENS_FIELD}},
+        )
+        priced = await price_requests({usage.request_id: [usage] for usage in listed.get(None, [])})
+        apply_spend_cells(
+            rows,
+            [priced.get(row["execution_id"], render_spend(None)) for row in rows],
+            EXECUTIONS_MONEY_COLUMN,
+        )
+        return EnrichedRows(
+            rows=rows,
+            columns=(EXECUTIONS_MONEY_COLUMN,),
+            totals=spend_footer(EXECUTIONS_MONEY_COLUMN, list(priced.values())),
+        )
+
+    def _build_workflows_executions_selection(self, query: dict[str, Any], fetch_size: int) -> dict[str, Any]:
+        """Select execution ids in newest-activity order without using approximate per-bucket sums."""
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+
+        return {
+            "query": query,
+            "size": 0,
+            "aggs": {
+                "paginated_results": AggregationBuilder.build_terms_agg(
+                    group_by_field=EXECUTION_ID_KEYWORD_FIELD,
+                    fetch_size=fetch_size,
+                    order={"last_activity": "desc"},
+                    sub_aggs={"last_activity": {"max": {"field": TIMESTAMP_FIELD}}},
+                )
+            },
+        }
+
+    def _build_workflows_executions_aggregation(
+        self, query: dict[str, Any], execution_ids: list[str]
+    ) -> dict[str, Any]:
+        """Aggregate every matching document for each selected id; all groups fit on every shard."""
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+
+        sub_aggs = {
+            "input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
+            "output_tokens": {"sum": {"field": OUTPUT_TOKENS_FIELD}},
+            "execution_time": {"max": {"field": "attributes.execution_time"}},
+            "last_activity": {"max": {"field": TIMESTAMP_FIELD}},
+            "latest": {
+                "top_hits": {
+                    "size": 1,
+                    "sort": [{TIMESTAMP_FIELD: {"order": "desc"}}],
+                    "_source": {"includes": [f"attributes.{field}" for field in EXECUTION_LATEST_FIELDS]},
+                }
+            },
+        }
+
+        terms_agg = AggregationBuilder.build_terms_agg(
+            group_by_field=EXECUTION_ID_KEYWORD_FIELD,
+            fetch_size=len(execution_ids),
+            order={"_key": "asc"},
+            sub_aggs=sub_aggs,
+        )
+
+        return {
+            "query": {"bool": {"filter": [query, {"terms": {EXECUTION_ID_KEYWORD_FIELD: execution_ids}}]}},
+            "size": 0,
+            "aggs": {"paginated_results": terms_agg},
+        }
+
+    @staticmethod
+    def _parse_workflows_executions_result(result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Parse one row per execution bucket; absent run fields become None."""
+        rows = []
+        for bucket in result.get("aggregations", {}).get("paginated_results", {}).get("buckets", []):
+            hits = bucket.get("latest", {}).get("hits", {}).get("hits", [])
+            latest = hits[0].get("_source", {}).get("attributes", {}) if hits else {}
+            input_tokens = int(bucket.get("input_tokens", {}).get("value") or 0)
+            output_tokens = int(bucket.get("output_tokens", {}).get("value") or 0)
+            execution_time = bucket.get("execution_time", {}).get("value")
+            rows.append(
+                {
+                    "execution_id": bucket["key"],
+                    "last_activity": bucket.get("last_activity", {}).get("value_as_string"),
+                    "workflow_name": latest.get("workflow_name"),
+                    "status": latest.get("status"),
+                    "user_id": latest.get("user_id"),
+                    "user_name": latest.get("user_name"),
+                    "user_email": latest.get("user_email"),
+                    "project": latest.get("project"),
+                    "usage_records": bucket.get("doc_count", 0),
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    EXECUTIONS_MONEY_COLUMN: None,
+                    "execution_time": round(execution_time, 2) if execution_time is not None else None,
+                    "attributes": attributes_from_record(latest),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _get_workflows_executions_columns() -> list[dict[str, Any]]:
+        """Get column definitions for workflows-executions."""
+        return [
+            {"id": "execution_id", "label": "Execution", "type": "string"},
+            {"id": "last_activity", "label": "Last Activity", "type": "date"},
+            {"id": "workflow_name", "label": "Workflow", "type": "string"},
+            {"id": "status", "label": "Status", "type": "string"},
+            {"id": "user_id", "label": "User ID", "type": "string"},
+            {"id": "user_name", "label": "User", "type": "string"},
+            {"id": "user_email", "label": "User Email", "type": "string"},
+            {"id": "project", "label": "Project", "type": "string"},
+            {"id": "usage_records", "label": "Usage Records", "type": "number"},
+            {"id": "input_tokens", "label": "Input Tokens", "type": "number"},
+            {"id": "output_tokens", "label": "Output Tokens", "type": "number"},
+            {"id": "total_tokens", "label": "Total Tokens", "type": "number"},
+            {"id": EXECUTIONS_MONEY_COLUMN, "label": "Cost ($)", "type": "number", "format": "currency"},
+            {"id": "execution_time", "label": "Time (s)", "type": "number"},
+            {"id": "attributes", "label": "Attributes", "type": "json"},
         ]
 
     async def get_top_workflow_usage(

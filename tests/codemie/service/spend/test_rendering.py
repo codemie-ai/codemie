@@ -133,6 +133,21 @@ class TestTheFooter:
 
         assert footer["total_cost_usd"] == pytest.approx(0.004)
 
+    @pytest.mark.parametrize(
+        "parts, expected",
+        [
+            (["0.003248", "0.003584"], 0.006832),
+            (["0.00022", "0.000246"], 0.000466),
+            (["0.000218", "0.000242", "0.000266"], 0.000726),
+        ],
+    )
+    def test_the_total_carries_no_binary_float_noise(self, parts, expected) -> None:
+        rendered = [render_spend(SpendResult(figure=Decimal(part))) for part in parts]
+
+        footer = spend_footer("total_cost_usd", rendered)
+
+        assert footer["total_cost_usd"] == expected
+
 
 class TestCombiningFigures:
     """One hole shared by many rows against many rows each holding their own - the pair that must

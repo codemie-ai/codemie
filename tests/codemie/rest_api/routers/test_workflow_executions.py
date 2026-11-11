@@ -136,6 +136,55 @@ async def test_create_workflow_execution_success(
     assert response.json()["execution_id"] == WORKFLOW_EXECUTION.execution_id
 
 
+@pytest.mark.usefixtures(
+    "mock_request_summary_manager",
+    "mock_workflow_executor",
+    "mock_validate_remote_entities",
+)
+@pytest.mark.asyncio
+async def test_create_workflow_execution_stores_request_attributes(
+    mock_workflow_service: MagicMock,
+    mock_authentication: MagicMock,
+    mock_ability: MagicMock,
+    request_headers: dict,
+) -> None:
+    mock_ability.return_value.can.return_value = True
+    mock_authentication.authenticate.return_value = USER
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            WORKFLOW_EXECUTIONS_URL,
+            json={"user_input": "input_data", "attributes": {"team": "core"}},
+            headers=request_headers,
+        )
+
+    assert response.status_code == 200
+    create_call = mock_workflow_service.return_value.create_workflow_execution.call_args
+    assert create_call.kwargs["attributes"] == {"team": "core"}
+
+
+@pytest.mark.usefixtures("mock_request_summary_manager", "mock_workflow_executor", "mock_validate_remote_entities")
+@pytest.mark.asyncio
+async def test_create_workflow_execution_rejects_invalid_attributes(
+    mock_workflow_service: MagicMock,
+    mock_ability: MagicMock,
+    request_headers: dict,
+) -> None:
+    mock_ability.return_value.can.return_value = True
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            WORKFLOW_EXECUTIONS_URL,
+            json={"user_input": "input_data", "attributes": {"codemie.team": "core"}},
+            headers=request_headers,
+        )
+
+    assert response.status_code == 422
+    mock_workflow_service.return_value.create_workflow_execution.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_create_workflow_execution_access_denied() -> None:
     request = CreateWorkflowExecutionRequest(user_input="input_data")

@@ -28,6 +28,7 @@ from pydantic import BaseModel, field_validator
 
 from codemie.configs.config import config
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.run_attributes import RunAttributesError, parse_attributes_filter
 from codemie.utils.datetime_utils import to_utc
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,13 @@ PROJECTS_FILTER_ADMIN_DESC = "Filter by projects (comma-separated, admin only)"
 USERS_FILTER_DESC = "Filter by users (comma-separated user IDs)"
 PROJECTS_FILTER_DESC = "Filter by projects (comma-separated project names)"
 CLIENT_SOURCE_FILTER_DESC = "Filter by client source (platform, teams, cli, sdk, chrome_extension, or other)"
+ATTRIBUTES_FILTER_DESC = (
+    'Filter by run attributes: a JSON object of string keys and string values, e.g. {"team": "alpha"}. '
+    "Only runs that carry all the given attributes are counted, and costs are those of the matching runs, "
+    "priced per run from the LiteLLM spend ledger. "
+    "Keys and values follow the run attribute rules; an invalid filter returns 422. "
+    "Values are declared by the callers who start the runs and are not verified."
+)
 
 
 ERROR_MSG_PROJECT_EMPTY = "project field cannot be empty or whitespace-only"
@@ -93,6 +101,19 @@ def handle_analytics_errors(endpoint_name: str) -> Callable:
         return wrapper
 
     return decorator
+
+
+def _parse_attributes_param(raw: str | None) -> dict[str, str] | None:
+    """Parse the `attributes` query parameter, mapping validation failures to HTTP 422."""
+    try:
+        return parse_attributes_filter(raw)
+    except RunAttributesError as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Invalid attributes filter",
+            details=str(e),
+            help='Pass attributes as a JSON object of string keys and string values, e.g. {"team": "alpha"}.',
+        ) from e
 
 
 def _create_response(data: dict, model_class) -> JSONResponse:

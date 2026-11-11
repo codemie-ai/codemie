@@ -20,16 +20,20 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import JSONResponse
 
+from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.run_attributes import RunAttributesError, validate_attribute_key
 from codemie.rest_api.models.analytics import (
     SummariesResponse,
     TabularResponse,
 )
 from codemie.rest_api.routers.analytics._common import (
+    ATTRIBUTES_FILTER_DESC,
     CLIENT_SOURCE_FILTER_DESC,
     PROJECTS_FILTER_DESC,
     USERS_FILTER_DESC,
     AnalyticsQueryParams,
     _create_response,
+    _parse_attributes_param,
     handle_analytics_errors,
 )
 from codemie.rest_api.security.authentication import authenticate
@@ -138,8 +142,10 @@ async def get_assistants_chats(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
     client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
+    attributes: str | None = Query(None, description=ATTRIBUTES_FILTER_DESC),
 ) -> JSONResponse:
     """Get assistants chats analytics."""
+    attributes_filter = _parse_attributes_param(attributes)
     service = AnalyticsService(user)
     data = await service.get_assistants_chats(
         params.time_period,
@@ -150,6 +156,7 @@ async def get_assistants_chats(
         params.page,
         params.per_page,
         client_source=client_source.value if client_source else None,
+        attributes=attributes_filter,
     )
     return _create_response(data, TabularResponse)
 
@@ -165,7 +172,10 @@ them. A request is one assistant turn, i.e. one HTTP request identified by `requ
 Error message and error class are not stored in the metric, so only `status` is available. \
 Requests made with `save_history=False` and requests to virtual assistants emit no usage document and \
 are absent here, exactly as they are from `assistants-chats`. Attributes missing from a document \
-(older documents may lack `request_id`) are returned as `null`.
+(older documents may lack `request_id`) are returned as `null`. `attributes` holds the run attributes of the \
+conversation as a `{key: value}` object, or `null` when the conversation has none. The `attributes` filter \
+keeps only requests of conversations that carry all the given attributes, which lists every request of the matching \
+chats.
 
 **Paging:** `page`/`per_page` page through the matching rows newest first. Elasticsearch counts and \
 serves at most the first 10,000 matching rows, so `total_count` stops at 10,000; narrow the date range or \
@@ -207,8 +217,10 @@ async def get_assistants_requests(
     params: AnalyticsQueryParams = Depends(),
     client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
     assistant_id: str | None = Query(None, description="Exact assistant id"),
+    attributes: str | None = Query(None, description=ATTRIBUTES_FILTER_DESC),
 ) -> JSONResponse:
     """Get one analytics row per assistant request."""
+    attributes_filter = _parse_attributes_param(attributes)
     service = AnalyticsService(user)
     data = await service.get_assistants_requests(
         time_period=params.time_period,
@@ -220,6 +232,7 @@ async def get_assistants_requests(
         per_page=params.per_page,
         client_source=client_source.value if client_source else None,
         assistant_id=assistant_id,
+        attributes=attributes_filter,
     )
     return _create_response(data, TabularResponse)
 
@@ -235,8 +248,10 @@ async def get_workflows(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
     client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
+    attributes: str | None = Query(None, description=ATTRIBUTES_FILTER_DESC),
 ) -> JSONResponse:
     """Get workflows analytics."""
+    attributes_filter = _parse_attributes_param(attributes)
     service = AnalyticsService(user)
     data = await service.get_workflows(
         params.time_period,
@@ -247,6 +262,83 @@ async def get_workflows(
         params.page,
         params.per_page,
         client_source=client_source.value if client_source else None,
+        attributes=attributes_filter,
+    )
+    return _create_response(data, TabularResponse)
+
+
+WORKFLOWS_EXECUTIONS_DESCRIPTION = """\
+One row per workflow execution (`execution_id`), most recent activity first.
+
+**Source:** the `workflow_execution_total` usage documents in Elasticsearch, the same documents behind \
+`workflows`. One execution writes several of them (one per LLM call, or one aggregated document, and more \
+after a resume), so a row groups all documents of one execution: `input_tokens`, `output_tokens` and \
+`total_tokens` are summed, `usage_records` counts the documents, `execution_time` \
+(seconds) is the largest reported and `last_activity` is the newest document timestamp. `workflow_name`, \
+`status`, user, `project` and `attributes` come from the newest document, so `status` is the latest \
+reported status. An execution appears once it has written a usage document; executions deleted after \
+completion (`delete_on_completion`) are still listed.
+
+**Field availability:** `total_tokens` is `input_tokens + output_tokens` and excludes cached tokens; \
+`money_spent` excludes `cached_tokens_money_spent`, as in `workflows`. `attributes` holds the run \
+attributes of the execution as a `{key: value}` object, or `null` when it has none. The `attributes` filter \
+keeps only executions that carry all the given attributes. Fields missing from a document are `null`.
+
+**Cost:** `money_spent` is the whole execution's cost. For executions first seen on or after the LiteLLM \
+spend ledger's coverage start it comes from the ledger, keyed on `execution_id`; for older executions and on \
+deployments without the ledger it is the sum of the usage documents' cost. A cost the ledger has not recorded \
+yet is `null` with `spend_unavailable: true`, and a document sum missing unsettled costs has \
+`spend_partial: true`. `totals.money_spent` is the cost of every execution in the filtered range, not only \
+the page, with the same flags as `money_spent_spend_unavailable`, `money_spent_spend_partial` and \
+`money_spent_spend_missing_amount`.
+
+**Paging:** `page`/`per_page` page through executions. `total_count` is an approximate distinct count above \
+3,000 executions, and at most the first 10,000 executions of the filtered range can be paged; narrow the \
+date range or add filters to reach older ones.
+
+**Access:** standard analytics scoping. Super admins see all executions, project admins the executions of \
+projects they administer, other users their own.
+
+**Reconciliation with `workflows`:** for the same filters and date range, `total_tokens` here sums to \
+`workflows` `total_tokens`, and the number of executions matches `total_runs` (an approximate distinct count \
+there). The date filter applies per document `@timestamp`, so an execution that spans a range boundary counts \
+only its documents inside the range for tokens. Cost does not reconcile in general. `money_spent` here is the \
+whole execution's cost, priced by `execution_id`. `workflows` `total_cost_usd` counts each LLM call in the \
+range it started in and, without an `attributes` filter, is priced per workflow: only a name that belongs to \
+exactly one existing workflow gets a cost, under that workflow's current name. Executions of a deleted \
+workflow, of a name shared by two workflows, or under a workflow's former name therefore have a cost here and \
+none in `workflows`.
+"""
+
+
+@router.get(
+    "/workflows-executions",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get per-execution workflow analytics",
+    description=WORKFLOWS_EXECUTIONS_DESCRIPTION,
+)
+@handle_analytics_errors("workflows executions analytics")
+async def get_workflows_executions(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
+    attributes: str | None = Query(None, description=ATTRIBUTES_FILTER_DESC),
+) -> JSONResponse:
+    """Get one analytics row per workflow execution."""
+    attributes_filter = _parse_attributes_param(attributes)
+    service = AnalyticsService(user)
+    data = await service.get_workflows_executions(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+        client_source=client_source.value if client_source else None,
+        attributes=attributes_filter,
     )
     return _create_response(data, TabularResponse)
 
@@ -403,6 +495,89 @@ async def get_top_workflow_usage(
         params.page,
         params.per_page,
         client_source=client_source.value if client_source else None,
+    )
+    return _create_response(data, TabularResponse)
+
+
+ATTRIBUTES_USAGE_DESCRIPTION = """\
+Chat and workflow usage broken down by the values of one run attribute key, one row per value.
+
+**Columns:** `conversations` and `workflow_executions` count distinct runs, `total_tokens` is input plus output \
+tokens, `total_cost` is the cost of the runs carrying the value, `unique_users` counts distinct users, `last_used` \
+is the newest usage record.
+
+**Cost:** each run is priced from the LiteLLM spend ledger, by `execution_id` for workflow executions and by \
+`request_id` for chat requests, when first seen on or after the ledger's coverage start; older runs and \
+deployments without the ledger use the usage documents' cost. A cost the ledger has not recorded yet leaves \
+`total_cost` without it and sets `spend_unavailable: true`; a value with no known cost has `total_cost: null`.
+
+**Filters:** `attributes` narrows the rows to runs that also carry the given attributes. A missing or invalid \
+`attribute_key` returns 422.
+
+**Access:** standard analytics scoping. Super admins see all usage, project admins the usage of projects they \
+administer, other users their own.
+
+**Not covered:** chats with `save_history=false` and virtual assistants record no usage, and runs started without \
+attributes (including all runs before the feature) have none, so they are absent here. Run attribute keys are not \
+listed by any endpoint, and an unknown key returns an empty table.
+
+**Trust:** values are declared by the callers who start the runs and are not verified, so the totals per value are \
+only as reliable as the callers' labelling.
+"""
+
+
+def _validate_attribute_key_param(raw: str | None) -> str:
+    if not raw:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Missing attribute key",
+            details="attribute_key is required",
+            help="Pass attribute_key as 2-64 lowercase letters, digits, '.', '_' or '-', "
+            "starting and ending with a letter or digit.",
+        )
+    try:
+        return validate_attribute_key(raw)
+    except RunAttributesError as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Invalid attribute key",
+            details=str(e),
+            help="Pass attribute_key as 2-64 lowercase letters, digits, '.', '_' or '-', "
+            "starting and ending with a letter or digit.",
+        ) from e
+
+
+@router.get(
+    "/attributes-usage",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get usage by run attribute value",
+    description=ATTRIBUTES_USAGE_DESCRIPTION,
+)
+@handle_analytics_errors("attributes usage analytics")
+async def get_attributes_usage(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+    attribute_key: str | None = Query(None, description="Run attribute key to break usage down by (required)"),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
+    attributes: str | None = Query(None, description=ATTRIBUTES_FILTER_DESC),
+) -> JSONResponse:
+    """Get usage grouped by the values of one run attribute key."""
+    validated_key = _validate_attribute_key_param(attribute_key)
+    attributes_filter = _parse_attributes_param(attributes)
+    service = AnalyticsService(user)
+    data = await service.get_attributes_usage(
+        validated_key,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
+        client_source=client_source.value if client_source else None,
+        attributes=attributes_filter,
     )
     return _create_response(data, TabularResponse)
 

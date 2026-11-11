@@ -34,6 +34,7 @@ from fastapi import status
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs.config import config
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.repository.metrics_aggregation_snapshot import MetricsAggregationSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,10 @@ class MetricsElasticRepository:
         self._client: AsyncElasticsearch | None = (
             ElasticSearchClient.get_async_client() if ElasticSearchClient.is_configured() else None
         )
+
+    def aggregation_snapshot(self) -> MetricsAggregationSnapshot:
+        """Return a fail-closed snapshot for multi-search grouped analytics."""
+        return MetricsAggregationSnapshot(self._client, self._index)
 
     def _handle_unavailable(self, empty_result: dict, *, reason: str) -> dict:
         if self._fail_open_on_unavailable:

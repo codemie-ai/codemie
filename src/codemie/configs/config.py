@@ -170,6 +170,7 @@ class Config(BaseSettings):
     FILE_DATASOURCE_MAX_UPLOAD_COUNT: int = Field(default=10, gt=0)
     # Max input files accepted on one workflow run request.
     WORKFLOW_RUN_FILES_MAX_COUNT: int = Field(default=20, gt=0)
+    RUN_ATTRIBUTES_MAX_KEYS: int = 4
     # Aggregate cap across all files in one upload request. The file-count limit above used to
     # be a de facto aggregate size cap (count x FILES_STORAGE_MAX_UPLOAD_SIZE); now that the
     # count is independently configurable, this restores that ceiling explicitly.
@@ -802,6 +803,7 @@ class Config(BaseSettings):
     # N, the id-set size at which a dimension-grouped report PAGES. Never a truncation point:
     # a narrowed report answers a smaller question than the one asked.
     SPEND_LEDGER_MAX_METRIC_IDS: int = 50_000
+    SPEND_LEDGER_REQUEST_COST_BATCH_SIZE: int = 1_000
     # Below F: reported absent, or served by the LEGACY engine. False - the default - keeps current
     # behaviour, where a period reaching below F is reported unavailable. True routes that portion to
     # the legacy Elasticsearch engine (attributes.money_spent), which is what production shows today

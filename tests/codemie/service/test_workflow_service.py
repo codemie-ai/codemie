@@ -852,6 +852,19 @@ def test_create_workflow_execution_sets_lineage_when_parent_given(
     parent_exec.save.assert_called_once()
 
 
+def test_create_workflow_execution_stores_run_attributes(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+    user_model: UserEntity,
+):
+    with patch.object(WorkflowExecution, 'save'):
+        result = workflow_service.create_workflow_execution(
+            workflow_config, user_model, "task input", attributes={"team": "core"}
+        )
+
+    assert result.attributes == {"team": "core"}
+
+
 @pytest.mark.skip(reason="Requires database connection for conversation creation - integration test")
 def test_create_workflow_execution_with_conversation_id(
     workflow_service: WorkflowService,

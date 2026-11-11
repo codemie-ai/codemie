@@ -485,6 +485,7 @@ class TestPaginationEndpoints:
             user=mock_user,
             params=AnalyticsQueryParams(page=0, per_page=50),
             client_source=None,
+            attributes=None,
         )
 
         # Assert
@@ -512,6 +513,7 @@ class TestPaginationEndpoints:
             user=mock_user,
             params=AnalyticsQueryParams(page=2, per_page=100),
             client_source=None,
+            attributes=None,
         )
 
         # Assert
@@ -546,6 +548,7 @@ class TestAssistantsRequestsEndpoint:
             ),
             client_source=ClientSource.MS_TEAMS_BOT,
             assistant_id="a-1",
+            attributes=None,
         )
 
         mock_service.get_assistants_requests.assert_called_once_with(
@@ -558,6 +561,7 @@ class TestAssistantsRequestsEndpoint:
             per_page=40,
             client_source="ms-teams-bot",
             assistant_id="a-1",
+            attributes=None,
         )
         assert isinstance(response, JSONResponse)
 
@@ -582,11 +586,12 @@ class TestWorkflowsEndpoint:
             user=mock_user,
             params=AnalyticsQueryParams(time_period="last_7_days", page=0, per_page=50),
             client_source=None,
+            attributes=None,
         )
 
         # Assert
         mock_service.get_workflows.assert_called_once_with(
-            "last_7_days", None, None, None, None, 0, 50, client_source=None
+            "last_7_days", None, None, None, None, 0, 50, client_source=None, attributes=None
         )
         assert isinstance(response, JSONResponse)
         assert response.status_code == status.HTTP_200_OK

@@ -519,6 +519,7 @@ ASSISTANTS_REQUESTS_COLUMNS = [
     "cached_tokens_money_spent",
     "execution_time",
     "status",
+    "attributes",
 ]
 
 
@@ -701,6 +702,16 @@ class TestGetAssistantsRequests:
             ],
         }
 
+    @pytest.mark.asyncio
+    async def test_assistants_requests_attributes_filter_narrows_the_query(self, handler, mock_repository):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+
+        await handler.get_assistants_requests(time_period="last_30_days", attributes={"team": "core", "env": "prod"})
+
+        query_filters = mock_repository.execute_search_query.call_args.args[0]["bool"]["filter"]
+        assert {"term": {"attributes.run_attribute_pairs.keyword": "team=core"}} in query_filters
+        assert {"term": {"attributes.run_attribute_pairs.keyword": "env=prod"}} in query_filters
+
     def test_parse_assistants_requests_nulls_and_total_tokens(self):
         input_only_hit = _request_hit("2026-10-29T09:30:00Z", conversation_id="c-1", input_tokens=100)
         no_tokens_hit = {"_source": {"@timestamp": "2026-10-29T09:00:00Z", "attributes": {"request_id": "r-0"}}}
@@ -717,6 +728,30 @@ class TestGetAssistantsRequests:
         assert rows[2]["total_tokens"] == 100
         assert rows[3]["total_tokens"] == 0
         assert rows[3]["assistant_id"] is None
+
+    def test_parse_assistants_requests_maps_run_attribute_pairs(self):
+        labelled_hit = _request_hit(
+            "2026-10-29T12:00:00Z",
+            request_id="r-9",
+            run_attribute_keys=["com.epam.gen_ai.service.work_item.id", "team"],
+            run_attribute_pairs=["com.epam.gen_ai.service.work_item.id=ABC-123", "team=a=b"],
+        )
+        result = {"hits": {"hits": [labelled_hit, REQUEST_DOCS["hits"]["hits"][0]]}}
+
+        rows = AssistantHandler._parse_assistants_requests(result)
+
+        assert rows[0]["attributes"] == {"com.epam.gen_ai.service.work_item.id": "ABC-123", "team": "a=b"}
+        assert rows[1]["attributes"] is None
+        assert "run_attribute_pairs" not in rows[0]
+
+    @pytest.mark.asyncio
+    async def test_assistants_requests_attributes_column_is_json(self, handler, mock_repository):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+
+        result = await handler.get_assistants_requests(time_period="last_30_days")
+
+        columns = {column["id"]: column for column in result["data"]["columns"]}
+        assert columns["attributes"] == {"id": "attributes", "label": "Attributes", "type": "json"}
 
     @pytest.mark.asyncio
     async def test_assistants_requests_reconcile_with_chats_totals(self, handler, mock_repository):

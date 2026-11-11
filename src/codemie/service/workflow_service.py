@@ -318,6 +318,7 @@ class WorkflowService:
         file_names: Optional[list[str]] = None,
         conversation_id: Optional[str] = None,
         parent_execution_id: Optional[str] = None,
+        attributes: dict[str, str] | None = None,
     ) -> WorkflowExecution:
         execution_id: str | None = None
         run_files_registered = False
@@ -376,6 +377,7 @@ class WorkflowService:
                 file_names=file_names,
                 conversation_id=conversation_id if is_chat_execution else None,
                 parent_execution_id=parent_execution_id,
+                attributes=attributes,
             )
 
             # Only add conversation history for chat executions (streamable workflows)

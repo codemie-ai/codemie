@@ -28,6 +28,7 @@ from codemie.core.ability import Owned, Action
 from codemie.core.db_utils import escape_like_wildcards
 from codemie.core.exceptions import ValidationException
 from codemie.core.models import CodeIndexType, ChatMessage, ChatRole, ConfiguredModel, ToolCallPolicy
+from codemie.core.run_attributes import CONVERSATION_RUN_ATTRIBUTES_RESPONSE_DESC
 from codemie.core.routing_info import RoutingInfo
 from codemie.rest_api.models.assistant import Context, AssistantType
 from codemie.rest_api.models.base import (
@@ -377,6 +378,9 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
     finished_at: Optional[datetime] = SQLField(
         default=None,
         description="Timestamp the conversation was finished, or None if still active",
+    )
+    attributes: dict[str, str] | None = SQLField(
+        default=None, sa_column=Column(JSONB, nullable=True), description=CONVERSATION_RUN_ATTRIBUTES_RESPONSE_DESC
     )
 
     # Legacy
@@ -1108,6 +1112,7 @@ class ConversationResponse(BaseModel):
     very_first_msg_at: Optional[datetime] = None
     very_last_msg_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+    attributes: dict[str, str] | None = Field(default=None, description=CONVERSATION_RUN_ATTRIBUTES_RESPONSE_DESC)
 
     pagination: Optional[ConversationHistoryPaginationData] = None
 

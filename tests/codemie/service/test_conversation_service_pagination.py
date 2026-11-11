@@ -248,6 +248,24 @@ class TestGetConversationHistorySlice:
 
         assert conversation.finished_at == finished_at
 
+    @patch("codemie.service.conversation_service.materialize_workflow_conversation")
+    @patch("codemie.service.conversation_service.get_session")
+    def test_returns_attributes_in_conversation(self, mock_get_session, mock_materialize):
+        mock_session = MagicMock()
+        row = self._get_mock_row()
+        row._mapping["attributes"] = {"team": "core"}
+        mock_session.exec.return_value.first.return_value = row
+        mock_session.exec.return_value.all.return_value = []
+        mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
+        mock_materialize.side_effect = lambda msgs, _: MaterializedConversation(history=msgs)
+
+        conversation, _, _, _ = ConversationService.get_conversation_history_slice(
+            conversation_id="conv-123", page=0, per_page=50
+        )
+
+        assert conversation.attributes == {"team": "core"}
+
     @patch("codemie.service.conversation_service.get_session")
     def test_returns_none_if_not_found(self, mock_get_session):
         """Test that (None, 0) is returned when conversation not found."""
@@ -268,6 +286,20 @@ class TestGetConversationHistorySlice:
         assert total == 0
         assert first_ts is None
         assert last_ts is None
+
+    @patch("codemie.service.conversation_service.get_session")
+    def test_meta_query_selects_run_attributes(self, mock_get_session):
+        mock_session = MagicMock()
+        mock_session.exec.return_value.first.return_value = None
+        mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        ConversationService.get_conversation_history_slice(conversation_id="conv-123", page=0, per_page=50)
+
+        sql = str(mock_session.exec.call_args_list[0].args[0])
+        select_list = sql.split("SELECT", 1)[1].split("jsonb_array_length", 1)[0]
+        selected = {column.strip() for column in select_list.split(",") if column.strip()}
+        assert "attributes" in selected
 
     @patch("codemie.service.conversation_service.materialize_workflow_conversation")
     @patch("codemie.service.conversation_service.get_session")

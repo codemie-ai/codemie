@@ -27,6 +27,7 @@ import json
 import logging
 from datetime import datetime
 
+from codemie.core.run_attributes import PAIRS_FIELD, encode_pair
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.access_filter import AccessFilter
 from codemie.service.analytics.metric_names import MetricName
@@ -241,6 +242,20 @@ class SecureQueryBuilder:
         """
         if client_source:
             self._query["bool"]["filter"].append({"term": {CLIENT_SOURCE_FIELD: client_source}})
+        return self
+
+    def add_attributes_filter(self, attributes: dict[str, str] | None) -> SecureQueryBuilder:
+        """Add run attribute filters (exact key=value match, one term filter per pair, AND semantics).
+
+        Args:
+            attributes: Validated run attributes to filter on.
+
+        Returns:
+            Self for method chaining
+        """
+        if attributes:
+            for key, value in attributes.items():
+                self._query["bool"]["filter"].append({"term": {PAIRS_FIELD: encode_pair(key, value)}})
         return self
 
     def add_assistant_filter(self, assistant_id: str) -> SecureQueryBuilder:

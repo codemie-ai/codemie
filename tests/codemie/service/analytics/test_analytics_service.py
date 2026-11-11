@@ -242,6 +242,7 @@ class TestAnalyticsServiceDelegation:
             page=2,
             per_page=50,
             client_source=None,
+            attributes=None,
         )
         assert result == expected_result
 
@@ -266,6 +267,7 @@ class TestAnalyticsServiceDelegation:
             per_page=25,
             client_source="platform",
             assistant_id="a-1",
+            attributes={"team": "core"},
         )
 
         mock_handler_instance.get_assistants_requests.assert_called_once_with(
@@ -278,6 +280,7 @@ class TestAnalyticsServiceDelegation:
             per_page=25,
             client_source="platform",
             assistant_id="a-1",
+            attributes={"team": "core"},
         )
         assert result == expected_result
 
@@ -566,6 +569,103 @@ class TestAnalyticsServiceDelegation:
             page=0,
             per_page=20,
             client_source=None,
+            attributes=None,
+        )
+        assert result == expected_result
+
+    @patch("codemie.service.analytics.analytics_service.WorkflowHandler")
+    @patch("codemie.service.analytics.analytics_service.MetricsElasticRepository")
+    @pytest.mark.asyncio
+    async def test_get_workflows_executions_delegates_all_filters(
+        self, mock_repository, mock_workflow_handler_class, mock_user
+    ):
+        mock_handler_instance = MagicMock()
+        mock_workflow_handler_class.return_value = mock_handler_instance
+        expected_result = {"data": {"rows": []}}
+        mock_handler_instance.get_workflows_executions = AsyncMock(return_value=expected_result)
+
+        result = await AnalyticsService(mock_user).get_workflows_executions(
+            time_period="last_30_days",
+            users=["alice"],
+            projects=["proj-a"],
+            page=1,
+            per_page=10,
+            client_source="sdk",
+            attributes={"team": "core"},
+        )
+
+        mock_handler_instance.get_workflows_executions.assert_called_once_with(
+            time_period="last_30_days",
+            start_date=None,
+            end_date=None,
+            users=["alice"],
+            projects=["proj-a"],
+            page=1,
+            per_page=10,
+            client_source="sdk",
+            attributes={"team": "core"},
+        )
+        assert result == expected_result
+
+    @patch("codemie.service.analytics.analytics_service.AssistantHandler")
+    @patch("codemie.service.analytics.analytics_service.MetricsElasticRepository")
+    @pytest.mark.asyncio
+    async def test_get_assistants_chats_forwards_attributes(
+        self, mock_repository, mock_assistant_handler_class, mock_user
+    ):
+        mock_handler_instance = MagicMock()
+        mock_assistant_handler_class.return_value = mock_handler_instance
+        mock_handler_instance.get_assistants_chats = AsyncMock(return_value={"data": {"rows": []}})
+
+        await AnalyticsService(mock_user).get_assistants_chats(attributes={"team": "core"})
+
+        assert mock_handler_instance.get_assistants_chats.call_args.kwargs["attributes"] == {"team": "core"}
+
+    @patch("codemie.service.analytics.analytics_service.WorkflowHandler")
+    @patch("codemie.service.analytics.analytics_service.MetricsElasticRepository")
+    @pytest.mark.asyncio
+    async def test_get_workflows_forwards_attributes(self, mock_repository, mock_workflow_handler_class, mock_user):
+        mock_handler_instance = MagicMock()
+        mock_workflow_handler_class.return_value = mock_handler_instance
+        mock_handler_instance.get_workflows = AsyncMock(return_value={"data": {"rows": []}})
+
+        await AnalyticsService(mock_user).get_workflows(attributes={"team": "core"})
+
+        assert mock_handler_instance.get_workflows.call_args.kwargs["attributes"] == {"team": "core"}
+
+    @patch("codemie.service.analytics.analytics_service.AttributesHandler")
+    @patch("codemie.service.analytics.analytics_service.MetricsElasticRepository")
+    @pytest.mark.asyncio
+    async def test_get_attributes_usage_delegates_all_filters(
+        self, mock_repository, mock_attributes_handler_class, mock_user
+    ):
+        mock_handler_instance = MagicMock()
+        mock_attributes_handler_class.return_value = mock_handler_instance
+        expected_result = {"data": {"rows": []}}
+        mock_handler_instance.get_attributes_usage = AsyncMock(return_value=expected_result)
+
+        result = await AnalyticsService(mock_user).get_attributes_usage(
+            "team",
+            time_period="last_30_days",
+            users=["alice"],
+            projects=["proj-a"],
+            page=1,
+            per_page=10,
+            client_source="sdk",
+            attributes={"env": "prod"},
+        )
+
+        mock_handler_instance.get_attributes_usage.assert_called_once_with(
+            attribute_key="team",
+            time_period="last_30_days",
+            start_date=None,
+            end_date=None,
+            users=["alice"],
+            projects=["proj-a"],
+            page=1,
+            per_page=10,
+            client_source="sdk",
+            attributes={"env": "prod"},
         )
         assert result == expected_result
 

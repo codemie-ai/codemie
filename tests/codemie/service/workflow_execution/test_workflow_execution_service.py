@@ -942,3 +942,73 @@ class TestWorkflowExecutionLockReentrant:
         t.start()
         t.join(timeout=2.0)
         assert len(completed) == 1, "record_transition deadlocked when called inside workflow_execution_lock"
+
+
+class TestRunAttributesOnMetrics:
+    MODULE = "codemie.service.workflow_execution.workflow_execution_service"
+
+    def _service(self, workflow_config, executions):
+        with patch(f"{self.MODULE}.WorkflowExecution.get_by_execution_id", side_effect=executions):
+            return WorkflowExecutionService(
+                workflow_config=workflow_config, workflow_execution_id=EXECUTION_ID, user=MagicMock()
+            )
+
+    @patch(f"{MODULE}.request_summary_manager")
+    @patch(f"{MODULE}.WorkflowMonitoringService")
+    def test_fail_labels_metric_with_execution_attributes(self, mock_monitoring, _summary, workflow_config):
+        execution = MagicMock(attributes={"team": "core"}, overall_status=WorkflowExecutionStatusEnum.IN_PROGRESS)
+        service = self._service(workflow_config, [[execution]])
+
+        with (
+            patch(f"{self.MODULE}.WorkflowExecution.get_by_execution_id", return_value=[execution]),
+            patch(f"{self.MODULE}.WorkflowExecutionState.get_all_by_fields", return_value=[]),
+            patch.object(service, "_update_assistant_response_in_history"),
+        ):
+            service.fail(error_class="RuntimeError", error_message="boom")
+
+        assert mock_monitoring.send_workflow_execution_metric.call_args.kwargs["run_attributes"] == {"team": "core"}
+
+    @patch(f"{MODULE}.request_summary_manager")
+    @patch(f"{MODULE}.WorkflowMonitoringService")
+    def test_finish_labels_metric_with_execution_attributes(self, mock_monitoring, _summary, workflow_config):
+        execution = MagicMock(attributes={"team": "core"}, overall_status=WorkflowExecutionStatusEnum.IN_PROGRESS)
+        service = self._service(workflow_config, [[execution]])
+
+        with (
+            patch(f"{self.MODULE}.WorkflowExecution.get_by_execution_id", return_value=[execution]),
+            patch.object(service, "_update_assistant_response_in_history"),
+        ):
+            service.finish()
+
+        assert mock_monitoring.send_workflow_execution_metric.call_args.kwargs["run_attributes"] == {"team": "core"}
+
+    @patch(f"{MODULE}.request_summary_manager")
+    @patch(f"{MODULE}.WorkflowMonitoringService")
+    def test_abort_labels_metric_with_execution_attributes(self, mock_monitoring, _summary, workflow_config):
+        execution = MagicMock(attributes={"team": "core"}, overall_status=WorkflowExecutionStatusEnum.IN_PROGRESS)
+        service = self._service(workflow_config, [[execution]])
+
+        with (
+            patch(f"{self.MODULE}.WorkflowExecution.get_by_execution_id", return_value=[execution]),
+            patch.object(service, "_cleanup_inflight_states"),
+            patch.object(service, "_abort_active_sub_execution"),
+        ):
+            service.abort()
+
+        assert mock_monitoring.send_workflow_execution_metric.call_args.kwargs["run_attributes"] == {"team": "core"}
+
+    @patch(f"{MODULE}.request_summary_manager")
+    @patch(f"{MODULE}.WorkflowMonitoringService")
+    def test_metric_flushed_after_row_deletion_keeps_cached_attributes(
+        self, mock_monitoring, mock_summary, workflow_config
+    ):
+        execution = MagicMock(attributes={"team": "core"})
+        service = self._service(workflow_config, [[execution]])
+        mock_summary.get_summary.return_value = MagicMock(llm_runs=[MagicMock()])
+
+        with patch(f"{self.MODULE}.WorkflowExecution.get_by_execution_id", return_value=[]):
+            service.fail(error_class="RuntimeError", error_message="boom")
+
+        call = mock_monitoring.send_workflow_execution_metric.call_args.kwargs
+        assert call["workflow_execution_config"] is None
+        assert call["run_attributes"] == {"team": "core"}

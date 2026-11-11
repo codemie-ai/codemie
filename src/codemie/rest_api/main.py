@@ -1827,25 +1827,26 @@ async def oauth_connect_required_handler(request: Request, exc: OAuthConnectRequ
 
 
 def _json_safe(value: Any) -> Any:
+    if isinstance(value, str):
+        # Validation errors can echo lone surrogates, which JSONResponse cannot encode as UTF-8.
+        return value.encode("utf-8", errors="backslashreplace").decode("utf-8")
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     if isinstance(value, dict):
-        return {key: _json_safe(item) for key, item in value.items()}
+        return {_json_safe(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     return value
 
 
 def _sanitize_error(error: dict) -> dict:
-    if "input" in error:
-        error = {**error, "input": _json_safe(error["input"])}
     ctx = error.get("ctx")
     if ctx and isinstance(ctx, dict):
         sanitized_ctx = {
             k: str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v for k, v in ctx.items()
         }
-        return {**error, "ctx": sanitized_ctx}
-    return error
+        error = {**error, "ctx": sanitized_ctx}
+    return _json_safe(error)
 
 
 def _validation_error_details(exc: RequestValidationError) -> tuple[list, list[str]]:

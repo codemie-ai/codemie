@@ -25,8 +25,10 @@ from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.assistant import Assistant
+from codemie.rest_api.models.conversation import Conversation
 
 if TYPE_CHECKING:
+    from codemie.core.models import AssistantChatRequest
     from codemie.core.thread import ThreadedGenerator
     from codemie.rest_api.security.user import User
     from codemie.workflows.workflow import WorkflowExecutor
@@ -122,6 +124,31 @@ def check_user_can_access_assistant(user: User, assistant: Assistant, action_nam
     # A named grant (READ only) is read by Ability itself when no other role admits the user.
     if not Ability(user).can(action_type, assistant):
         raise_access_denied(action_name)
+
+
+def validate_run_attributes_and_raise(request: AssistantChatRequest, user: User) -> None:
+    """
+    Rejects attempts to change the run attributes of a conversation that already has history.
+    """
+    if not request.attributes or not request.save_history or not request.conversation_id:
+        return
+
+    conversation = Conversation.find_by_id(request.conversation_id)
+    if not conversation:
+        return
+
+    if not Ability(user).can(Action.READ, conversation):
+        request.attributes = None
+        return
+
+    if conversation.history and request.attributes != conversation.attributes:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Run attributes cannot be changed",
+            details="Attributes are set when the conversation starts and are immutable afterwards.",
+            help="Omit attributes or send the same attributes the conversation was started with, "
+            "or start a new conversation.",
+        )
 
 
 def run_in_thread_pool(func, *args):

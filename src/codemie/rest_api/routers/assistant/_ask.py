@@ -29,7 +29,7 @@ from codemie.rest_api.handlers.assistant_handlers import get_request_handler, Ch
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.routers.assistant._shared import _validate_remote_entities_and_raise
-from codemie.rest_api.routers.utils import check_user_can_access_assistant
+from codemie.rest_api.routers.utils import check_user_can_access_assistant, validate_run_attributes_and_raise
 from codemie.rest_api.security.user import User
 from codemie.service.assistant.assistant_user_interaction_service import assistant_user_interaction_service
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
@@ -287,6 +287,7 @@ def _ask_assistant(
     _validate_assistant_supports_files_and_raise(assistant, request.file_names)
     _validate_file_attachment_allowed_and_raise(assistant, request.file_names)
     _validate_assistant_supports_model_change_and_raise(assistant, request.llm_model)
+    validate_run_attributes_and_raise(request, user)
 
     if assistant.id and request.text:
         # We do not validate system prompts as the guardrails will just treat 99% of them as PROMPT_ATTACK

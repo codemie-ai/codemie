@@ -86,3 +86,26 @@ class TestAssistantChatRequestToolCallPolicy:
         payload = json.loads('{"text": "Hello", "toolCallPolicy": "approve_for_me"}')
         request = AssistantChatRequest.model_validate(payload)
         assert request.tool_call_policy == ToolCallPolicy.APPROVE_FOR_ME
+
+
+class TestAssistantChatRequestAttributes:
+    def test_defaults_to_none(self):
+        assert AssistantChatRequest(text="hi").attributes is None
+
+    def test_keeps_valid_attributes(self):
+        request = AssistantChatRequest(text="hi", attributes={"com.epam.gen_ai.service.work_item.id": "ABC-123"})
+
+        assert request.attributes == {"com.epam.gen_ai.service.work_item.id": "ABC-123"}
+
+    @pytest.mark.parametrize(
+        "attributes, message",
+        [
+            ({"Team": "core"}, "Invalid attribute key"),
+            ({"codemie.team": "core"}, "reserved prefix"),
+            ({"team": "v" * 129}, "1-128"),
+            ({"team": "lone\ud800surrogate"}, "unpaired surrogates"),
+        ],
+    )
+    def test_rejects_invalid_attributes(self, attributes, message):
+        with pytest.raises(ValidationError, match=message):
+            AssistantChatRequest(text="hi", attributes=attributes)

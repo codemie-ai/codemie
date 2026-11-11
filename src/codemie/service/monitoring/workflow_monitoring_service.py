@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import Any, Optional
 
 from codemie.configs import logger
 from codemie.core.dependecies import get_current_project
+from codemie.core.run_attributes import build_record_fields
 from codemie.core.workflow_models import WorkflowConfig, WorkflowExecution, WorkflowExecutionStatusEnum, WorkflowMode
 from codemie.rest_api.security.user import User
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
@@ -38,6 +39,7 @@ class WorkflowMonitoringService(BaseMonitoringService):
         request_id: str = None,
         status: Optional[WorkflowExecutionStatusEnum] = None,
         additional_attributes: Optional[dict] = None,
+        run_attributes: dict[str, str] | None = None,
     ):
         """
         Send workflow execution metrics.
@@ -51,8 +53,16 @@ class WorkflowMonitoringService(BaseMonitoringService):
             execution_status, execution_id, execution_time = cls._resolve_execution_state(
                 workflow_execution_config, status, request_id
             )
+            record_fields = build_record_fields(run_attributes)
             if request_id and cls._send_per_run_metrics(
-                request_id, workflow_config, user, execution_status, execution_id, execution_time, additional_attributes
+                request_id,
+                workflow_config,
+                user,
+                execution_status,
+                execution_id,
+                execution_time,
+                additional_attributes,
+                record_fields,
             ):
                 return
             if workflow_execution_config:
@@ -64,6 +74,7 @@ class WorkflowMonitoringService(BaseMonitoringService):
                     execution_id,
                     execution_time,
                     additional_attributes,
+                    record_fields,
                 )
         except Exception as e:
             logger.error(f"Failed to send workflow execution metric: {e}")
@@ -118,6 +129,7 @@ class WorkflowMonitoringService(BaseMonitoringService):
         execution_id: Optional[str],
         execution_time: Optional[float],
         additional_attributes: Optional[dict],
+        record_fields: dict[str, Any] | None = None,
     ) -> bool:
         from codemie.service.request_summary_manager import request_summary_manager
 
@@ -150,6 +162,7 @@ class WorkflowMonitoringService(BaseMonitoringService):
             cls.send_count_metric(
                 name=cls.WORKFLOW_EXECUTION_BASE_METRIC + "_total",
                 attributes=run_attributes,
+                extra_log_fields=record_fields,
             )
         return True
 
@@ -163,6 +176,7 @@ class WorkflowMonitoringService(BaseMonitoringService):
         execution_id: Optional[str],
         execution_time: Optional[float],
         additional_attributes: Optional[dict],
+        record_fields: dict[str, Any] | None = None,
     ):
         base = cls._build_execution_base_attributes(workflow_config, user, execution_status, execution_id)
         tokens_usage = workflow_execution_config.tokens_usage
@@ -186,6 +200,7 @@ class WorkflowMonitoringService(BaseMonitoringService):
         cls.send_count_metric(
             name=cls.WORKFLOW_EXECUTION_BASE_METRIC + "_total",
             attributes=attributes,
+            extra_log_fields=record_fields,
         )
 
     @classmethod

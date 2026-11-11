@@ -65,6 +65,7 @@ class WorkflowExecutionService:
         self.workflow_execution_lock = threading.RLock()
         self.thought_queue = thought_queue  # For streaming state events
         self.workflow_execution = None
+        self._run_attributes: dict[str, str] | None = None
         self._refresh_workflow_execution()
         self._current_history_index = self._compute_current_history_index()
 
@@ -124,6 +125,7 @@ class WorkflowExecutionService:
             user=self.user,
             request_id=self.workflow_execution_id,
             additional_attributes={"error_class": error_class, "error_cause": error_message},
+            run_attributes=self._run_attributes,
         )
         request_summary_manager.clear_summary(self.workflow_execution_id)
 
@@ -182,6 +184,7 @@ class WorkflowExecutionService:
             workflow_execution_config=self.workflow_execution,
             user=self.user,
             request_id=self.workflow_execution_id,
+            run_attributes=self._run_attributes,
         )
         request_summary_manager.clear_summary(self.workflow_execution_id)
         self._abort_active_sub_execution()
@@ -367,6 +370,7 @@ class WorkflowExecutionService:
             workflow_execution_config=self.workflow_execution,
             user=self.user,
             request_id=self.workflow_execution_id,
+            run_attributes=self._run_attributes,
         )
         request_summary_manager.clear_summary(self.workflow_execution_id)
 
@@ -540,6 +544,8 @@ class WorkflowExecutionService:
 
     def _refresh_workflow_execution(self):
         self.workflow_execution = self.find_workflow_execution(self.workflow_execution_id)
+        if self.workflow_execution:
+            self._run_attributes = self.workflow_execution.attributes
 
     @staticmethod
     def find_workflow_execution(workflow_execution_id: str):
@@ -569,6 +575,7 @@ class WorkflowExecutionService:
                 request_id=self.workflow_execution_id,
                 status=status,
                 additional_attributes=additional_attributes,
+                run_attributes=self._run_attributes,
             )
         request_summary_manager.clear_summary(self.workflow_execution_id)
 

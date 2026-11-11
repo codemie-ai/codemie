@@ -17,7 +17,8 @@ from enum import Enum
 from typing import Any, List, Optional
 
 from codemie.core.ability import Ability, Action, Owned
-from codemie.core.models import FileNamesCountValidatorMixin, TokensUsage, UserEntity
+from codemie.core.models import FileNamesCountValidatorMixin, RunAttributesValidatorMixin, TokensUsage, UserEntity
+from codemie.core.run_attributes import RUN_ATTRIBUTES_RESPONSE_DESC, WORKFLOW_RUN_ATTRIBUTES_REQUEST_DESC
 from codemie.rest_api.models.base import BaseModelWithSQLSupport, CommonBaseModel, PydanticListType, PydanticType
 from codemie.rest_api.models.conversation import GeneratedMessage
 from codemie.rest_api.security.user import User
@@ -157,6 +158,9 @@ class WorkflowExecution(BaseModelWithSQLSupport, Owned, table=True):
     prompt: Optional[str] = None
     file_names: list[str] = SQLField(
         default_factory=list, sa_column=Column(JSONB, nullable=True, server_default=text("'[]'::jsonb"))
+    )
+    attributes: dict[str, str] | None = SQLField(
+        default=None, sa_column=Column(JSONB, nullable=True), description=RUN_ATTRIBUTES_RESPONSE_DESC
     )
     created_by: Optional[UserEntity] = SQLField(default=None, sa_column=Column(PydanticType(UserEntity)))
     updated_by: Optional[UserEntity] = SQLField(default=None, sa_column=Column(PydanticType(UserEntity)))
@@ -302,6 +306,7 @@ class WorkflowExecutionResponse(BaseModel):
     prompt: Optional[str] = None
     file_name: Optional[str] = None
     file_names: list[str] = []
+    attributes: dict[str, str] | None = Field(default=None, description=RUN_ATTRIBUTES_RESPONSE_DESC)
     workflow_id: str
     execution_id: str
     conversation_id: Optional[str] = None
@@ -318,7 +323,7 @@ class WorkflowExecutionResponse(BaseModel):
         return v or []
 
 
-class CreateWorkflowExecutionRequest(FileNamesCountValidatorMixin, BaseModel):
+class CreateWorkflowExecutionRequest(FileNamesCountValidatorMixin, RunAttributesValidatorMixin, BaseModel):
     user_input: Optional[str] = ""
     file_name: Optional[str] = None
     file_names: Optional[list[str]] = None
@@ -342,6 +347,7 @@ class CreateWorkflowExecutionRequest(FileNamesCountValidatorMixin, BaseModel):
         description="If true, automatically delete the workflow execution after completion (success or failure). "
         "If Langfuse traces are enabled, deletion occurs after traces are submitted.",
     )
+    attributes: dict[str, str] | None = Field(default=None, description=WORKFLOW_RUN_ATTRIBUTES_REQUEST_DESC)
 
 
 class ResumeWorkflowExecutionRequest(FileNamesCountValidatorMixin, BaseModel):

@@ -14,7 +14,7 @@
 
 import json
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from opentelemetry import metrics
 
@@ -163,13 +163,14 @@ class BaseMonitoringService:
         unit: str = "",
         attributes: Optional[dict] = None,
         count: int = 1,
+        extra_log_fields: dict[str, Any] | None = None,
     ):
         try:
             attributes = attributes or {}
             _add_budget_fallback_attribute(attributes)
             if not attributes.get(MetricsAttributes.USER_ID):
                 attributes.update({MetricsAttributes.USER_ID: logging_user_id.get("-")})
-            send_log_metric(name, {"count": count, **attributes})
+            send_log_metric(name, {"count": count, **attributes, **(extra_log_fields or {})})
             counter = cls._get_or_create_counter(name, description, unit)
             attributes.update(
                 {

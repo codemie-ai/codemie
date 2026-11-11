@@ -1,0 +1,50 @@
+{
+  "decision": "approve",
+  "rationale": "All six prior blocking findings are resolved on current source at HEAD c0cccd2631: bare dict annotations parameterized, save_history=false short-circuits the pre-flight, composite paging capped at 50 pages with a 422, and the three test gaps now have tests. The test-gap fixes (CR-002 in the untracked test_main_validation_handler.py, CR-004 and CR-006 in test_run_attributes_money.py) were verified by reading, not by running; the targeted tests belong to Stage 7 execution.",
+  "confidence": "medium",
+  "risk_flags": ["migration", "public-api", "data-contract"],
+  "business_review": [
+    {"kind": "spec", "item": "Input and validation: optional attributes on chat and workflow requests, shared module, key regex, value 1-128, 422", "status": "pass", "notes": "run_attributes.py validators on both request models; main.py keeps 422 body encodable"},
+    {"kind": "spec", "item": "Access: no extra permission, fixed at start, read endpoints return attributes", "status": "pass", "notes": "Response models expose attributes; no update path added"},
+    {"kind": "spec", "item": "Value limit 128 with key+1+value below ES ignore_above 256", "status": "pass", "notes": "MAX_VALUE_LEN, ES_IGNORE_ABOVE and module-level assert in run_attributes.py"},
+    {"kind": "spec", "item": "Persistence: nullable JSONB attributes on Conversation and WorkflowExecution, additive migration on single head", "status": "pass", "notes": "aad1456a4f17 revises b5c6d7e8f901; models and responses carry attributes"},
+    {"kind": "spec", "item": "Chat: validate_run_attributes_and_raise pre-flight, immutability, unreadable conversation drop", "status": "pass", "notes": "Wired in _ask_assistant; save_history=false interaction raised as CR-003"},
+    {"kind": "spec", "item": "IDE virtual route runs the same pre-flight first, in a worker thread", "status": "pass", "notes": "ide.py:107 to_thread call before the try"},
+    {"kind": "spec", "item": "Workflow: execution stores attributes, sub-workflows inherit, metric calls pass cached attributes", "status": "pass", "notes": "All 4 send_workflow_execution_metric calls pass run_attributes"},
+    {"kind": "spec", "item": "Metrics: log-only extra fields, never in OTel counter; keyword arrays only when attributes exist", "status": "pass", "notes": "build_record_fields returns {} without attributes"},
+    {"kind": "spec", "item": "Analytics filter: attributes param on five endpoints, not on summaries or all-time query, echoed in filters_applied", "status": "pass", "notes": "Routes parse via _parse_attributes_param; query builder adds term filters"},
+    {"kind": "spec", "item": "Analytics error mapping: validation failures raise ExtendedHTTPException 422", "status": "pass", "notes": "RunAttributesError mapped in _common and usage; handle_analytics_errors unchanged"},
+    {"kind": "spec", "item": "attributes-usage group-by endpoint with escaped key prefix include and keys-field filter", "status": "pass", "notes": "attributes_handler.py columns and include regex as specified"},
+    {"kind": "spec", "item": "Per-request analytics: assistants-requests attributes column and filter", "status": "pass", "notes": "attributes_from_pairs; null without pairs"},
+    {"kind": "spec", "item": "Per-execution analytics: workflows-executions in one PIT, exact page, 503 on incomplete", "status": "pass", "notes": "execute_exact_tabular_query with MetricsAggregationSnapshot"},
+    {"kind": "spec", "item": "Docs: OpenAPI descriptions only, no Markdown page", "status": "pass", "notes": "Descriptions in run_attributes.py, _common.py, usage.py; openapi baseline updated"},
+    {"kind": "spec", "item": "Cost: ledger-priced per run via request_spend; pending cost null; filtered paths price filtered runs only", "status": "pass", "notes": "Implemented; paging cap added for CR-005, filtered-path tests added for CR-004 and CR-006"},
+    {"kind": "story-ac", "item": "AC 1: valid attributes stored on the run and returned by the two read endpoints", "status": "pass", "notes": "Handlers, conversation service and workflow service store them"},
+    {"kind": "story-ac", "item": "AC 2: invalid count, key, reserved prefix or value returns 422 and nothing runs", "status": "pass", "notes": "Pydantic validators run before any handler"},
+    {"kind": "story-ac", "item": "AC 3: chat conversation rules for pre-created, history, different attributes and unreadable conversations", "status": "pass", "notes": "utils.py pre-flight and service upsert; save_history=false now ignored"},
+    {"kind": "story-ac", "item": "AC 4: every usage record of a run with attributes carries both keyword arrays", "status": "pass", "notes": "Chat reads row attributes; workflow service cache survives row deletion"},
+    {"kind": "story-ac", "item": "AC 5: attributes never reach the OTel counter; records without attributes unchanged", "status": "pass", "notes": "extra_log_fields merged only into the log payload"},
+    {"kind": "story-ac", "item": "AC 6: attributes filter narrows five endpoints; invalid filter returns 422", "status": "pass", "notes": "One term per pair; RecursionError caught in parse_attributes_filter"},
+    {"kind": "story-ac", "item": "AC 7: attributes-usage columns, scoping, sibling-key isolation, 422 on bad key", "status": "pass", "notes": "pair_prefix with '=', escaped include regex, key validated in the route"},
+    {"kind": "story-ac", "item": "AC 8: migration applies and downgrades cleanly on a single head; existing rows stay null", "status": "pending-stage-7", "notes": "Additive nullable add_column with symmetric drop; up/down and single-head are execution evidence"},
+    {"kind": "story-ac", "item": "AC 9: no docs page; OpenAPI descriptions cover the listed topics and the 128 limit", "status": "pass", "notes": "Descriptions state the limit; no .md page in the diff"},
+    {"kind": "story-ac", "item": "AC 10: every assistants-requests row has an attributes column", "status": "pass", "notes": "Splits on first '='; null without pairs"},
+    {"kind": "story-ac", "item": "AC 11: metadata.filters_applied echoes the attributes filter", "status": "pass", "notes": "tabular_filters_applied adds attributes"},
+    {"kind": "story-ac", "item": "AC 12: workflows-executions one row per execution, newest first, exact totals, 503 on incomplete, PIT closed", "status": "pass", "notes": "Snapshot closes in __aexit__; selection and details in one PIT"},
+    {"kind": "spec", "item": "Non-goals: no editing, registry, mapping change, summaries filter or keys endpoint", "status": "pass", "notes": "None appear in the diff"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 18 commit subjects in diff_base..HEAD match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "partial", "notes": "Carried forward from the final round; the cited bare dict annotations in new code are now parameterized (CR-001 resolved)"},
+    {"kind": "security", "status": "pass", "notes": "Endpoints use authenticate and secure_query scoping; keys validated and escaped before the Lucene include regex; values rejected, not repaired"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "Annotations parameterized in run_attributes.py, request_spend.py, workflow_handler.py:463 and query_pipeline.py; no added line on the branch carries a bare dict annotation"},
+    {"id": "CR-002", "status": "resolved", "notes": "main.py unchanged; new untracked test_main_validation_handler.py drives validation_exception_handler and _sanitize_error with a lone surrogate (not run)"},
+    {"id": "CR-003", "status": "resolved", "notes": "utils.py:133 returns early when save_history is false; test asserts the conversation is not loaded"},
+    {"id": "CR-004", "status": "resolved", "notes": "test_get_assistants_chats_prices_only_the_filtered_requests calls the public method with attributes; handler passes filters=filters to the enricher (not run)"},
+    {"id": "CR-005", "status": "resolved", "notes": "MAX_REQUEST_USAGE_PAGES=50 raises a 422 beyond the cap; tests cover exhaustion and the cap"},
+    {"id": "CR-006", "status": "resolved", "notes": "test_get_workflows_prices_only_the_filtered_executions calls get_workflows(attributes=...) over a non-empty bucket (not run)"}
+  ]
+}

@@ -281,6 +281,7 @@ def create_workflow_execution(
         user_input=request.user_input,
         file_names=file_names,
         conversation_id=request.conversation_id,
+        attributes=request.attributes,
     )
     request_summary_manager_module.create_request_summary(
         request_id=execution.execution_id,

@@ -30,7 +30,7 @@ from codemie.rest_api.models.ide import IdeConfigurationResponse, IdeConfigurati
 from codemie.rest_api.handlers.assistant_handlers import get_request_handler
 from codemie.rest_api.routers.assistant.execution import ask_assistant_by_id
 from codemie.rest_api.routers.conversation.crud import create_conversation
-from codemie.rest_api.routers.utils import get_assistant_by_id_or_raise
+from codemie.rest_api.routers.utils import get_assistant_by_id_or_raise, validate_run_attributes_and_raise
 from codemie.service.settings.settings import SettingsService
 from codemie.service.monitoring.agent_monitoring_service import AgentMonitoringService
 from fastapi import APIRouter, status, Request, Depends, BackgroundTasks
@@ -104,6 +104,7 @@ async def inference_virtual(
     request: VirtualIdeChatRequest,
     user: User = Depends(authenticate),
 ):
+    await asyncio.to_thread(validate_run_attributes_and_raise, request, user)
     asyncio.create_task(raw_request.state.wait_for_disconnect())
     try:
         assistant = VirtualIdeAssistant(

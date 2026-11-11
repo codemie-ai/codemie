@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from functools import partial
 from typing import Any
 
+from codemie.core.run_attributes import attributes_from_record
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import (
@@ -30,6 +31,7 @@ from codemie.service.analytics.handlers.field_constants import (
     USER_EMAIL_KEYWORD_FIELD,
     USER_ID_KEYWORD_FIELD,
 )
+from codemie.service.analytics.handlers.request_spend import price_filtered_requests
 from codemie.service.analytics.handlers.money_coverage import (
     money_coverage_aggs,
     pre_floor_boundary,
@@ -171,6 +173,7 @@ class AssistantHandler:
         page: int = 0,
         per_page: int = 20,
         client_source: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> dict:
         """Get assistants/chats analytics with performance metrics.
 
@@ -190,6 +193,7 @@ class AssistantHandler:
             page: Page number (zero-indexed)
             per_page: Items per page
             client_source: Filter by client source (optional)
+            attributes: Filter by run attributes (optional)
 
         Returns:
             Tabular response with assistants metrics including min/median/max statistics
@@ -238,25 +242,29 @@ FROM codemie_metrics_logs*
 | LIMIT 1000
 """
 
+        filters = AnalyticsQueryFilters(
+            metric_filters=[MetricName.CONVERSATION_ASSISTANT_USAGE.value],
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+            client_source=client_source,
+            attributes=attributes,
+        )
+
         return await self._pipeline.execute_esql_query(
             esql_query=esql_query,
             result_parser=self._parse_assistants_chats_result,
             columns=self._get_assistants_chats_columns(),
-            filters=AnalyticsQueryFilters(
-                metric_filters=[MetricName.CONVERSATION_ASSISTANT_USAGE.value],
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-                client_source=client_source,
-            ),
+            filters=filters,
             row_enricher=partial(
                 self._enrich_assistants_spending,
                 client_source=client_source,
                 report_filter=await report_filter_for(users, projects),
+                filters=filters,
             ),
         )
 
@@ -271,6 +279,7 @@ FROM codemie_metrics_logs*
         per_page: int = 20,
         client_source: str | None = None,
         assistant_id: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Get one row per assistant request (conversation_assistant_usage document), newest first."""
         logger.info("Requesting assistants-requests analytics")
@@ -289,6 +298,7 @@ FROM codemie_metrics_logs*
                 per_page=per_page,
                 client_source=client_source,
                 assistant_id=assistant_id,
+                attributes=attributes,
             ),
             sort=[
                 {TIMESTAMP_FIELD: {"order": "desc", "unmapped_type": "date"}},
@@ -347,6 +357,7 @@ FROM codemie_metrics_logs*
             }
             row["timestamp"] = source.get(TIMESTAMP_FIELD)
             row["total_tokens"] = (attributes.get("input_tokens") or 0) + (attributes.get("output_tokens") or 0)
+            row["attributes"] = attributes_from_record(attributes)
             rows.append(row)
         return rows
 
@@ -373,6 +384,7 @@ FROM codemie_metrics_logs*
             {"id": "cached_tokens_money_spent", "label": "Cached Cost ($)", "type": "number", "format": "currency"},
             {"id": "execution_time", "label": "Time (s)", "type": "number"},
             {"id": "status", "label": "Status", "type": "string"},
+            {"id": "attributes", "label": "Attributes", "type": "json"},
         ]
 
     async def _enrich_assistants_spending(
@@ -382,8 +394,12 @@ FROM codemie_metrics_logs*
         end_dt: datetime,
         client_source: str | None = None,
         report_filter: ReportFilter | None = None,
+        filters: AnalyticsQueryFilters | None = None,
     ) -> EnrichedRows:
         """Fill each assistant's cost from the spend port, then order and total the table by it.
+
+        Under an `attributes` filter the ledger cannot narrow an assistant's spend to the labelled
+        conversations, so each assistant's cost is the sum of its filtered requests, priced per request id.
 
         The port is keyed on the **assistant ids the query grouped by**, never on the display names:
         a name is mutable, so keying on it would ask the ledger about a bucket the aggregation never
@@ -410,23 +426,19 @@ FROM codemie_metrics_logs*
         filtered table read without it foots its rows with the assistant's spend everywhere else and
         sizes the "unattributed" residue on the whole window.
         """
-        period = report_period_or_none(start_dt, end_dt, client_source)
         assistant_ids = [row.pop(CHATS_ASSISTANT_ID_KEY) for row in rows]
-        # One round trip for the whole candidate set - every id shares the one requested window.
-        spend = (
-            await spend_service.aggregate_by_dimension(
-                period,
-                SpendDimension.ASSISTANT,
-                assistant_ids,
-                access=self._pipeline.access_scope,
-                report_filter=report_filter,
+        if filters is not None and filters.attributes and assistant_ids:
+            priced = await price_filtered_requests(
+                self._pipeline,
+                filters,
+                start_dt,
+                end_dt,
+                group_field=ASSISTANT_ID_KEYWORD_FIELD,
+                id_fields=(REQUEST_ID_KEYWORD_FIELD,),
             )
-            if period is not None and assistant_ids
-            else {}
-        )
-        logger.info(f"Assistants-chats read the ledger for {len(set(assistant_ids))} assistant(s) over one window")
-
-        rendered = [render_spend(spend.get(assistant_id)) for assistant_id in assistant_ids]
+            rendered = [priced.get(assistant_id, render_spend(None)) for assistant_id in assistant_ids]
+        else:
+            rendered = await self._assistants_spend(assistant_ids, start_dt, end_dt, client_source, report_filter)
         apply_spend_cells(rows, rendered, CHATS_MONEY_COLUMN)
         for row, figure in zip(rows, rendered, strict=True):
             # No annotation of its own: the ratio is derived from the same `SpendResult` as the money
@@ -448,6 +460,30 @@ FROM codemie_metrics_logs*
             columns=(CHATS_MONEY_COLUMN,),
             totals=spend_footer(CHATS_MONEY_COLUMN, [figure for _, figure in ordered]),
         )
+
+    async def _assistants_spend(
+        self,
+        assistant_ids: list[str],
+        start_dt: datetime,
+        end_dt: datetime,
+        client_source: str | None,
+        report_filter: ReportFilter | None,
+    ) -> list[RenderedSpend]:
+        period = report_period_or_none(start_dt, end_dt, client_source)
+        # One round trip for the whole candidate set - every id shares the one requested window.
+        spend = (
+            await spend_service.aggregate_by_dimension(
+                period,
+                SpendDimension.ASSISTANT,
+                assistant_ids,
+                access=self._pipeline.access_scope,
+                report_filter=report_filter,
+            )
+            if period is not None and assistant_ids
+            else {}
+        )
+        logger.info(f"Assistants-chats read the ledger for {len(set(assistant_ids))} assistant(s) over one window")
+        return [render_spend(spend.get(assistant_id)) for assistant_id in assistant_ids]
 
     @staticmethod
     def _cost_per_operation(figure: float | None, successful_operations: int) -> float | None:

@@ -33,6 +33,7 @@ from codemie.service.analytics.handlers.engagement_handler import EngagementHand
 from codemie.service.analytics.handlers.leaderboard_handler import LeaderboardHandler
 from codemie.service.analytics.handlers.llm_handler import LLMHandler
 from codemie.service.analytics.handlers.mcp_handler import MCPHandler
+from codemie.service.analytics.handlers.attributes_handler import AttributesHandler
 from codemie.service.analytics.handlers.project_handler import ProjectHandler
 from codemie.service.analytics.handlers.summary_handler import SummaryHandler
 from codemie.service.analytics.handlers.tools_handler import ToolsHandler
@@ -61,6 +62,7 @@ class AnalyticsService:
         self._summary_handler_instance: SummaryHandler | None = None
         self._assistant_handler_instance: AssistantHandler | None = None
         self._workflow_handler_instance: WorkflowHandler | None = None
+        self._attributes_handler_instance: AttributesHandler | None = None
         self._tools_handler_instance: ToolsHandler | None = None
         self._user_handler_instance: UserHandler | None = None
         self._project_handler_instance: ProjectHandler | None = None
@@ -102,6 +104,13 @@ class AnalyticsService:
         if self._workflow_handler_instance is None:
             self._workflow_handler_instance = WorkflowHandler(self._user, self._repository)
         return self._workflow_handler_instance
+
+    @property
+    def _attributes_handler(self) -> AttributesHandler:
+        """Lazy-load attributes handler."""
+        if self._attributes_handler_instance is None:
+            self._attributes_handler_instance = AttributesHandler(self._user, self._repository)
+        return self._attributes_handler_instance
 
     @property
     def _tools_handler(self) -> ToolsHandler:
@@ -369,6 +378,7 @@ class AnalyticsService:
         page: int = 0,
         per_page: int = 20,
         client_source: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> dict:
         """Get assistants/chats analytics with performance metrics."""
         return await self._assistant_handler.get_assistants_chats(
@@ -380,6 +390,7 @@ class AnalyticsService:
             page=page,
             per_page=per_page,
             client_source=client_source,
+            attributes=attributes,
         )
 
     async def get_assistants_requests(
@@ -393,6 +404,7 @@ class AnalyticsService:
         per_page: int = 20,
         client_source: str | None = None,
         assistant_id: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Get one analytics row per assistant request, newest first."""
         return await self._assistant_handler.get_assistants_requests(
@@ -405,6 +417,7 @@ class AnalyticsService:
             per_page=per_page,
             client_source=client_source,
             assistant_id=assistant_id,
+            attributes=attributes,
         )
 
     async def get_agents_usage(
@@ -439,6 +452,7 @@ class AnalyticsService:
         page: int = 0,
         per_page: int = 20,
         client_source: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> dict:
         """Get workflow execution analytics."""
         return await self._workflow_handler.get_workflows(
@@ -450,6 +464,32 @@ class AnalyticsService:
             page=page,
             per_page=per_page,
             client_source=client_source,
+            attributes=attributes,
+        )
+
+    async def get_workflows_executions(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+        client_source: str | None = None,
+        attributes: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Get one analytics row per workflow execution, newest first."""
+        return await self._workflow_handler.get_workflows_executions(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+            client_source=client_source,
+            attributes=attributes,
         )
 
     # Tools endpoints
@@ -1076,6 +1116,33 @@ class AnalyticsService:
             page=page,
             per_page=per_page,
             client_source=client_source,
+        )
+
+    async def get_attributes_usage(
+        self,
+        attribute_key: str,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+        client_source: str | None = None,
+        attributes: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Get usage broken down by run attribute values for one key."""
+        return await self._attributes_handler.get_attributes_usage(
+            attribute_key=attribute_key,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+            client_source=client_source,
+            attributes=attributes,
         )
 
     async def get_published_to_marketplace(

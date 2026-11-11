@@ -147,3 +147,25 @@ class TestCreateWorkflowExecutionRequestPropagateHeaders:
         # Assert - coerced to boolean
         assert request.propagate_headers is True
         assert isinstance(request.propagate_headers, bool)
+
+
+class TestCreateWorkflowExecutionRequestAttributes:
+    def test_defaults_to_none(self):
+        assert CreateWorkflowExecutionRequest(user_input="run").attributes is None
+
+    def test_keeps_valid_attributes(self):
+        request = CreateWorkflowExecutionRequest(user_input="run", attributes={"team": "core"})
+
+        assert request.attributes == {"team": "core"}
+
+    @pytest.mark.parametrize(
+        "attributes, message",
+        [
+            ({"Team": "core"}, "Invalid attribute key"),
+            ({"otel.team": "core"}, "reserved prefix"),
+            ({"team": "line\nbreak"}, "control characters"),
+        ],
+    )
+    def test_rejects_invalid_attributes(self, attributes, message):
+        with pytest.raises(ValidationError, match=message):
+            CreateWorkflowExecutionRequest(user_input="run", attributes=attributes)

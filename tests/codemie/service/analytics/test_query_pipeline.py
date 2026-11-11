@@ -1014,6 +1014,24 @@ class TestAnalyticsQueryPipeline:
 
         assert filters["assistant_id"] is None
 
+    def test_build_filters_applied_includes_attributes_when_set(self, pipeline, sample_start_dt, sample_end_dt):
+        filters = pipeline._build_filters_applied(
+            AnalyticsQueryFilters(time_period="last_30_days", attributes={"team": "core"}),
+            sample_start_dt,
+            sample_end_dt,
+        )
+
+        assert filters["attributes"] == {"team": "core"}
+
+    def test_build_filters_applied_attributes_defaults_to_none(self, pipeline, sample_start_dt, sample_end_dt):
+        filters = pipeline._build_filters_applied(
+            AnalyticsQueryFilters(time_period="last_30_days"),
+            sample_start_dt,
+            sample_end_dt,
+        )
+
+        assert filters["attributes"] is None
+
     @patch("codemie.service.analytics.query_pipeline.TotalsCalculator")
     @patch("codemie.service.analytics.query_pipeline.ResponseFormatter")
     @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")

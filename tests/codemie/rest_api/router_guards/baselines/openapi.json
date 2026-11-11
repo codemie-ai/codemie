@@ -2348,6 +2348,21 @@
             "description": "A2UI catalog ids the client can render; interactive UI is emitted only when the active catalog is declared (stale or non-A2UI clients fall back to plain text)",
             "title": "A2Uisupportedcatalogs"
           },
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Analytics labels for this run: an object of string keys and string values, for example {\"com.epam.gen_ai.service.work_item.id\": \"ABC-123\"}. At most 4 keys. A key is 2-64 lowercase letters, digits, '.', '_' or '-', starts and ends with a letter or digit, and must not start with codemie. or otel.. A value is 1-128 characters (UTF-16 code units) without control characters or unpaired surrogates. Invalid attributes return 422 and nothing runs. Attributes are fixed when the conversation starts: later messages of the conversation keep them and sending different ones returns 422. Ignored when save_history is false: such chats store no conversation and write no usage record. They are never passed to the assistant, its tools or the workflow (use metadata, prompt_variables or user_input for that; workflow tags only label Langfuse traces). They are stored with the run, written to usage metrics and application logs, and shown to every user who can see the run or its usage analytics, so they must not contain secrets or personal data. Analytics totals grouped or filtered by attributes rely on the values callers declare; they are not verified.",
+            "title": "Attributes"
+          },
           "backgroundTask": {
             "anyOf": [
               {
@@ -6427,6 +6442,21 @@
             ],
             "title": "Assistant Ids"
           },
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Run attributes set when the conversation started, or null if none. They cannot be changed. Always null for workflow conversations: workflow run attributes are stored on each workflow execution.",
+            "title": "Attributes"
+          },
           "category": {
             "anyOf": [
               {
@@ -7257,6 +7287,21 @@
               }
             ],
             "title": "Assistant Ids"
+          },
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Run attributes set when the conversation started, or null if none. They cannot be changed. Always null for workflow conversations: workflow run attributes are stored on each workflow execution.",
+            "title": "Attributes"
           },
           "category": {
             "anyOf": [
@@ -8543,6 +8588,21 @@
       },
       "CreateWorkflowExecutionRequest": {
         "properties": {
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Analytics labels for this run: an object of string keys and string values, for example {\"com.epam.gen_ai.service.work_item.id\": \"ABC-123\"}. At most 4 keys. A key is 2-64 lowercase letters, digits, '.', '_' or '-', starts and ends with a letter or digit, and must not start with codemie. or otel.. A value is 1-128 characters (UTF-16 code units) without control characters or unpaired surrogates. Invalid attributes return 422 and nothing runs. Attributes are fixed for this execution: a resume keeps them and sub-workflows inherit them. Each execution takes only the attributes of its own request, so executions that continue the same conversation_id neither inherit nor are checked against the attributes of earlier executions. They are never passed to the assistant, its tools or the workflow (use metadata, prompt_variables or user_input for that; workflow tags only label Langfuse traces). They are stored with the run, written to usage metrics and application logs, and shown to every user who can see the run or its usage analytics, so they must not contain secrets or personal data. Analytics totals grouped or filtered by attributes rely on the values callers declare; they are not verified.",
+            "title": "Attributes"
+          },
           "conversation_id": {
             "anyOf": [
               {
@@ -12053,6 +12113,21 @@
             ],
             "description": "A2UI catalog ids the client can render; interactive UI is emitted only when the active catalog is declared (stale or non-A2UI clients fall back to plain text)",
             "title": "A2Uisupportedcatalogs"
+          },
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Analytics labels for this run: an object of string keys and string values, for example {\"com.epam.gen_ai.service.work_item.id\": \"ABC-123\"}. At most 4 keys. A key is 2-64 lowercase letters, digits, '.', '_' or '-', starts and ends with a letter or digit, and must not start with codemie. or otel.. A value is 1-128 characters (UTF-16 code units) without control characters or unpaired surrogates. Invalid attributes return 422 and nothing runs. Attributes are fixed when the conversation starts: later messages of the conversation keep them and sending different ones returns 422. Ignored when save_history is false: such chats store no conversation and write no usage record. They are never passed to the assistant, its tools or the workflow (use metadata, prompt_variables or user_input for that; workflow tags only label Langfuse traces). They are stored with the run, written to usage metrics and application logs, and shown to every user who can see the run or its usage analytics, so they must not contain secrets or personal data. Analytics totals grouped or filtered by attributes rely on the values callers declare; they are not verified.",
+            "title": "Attributes"
           },
           "backgroundTask": {
             "anyOf": [
@@ -33923,6 +33998,21 @@
             "description": "A2UI catalog ids the client can render; interactive UI is emitted only when the active catalog is declared (stale or non-A2UI clients fall back to plain text)",
             "title": "A2Uisupportedcatalogs"
           },
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Analytics labels for this run: an object of string keys and string values, for example {\"com.epam.gen_ai.service.work_item.id\": \"ABC-123\"}. At most 4 keys. A key is 2-64 lowercase letters, digits, '.', '_' or '-', starts and ends with a letter or digit, and must not start with codemie. or otel.. A value is 1-128 characters (UTF-16 code units) without control characters or unpaired surrogates. Invalid attributes return 422 and nothing runs. Attributes are fixed when the conversation starts: later messages of the conversation keep them and sending different ones returns 422. Ignored when save_history is false: such chats store no conversation and write no usage record. They are never passed to the assistant, its tools or the workflow (use metadata, prompt_variables or user_input for that; workflow tags only label Langfuse traces). They are stored with the run, written to usage metrics and application logs, and shown to every user who can see the run or its usage analytics, so they must not contain secrets or personal data. Analytics totals grouped or filtered by attributes rely on the values callers declare; they are not verified.",
+            "title": "Attributes"
+          },
           "backgroundTask": {
             "anyOf": [
               {
@@ -36017,6 +36107,21 @@
       },
       "WorkflowExecutionResponse": {
         "properties": {
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Run attributes set when the run started, or null if none. They cannot be changed.",
+            "title": "Attributes"
+          },
           "conversation_id": {
             "anyOf": [
               {
@@ -42912,6 +43017,24 @@
             }
           },
           {
+            "description": "Filter by run attributes: a JSON object of string keys and string values, e.g. {\"team\": \"alpha\"}. Only runs that carry all the given attributes are counted, and costs are those of the matching runs, priced per run from the LiteLLM spend ledger. Keys and values follow the run attribute rules; an invalid filter returns 422. Values are declared by the callers who start the runs and are not verified.",
+            "in": "query",
+            "name": "attributes",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by run attributes: a JSON object of string keys and string values, e.g. {\"team\": \"alpha\"}. Only runs that carry all the given attributes are counted, and costs are those of the matching runs, priced per run from the LiteLLM spend ledger. Keys and values follow the run attribute rules; an invalid filter returns 422. Values are declared by the callers who start the runs and are not verified.",
+              "title": "Attributes"
+            }
+          },
+          {
             "in": "query",
             "name": "time_period",
             "required": false,
@@ -43055,7 +43178,7 @@
     },
     "/v1/analytics/assistants-requests": {
       "get": {
-        "description": "One row per assistant request (a `conversation_assistant_usage` metric document), newest first.\n\n**Chat vs request:** a chat is a conversation (`conversation_id`); `assistants-chats` `total_chats` counts them. A request is one assistant turn, i.e. one HTTP request identified by `request_id`; `assistants-chats` `total_messages` counts them. \"Runs\" is reserved for workflows.\n\n**Field availability:** tokens, cost, `execution_time` (seconds) and `status` are returned per request. Error message and error class are not stored in the metric, so only `status` is available. Requests made with `save_history=False` and requests to virtual assistants emit no usage document and are absent here, exactly as they are from `assistants-chats`. Attributes missing from a document (older documents may lack `request_id`) are returned as `null`.\n\n**Paging:** `page`/`per_page` page through the matching rows newest first. Elasticsearch counts and serves at most the first 10,000 matching rows, so `total_count` stops at 10,000; narrow the date range or add filters to reach older rows.\n\n**Cost:** `money_spent` comes from the LiteLLM spend ledger for requests made on or after the ledger's coverage start, and from the metric document for older requests and on deployments without the ledger. A cost the ledger has not recorded yet is `null` with `spend_unavailable: true`; if the ledger cannot be read, the document's value is returned with `spend_unavailable: true`. `cached_tokens_money_spent` is always the document's value.\n\n**Reconciliation with `assistants-chats`** (totals match only for the same filters and date range):\n- `assistants-chats` groups by `assistant_id` and shows each assistant's current name; filter here by `assistant_id` to list the requests behind one of its rows.\n- `total_cost_usd` there reads the same sources as `money_spent` here, so it equals their sum once every request's cost is recorded; rows with `spend_unavailable: true` account for a gap. Neither includes `cached_tokens_money_spent`.\n- `total_tokens` is `input_tokens + output_tokens` and excludes `cache_read_input_tokens`.\n- `avg_time_seconds` there is an average of per-conversation averages, not the mean of request `execution_time`.\n- `error_rate_percent` and failed counts there are per conversation (any non-success request fails the chat); `status` here is per request.\n- The date filter applies per request `@timestamp`, so one conversation can be split across ranges, while `assistants-chats` counts a chat in every range containing at least one of its requests.",
+        "description": "One row per assistant request (a `conversation_assistant_usage` metric document), newest first.\n\n**Chat vs request:** a chat is a conversation (`conversation_id`); `assistants-chats` `total_chats` counts them. A request is one assistant turn, i.e. one HTTP request identified by `request_id`; `assistants-chats` `total_messages` counts them. \"Runs\" is reserved for workflows.\n\n**Field availability:** tokens, cost, `execution_time` (seconds) and `status` are returned per request. Error message and error class are not stored in the metric, so only `status` is available. Requests made with `save_history=False` and requests to virtual assistants emit no usage document and are absent here, exactly as they are from `assistants-chats`. Attributes missing from a document (older documents may lack `request_id`) are returned as `null`. `attributes` holds the run attributes of the conversation as a `{key: value}` object, or `null` when the conversation has none. The `attributes` filter keeps only requests of conversations that carry all the given attributes, which lists every request of the matching chats.\n\n**Paging:** `page`/`per_page` page through the matching rows newest first. Elasticsearch counts and serves at most the first 10,000 matching rows, so `total_count` stops at 10,000; narrow the date range or add filters to reach older rows.\n\n**Cost:** `money_spent` comes from the LiteLLM spend ledger for requests made on or after the ledger's coverage start, and from the metric document for older requests and on deployments without the ledger. A cost the ledger has not recorded yet is `null` with `spend_unavailable: true`; if the ledger cannot be read, the document's value is returned with `spend_unavailable: true`. `cached_tokens_money_spent` is always the document's value.\n\n**Reconciliation with `assistants-chats`** (totals match only for the same filters and date range):\n- `assistants-chats` groups by `assistant_id` and shows each assistant's current name; filter here by `assistant_id` to list the requests behind one of its rows.\n- `total_cost_usd` there reads the same sources as `money_spent` here, so it equals their sum once every request's cost is recorded; rows with `spend_unavailable: true` account for a gap. Neither includes `cached_tokens_money_spent`.\n- `total_tokens` is `input_tokens + output_tokens` and excludes `cache_read_input_tokens`.\n- `avg_time_seconds` there is an average of per-conversation averages, not the mean of request `execution_time`.\n- `error_rate_percent` and failed counts there are per conversation (any non-success request fails the chat); `status` here is per request.\n- The date filter applies per request `@timestamp`, so one conversation can be split across ranges, while `assistants-chats` counts a chat in every range containing at least one of its requests.",
         "operationId": "get_assistants_requests_v1_analytics_assistants_requests_get",
         "parameters": [
           {
@@ -43092,6 +43215,24 @@
               ],
               "description": "Exact assistant id",
               "title": "Assistant Id"
+            }
+          },
+          {
+            "description": "Filter by run attributes: a JSON object of string keys and string values, e.g. {\"team\": \"alpha\"}. Only runs that carry all the given attributes are counted, and costs are those of the matching runs, priced per run from the LiteLLM spend ledger. Keys and values follow the run attribute rules; an invalid filter returns 422. Values are declared by the callers who start the runs and are not verified.",
+            "in": "query",
+            "name": "attributes",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by run attributes: a JSON object of string keys and string values, e.g. {\"team\": \"alpha\"}. Only runs that carry all the given attributes are counted, and costs are those of the matching runs, priced per run from the LiteLLM spend ledger. Keys and values follow the run attribute rules; an invalid filter returns 422. Values are declared by the callers who start the runs and are not verified.",
+              "title": "Attributes"
             }
           },
           {
@@ -43231,6 +43372,207 @@
           }
         ],
         "summary": "Get per-request assistant analytics",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/attributes-usage": {
+      "get": {
+        "description": "Chat and workflow usage broken down by the values of one run attribute key, one row per value.\n\n**Columns:** `conversations` and `workflow_executions` count distinct runs, `total_tokens` is input plus output tokens, `total_cost` is the cost of the runs carrying the value, `unique_users` counts distinct users, `last_used` is the newest usage record.\n\n**Cost:** each run is priced from the LiteLLM spend ledger, by `execution_id` for workflow executions and by `request_id` for chat requests, when first seen on or after the ledger's coverage start; older runs and deployments without the ledger use the usage documents' cost. A cost the ledger has not recorded yet leaves `total_cost` without it and sets `spend_unavailable: true`; a value with no known cost has `total_cost: null`.\n\n**Filters:** `attributes` narrows the rows to runs that also carry the given attributes. A missing or invalid `attribute_key` returns 422.\n\n**Access:** standard analytics scoping. Super admins see all usage, project admins the usage of projects they administer, other users their own.\n\n**Not covered:** chats with `save_history=false` and virtual assistants record no usage, and runs started without attributes (including all runs before the feature) have none, so they are absent here. Run attribute keys are not listed by any endpoint, and an unknown key returns an empty table.\n\n**Trust:** values are declared by the callers who start the runs and are not verified, so the totals per value are only as reliable as the callers' labelling.",
+        "operationId": "get_attributes_usage_v1_analytics_attributes_usage_get",
+        "parameters": [
+          {
+            "description": "Run attribute key to break usage down by (required)",
+            "in": "query",
+            "name": "attribute_key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Run attribute key to break usage down by (required)",
+              "title": "Attribute Key"
+            }
+          },
+          {
+            "description": "Filter by client source (platform, teams, cli, sdk, chrome_extension, or other)",
+            "in": "query",
+            "name": "client_source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ClientSource"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by client source (platform, teams, cli, sdk, chrome_extension, or other)",
+              "title": "Client Source"
+            }
+          },
+          {
+            "description": "Filter by run attributes: a JSON object of string keys and string values, e.g. {\"team\": \"alpha\"}. Only runs that carry all the given attributes are counted, and costs are those of the matching runs, priced per run from the LiteLLM spend ledger. Keys and values follow the run attribute rules; an invalid filter returns 422. Values are declared by the callers who start the runs and are not verified.",
+            "in": "query",
+            "name": "attributes",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by run attributes: a JSON object of string keys and string values, e.g. {\"team\": \"alpha\"}. Only runs that carry all the given attributes are counted, and costs are those of the matching runs, priced per run from the LiteLLM spend ledger. Keys and values follow the run attribute rules; an invalid filter returns 422. Values are declared by the callers who start the runs and are not verified.",
+              "title": "Attributes"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "users",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Users"
+            }
+          },
+          {
+            "in": "query",
+            "name": "projects",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Projects"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TabularResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get usage by run attribute value",
         "tags": [
           "Dashboard Analytics"
         ]
@@ -58734,6 +59076,24 @@
             }
           },
           {
+            "description": "Filter by run attributes: a JSON object of string keys and string values, e.g. {\"team\": \"alpha\"}. Only runs that carry all the given attributes are counted, and costs are those of the matching runs, priced per run from the LiteLLM spend ledger. Keys and values follow the run attribute rules; an invalid filter returns 422. Values are declared by the callers who start the runs and are not verified.",
+            "in": "query",
+            "name": "attributes",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by run attributes: a JSON object of string keys and string values, e.g. {\"team\": \"alpha\"}. Only runs that carry all the given attributes are counted, and costs are those of the matching runs, priced per run from the LiteLLM spend ledger. Keys and values follow the run attribute rules; an invalid filter returns 422. Values are declared by the callers who start the runs and are not verified.",
+              "title": "Attributes"
+            }
+          },
+          {
             "in": "query",
             "name": "time_period",
             "required": false,
@@ -58870,6 +59230,189 @@
           }
         ],
         "summary": "Get Workflows",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/workflows-executions": {
+      "get": {
+        "description": "One row per workflow execution (`execution_id`), most recent activity first.\n\n**Source:** the `workflow_execution_total` usage documents in Elasticsearch, the same documents behind `workflows`. One execution writes several of them (one per LLM call, or one aggregated document, and more after a resume), so a row groups all documents of one execution: `input_tokens`, `output_tokens` and `total_tokens` are summed, `usage_records` counts the documents, `execution_time` (seconds) is the largest reported and `last_activity` is the newest document timestamp. `workflow_name`, `status`, user, `project` and `attributes` come from the newest document, so `status` is the latest reported status. An execution appears once it has written a usage document; executions deleted after completion (`delete_on_completion`) are still listed.\n\n**Field availability:** `total_tokens` is `input_tokens + output_tokens` and excludes cached tokens; `money_spent` excludes `cached_tokens_money_spent`, as in `workflows`. `attributes` holds the run attributes of the execution as a `{key: value}` object, or `null` when it has none. The `attributes` filter keeps only executions that carry all the given attributes. Fields missing from a document are `null`.\n\n**Cost:** `money_spent` is the whole execution's cost. For executions first seen on or after the LiteLLM spend ledger's coverage start it comes from the ledger, keyed on `execution_id`; for older executions and on deployments without the ledger it is the sum of the usage documents' cost. A cost the ledger has not recorded yet is `null` with `spend_unavailable: true`, and a document sum missing unsettled costs has `spend_partial: true`. `totals.money_spent` is the cost of every execution in the filtered range, not only the page, with the same flags as `money_spent_spend_unavailable`, `money_spent_spend_partial` and `money_spent_spend_missing_amount`.\n\n**Paging:** `page`/`per_page` page through executions. `total_count` is an approximate distinct count above 3,000 executions, and at most the first 10,000 executions of the filtered range can be paged; narrow the date range or add filters to reach older ones.\n\n**Access:** standard analytics scoping. Super admins see all executions, project admins the executions of projects they administer, other users their own.\n\n**Reconciliation with `workflows`:** for the same filters and date range, `total_tokens` here sums to `workflows` `total_tokens`, and the number of executions matches `total_runs` (an approximate distinct count there). The date filter applies per document `@timestamp`, so an execution that spans a range boundary counts only its documents inside the range for tokens. Cost does not reconcile in general. `money_spent` here is the whole execution's cost, priced by `execution_id`. `workflows` `total_cost_usd` counts each LLM call in the range it started in and, without an `attributes` filter, is priced per workflow: only a name that belongs to exactly one existing workflow gets a cost, under that workflow's current name. Executions of a deleted workflow, of a name shared by two workflows, or under a workflow's former name therefore have a cost here and none in `workflows`.",
+        "operationId": "get_workflows_executions_v1_analytics_workflows_executions_get",
+        "parameters": [
+          {
+            "description": "Filter by client source (platform, teams, cli, sdk, chrome_extension, or other)",
+            "in": "query",
+            "name": "client_source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ClientSource"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by client source (platform, teams, cli, sdk, chrome_extension, or other)",
+              "title": "Client Source"
+            }
+          },
+          {
+            "description": "Filter by run attributes: a JSON object of string keys and string values, e.g. {\"team\": \"alpha\"}. Only runs that carry all the given attributes are counted, and costs are those of the matching runs, priced per run from the LiteLLM spend ledger. Keys and values follow the run attribute rules; an invalid filter returns 422. Values are declared by the callers who start the runs and are not verified.",
+            "in": "query",
+            "name": "attributes",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by run attributes: a JSON object of string keys and string values, e.g. {\"team\": \"alpha\"}. Only runs that carry all the given attributes are counted, and costs are those of the matching runs, priced per run from the LiteLLM spend ledger. Keys and values follow the run attribute rules; an invalid filter returns 422. Values are declared by the callers who start the runs and are not verified.",
+              "title": "Attributes"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "users",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Users"
+            }
+          },
+          {
+            "in": "query",
+            "name": "projects",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Projects"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TabularResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get per-execution workflow analytics",
         "tags": [
           "Dashboard Analytics"
         ]

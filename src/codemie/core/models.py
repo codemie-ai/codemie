@@ -40,6 +40,7 @@ from codemie.configs import config
 from codemie.core.ability import Owned
 from codemie.core.constants import CodeIndexType, ChatRole, BackgroundTaskStatus, DatasourceTypes
 from codemie.core.routing_info import RoutingInfo
+from codemie.core.run_attributes import RUN_ATTRIBUTES_REQUEST_DESC, RunAttributesError, validate_run_attributes
 
 if TYPE_CHECKING:
     from codemie.rest_api.security.user import User
@@ -608,6 +609,16 @@ class FileNamesCountValidatorMixin:
         return file_names
 
 
+class RunAttributesValidatorMixin:
+    @field_validator("attributes")
+    @classmethod
+    def validate_attributes(cls, attributes: dict[str, str] | None) -> dict[str, str] | None:
+        try:
+            return validate_run_attributes(attributes)
+        except RunAttributesError as exc:
+            raise ValueError(str(exc)) from exc
+
+
 class ToolCallPolicy(str, Enum):
     """How tool calls are confirmed during an assistant conversation."""
 
@@ -639,7 +650,7 @@ class ToolCallAction(str, Enum):
     deny = "deny"
 
 
-class AssistantChatRequest(FileNamesCountValidatorMixin, ConfiguredModel):
+class AssistantChatRequest(FileNamesCountValidatorMixin, RunAttributesValidatorMixin, ConfiguredModel):
     _history_variant_persisted: bool = PrivateAttr(default=False)
 
     @staticmethod
@@ -712,6 +723,7 @@ class AssistantChatRequest(FileNamesCountValidatorMixin, ConfiguredModel):
     metadata: Optional[dict[str, Any]] = None
     tools_config: Optional[list[ToolConfig]] = None
     output_schema: Annotated[Optional[dict], AfterValidator(validate_structured_output)] = None
+    attributes: dict[str, str] | None = Field(default=None, description=RUN_ATTRIBUTES_REQUEST_DESC)
     disable_cache: Optional[bool] = Field(
         default=False, description="Disable prompt caching for this request (applies to main agent LLM only)"
     )
