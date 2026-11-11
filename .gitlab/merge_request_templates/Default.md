@@ -70,3 +70,6 @@ Command: `make test-harness`
 - [ ] Tests written/updated
 - [ ] No breaking changes (or clearly documented above)
 - [ ] `/sanity` requested — required if the MR touches dependencies, the Dockerfile or security-relevant code
+
+<!-- Opens the MR as Draft (EPMCDME-16799); GitLab runs this quick action on creation and removes it. -->
+/draft
