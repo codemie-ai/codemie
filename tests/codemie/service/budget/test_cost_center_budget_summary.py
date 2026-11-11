@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from codemie.configs.customer_config import CustomerConfig
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.budget.cost_center_budget_summary import (
     CostCenterAssignedBudgetSummary,
@@ -74,7 +76,12 @@ def _spent(amount: str | None) -> SpendResult:
 
 @contextlib.contextmanager
 def _patched(spend_by_project, member_counts=None, removed_by_project=None):
-    """Stub the project budget spend the rollup reads and the member-count query."""
+    """Stub the project budget spend the rollup reads and the member-count query.
+
+    Also pins the budgetManagement chokepoint guard (EPMCDME-14536) "on": these tests
+    exercise the aggregation logic, not the feature gate — `test_rejects_when_budget_management_disabled`
+    overrides this back to `False` itself, from inside this context, to test the gate directly.
+    """
 
     @contextlib.asynccontextmanager
     async def session():
@@ -87,6 +94,7 @@ def _patched(spend_by_project, member_counts=None, removed_by_project=None):
         ) as spend,
         patch(f"{MODULE}.project_budget_assignment_repository") as repo,
         patch(f"{MODULE}.get_async_session", session),
+        patch.object(CustomerConfig, "is_feature_enabled", return_value=True),
     ):
         repo.get_distinct_member_counts_by_category = AsyncMock(return_value=member_counts or {})
         yield spend, repo
@@ -151,6 +159,32 @@ async def test_a_budget_without_a_figure_is_unavailable_never_zero():
     assert result.current_spending == 5.0
     assert result.spend_unavailable is True
     assert result.spend_partial is True
+
+
+@pytest.mark.asyncio
+async def test_rejects_when_budget_management_disabled():
+    """The chokepoint guard (EPMCDME-14536) short-circuits before any DB/spend work,
+    not only before the response is built — proven by asserting both never run."""
+    with _patched({}) as (spend, repo), patch.object(CustomerConfig, "is_feature_enabled", return_value=False):
+        with pytest.raises(ExtendedHTTPException) as exc:
+            await get_cost_center_budget_summary(["proj-1"])
+
+    assert exc.value.code == 403
+    spend.assert_not_awaited()
+    repo.get_distinct_member_counts_by_category.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rejects_when_budget_management_disabled_with_empty_project_list():
+    """CR-001: an empty project_names list must not bypass the chokepoint — the gate has to be
+    checked before the `if not project_names` early return, not after it."""
+    with _patched({}) as (spend, repo), patch.object(CustomerConfig, "is_feature_enabled", return_value=False):
+        with pytest.raises(ExtendedHTTPException) as exc:
+            await get_cost_center_budget_summary([])
+
+    assert exc.value.code == 403
+    spend.assert_not_awaited()
+    repo.get_distinct_member_counts_by_category.assert_not_called()
 
 
 @pytest.mark.asyncio

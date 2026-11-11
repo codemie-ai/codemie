@@ -1,0 +1,249 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "CR-001 confirmed resolved by targeted verifier, confidence high, 0 unresolved findings."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "CR-001: budgetManagement guard bypassed for cost centers with zero linked projects (200 instead of 403). Dispatching fix-up."
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "CR-001 confirmed resolved by targeted verifier, confidence high, 0 unresolved findings."
+    }
+  ],
+  "reviewed_head": "e83f19808bd4d883cfaecb5e4e8401ff4a2649a3",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "CR-001 is resolved: ensure_budget_management_enabled() now runs at cost_center_budget_summary.py:263, above the `if not project_names` early return, and the added test test_rejects_when_budget_management_disabled_with_empty_project_list confirms a 403 for an empty project list with budgetManagement disabled, matching the prior finding's recommendation exactly. No other prior blocking findings existed to re-check; DF-001/DF-002 remain deferred from the prior round and are not re-checked here. business_review and standards_review are carried forward unchanged from the prior verdict per the check-round contract, so stale CR-001 references in their notes describe the pre-fix state, not this round's finding.",
+  "confidence": "high",
+  "check_confidence": "high",
+  "risk_flags": [
+    "security"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/cost_center_budget_summary.py",
+      "line": 263,
+      "title": "budgetManagement gate skipped for empty project list",
+      "problem": "get_cost_center_budget_summary() returns CostCenterBudgetSummary(budgets=[]) at the early return for an empty project_names list (line 263-264), before the ensure_budget_management_enabled() call added at line 266, so that path never reaches the new chokepoint.",
+      "impact": "A cost center that resolves to zero linked projects (via GET /v1/admin/cost-centers/{id}/budget-rollup) returns 200 with an empty summary instead of the 403 every other budgetManagement-disabled call receives, materially deviating from the spec's explicit 'checked before it returns any figures, so a future second caller cannot bypass it by construction' requirement for this chokepoint. No test combines an empty project list with the flag disabled.",
+      "recommendation": "Move the ensure_budget_management_enabled() call above the `if not project_names` early return so the gate is checked unconditionally before any return path, and add a test covering the empty-list path with budgetManagement disabled.",
+      "status": "resolved",
+      "check_notes": "ensure_budget_management_enabled() moved to line 263, above the empty-project_names early return; new test confirms 403 for empty list + disabled flag.",
+      "fix": {
+        "change": "Moved ensure_budget_management_enabled() above the `if not project_names` early return in get_cost_center_budget_summary() so the gate runs unconditionally before any return path.",
+        "test": "tests/codemie/service/budget/test_cost_center_budget_summary.py::test_rejects_when_budget_management_disabled_with_empty_project_list"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/rest_api/routers/user_management_router.py",
+      "line": 478,
+      "title": "Per-user budget endpoints bypass the budgetManagement flag entirely",
+      "problem": "bulk_set_user_budgets, get_user_budgets, reset_user_budget_spending and set_user_budgets (lines 478-584) check only ENABLE_USER_MANAGEMENT and require_litellm_enabled(), never customer_config.is_feature_enabled('budgetManagement') or the new shared guard.",
+      "preexisting": "Never had any budgetManagement check before this diff; the spec explicitly scoped the new guard to budget_router.py, project_budget_router.py, and the Cost Centers rollup chokepoint only."
+    },
+    {
+      "id": "DF-002",
+      "severity": "major",
+      "file": "src/codemie/service/servicenow_integration_service.py",
+      "line": 334,
+      "title": "ServiceNow integration budget-group writes bypass the router-level guard",
+      "problem": "_create_group/_update_group/_delete_group (lines 332-381) call project_budget_service directly, not through project_budget_router.py's APIRouter, so require_budget_management_enabled never runs for ServiceNow-driven group create/update/delete.",
+      "preexisting": "This internal call path bypassed any budgetManagement check before this diff too; the spec wired the guard only at the router layer and inside get_cost_center_budget_summary(), not at this separate service-to-service path."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1: costCenters unavailable without enterprise package, API and UI",
+      "status": "partial",
+      "notes": "API: CONFIG_IDS entry ANDs with is_enterprise, tested. UI (tabs.tsx) is in codemie-ui, explicitly out of scope for this backend-only run."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: budgetManagement unavailable without enterprise package, API (3 named surfaces) and UI",
+      "status": "partial",
+      "notes": "API guard wired at budget_router/project_budget_router/cost-center rollup, but CR-001 is an empty-project-list bypass at the rollup chokepoint. UI out of scope for this run."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: projectChargeback unavailable without enterprise package, API and UI",
+      "status": "partial",
+      "notes": "API gated via CONFIG_IDS AND is_enterprise, reusing ProjectService's existing check, tested. UI out of scope for this run."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: enterprise installed + all flags true behaves unchanged from today",
+      "status": "pass",
+      "notes": "test_cost_centers_budget_management_chargeback_enterprise_installed_flag_true confirms all three return True."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: without enterprise, direct API calls rejected same as explicit disable",
+      "status": "pass",
+      "notes": "True for non-empty inputs across all three surfaces; CR-001 is an edge-case exception at the Cost Centers rollup."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: a flag omitted from YAML defaults to unavailable",
+      "status": "pass",
+      "notes": "_yaml_declared_enabled treats an absent component as False; covered by direct unit tests."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: enterprise installed but flag false keeps the feature disabled",
+      "status": "pass",
+      "notes": "test_..._enterprise_installed_flag_false asserts all three return False."
+    },
+    {
+      "kind": "spec",
+      "item": "CONFIG_IDS gains costCenters/budgetManagement/projectChargeback with correct feature: ids",
+      "status": "pass",
+      "notes": "customer_config.py:49-51, exact ids as specified."
+    },
+    {
+      "kind": "spec",
+      "item": "Each flag computed as YAML-declared value AND is_enterprise, both as local values, non-recursively",
+      "status": "pass",
+      "notes": "Reuses the existing is_enterprise local; confirmed non-recursive via resolve()'s empty runtime_ids branch."
+    },
+    {
+      "kind": "spec",
+      "item": "New non-recursive YAML-only read helper (_yaml_declared_enabled), unit-tested standalone",
+      "status": "pass",
+      "notes": "customer_config.py:152-162; test_yaml_declared_enabled covers absent/false/true."
+    },
+    {
+      "kind": "spec",
+      "item": "resolve_component's existing CONFIG_IDS-membership routing alone propagates the fix to every reader",
+      "status": "pass",
+      "notes": "Confirmed by reading resolve_component/is_component_enabled/is_feature_enabled; no other reader needed changes."
+    },
+    {
+      "kind": "spec",
+      "item": "Shared budgetManagement guard defined in new feature_gate.py, not inside any of its callers",
+      "status": "pass",
+      "notes": "feature_gate.py exports ensure_budget_management_enabled() and require_budget_management_enabled()."
+    },
+    {
+      "kind": "spec",
+      "item": "Guard wired as router-level dependency on budget_router and both project_budget_router routers",
+      "status": "pass",
+      "notes": "budget_router.py:87, project_budget_router.py:108 (router) and :118 (group_router)."
+    },
+    {
+      "kind": "spec",
+      "item": "Guard also called inside get_cost_center_budget_summary() before it returns any figures, bypass-proof by construction",
+      "status": "partial",
+      "notes": "CR-001: the call sits after the empty-project_names early return, so that invariant does not hold for a zero-linked-project cost center."
+    },
+    {
+      "kind": "spec",
+      "item": "Existing _require_budgeting_enabled() no-op and require_litellm_enabled() stay; new guard is additional",
+      "status": "pass",
+      "notes": "Both call sites confirmed unchanged across their existing call sites."
+    },
+    {
+      "kind": "spec",
+      "item": "budgetManagement guard ordered after authenticate (401 before 403) on every guarded route",
+      "status": "pass",
+      "notes": "require_budget_management_enabled resolves authenticate first; both 401-before-403 tests pass."
+    },
+    {
+      "kind": "spec",
+      "item": "New customer_config.py tests for all three flags, modeled on existing enterprise-install tests",
+      "status": "pass",
+      "notes": "test_cost_centers_budget_management_chargeback_enterprise_installed/_not_installed_* added."
+    },
+    {
+      "kind": "spec",
+      "item": "Unit test for the new YAML-only non-recursive read helper (absent/false/true)",
+      "status": "pass",
+      "notes": "test_yaml_declared_enabled covers all three cases."
+    },
+    {
+      "kind": "spec",
+      "item": "Shared guard tests cover all three call sites, including group_router specifically",
+      "status": "pass",
+      "notes": "test_budget_router.py, test_project_budget_router.py (router and group_router), test_cost_centers_router.py, test_cost_center_budget_summary.py, test_feature_gate.py."
+    },
+    {
+      "kind": "spec",
+      "item": "Unauthenticated request to a budgetManagement-guarded endpoint returns 401, not 403",
+      "status": "pass",
+      "notes": "test_endpoint_requires_auth_before_budget_management_check and its router-level counterpart both assert 401."
+    },
+    {
+      "kind": "spec",
+      "item": "tabs.tsx test: Budget Management visibility no longer depends on isEnterpriseEdition() for Admin",
+      "status": "na",
+      "notes": "tabs.tsx lives in codemie-ui, not present in this diff; UI explicitly out of scope for this run."
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no new UI affordance distinguishing package-missing vs flag-off",
+      "status": "na",
+      "notes": "No UI change present in this diff at all."
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no change to default enablement when the enterprise package is installed",
+      "status": "pass",
+      "notes": "With is_enterprise=True, result equals the YAML-declared value exactly; confirmed by tests."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 5 commit subjects use the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "feature_gate.py follows module-cohesion convention; license header, typed signatures, consistent style with the file's existing conventions"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "require_budget_management_enabled composes with the central authenticate dependency (401 before 403); no secrets/internals in the 403 message; no untrusted-input parsing introduced"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "CR-001 (critical): the new budgetManagement chokepoint in get_cost_center_budget_summary() sits after the empty-project_names early return, so a cost center with zero linked projects returns 200 instead of 403 when budgetManagement is disabled, deviating from the spec's explicit 'checked before any figures are returned, bypass-proof by construction' requirement. Deferred 2 pre-existing budgetManagement enforcement gaps outside this diff's named scope: user_management_router.py's per-user budget endpoints and servicenow_integration_service.py's direct project_budget_service calls bypass the flag entirely, with no gate at all, before and after this diff. 5 findings dismissed as below the blocking floor or explicitly out of scope (a service-layer/FastAPI import matching existing precedent, a CONFIG_IDS string-duplication style nit, chargeback's cross-flag dependency on costCenters which the spec names as a non-goal tracked separately, costCenters CRUD already gated via cost_center_service.ensure_feature_enabled, and an untested-but-non-bypassing auth-ordering corner case); the UI portion of AC1-AC3 is explicitly out of scope for this backend-only run per the task.",
+    "confidence": "high",
+    "risk_flags": [
+      "security"
+    ]
+  }
+}

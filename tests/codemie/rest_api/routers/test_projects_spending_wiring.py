@@ -73,6 +73,12 @@ def _budget_row(project: str, max_budget: float = 6.0) -> SimpleNamespace:
     )
 
 
+@pytest.fixture(autouse=True)
+def budget_management_enabled():
+    with patch("codemie.rest_api.routers.projects.crud.is_budget_management_enabled", return_value=True):
+        yield
+
+
 @pytest.fixture
 def spending_io():
     """The database session and every read of the spending helpers, replaced at their defining modules."""
@@ -206,6 +212,13 @@ class TestProjectDetailSpending:
         )
 
         assert response.spending is None
+        _assert_nothing_was_read(spending_io)
+
+    async def test_spending_is_not_read_when_budget_management_is_disabled(self, spending_io):
+        with patch("codemie.rest_api.routers.projects.crud.is_budget_management_enabled", return_value=False):
+            response = await _get_project_detail(_project("proj-a", is_project_admin=True), _user("user-1"))
+
+        assert (response.spending, response.spending_widget) == (None, None)
         _assert_nothing_was_read(spending_io)
 
 

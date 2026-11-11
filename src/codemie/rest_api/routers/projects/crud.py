@@ -42,6 +42,7 @@ from codemie.rest_api.routers.projects._common import (
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import BudgetCategory
+from codemie.service.budget.feature_gate import is_budget_management_enabled
 from codemie.service.budget.provider_registry import get_active_provider
 from codemie.service.project import cli_analytics_policy
 from codemie.service.project.project_service import project_service
@@ -306,10 +307,10 @@ async def list_projects(
 
     items = [ProjectListItem(**_with_visible_cli_analytics(user, proj)) for proj in enriched_projects]
 
-    if include_budgets and _is_budget_provider_active():
+    if include_budgets and is_budget_management_enabled() and _is_budget_provider_active():
         await _attach_assigned_budget_summaries(items, budget_category)
 
-    if include_spending:
+    if include_spending and is_budget_management_enabled():
         await attach_project_spending_summaries(items, enriched_projects, user)
 
     return PaginatedProjectListResponse(
@@ -360,7 +361,7 @@ async def get_project_detail(
 
     response = _build_project_detail_response(_with_visible_cli_analytics(user, project_detail), project_name)
 
-    if include_spending and can_see_project_spending(user, project_detail):
+    if include_spending and is_budget_management_enabled() and can_see_project_spending(user, project_detail):
         await attach_project_detail_spending(
             response=response,
             project_name=project_name,

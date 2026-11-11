@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Gate Cost Centers, Budget Management, and Chargeback feature flags on codemie-enterprise package presence by mirroring the existing enterpriseEdition runtime-computed-component pattern.",
+  "generated": "2026-08-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "The shared CustomerConfig runtime-flag mechanism is the central touch point, but the change ripples through CostCenterService, ProjectService's chargeback path, budget services/routers (a new enforcement point that doesn't exist today), and the UI feature-flag wrapper layer, spanning both the codemie and codemie-ui repositories." },
+    { "dimension": "requirements_clarity", "reason": "Real design decisions remain open: whether budgetManagement has any backend enforcement point today (research found none), whether the Cost Centers UI gap self-resolves once the backend flag is corrected or needs an explicit UI composition fix, and two prior stories that deliberately deferred related gating decisions and may be revisited here." },
+    { "dimension": "technical_risk", "reason": "The exact mechanism already exists for enterpriseEdition with direct unit-test precedent to model from, but this closes a real enforcement gap for Budget Management (no confirmed server-side gate exists) and changes default-enabled semantics for absent YAML keys — a licensing/access-control gap-closing change, which triggers the Security/Compliance red flag." },
+    { "dimension": "file_change_estimate", "reason": "Expected changes span customer_config.py plus its test suite, a new (extent-unconfirmed) enforcement addition for budget routers/services, and UI-side tabs.tsx/feature-flag-wrapper updates plus tests — likely in the 8-10 modified / few new file range across 3+ directories in two repositories." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: closing a licensing/access-control enforcement gap (enterprise-only features reachable without the enterprise package) — Security/Compliance red flag."
+  ],
+  "split_recommendation": null
+}

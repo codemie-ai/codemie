@@ -38,11 +38,12 @@ from codemie.rest_api.security.authentication import (
 )
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_service import budget_service
+from codemie.service.budget.feature_gate import budget_management_guard
 
 router = APIRouter(
     tags=["Budgets"],
     prefix="/v1/admin/budgets",
-    dependencies=[],
+    dependencies=budget_management_guard,
 )
 
 

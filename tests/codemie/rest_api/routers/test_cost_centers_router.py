@@ -17,6 +17,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pytest
+
+from codemie.configs.customer_config import CustomerConfig
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.cost_center import CostCenterCreateRequest
 from codemie.rest_api.routers.cost_centers import (
     create_cost_center,
@@ -234,3 +238,39 @@ class TestCostCenterBudgetRollup:
 
         assert response.budgets == []
         assert response.budget_limit is None
+
+    @patch("codemie.rest_api.routers.cost_centers.config")
+    @patch("codemie.rest_api.routers.cost_centers.get_async_session")
+    @patch("codemie.rest_api.routers.cost_centers.application_repository")
+    @patch("codemie.rest_api.routers.cost_centers.get_session")
+    @patch("codemie.rest_api.routers.cost_centers.cost_center_service")
+    def test_get_cost_center_budget_rollup_rejects_when_budget_management_disabled_but_cost_centers_enabled(
+        self,
+        mock_cost_center_service,
+        mock_get_session,
+        mock_application_repository,
+        mock_get_async_session,
+        mock_config,
+    ):
+        """AC2: costCenters being enabled is no longer sufficient — budgetManagement is its own
+        gate, enforced by get_cost_center_budget_summary()'s own chokepoint (not mocked here)."""
+        import asyncio
+
+        from codemie.rest_api.routers.cost_centers import get_cost_center_budget_rollup
+
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        cost_center_id = uuid4()
+        mock_get_session.return_value.__enter__.return_value = MagicMock()
+        mock_cost_center_service.get_or_404.return_value = SimpleNamespace(id=cost_center_id, name="epm-cdme")
+        mock_get_async_session.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_get_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_application_repository.aget_project_names_by_cost_center_name = AsyncMock(return_value=["proj-a"])
+
+        def _is_feature_enabled(self, feature_key: str) -> bool:
+            return feature_key == "costCenters"
+
+        with patch.object(CustomerConfig, "is_feature_enabled", _is_feature_enabled):
+            with pytest.raises(ExtendedHTTPException) as exc:
+                asyncio.run(get_cost_center_budget_rollup(cost_center_id=cost_center_id, user=_super_admin(), _=None))
+
+        assert exc.value.code == 403

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-11-05T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 12,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "A new shared feature_gate.py chokepoint (ensure_budget_management_enabled / require_budget_management_enabled) is reused across budget_router.py's router, project_budget_router.py's two routers (router + group_router), and get_cost_center_budget_summary()'s own call — 3-4 components spanning Config, Service, and API layers, with a shared utility deliberately introduced to prevent drift." },
+    { "dimension": "technical_risk", "reason": "The enterprise-ceiling pattern (is_enterprise AND yaml-declared flag) directly reuses the existing Component/CONFIG_IDS mechanism already applied to enterpriseEdition/metricsAnalytics, which argues for a lower score. But the gating is authorization-style access control (403 on missing feature), and a dedicated follow-up commit ('Fix budgetManagement guard bypass for empty-project cost centers') shows the first pass left a real gap the precedent didn't cover — this matches the 'affects authentication or authorization' red flag, bumping from M to L." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 12 files changed (5 src: customer_config.py, budget_router.py, project_budget_router.py, cost_center_budget_summary.py, and the new feature_gate.py; 7 tests: 6 modified + the new test_feature_gate.py). Per the actual-mode N-files-to-score mapping this lands in the 11-15 (XL) band. Flagging a disagreement with the nearest M calibration example (epmcdme-10203, 6 files, total 15): that example's smaller file count kept it mid-M, while this change's heavier test surface (7 of 12 files) pushes the raw count into XL even though the production-code delta is a small, well-patterned shared gate plus four call sites." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: feature gating enforces authorization-style access (403) to Budget Management / Cost Center / Chargeback data, and a real bypass (empty-project cost centers) required a dedicated follow-up fix, showing the existing flag-pattern precedent did not fully cover the authz surface on the first pass."
+  ],
+  "split_recommendation": null
+}

@@ -41,6 +41,7 @@ from codemie.service.activity.activity_models import (
     ProjectManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.service.budget.feature_gate import ensure_budget_management_enabled
 from codemie.repository.user_repository import user_repository
 from codemie.service.user.active_user import require_active_user
 from codemie.rest_api.models.settings import Settings
@@ -324,14 +325,13 @@ class ProjectService:
             if cli_analytics_enabled and project.project_type == Application.ProjectType.PERSONAL:
                 raise ExtendedHTTPException(code=400, message=cls.ERRORS.PERSONAL_CLI_ANALYTICS)
 
-            if (
-                chargeback_enabled is not None or chargeback_attribution is not None
-            ) and not customer_config.is_feature_enabled("projectChargeback"):
-                raise ExtendedHTTPException(
-                    code=403,
-                    message="Feature not available",
-                    details="Project chargeback configuration is not enabled for this customer.",
-                )
+            cls._require_chargeback_feature(chargeback_enabled, chargeback_attribution)
+
+            # The edit form resends the stored value on every save, so only a change is a Budget Management action.
+            if enforce_member_spend_limits is not None and (
+                enforce_member_spend_limits != SettingsService.get_enforce_member_spend_limits(project.name)
+            ):
+                ensure_budget_management_enabled()
 
             validated_name = cls._resolve_updated_name(session, project_name, name)
             resolved_description, resolved_clear_description = cls._resolve_updated_description(
@@ -471,6 +471,17 @@ class ProjectService:
         """Defence in depth behind the router guard: only global admins/maintainers may set the flag."""
         if cli_analytics_enabled is not None:
             cli_analytics_policy.require_write(user, {cli_analytics_policy.FIELD})
+
+    @staticmethod
+    def _require_chargeback_feature(chargeback_enabled: bool | None, chargeback_attribution: str | None) -> None:
+        if (
+            chargeback_enabled is not None or chargeback_attribution is not None
+        ) and not customer_config.is_feature_enabled("projectChargeback"):
+            raise ExtendedHTTPException(
+                code=403,
+                message="Feature not available",
+                details="Project chargeback configuration is not enabled for this customer.",
+            )
 
     @classmethod
     def _get_project_for_update(cls, session: Session, user: User, project_name: str) -> Application:

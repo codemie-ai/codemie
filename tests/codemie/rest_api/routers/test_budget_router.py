@@ -29,10 +29,14 @@ from datetime import datetime, UTC
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
 
+from codemie.configs.customer_config import CustomerConfig
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.enterprise.litellm.budget_categories import BudgetCategory
+from codemie.rest_api.main import extended_http_exception_handler
 from codemie.rest_api.models.budget import BudgetCreateRequest, BudgetUpdateRequest
 from codemie.rest_api.routers.budget_router import (
     router,
@@ -42,6 +46,7 @@ from codemie.rest_api.routers.budget_router import (
     sync_budgets,
     update_budget,
 )
+from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_models import Budget
 
@@ -685,3 +690,59 @@ class TestCreatedByName:
 
         assert result.budgets[0].created_by_name == "Alice Smith"
         assert result.budgets[0].created_by == "user-1"
+
+
+# ---------------------------------------------------------------------------
+# budgetManagement router-level guard (EPMCDME-14536, AR-12)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def budget_router_app():
+    app = FastAPI()
+    app.include_router(router)
+    app.add_exception_handler(ExtendedHTTPException, extended_http_exception_handler)
+    return TestClient(app)
+
+
+def _override_identity(app: FastAPI, user: User) -> None:
+    """Inject *user* the way `authenticate` does: `maintainer_access_only` and
+    `admin_or_maintainer_or_auditor_access` both read `request.state.user` directly."""
+
+    async def _fake_authenticate(request: Request) -> User:
+        request.state.user = user
+        return user
+
+    app.dependency_overrides[authenticate] = _fake_authenticate
+
+
+def test_create_budget_rejects_when_budget_management_disabled(budget_router_app):
+    """A user who would otherwise pass `maintainer_access_only`, so a 403 here can only
+    come from the budgetManagement guard, never from the endpoint's own authorization."""
+    client = budget_router_app
+    _override_identity(client.app, _maintainer_user())
+
+    with patch.object(CustomerConfig, "is_feature_enabled", return_value=False):
+        response = client.post(
+            "/v1/admin/budgets",
+            json={
+                "budget_id": "new-budget",
+                "name": "New Budget",
+                "soft_budget": 10.0,
+                "max_budget": 100.0,
+                "budget_duration": "30d",
+                "budget_category": "platform",
+            },
+        )
+
+    assert response.status_code == 403
+
+
+def test_endpoint_requires_auth_before_budget_management_check(budget_router_app):
+    """No `authenticate` override — the real auth stack must answer 401, never 403."""
+    client = budget_router_app
+
+    with patch.object(CustomerConfig, "is_feature_enabled", return_value=False):
+        response = client.get("/v1/admin/budgets")
+
+    assert response.status_code == 401

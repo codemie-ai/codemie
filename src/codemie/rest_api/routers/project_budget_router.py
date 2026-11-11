@@ -44,6 +44,7 @@ from codemie.rest_api.models.project_budget import (
 from codemie.rest_api.security.authentication import authenticate, maintainer_access_only
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory
+from codemie.service.budget.feature_gate import budget_management_guard
 from codemie.service.budget.budget_models import (
     Budget,
     ProjectBudgetAssignment,
@@ -63,7 +64,7 @@ _ACCESS_DENIED_HELP = "If you believe you should have access, please contact you
 router = APIRouter(
     tags=["Project Budgets"],
     prefix="/v1/admin/project-budgets",
-    dependencies=[],
+    dependencies=budget_management_guard,
 )
 
 
@@ -452,7 +453,7 @@ async def clear_member_override(
 group_router = APIRouter(
     tags=["Project Budget Groups"],
     prefix="/v1/admin/project-budget-groups",
-    dependencies=[],
+    dependencies=budget_management_guard,
 )
 
 

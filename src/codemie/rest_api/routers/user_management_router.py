@@ -49,6 +49,7 @@ from codemie.rest_api.security.authentication import (
     project_admin_or_admin_user_detail_access,
 )
 from codemie.rest_api.security.user import User
+from codemie.service.budget.feature_gate import ensure_budget_management_enabled
 from codemie.service.budget.budget_service import budget_service
 from codemie.service.user.password_management_service import password_management_service
 from codemie.service.user.user_access_service import user_access_service
@@ -506,6 +507,7 @@ async def bulk_set_user_budgets(
     if not config.ENABLE_USER_MANAGEMENT:
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
     require_litellm_enabled()
+    ensure_budget_management_enabled()
     async with get_async_session() as session:
         await budget_service.bulk_set_user_budgets(
             session=session,
@@ -530,6 +532,7 @@ async def get_user_budgets(
     if not config.ENABLE_USER_MANAGEMENT:
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
     require_litellm_enabled()
+    ensure_budget_management_enabled()
     async with get_async_session() as session:
         rows = await budget_repository.get_user_category_assignments(session, user_id)
         return [
@@ -562,6 +565,7 @@ async def reset_user_budget_spending(
     if not config.ENABLE_USER_MANAGEMENT:
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
     require_litellm_enabled()
+    ensure_budget_management_enabled()
     async with get_async_session() as session:
         await budget_service.reset_user_budget_spending(
             session=session,
@@ -590,6 +594,7 @@ async def set_user_budgets(
     if not config.ENABLE_USER_MANAGEMENT:
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
     require_litellm_enabled()
+    ensure_budget_management_enabled()
     async with get_async_session() as session:
         await budget_service.assign_budget_to_user(
             session=session,

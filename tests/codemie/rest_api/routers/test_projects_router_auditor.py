@@ -33,6 +33,12 @@ async def _mock_session_ctx(session):
     yield session
 
 
+@pytest.fixture(autouse=True)
+def budget_management_enabled():
+    with patch("codemie.rest_api.routers.projects.crud.is_budget_management_enabled", return_value=True):
+        yield
+
+
 def _make_auditor():
     with patch.object(config, 'ENV', 'dev'), patch.object(config, 'ENABLE_USER_MANAGEMENT', True):
         return User(

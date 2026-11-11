@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from codemie.configs.customer_config import CustomerConfig
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.service.project.project_service import ProjectService
@@ -598,6 +599,11 @@ class TestProjectServiceDeleteProject:
 class TestProjectServiceUpdateProject:
     """Tests for ProjectService.update_project (PATCH: description + cost center)."""
 
+    @pytest.fixture
+    def budget_management_on(self):
+        with patch.object(CustomerConfig, "is_feature_enabled", return_value=True):
+            yield
+
     def _make_super_admin(self) -> MagicMock:
         user = MagicMock()
         user.is_admin = True
@@ -750,6 +756,7 @@ class TestProjectServiceUpdateProject:
         mock_app_repo,
         mock_cc_service,
         mock_settings_service,
+        budget_management_on,
     ):
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
@@ -776,6 +783,7 @@ class TestProjectServiceUpdateProject:
         mock_app_repo,
         mock_cc_service,
         mock_settings_service,
+        budget_management_on,
     ):
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
@@ -971,6 +979,7 @@ class TestProjectServiceUpdateProject:
         mock_app_repo,
         mock_cc_service,
         mock_settings_service,
+        budget_management_on,
     ):
         """Toggling enforce_member_spend_limits calls bulk resync."""
         mock_session = MagicMock()
@@ -1001,6 +1010,7 @@ class TestProjectServiceUpdateProject:
         mock_app_repo,
         mock_cc_service,
         mock_settings_service,
+        budget_management_on,
     ):
         """If resync fails, flag is still saved and no exception propagates."""
         mock_session = MagicMock()
@@ -1014,6 +1024,63 @@ class TestProjectServiceUpdateProject:
             "codemie.enterprise.litellm.project_member_runtime_sync.resync_project_member_allocations_sync",
             side_effect=RuntimeError("resync exploded"),
         ):
+            result = ProjectService.update_project(
+                user=self._make_super_admin(),
+                project_name="my-project",
+                enforce_member_spend_limits=False,
+            )
+
+        assert result is project
+        mock_settings_service.set_enforce_member_spend_limits.assert_called_once_with("my-project", False)
+
+    @patch("codemie.service.project.project_service.SettingsService")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_update_enforcement_flag_change_is_403_when_budget_management_is_disabled(
+        self,
+        mock_get_session,
+        mock_app_repo,
+        mock_cc_service,
+        mock_settings_service,
+    ):
+        mock_get_session.return_value.__enter__.return_value = MagicMock()
+        project = _make_app("my-project")
+        project.cost_center_id = None
+        mock_app_repo.get_by_name.return_value = project
+        mock_settings_service.get_enforce_member_spend_limits.return_value = False
+
+        with patch.object(CustomerConfig, "is_feature_enabled", return_value=False):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                ProjectService.update_project(
+                    user=self._make_super_admin(),
+                    project_name="my-project",
+                    enforce_member_spend_limits=True,
+                )
+
+        assert exc_info.value.code == 403
+        mock_app_repo.update_project.assert_not_called()
+        mock_settings_service.set_enforce_member_spend_limits.assert_not_called()
+
+    @patch("codemie.service.project.project_service.SettingsService")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_update_enforcement_flag_resubmitted_unchanged_passes_when_budget_management_is_disabled(
+        self,
+        mock_get_session,
+        mock_app_repo,
+        mock_cc_service,
+        mock_settings_service,
+    ):
+        mock_get_session.return_value.__enter__.return_value = MagicMock()
+        project = _make_app("my-project")
+        project.cost_center_id = None
+        mock_app_repo.get_by_name.return_value = project
+        mock_app_repo.update_project.return_value = project
+        mock_settings_service.get_enforce_member_spend_limits.return_value = False
+
+        with patch.object(CustomerConfig, "is_feature_enabled", return_value=False):
             result = ProjectService.update_project(
                 user=self._make_super_admin(),
                 project_name="my-project",

@@ -27,6 +27,7 @@ from codemie.repository.project_budget_repository import (
 # Use the service-layer enum — NOT codemie.enterprise.litellm.budget_categories.BudgetCategory,
 # which is a separate, identically-shaped enum that project_budget_repository/projects.py do not use.
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
+from codemie.service.budget.feature_gate import ensure_budget_management_enabled
 from codemie.service.project.project_spending_service import project_budget_spend
 from codemie.service.spend.coverage import SpendResult
 from codemie.service.spend.rendering import RenderedSpend, combine_rendered_spend, render_budget_spend
@@ -259,6 +260,8 @@ async def get_cost_center_budget_summary(project_names: list[str]) -> CostCenter
     current_spending mirrors the project page's "Spend": it is read through the same
     `project_budget_spend` pairs the project cards derive their figures from.
     """
+    ensure_budget_management_enabled()
+
     if not project_names:
         return CostCenterBudgetSummary(budgets=[])
 

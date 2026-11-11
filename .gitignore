@@ -131,6 +131,11 @@ docs/superpowers/runs/*/**/mr-description.md
 docs/superpowers/tasks/*/**/*.local.*
 docs/superpowers/runs/*/**/*.local.*
 docs/superpowers/qa-tasks/*/**/*.local.*
+# ...same family, but held in a *.local/ working directory rather than a *.local.* filename
+# (e.g. architecture-review top-up research under arch-review/facts-topup.local/)
+docs/superpowers/tasks/*/**/*.local/**
+docs/superpowers/runs/*/**/*.local/**
+docs/superpowers/qa-tasks/*/**/*.local/**
 credentials.json
 .code-graph/
 standalone/*.log

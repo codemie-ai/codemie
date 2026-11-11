@@ -33,12 +33,14 @@ from codemie.rest_api.models.project_budget import (
     OverrideMemberAllocationRequest,
     ProjectBudgetResponse,
 )
+from codemie.configs.customer_config import CustomerConfig
 from codemie.rest_api.routers.project_budget_router import (
     _build_project_budget_group_response,
     _build_project_budget_response,
     _can_manage_project_budget_members,
     _ensure_can_manage_project_budget_members,
     clear_member_override,
+    group_router,
     list_project_budgets,
     list_project_budget_members,
     override_member_allocation,
@@ -1054,7 +1056,12 @@ async def test_member_override_endpoints_load_full_budget_once_per_request(endpo
 
 @pytest.fixture
 def send_member_request():
-    """Send a member override request through the real router wiring and error handler."""
+    """Send a member override request through the real router wiring and error handler.
+
+    `router` now carries the budgetManagement router-level guard (EPMCDME-14536); these
+    pre-existing tests exercise member-override authorization, not the feature gate, so pin
+    the flag "on" for the duration of the request.
+    """
     app = FastAPI()
     app.include_router(router)
     app.add_exception_handler(ExtendedHTTPException, extended_http_exception_handler)
@@ -1062,7 +1069,8 @@ def send_member_request():
 
     def send(endpoint: _MemberEndpoint, user: User):
         app.dependency_overrides[authenticate] = lambda: user
-        return client.request(endpoint.http_method, endpoint.http_path, json=endpoint.http_json)
+        with patch.object(CustomerConfig, "is_feature_enabled", return_value=True):
+            return client.request(endpoint.http_method, endpoint.http_path, json=endpoint.http_json)
 
     return send
 
@@ -1105,3 +1113,50 @@ def test_member_override_http_returns_404_for_unknown_budget(send_member_request
     assert response.status_code == 404
     assert response.json()["error"]["message"] == _NOT_FOUND_MESSAGE
     service_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# budgetManagement router-level guard (EPMCDME-14536, AR-10/AR-12)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def budget_management_app():
+    """A fresh app per test mounting both `router` and `group_router`, with the real
+    exception handler so ExtendedHTTPException turns into the real HTTP status code."""
+    app = FastAPI()
+    app.include_router(router)
+    app.include_router(group_router)
+    app.add_exception_handler(ExtendedHTTPException, extended_http_exception_handler)
+    return TestClient(app)
+
+
+def test_router_endpoint_rejects_when_budget_management_disabled(budget_management_app):
+    client = budget_management_app
+    client.app.dependency_overrides[authenticate] = lambda: admin_user()
+
+    with patch.object(CustomerConfig, "is_feature_enabled", return_value=False):
+        response = client.get("/v1/admin/project-budgets")
+
+    assert response.status_code == 403
+
+
+def test_group_router_endpoint_rejects_when_budget_management_disabled(budget_management_app):
+    """AR-10: `group_router` is a separate `APIRouter` object — must be independently covered."""
+    client = budget_management_app
+    client.app.dependency_overrides[authenticate] = lambda: admin_user()
+
+    with patch.object(CustomerConfig, "is_feature_enabled", return_value=False):
+        response = client.get("/v1/admin/project-budget-groups", params={"project_name": "P"})
+
+    assert response.status_code == 403
+
+
+def test_router_endpoint_requires_auth_before_budget_management_check(budget_management_app):
+    """AR-12: no `authenticate` override — the real auth stack must answer 401, never 403."""
+    client = budget_management_app
+
+    with patch.object(CustomerConfig, "is_feature_enabled", return_value=False):
+        response = client.get("/v1/admin/project-budgets")
+
+    assert response.status_code == 401

@@ -263,32 +263,48 @@ class TestCustomerConfig(unittest.TestCase):
             # Unconfigured feature defaults to False (is_component_enabled defaults to False)
             self.assertFalse(config.is_feature_enabled("unknownFeature"))
 
-    def test_is_feature_enabled_project_chargeback(self):
-        yaml_disabled = {
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: True)
+    def test_is_feature_enabled_project_chargeback_enterprise_installed(self, mock_read_text):
+        """Enterprise installed: the YAML flag alone decides (today's behavior, no regression)."""
+        yaml_disabled = {'components': [{'id': 'features:projectChargeback', 'settings': {'enabled': False}}]}
+        yaml_enabled = {'components': [{'id': 'features:projectChargeback', 'settings': {'enabled': True}}]}
+        yaml_absent = {'components': [{'id': 'features:otherFeature', 'settings': {'enabled': True}}]}
+
+        mock_read_text.return_value = yaml.dump(yaml_disabled)
+        self.assertFalse(CustomerConfig().is_feature_enabled("projectChargeback"))
+
+        mock_read_text.return_value = yaml.dump(yaml_enabled)
+        self.assertTrue(CustomerConfig().is_feature_enabled("projectChargeback"))
+
+        mock_read_text.return_value = yaml.dump(yaml_absent)
+        self.assertFalse(CustomerConfig().is_feature_enabled("projectChargeback"))
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: False)
+    def test_is_feature_enabled_project_chargeback_enterprise_not_installed(self, mock_read_text):
+        """No enterprise package: YAML true is not enough — AC1/AC3's hard ceiling."""
+        yaml_enabled = {'components': [{'id': 'features:projectChargeback', 'settings': {'enabled': True}}]}
+
+        mock_read_text.return_value = yaml.dump(yaml_enabled)
+        self.assertFalse(CustomerConfig().is_feature_enabled("projectChargeback"))
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    def test_yaml_declared_enabled(self, mock_read_text):
+        """`_yaml_declared_enabled` never touches runtime computation: absent/false/true only."""
+        yaml_data = {
             'components': [
-                {'id': 'features:projectChargeback', 'settings': {'enabled': False}},
+                {'id': 'features:costCenters', 'settings': {'enabled': False}},
+                {'id': 'features:budgetManagement', 'settings': {'enabled': True}},
             ]
         }
-        yaml_enabled = {
-            'components': [
-                {'id': 'features:projectChargeback', 'settings': {'enabled': True}},
-            ]
-        }
-        yaml_other = {
-            'components': [
-                {'id': 'features:otherFeature', 'settings': {'enabled': True}},
-            ]
-        }
+        mock_read_text.return_value = yaml.dump(yaml_data)
+        config = CustomerConfig()
 
-        with patch("codemie.configs.customer_config.Path.read_text") as mock_read_text:
-            mock_read_text.return_value = yaml.dump(yaml_disabled)
-            self.assertFalse(CustomerConfig().is_feature_enabled("projectChargeback"))
-
-            mock_read_text.return_value = yaml.dump(yaml_enabled)
-            self.assertTrue(CustomerConfig().is_feature_enabled("projectChargeback"))
-
-            mock_read_text.return_value = yaml.dump(yaml_other)
-            self.assertFalse(CustomerConfig().is_feature_enabled("projectChargeback"))
+        self.assertFalse(config._yaml_declared_enabled("features:costCenters"))
+        self.assertTrue(config._yaml_declared_enabled("features:budgetManagement"))
+        # Absent from YAML entirely
+        self.assertFalse(config._yaml_declared_enabled("features:projectChargeback"))
 
     def test_get_all_configured_assistant_slugs(self):
         """Test getting all configured assistant slugs"""
@@ -527,6 +543,110 @@ class TestRuntimeFeatures(unittest.TestCase):
 
         # YAML components should still work
         self.assertTrue(config.is_component_enabled("features:webSearch"))
+
+    @staticmethod
+    def _set_full_runtime_mock_config(mock_config) -> None:
+        """Every attribute `_get_runtime_config()` reads, so the whole method can run."""
+        mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.IDP_PROVIDER = "local"
+        mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
+        mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED = False
+        mock_config.GITLAB_OAUTH_ENABLED = False
+        mock_config.JIRA_OAUTH_ENABLED = False
+        mock_config.CONFLUENCE_OAUTH_ENABLED = False
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = False
+        mock_config.RETRIEVAL_BACKEND = "elasticsearch"
+        mock_config.CONVERSATION_ANALYSIS_ENABLED = False
+        mock_config.TOOL_SELECTION_ENABLED = False
+
+    @staticmethod
+    def _yaml_with_gated_flags(cost_centers=None, budget_management=None, project_chargeback=None) -> dict:
+        """A YAML fixture declaring only the gated flags that are not None."""
+        components = [{'id': 'component1', 'settings': {'enabled': True}}]
+        for flag_id, value in (
+            ("features:costCenters", cost_centers),
+            ("features:budgetManagement", budget_management),
+            ("features:projectChargeback", project_chargeback),
+        ):
+            if value is not None:
+                components.append({'id': flag_id, 'settings': {'enabled': value}})
+        return {'components': components}
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: True)
+    @patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True)
+    @patch("codemie.configs.customer_config.config")
+    def test_cost_centers_budget_management_chargeback_enterprise_installed_flag_true(
+        self, mock_config, mock_es_configured, mock_read_text
+    ):
+        """AC4/AC7: enterprise installed + YAML true -> enabled (today's behavior, no regression)."""
+        self._set_full_runtime_mock_config(mock_config)
+        mock_read_text.return_value = yaml.dump(
+            self._yaml_with_gated_flags(cost_centers=True, budget_management=True, project_chargeback=True)
+        )
+
+        config = CustomerConfig()
+
+        self.assertTrue(config.is_feature_enabled("costCenters"))
+        self.assertTrue(config.is_feature_enabled("budgetManagement"))
+        self.assertTrue(config.is_feature_enabled("projectChargeback"))
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: True)
+    @patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True)
+    @patch("codemie.configs.customer_config.config")
+    def test_cost_centers_budget_management_chargeback_enterprise_installed_flag_false(
+        self, mock_config, mock_es_configured, mock_read_text
+    ):
+        """AC7: enterprise installed + YAML false -> disabled."""
+        self._set_full_runtime_mock_config(mock_config)
+        mock_read_text.return_value = yaml.dump(
+            self._yaml_with_gated_flags(cost_centers=False, budget_management=False, project_chargeback=False)
+        )
+
+        config = CustomerConfig()
+
+        self.assertFalse(config.is_feature_enabled("costCenters"))
+        self.assertFalse(config.is_feature_enabled("budgetManagement"))
+        self.assertFalse(config.is_feature_enabled("projectChargeback"))
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: True)
+    @patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True)
+    @patch("codemie.configs.customer_config.config")
+    def test_cost_centers_budget_management_chargeback_enterprise_installed_flag_absent(
+        self, mock_config, mock_es_configured, mock_read_text
+    ):
+        """AC6: enterprise installed + YAML-absent -> disabled, never accidentally True."""
+        self._set_full_runtime_mock_config(mock_config)
+        mock_read_text.return_value = yaml.dump(self._yaml_with_gated_flags())
+
+        config = CustomerConfig()
+
+        self.assertFalse(config.is_feature_enabled("costCenters"))
+        self.assertFalse(config.is_feature_enabled("budgetManagement"))
+        self.assertFalse(config.is_feature_enabled("projectChargeback"))
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: False)
+    @patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True)
+    @patch("codemie.configs.customer_config.config")
+    def test_cost_centers_budget_management_chargeback_enterprise_not_installed_flag_true(
+        self, mock_config, mock_es_configured, mock_read_text
+    ):
+        """AC1/AC2/AC3: no enterprise package -> disabled even though YAML says true."""
+        self._set_full_runtime_mock_config(mock_config)
+        mock_read_text.return_value = yaml.dump(
+            self._yaml_with_gated_flags(cost_centers=True, budget_management=True, project_chargeback=True)
+        )
+
+        config = CustomerConfig()
+
+        self.assertFalse(config.is_feature_enabled("costCenters"))
+        self.assertFalse(config.is_feature_enabled("budgetManagement"))
+        self.assertFalse(config.is_feature_enabled("projectChargeback"))
 
     @patch("codemie.configs.customer_config.Path.read_text")
     @patch("codemie.enterprise.has_enterprise", new=lambda: False)

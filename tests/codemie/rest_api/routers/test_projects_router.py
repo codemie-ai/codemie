@@ -85,6 +85,12 @@ async def _mock_session_ctx(session):
     yield session
 
 
+@pytest.fixture(autouse=True)
+def budget_management_enabled():
+    with patch("codemie.rest_api.routers.projects.crud.is_budget_management_enabled", return_value=True):
+        yield
+
+
 @pytest.fixture
 def regular_user() -> User:
     with patch.object(config, 'ENV', 'dev'), patch.object(config, 'ENABLE_USER_MANAGEMENT', True):
@@ -771,25 +777,83 @@ class TestProjectsVisibilityEndpoints:
             }
         )
 
-        result = await list_projects(
-            search=None,
-            page=0,
-            per_page=20,
-            include_counters=True,
-            include_spending=False,
-            include_budgets=True,
-            has_assigned_budgets=False,
-            budget_category=None,
-            sort_by=None,
-            sort_order="asc",
-            user=regular_user,
-            cost_center_ids=None,
-        )
+        with patch("codemie.rest_api.routers.projects.crud.is_budget_management_enabled", return_value=True):
+            result = await list_projects(
+                search=None,
+                page=0,
+                per_page=20,
+                include_counters=True,
+                include_spending=False,
+                include_budgets=True,
+                has_assigned_budgets=False,
+                budget_category=None,
+                sort_by=None,
+                sort_order="asc",
+                user=regular_user,
+                cost_center_ids=None,
+            )
 
         assert len(result.data[0].budgets) == 1
         assert result.data[0].budgets[0].budget_id == "budget-1"
         assert result.data[0].budgets[0].budget_category == BudgetCategory.CLI
         assert result.data[0].budgets[0].current_spending == pytest.approx(5.0)
+
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_active_provider")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
+    @pytest.mark.anyio
+    async def test_list_projects_skips_budget_summaries_when_budget_management_is_disabled(
+        self,
+        mock_visibility_service,
+        mock_get_session,
+        mock_get_active_provider,
+        mock_config,
+        mock_common_config,
+        regular_user,
+    ):
+        mock_common_config.ENABLE_USER_MANAGEMENT = True
+        mock_config.LLM_PROXY_BUDGET_CHECK_ENABLED = True
+        mock_get_active_provider.return_value = SimpleNamespace(provider_name="litellm")
+        mock_get_session.return_value.__enter__.return_value = MagicMock()
+        mock_visibility_service.list_visible_projects_paginated.return_value = (
+            [
+                {
+                    "name": "shared-proj",
+                    "description": "desc",
+                    "project_type": "shared",
+                    "created_by": "owner-1",
+                    "created_at": datetime(2026, 2, 10, tzinfo=UTC),
+                    "user_count": 3,
+                    "admin_count": 1,
+                }
+            ],
+            1,
+        )
+
+        with (
+            patch("codemie.rest_api.routers.projects.crud.is_budget_management_enabled", return_value=False),
+            patch(
+                "codemie.rest_api.routers.projects.crud._attach_assigned_budget_summaries", new_callable=AsyncMock
+            ) as mock_attach,
+        ):
+            result = await list_projects(
+                search=None,
+                page=0,
+                per_page=20,
+                include_counters=True,
+                include_spending=False,
+                include_budgets=True,
+                has_assigned_budgets=False,
+                budget_category=None,
+                sort_by=None,
+                sort_order="asc",
+                user=regular_user,
+            )
+
+        assert result.data[0].budgets is None
+        mock_attach.assert_not_awaited()
 
     @patch("codemie.rest_api.routers.projects._common.config")
     @patch("codemie.rest_api.routers.projects.crud.get_session")

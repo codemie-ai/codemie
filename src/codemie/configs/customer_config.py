@@ -52,6 +52,9 @@ CONFIG_IDS = {
     "googleOauth": "features:googleOauth",
     "sharepointPkce": "features:sharepointPkce",
     "core": "features:core",
+    "costCenters": "features:costCenters",
+    "budgetManagement": "features:budgetManagement",
+    "projectChargeback": "features:projectChargeback",
 }
 
 
@@ -151,6 +154,18 @@ class CustomerConfig(BaseModel):
         settings = component.settings.model_dump(exclude_none=True)
         settings["enabled"] = os.getenv(feature_env_variable_name) == 'true'
         return Component(id=component.id, settings=ComponentSetting(**settings))
+
+    def _yaml_declared_enabled(self, component_id: str) -> bool:
+        """YAML-plus-override value for one component, never touching runtime computation.
+
+        Safe to call from inside `_get_runtime_config()` itself: unlike `is_feature_enabled`/
+        `is_component_enabled`/`resolve_component`, this always passes an empty `runtime_ids`
+        set, so it takes the YAML-plus-override branch only and cannot recurse into the
+        method currently building the runtime list. An absent component resolves to `False`,
+        the same default `is_component_enabled()` already applies elsewhere.
+        """
+        component = _resolve_component(component_id, self.components, [], set())
+        return component is not None and component.settings.enabled
 
     def _get_runtime_config(self) -> List[Component]:
         """Generate runtime-computed configuration components.
@@ -363,6 +378,38 @@ class CustomerConfig(BaseModel):
             Component(
                 id=CONFIG_IDS["sharepointPkce"],
                 settings=ComponentSetting(enabled=config.SHAREPOINT_PKCE_ENABLED),
+            )
+        )
+
+        # Cost Centers / Budget Management / Chargeback: the YAML flag alone raises nothing;
+        # `is_enterprise` (computed above) is the hard ceiling, mirroring enterpriseEdition's
+        # shape. A future cross-flag AND (e.g. projectChargeback AND costCenters) must read the
+        # costCenters Component already appended below off this in-progress `runtime_config`
+        # list, not re-derive it independently.
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["costCenters"],
+                settings=ComponentSetting(
+                    enabled=self._yaml_declared_enabled("features:costCenters") and is_enterprise
+                ),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["budgetManagement"],
+                settings=ComponentSetting(
+                    enabled=self._yaml_declared_enabled("features:budgetManagement") and is_enterprise
+                ),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["projectChargeback"],
+                settings=ComponentSetting(
+                    enabled=self._yaml_declared_enabled("features:projectChargeback") and is_enterprise
+                ),
             )
         )
 

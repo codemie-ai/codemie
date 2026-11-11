@@ -70,8 +70,10 @@ class TestCostCenterService:
 class TestCostCenterServiceLogging:
     @patch("codemie.service.cost_center_service.logger")
     @patch("codemie.service.cost_center_service.cost_center_repository")
-    def test_create_logs_on_success(self, mock_repo, mock_logger):
+    @patch("codemie.service.cost_center_service.customer_config", create=True)
+    def test_create_logs_on_success(self, mock_customer_config, mock_repo, mock_logger):
         """create emits a logger.info containing 'cost_center_created'."""
+        mock_customer_config.is_feature_enabled.return_value = True
         mock_repo.get_by_name_case_insensitive.return_value = None
         mock_repo.create.return_value = _cost_center()
 
@@ -82,8 +84,10 @@ class TestCostCenterServiceLogging:
 
     @patch("codemie.service.cost_center_service.logger")
     @patch("codemie.service.cost_center_service.cost_center_repository")
-    def test_update_logs_on_success(self, mock_repo, mock_logger):
+    @patch("codemie.service.cost_center_service.customer_config", create=True)
+    def test_update_logs_on_success(self, mock_customer_config, mock_repo, mock_logger):
         """update emits a logger.info containing 'cost_center_updated'."""
+        mock_customer_config.is_feature_enabled.return_value = True
         existing = _cost_center()
         mock_repo.get_active_by_id.return_value = existing
         mock_repo.update.return_value = existing
@@ -96,8 +100,10 @@ class TestCostCenterServiceLogging:
     @patch("codemie.service.cost_center_service.logger")
     @patch("codemie.service.cost_center_service.application_repository")
     @patch("codemie.service.cost_center_service.cost_center_repository")
-    def test_delete_logs_on_success(self, mock_repo, mock_app_repo, mock_logger):
+    @patch("codemie.service.cost_center_service.customer_config", create=True)
+    def test_delete_logs_on_success(self, mock_customer_config, mock_repo, mock_app_repo, mock_logger):
         """delete emits a logger.info containing 'cost_center_deleted'."""
+        mock_customer_config.is_feature_enabled.return_value = True
         existing = _cost_center()
         mock_repo.get_active_by_id.return_value = existing
         mock_app_repo.count_active_projects_by_cost_center_id.return_value = 0
