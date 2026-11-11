@@ -18,6 +18,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from codemie.service.tools.agent_tools_result import AgentToolsResult
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant, Context, ContextType
 from codemie.rest_api.security.user import User
@@ -70,7 +71,7 @@ def _user():
 @patch("codemie.service.assistant_service.AIToolsAgent")
 @patch("codemie.service.assistant_service.LangGraphAgent")
 @patch("codemie.service.assistant_service.config")
-@patch("codemie.service.assistant_service.ToolkitService.get_tools", return_value=[])
+@patch("codemie.service.assistant_service.ToolkitService.collect_agent_tools", return_value=AgentToolsResult(tools=[]))
 @patch("codemie.service.assistant_service.llm_service")
 @patch("codemie.service.assistant_service.set_llm_context")
 @patch("codemie.service.assistant_service.build_unique_file_objects", return_value={})

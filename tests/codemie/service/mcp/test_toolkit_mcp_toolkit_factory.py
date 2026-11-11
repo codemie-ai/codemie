@@ -23,12 +23,12 @@ import asyncio
 from cachetools import TTLCache
 
 from codemie.service.mcp.client import MCPConnectClient
-from codemie.service.mcp.models import MCPServerConfig, MCPToolDefinition
+from codemie.service.mcp.models import MCPListToolsResponse, MCPServerConfig, MCPToolDefinition
 from codemie.service.mcp.toolkit import MCPToolkit, MCPToolkitFactory
 from codemie.configs.config import config
 
 
-class TestMCPToolkitFactory(unittest.TestCase):
+class TestMCPToolkitFactory(unittest.IsolatedAsyncioTestCase):
     """Test suite for MCPToolkitFactory class."""
 
     def setUp(self):
@@ -111,7 +111,9 @@ class TestMCPToolkitFactory(unittest.TestCase):
     async def test_factory_create_toolkit_method(self, mock_toolkit_class):
         """Test toolkit creation through the factory."""
         # Configure mocks
-        self.mock_client.list_tools = AsyncMock(return_value=self.tools_definitions)
+        self.mock_client.list_tools_with_instructions = AsyncMock(
+            return_value=MCPListToolsResponse(tools=self.tools_definitions)
+        )
         mock_toolkit_instance = MagicMock(spec=MCPToolkit)
         mock_toolkit_class.return_value = mock_toolkit_instance
 
@@ -122,7 +124,7 @@ class TestMCPToolkitFactory(unittest.TestCase):
         toolkit = await factory.create_toolkit(server_config=self.mock_server_config)
 
         # Verify the mock client was called
-        self.mock_client.list_tools.assert_called_once_with(self.mock_server_config)
+        self.mock_client.list_tools_with_instructions.assert_called_once_with(self.mock_server_config, None)
 
         # Verify MCPToolkit constructor was called with correct parameters
         mock_toolkit_class.assert_called_once_with(
@@ -131,6 +133,7 @@ class TestMCPToolkitFactory(unittest.TestCase):
             mcp_client=self.mock_client,
             mcp_server_config=self.mock_server_config,
             tools_definitions=self.tools_definitions,
+            instructions=None,
         )
 
         # Verify the returned toolkit is the expected mock instance
@@ -141,7 +144,9 @@ class TestMCPToolkitFactory(unittest.TestCase):
 
         async def run_test():
             # Configure mocks
-            self.mock_client.list_tools = AsyncMock(return_value=self.tools_definitions)
+            self.mock_client.list_tools_with_instructions = AsyncMock(
+                return_value=MCPListToolsResponse(tools=self.tools_definitions)
+            )
             mock_toolkit_instance = MagicMock(spec=MCPToolkit)
 
             with patch('codemie.service.mcp.toolkit.MCPToolkit', return_value=mock_toolkit_instance):
@@ -152,7 +157,7 @@ class TestMCPToolkitFactory(unittest.TestCase):
                 toolkit = await factory.create_toolkit(server_config=self.mock_server_config)
 
                 # Verify the mock client was called with server_config and None execution_context
-                self.mock_client.list_tools.assert_called_once_with(self.mock_server_config, None)
+                self.mock_client.list_tools_with_instructions.assert_called_once_with(self.mock_server_config, None)
 
                 # Verify the returned toolkit is the expected mock instance
                 self.assertEqual(toolkit, mock_toolkit_instance)
@@ -163,7 +168,9 @@ class TestMCPToolkitFactory(unittest.TestCase):
     async def test_factory_caching_behavior(self):
         """Test that toolkits are properly cached and retrieved."""
         # Configure mocks
-        self.mock_client.list_tools = AsyncMock(return_value=self.tools_definitions)
+        self.mock_client.list_tools_with_instructions = AsyncMock(
+            return_value=MCPListToolsResponse(tools=self.tools_definitions)
+        )
 
         # Create mock toolkit instances - each with a unique id to verify caching
         mock_toolkit1 = MagicMock(spec=MCPToolkit)
@@ -186,7 +193,7 @@ class TestMCPToolkitFactory(unittest.TestCase):
             toolkit2 = await factory.create_toolkit(server_config=self.mock_server_config2)
 
         # Verify list_tools was called exactly twice (once for each unique config)
-        self.assertEqual(self.mock_client.list_tools.call_count, 2)
+        self.assertEqual(self.mock_client.list_tools_with_instructions.call_count, 2)
 
         # Verify both calls with the same config return the same instance (cached)
         self.assertIs(toolkit1_first_call, toolkit1_second_call)
@@ -284,19 +291,24 @@ class TestMCPToolkitFactory(unittest.TestCase):
     async def test_cache_clearing_and_removal(self):
         """Test that cache clearing and specific toolkit removal works."""
         # Configure mocks
-        self.mock_client.list_tools = AsyncMock(return_value=self.tools_definitions)
+        self.mock_client.list_tools_with_instructions = AsyncMock(
+            return_value=MCPListToolsResponse(tools=self.tools_definitions)
+        )
 
         # Create two distinct mock toolkit instances
         mock_toolkit1 = MagicMock(spec=MCPToolkit)
         mock_toolkit1.id = "toolkit1"
         mock_toolkit2 = MagicMock(spec=MCPToolkit)
         mock_toolkit2.id = "toolkit2"
+        # The third construction is the re-creation after remove_toolkit_from_cache.
+        mock_toolkit3 = MagicMock(spec=MCPToolkit)
+        mock_toolkit3.id = "toolkit1-recreated"
 
         # Initialize factory
         factory = MCPToolkitFactory(mcp_client=self.mock_client)
 
         # Patch MCPToolkit constructor to return our mock instances
-        with patch('codemie.service.mcp.toolkit.MCPToolkit', side_effect=[mock_toolkit1, mock_toolkit2]):
+        with patch('codemie.service.mcp.toolkit.MCPToolkit', side_effect=[mock_toolkit1, mock_toolkit2, mock_toolkit3]):
             # Populate cache with both configs
             await factory.create_toolkit(server_config=self.mock_server_config)
             await factory.create_toolkit(server_config=self.mock_server_config2)
@@ -311,9 +323,9 @@ class TestMCPToolkitFactory(unittest.TestCase):
             self.assertEqual(len(factory._toolkit_cache), 1)
 
             # Creating the first toolkit again should call list_tools
-            self.mock_client.list_tools.reset_mock()
+            self.mock_client.list_tools_with_instructions.reset_mock()
             await factory.create_toolkit(server_config=self.mock_server_config)
-            self.mock_client.list_tools.assert_called_once()
+            self.mock_client.list_tools_with_instructions.assert_called_once()
 
             # Verify both toolkits are in the cache again
             self.assertEqual(len(factory._toolkit_cache), 2)
@@ -371,7 +383,7 @@ class TestMCPToolkitFactoryInitTimeout(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(1.0)  # 1 s — far exceeds 50 ms timeout
             return []
 
-        self.mock_client.list_tools = slow_list_tools
+        self.mock_client.list_tools_with_instructions = slow_list_tools
 
         factory = MCPToolkitFactory(mcp_client=self.mock_client)
 
@@ -386,7 +398,7 @@ class TestMCPToolkitFactoryInitTimeout(unittest.IsolatedAsyncioTestCase):
         mock_config.MCP_TOOLKIT_FACTORY_CACHE_TTL = 600
         mock_config.MCP_TOOL_TOKENS_SIZE_LIMIT = 30000
 
-        self.mock_client.list_tools = AsyncMock(return_value=[])
+        self.mock_client.list_tools_with_instructions = AsyncMock(return_value=MCPListToolsResponse(tools=[]))
 
         factory = MCPToolkitFactory(mcp_client=self.mock_client)
         toolkit = await factory.create_toolkit(

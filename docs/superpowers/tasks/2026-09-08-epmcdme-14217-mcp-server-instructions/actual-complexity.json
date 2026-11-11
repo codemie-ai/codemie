@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "task": "Inject the usage instructions an MCP server declares at handshake into the assistant system prompt for both Assistants and Skills, via a contextvar side channel with injection-hardened rendering.",
+  "generated": "2026-09-08",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 23,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Six production components on one path: MCPConnectClient (new list_tools_with_instructions alongside a frozen list_tools), MCPListToolsResponse, MCPToolkit (new instructions field), MCPToolkitService (clear + record), the new server_instructions side-channel module, and AssistantService prompt assembly (_prepare_system_prompt plus a _discard_mcp_server_instructions drain on the workflow builder). Each edit is narrow, but the terminus is the shared system-prompt path used by Assistants, Skills and — by deliberate exclusion — Workflows."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "The goal was unambiguous, but the delivery required design decisions the ticket did not settle: two API surfaces had to stay frozen (list_tools call sites, get_mcp_server_tools with five external callers), forcing a contextvar side channel rather than a return-type change; and no acceptance criteria existed for handling untrusted third-party text, so the whole neutralization and capping policy was invented during implementation. A code review then produced seven findings, four security-relevant."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "First untrusted third-party text placed on the system-prompt path, i.e. a new prompt-injection surface with no precedent in the codebase. Mitigation had to be built from scratch: per-render nonce delimiters, tolerant BEGIN/END marker neutralization (regex, not literal replace), NFKC folding, Unicode hiding-character stripping, a 4000-char per-server cap and a 12000-char section cap. Secondary risk is contextvar leakage across requests, controlled by clearing at load start and draining on the workflow path. Rollback is cheap (purely additive, no persisted state), which keeps this at XL rather than XXL."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "14 code files: 8 modified (models, client, toolkit, toolkit_service, assistant_service, three pre-existing MCP test suites) and 6 new (server_instructions.py at ~220 lines plus five test modules). Spans src/codemie/service/mcp/, src/codemie/service/ and two test directories. The 20-file diffstat was reduced by the 6 SDLC run artifacts under docs/superpowers/tasks/, which are not implementation."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M (3) to L (4): touches a core shared path — system prompt assembly consumed by both the Assistant and Skill execution paths, with the Workflow path requiring an explicit drain to stay unaffected.",
+    "Technical Risk bumped from L (4) to XL (5): security requirement — untrusted server-supplied text reaching the system prompt required dedicated injection hardening, and the code review confirmed four security-relevant findings on this surface."
+  ],
+  "split_recommendation": null
+}

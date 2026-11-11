@@ -22,6 +22,7 @@ request_headers to the ToolkitService for MCP header propagation.
 from unittest.mock import Mock, patch
 
 
+from codemie.service.tools.agent_tools_result import AgentToolsResult
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
@@ -36,7 +37,7 @@ class TestAssistantServiceBuildAgentWithHeaders:
     @patch('codemie.service.assistant_service.AIToolsAgent')
     @patch('codemie.service.assistant_service.LangGraphAgent')
     @patch('codemie.service.assistant_service.config')
-    @patch('codemie.service.assistant_service.ToolkitService.get_tools')
+    @patch('codemie.service.assistant_service.ToolkitService.collect_agent_tools')
     @patch('codemie.service.assistant_service.llm_service')
     @patch('codemie.service.assistant_service.set_llm_context')
     @patch('codemie.service.assistant_service.build_unique_file_objects')
@@ -62,14 +63,14 @@ class TestAssistantServiceBuildAgentWithHeaders:
         Priority: Critical
 
         Tests that when build_agent is called with request_headers,
-        those headers are propagated to ToolkitService.get_tools.
+        those headers are propagated to ToolkitService.collect_agent_tools.
         """
         # Arrange
         mock_get_application_by_id.return_value = None
         mock_find_by_id.return_value = None
         mock_is_bedrock_assistant.return_value = False  # Not a Bedrock assistant
         mock_build_file_objects.return_value = {}
-        mock_get_tools.return_value = []
+        mock_get_tools.return_value = AgentToolsResult(tools=[])
         mock_llm_service.get_react_llms.return_value = []
         mock_llm_service.default_llm_model = 'claude-sonnet-4'
         mock_config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False
@@ -125,7 +126,7 @@ class TestAssistantServiceBuildAgentWithHeaders:
     @patch('codemie.service.assistant_service.AIToolsAgent')
     @patch('codemie.service.assistant_service.LangGraphAgent')
     @patch('codemie.service.assistant_service.config')
-    @patch('codemie.service.assistant_service.ToolkitService.get_tools')
+    @patch('codemie.service.assistant_service.ToolkitService.collect_agent_tools')
     @patch('codemie.service.assistant_service.llm_service')
     @patch('codemie.service.assistant_service.set_llm_context')
     @patch('codemie.service.assistant_service.build_unique_file_objects')
@@ -158,7 +159,7 @@ class TestAssistantServiceBuildAgentWithHeaders:
         mock_find_by_id.return_value = None
         mock_is_bedrock_assistant.return_value = False  # Not a Bedrock assistant
         mock_build_file_objects.return_value = {}
-        mock_get_tools.return_value = []
+        mock_get_tools.return_value = AgentToolsResult(tools=[])
         mock_llm_service.get_react_llms.return_value = []
         mock_llm_service.default_llm_model = 'claude-sonnet-4'
         mock_config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False
@@ -217,7 +218,7 @@ class TestAssistantServiceBuildAgentForWorkflowWithHeaders:
     @patch('codemie.service.assistant_service.AIToolsAgent')
     @patch('codemie.service.assistant_service.LangGraphAgent')
     @patch('codemie.service.assistant_service.config')
-    @patch('codemie.service.assistant_service.ToolkitService.get_tools')
+    @patch('codemie.service.assistant_service.ToolkitService.collect_agent_tools')
     @patch('codemie.service.assistant_service.llm_service')
     @patch('codemie.service.assistant_service.set_llm_context')
     @patch('codemie.service.assistant_service.build_unique_file_objects_list')
@@ -239,11 +240,11 @@ class TestAssistantServiceBuildAgentForWorkflowWithHeaders:
         Priority: Critical
 
         Tests that when building a workflow agent with request_headers,
-        those headers are propagated to ToolkitService.get_tools.
+        those headers are propagated to ToolkitService.collect_agent_tools.
         """
         # Arrange
         mock_build_file_objects_list.return_value = []
-        mock_get_tools.return_value = []
+        mock_get_tools.return_value = AgentToolsResult(tools=[])
         mock_llm_service.get_react_llms.return_value = []
         mock_llm_service.default_llm_model = 'claude-sonnet-4'
         mock_config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False
@@ -314,7 +315,7 @@ class TestAssistantServiceBuildAgentForWorkflowWithHeaders:
     @patch('codemie.service.assistant_service.AIToolsAgent')
     @patch('codemie.service.assistant_service.LangGraphAgent')
     @patch('codemie.service.assistant_service.config')
-    @patch('codemie.service.assistant_service.ToolkitService.get_tools')
+    @patch('codemie.service.assistant_service.ToolkitService.collect_agent_tools')
     @patch('codemie.service.assistant_service.llm_service')
     @patch('codemie.service.assistant_service.set_llm_context')
     @patch('codemie.service.assistant_service.build_unique_file_objects_list')
@@ -339,7 +340,7 @@ class TestAssistantServiceBuildAgentForWorkflowWithHeaders:
         """
         # Arrange
         mock_build_file_objects_list.return_value = []
-        mock_get_tools.return_value = []
+        mock_get_tools.return_value = AgentToolsResult(tools=[])
         mock_llm_service.get_react_llms.return_value = []
         mock_llm_service.default_llm_model = 'claude-sonnet-4'
         mock_config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False

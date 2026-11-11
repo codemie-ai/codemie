@@ -62,6 +62,10 @@ from codemie.service.assistant.assistant_user_mapping_service import assistant_u
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.llm.model_availability_service import resolve_assistant_model
 from codemie.service.llm_service.llm_service import llm_service
+from codemie.service.mcp.server_instructions import (
+    MCPServerInstructions,
+    render_instructions_section,
+)
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.service.tools.tools_info_service import ToolsInfoService
 from codemie.service.skill_workspace_preparation import prepare_skill_workspace
@@ -476,6 +480,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         request: AssistantChatRequest,
         thread_generator: MessageQueue = None,
         workspace_notices: list[str] | None = None,
+        mcp_instructions: list[MCPServerInstructions] | None = None,
     ) -> str:
         """Prepare system prompt with optional IDE decorations, output schema and skill workspace notices."""
         system_prompt = cls.get_system_prompt(assistant, user_id=user.id, current_user=user.username)
@@ -505,7 +510,21 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             if client_supports_catalog(declared):
                 system_prompt = f"{system_prompt}\n\n{render_prompt_section()}"
 
+        system_prompt = cls._append_mcp_instructions(system_prompt, mcp_instructions, request.conversation_id)
+
         return cls._append_workspace_notices(system_prompt, workspace_notices)
+
+    @staticmethod
+    def _append_mcp_instructions(
+        system_prompt: str,
+        entries: list[MCPServerInstructions] | None,
+        conversation_id: str | None,
+    ) -> str:
+        """Append the MCP server instructions that reach this build's prompt, if any and if enabled."""
+        if not entries or not customer_config.is_feature_enabled("mcpServerInstructions"):
+            return system_prompt
+        section = render_instructions_section(entries, conversation_id=conversation_id)
+        return f"{system_prompt}\n\n{section}" if section else system_prompt
 
     @staticmethod
     def _append_workspace_notices(system_prompt: str, notices: list[str] | None) -> str:
@@ -671,7 +690,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
 
         # Get tools for the agent. Don't gate per-user OAuth connections per-tool during assembly;
         # the aggregate gate below prompts for all unconnected providers together (MCP-style).
-        tools = ToolkitService.get_tools(
+        agent_tools = ToolkitService.collect_agent_tools(
             assistant,
             request,
             user,
@@ -683,6 +702,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             smart_tool_selection_enabled=smart_tool_selection_enabled,
             request_headers=request_headers,
         )
+        tools = agent_tools.tools
 
         # Pre-stream connect gate: if any shared per-user OAuth integration the assistant uses is not
         # connected by the acting user, raise one aggregate gate now (before streaming starts — the
@@ -692,7 +712,9 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         enforce_oauth_connected(tools, user.id)
 
         # Prepare system prompt with decorations and schema
-        system_prompt = cls._prepare_system_prompt(assistant, user, request, thread_generator, workspace_notices)
+        system_prompt = cls._prepare_system_prompt(
+            assistant, user, request, thread_generator, workspace_notices, mcp_instructions=agent_tools.mcp_instructions
+        )
 
         # Build common agent initialization parameters
         agent_kwargs = {
@@ -837,6 +859,8 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         workflow_state: WorkflowState,
         mcp_server_args_preprocessor: Optional[callable],
         workspace_notices: list[str] | None = None,
+        conversation_id: str | None = None,
+        mcp_instructions: list[MCPServerInstructions] | None = None,
     ) -> tuple[str, dict | None]:
         """Prepare system prompt with output schema for workflow execution.
 
@@ -868,6 +892,8 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
                 else cls.json_prompt.format(schema=schema)
             )
             system_prompt = f"{system_prompt}\n{output_schema_prompt}"
+
+        system_prompt = cls._append_mcp_instructions(system_prompt, mcp_instructions, conversation_id)
 
         return cls._append_workspace_notices(system_prompt, workspace_notices), output_schema
 
@@ -956,7 +982,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
 
         # Get tools for workflow execution
         try:
-            tools = ToolkitService.get_tools(
+            agent_tools = ToolkitService.collect_agent_tools(
                 assistant=assistant,
                 request=request,
                 user=user,
@@ -972,6 +998,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             )
         except ToolException as exc:
             raise ValueError(exc)
+        tools = agent_tools.tools
 
         # Same aggregate per-user OAuth connect gate as the chat path: prompt for every unconnected
         # provider together before the node runs (BaseNode surfaces MCPAuthenticationRequiredException).
@@ -991,6 +1018,8 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             workflow_state,
             mcp_server_args_preprocessor,
             workspace_notices=workspace_notices,
+            conversation_id=execution_id,
+            mcp_instructions=agent_tools.mcp_instructions,
         )
 
         # Select agent class based on configuration

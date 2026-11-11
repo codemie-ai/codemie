@@ -551,7 +551,7 @@ class TestToolkitService:
             ) as mock_gtbq:
                 with patch.object(ToolkitService, "get_core_tools", return_value=[mock_tool]):
                     with patch.object(ToolkitService, "add_context_tools", return_value=[]):
-                        with patch.object(ToolkitService, "_get_tools", return_value=[]):
+                        with patch.object(ToolkitService, "_get_tools", return_value=([], [])):
                             result = ToolkitService.get_tools(
                                 assistant=mock_assistant,
                                 request=mock_request,
@@ -1323,7 +1323,7 @@ class TestToolkitService:
         # Mock dependencies
         with patch.object(ToolkitService, 'get_core_tools', return_value=[]):
             with patch.object(ToolkitService, 'add_context_tools', return_value=[]):
-                with patch.object(ToolkitService, '_get_tools', return_value=[]):
+                with patch.object(ToolkitService, '_get_tools', return_value=([], [])):
                     # Call method
                     ToolkitService.get_tools(
                         assistant=mock_assistant,
@@ -1351,7 +1351,7 @@ class TestToolkitService:
 
         with patch.object(ToolkitService, 'get_core_tools', return_value=[]):
             with patch.object(ToolkitService, 'add_context_tools', return_value=[]):
-                with patch.object(ToolkitService, '_get_tools', return_value=[]):
+                with patch.object(ToolkitService, '_get_tools', return_value=([], [])):
                     result = ToolkitService.get_tools(
                         assistant=mock_assistant,
                         request=mock_request,
@@ -1378,7 +1378,7 @@ class TestToolkitService:
 
         with patch.object(ToolkitService, 'get_core_tools', return_value=[]):
             with patch.object(ToolkitService, 'add_context_tools', return_value=[]):
-                with patch.object(ToolkitService, '_get_tools', return_value=[]):
+                with patch.object(ToolkitService, '_get_tools', return_value=([], [])):
                     result = ToolkitService.get_tools(
                         assistant=mock_assistant,
                         request=mock_request,
@@ -1405,7 +1405,7 @@ class TestToolkitService:
 
         with patch.object(ToolkitService, 'get_core_tools', return_value=[]):
             with patch.object(ToolkitService, 'add_context_tools', return_value=[]):
-                with patch.object(ToolkitService, '_get_tools', return_value=[]):
+                with patch.object(ToolkitService, '_get_tools', return_value=([], [])):
                     result = ToolkitService.get_tools(
                         assistant=mock_assistant,
                         request=mock_request,
@@ -1435,7 +1435,7 @@ class TestToolkitService:
 
         with patch.object(ToolkitService, 'get_core_tools', return_value=[]):
             with patch.object(ToolkitService, 'add_context_tools', return_value=[]):
-                with patch.object(ToolkitService, '_get_tools', return_value=[]):
+                with patch.object(ToolkitService, '_get_tools', return_value=([], [])):
                     result = ToolkitService.get_tools(
                         assistant=mock_assistant,
                         request=mock_request,
@@ -1884,7 +1884,7 @@ class TestMergeSkillToolkits:
         with patch.object(ToolkitService, "_merge_skill_toolkits", return_value=[mock_merged_toolkit]) as mock_merge:
             with patch.object(ToolkitService, "get_core_tools", return_value=[]):
                 with patch.object(ToolkitService, "add_context_tools", return_value=[]):
-                    with patch.object(ToolkitService, "_get_tools", return_value=[]):
+                    with patch.object(ToolkitService, "_get_tools", return_value=([], [])):
                         ToolkitService.get_tools(
                             assistant=assistant,
                             request=mock_request,
@@ -1921,7 +1921,7 @@ class TestMergeSkillToolkits:
         with patch.object(ToolkitService, "_merge_skill_toolkits", return_value=[merged_toolkit]):
             with patch.object(ToolkitService, "get_core_tools", return_value=[]):
                 with patch.object(ToolkitService, "add_context_tools", return_value=[]):
-                    with patch.object(ToolkitService, "_get_tools", return_value=[]):
+                    with patch.object(ToolkitService, "_get_tools", return_value=([], [])):
                         with patch("codemie.service.tools.toolkit_service.ToolkitLookupService") as mock_lookup:
                             ToolkitService.get_tools(
                                 assistant=assistant,

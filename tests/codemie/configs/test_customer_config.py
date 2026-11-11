@@ -1046,7 +1046,12 @@ class TestShippedWorkspaceScriptToolCalls(unittest.TestCase):
         self.assertEqual(ids[: len(PRE_EXISTING_SHIPPED_COMPONENT_IDS)], list(PRE_EXISTING_SHIPPED_COMPONENT_IDS))
         self.assertEqual(
             ids[len(PRE_EXISTING_SHIPPED_COMPONENT_IDS) :],
-            ["features:workspaceScriptBridge", "features:usageAttribution", "features:hostedApplications"],
+            [
+                "features:workspaceScriptBridge",
+                "features:usageAttribution",
+                "features:mcpServerInstructions",
+                "features:hostedApplications",
+            ],
         )
 
 

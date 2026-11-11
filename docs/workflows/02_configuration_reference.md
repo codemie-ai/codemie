@@ -616,6 +616,12 @@ the first time (especially `npx` or `uvx` servers that must download packages), 
 `MCP_SERVER_INIT_TIMEOUT` (on CodeMie) and `MCP_CONNECT_INIT_TIMEOUT` (on MCP-Connect, in ms)
 to a consistent value — for example `MCP_SERVER_INIT_TIMEOUT=120` and `MCP_CONNECT_INIT_TIMEOUT=120000`.
 
+#### Server Instructions:
+
+An MCP server may declare usage instructions at handshake. When the `mcpServerInstructions` feature flag is enabled, CodeMie appends them to the system prompt in a delimited block.
+
+**`MCP_INSTRUCTIONS_NONCE_SECRET`** (default: unset, set on the **CodeMie** API): Keys the delimiters around MCP server instructions in the system prompt. Use the same value of at least 32 characters on every API replica (for example, `openssl rand -hex 32`). When unset, each process uses its own key, which breaks prompt caching across instances and restarts. A value shorter than 32 characters fails at startup.
+
 #### Examples:
 
 **Filesystem Server:**

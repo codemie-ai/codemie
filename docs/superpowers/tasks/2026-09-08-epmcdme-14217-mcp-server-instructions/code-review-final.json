@@ -1,0 +1,101 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran. Acceptance scored 6 of 7 criteria pass and 1 partial. The blind lens's headline concern — that a contextvar set during tool loading might not survive to prompt assembly — was refuted empirically by both other lenses: build_agent calls get_tools (assistant_service.py:578) and _prepare_system_prompt (:599) inline in the same synchronous frame, and recording happens in the caller's context. The design holds. Seven actionable defects remain, four of them security-relevant, and two were verified by running the real functions: a lowercase or Cyrillic-homoglyph copy of the block delimiter survives neutralization, and 30 servers render a 122,981-character section into every request. 7 findings emitted (all triage: patch). 2 deferred: MCPConnectClient.list_tools now has no production callers (the plan's stated justification for keeping it was wrong — it is kept as a public convenience, not because 14 sites need it), and the new tests mutate the MCPToolkitService singleton without restoring it. 1 dismissed: the blind lens's argument that untrusted text should not go in the system prompt at all is a product decision the ticket already made, and the acceptance criteria require exactly this placement.",
+  "confidence": "high",
+  "risk_flags": ["security", "prompt-injection"],
+  "business_review": [
+    {"criterion": "1. instructions retrieved before the first tool invocation", "status": "pass", "notes": "arrive on tools/list at toolkit creation, before any tool object exists (toolkit.py:775, client.py:154)"},
+    {"criterion": "2. injected into context before any tool call is planned or executed", "status": "pass", "notes": "ordering verified in build_agent: get_tools :578, _prepare_system_prompt :599, agent constructed :636; recording is synchronous in the caller's context"},
+    {"criterion": "3. Assistants follow them from the first response onward", "status": "pass", "notes": "appended at assistant_service.py:481-483; see CR-107 for the workflow-hosted variant"},
+    {"criterion": "4. Skills follow them from the first response onward", "status": "pass", "notes": "skill servers unioned by the real _merge_skill_mcp_servers before load; asserted in test_assistant_service_mcp_instructions.py:160-173"},
+    {"criterion": "5. subsequent calls reuse the retrieved instructions", "status": "pass", "notes": "value rides the cached MCPToolkit; cache hit re-records with no new tools/list (await_count == 1)"},
+    {"criterion": "6. backward compatible for servers without instructions", "status": "pass", "notes": "list_tools signature preserved, instructions defaults to None, render returns None so the prompt is byte-identical"},
+    {"criterion": "7. regression coverage for both paths, before tool calls", "status": "partial", "notes": "propagation is covered for both paths, but nothing pins the ordering — see CR-105"}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow.md commit format EPMCDME-XXXX: <Imperative>", "status": "pass", "notes": "all six commits conform"},
+    {"standard": "pre-commit hooks (ruff fast fix + lint + license, gitleaks)", "status": "pass", "notes": "enforced on every commit; both hooks passed"},
+    {"standard": "security-patterns.md — untrusted input handling", "status": "partial", "notes": "the change adds the first third-party text on the system-prompt path; its defences are present but bypassable — CR-101, CR-102, CR-103"},
+    {"standard": "testing-patterns.md", "status": "partial", "notes": "CR-105 (ordering unpinned) and CR-106 (a whole test class never executes)"},
+    {"standard": "quality-gates.md", "status": "pass", "notes": "6063 passed in service+agents; the 6 failures reproduce on merge-base bb8a230a (missing a2ui / codemie_enterprise locally); test-harness 193 passed on a rebuilt stack"}
+  ],
+  "findings": [
+    {
+      "id": "CR-101",
+      "title": "No aggregate cap on the rendered section — only a per-server one",
+      "problem": "MAX_INSTRUCTIONS_CHARS is applied per entry inside the render loop; nothing bounds the number of entries or the total length. assistant.mcp_servers is unbounded and skill-contributed servers are merged on top. Measured against the real function: 30 entries of 10k chars render 122,981 characters into every request's system prompt.",
+      "impact": "A handful of verbose servers, each individually under the per-server cap, silently consume tens of thousands of tokens on every call — cost, eviction of the operator's own context, and on smaller models a context overflow. Unlike MCP tool schemas, this text passes through no token budget at all. The module's own docstring claims it does not depend on a third party to bound what reaches the prompt; that is only half true today.",
+      "recommendation": "Add a section-wide budget and a maximum block count alongside the per-entry cap, emit a single '[N further servers omitted]' line, and log at WARNING when either cap trips so operators can see which server is bloating prompts.",
+      "location": "src/codemie/service/mcp/server_instructions.py:126-141",
+      "severity": "critical",
+      "triage": "patch",
+      "sources": ["blind", "edge-case"]
+    },
+    {
+      "id": "CR-102",
+      "title": "Delimiter neutralization matches only the exact uppercase ASCII marker",
+      "problem": "_neutralize defuses the markers with str.replace against a literal, which is case-sensitive and byte-exact. Verified against the real function: a payload containing lowercase 'end mcp server instructions' survives verbatim, and so does 'ЕND MCP SERVER INSTRUCTIONS' with a Cyrillic Е (U+0415). An LLM reads both as the block terminator. The neutralized form is itself lowercased, so lowercase is not merely unhandled — it is the shape the code already treats as harmless.",
+      "impact": "The stated prompt-injection defence for third-party text placed in the system prompt is trivially bypassable. A hostile or compromised MCP server can appear to close its own block and continue in operator voice, which is exactly the attack the delimiters exist to stop.",
+      "recommendation": "NFKC-normalize, then neutralize case-insensitively with a tolerant regex; better, generate a per-render random nonce for the delimiters so no fixed string a server can emit is ever the real terminator. Add tests for lowercase, mixed case, extra whitespace and homoglyph payloads.",
+      "location": "src/codemie/service/mcp/server_instructions.py:112-121",
+      "severity": "critical",
+      "triage": "patch",
+      "sources": ["blind", "edge-case"]
+    },
+    {
+      "id": "CR-103",
+      "title": "Control-character stripping misses the Unicode actually used to hide injected text",
+      "problem": "_CONTROL_CHARACTERS covers only C0/C1. Verified on the real renderer: U+202E (RTL override), U+200B (zero-width space) and U+2028 (line separator) all survive, as does a bare carriage return.",
+      "impact": "Zero-width and bidi characters are the standard way to make injected text invisible to a human reviewing the server's catalog entry while remaining fully visible to the model. Combined with CR-102 this composes into an attack no reviewer can see.",
+      "recommendation": "Extend the stripped set to bidi controls (U+202A-U+202E, U+2066-U+2069), zero-width and format characters (U+200B-U+200F, U+FEFF) and U+2028/U+2029; normalize CRLF and CR to LF; apply NFKC before the check so decomposed lookalikes fold.",
+      "location": "src/codemie/service/mcp/server_instructions.py:35",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["edge-case"]
+    },
+    {
+      "id": "CR-104",
+      "title": "Instructions are recorded before tool filtering, so a server contributing no tools still injects its block",
+      "problem": "record_server_instructions runs one line before _filter_tools_by_config, which keeps only tools named in the server's allowlist and returns an empty list with a warning when none match — the normal outcome after a server renames or drops a pinned tool.",
+      "impact": "The prompt carries mandatory-sounding usage rules for tools the assistant does not have, plus their token cost, on exactly the configurations that are already broken. It also lets a server whose tools an operator deliberately allowlisted away still speak into the system prompt.",
+      "recommendation": "Record after filtering and only when the filtered tool list is non-empty.",
+      "location": "src/codemie/service/mcp/toolkit_service.py:822-828",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["edge-case"]
+    },
+    {
+      "id": "CR-105",
+      "title": "The ordering contract the design rests on is untested, and the test docstring claims otherwise",
+      "problem": "_load_and_build_prompt calls _merge_skill_mcp_servers, then get_mcp_server_tools, then _prepare_system_prompt in a hand-written order; build_agent is never invoked. Its docstring states that if the order inside build_agent changed these assertions would fail. That is false — swapping assistant_service.py:578 and :599 leaves every test in the file green.",
+      "impact": "The one invariant that makes a contextvar side channel safe here is documented as tested when it is not. Moving tool loading into a task or executor for parallelism — a very plausible refactor — breaks the feature with zero test signal, and the misleading docstring actively discourages the next reviewer from checking.",
+      "recommendation": "Drive AssistantService.build_agent end to end with a stubbed toolkit and assert the instructions land in the system prompt the agent is constructed with. Correct the docstring either way.",
+      "location": "tests/codemie/service/test_assistant_service_mcp_instructions.py:97-105",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["edge-case", "acceptance"]
+    },
+    {
+      "id": "CR-106",
+      "title": "The factory tests updated for the new API never execute",
+      "problem": "Six assertions were updated from list_tools to list_tools_with_instructions, but they live in async methods on a plain unittest.TestCase, so the coroutines are created and discarded (RuntimeWarning: coroutine was never awaited, while the run still reports passed). The proof they are dead is in the file: assert_called_once_with still omits the instructions= kwarg the factory now passes and the execution_context positional the client now receives — both would fail immediately if they ran.",
+      "impact": "The change to the MCPToolkit constructor call — one of the load-bearing edits — has no executing assertion behind it in that suite, so part of this MR's green run is false confidence.",
+      "recommendation": "Switch the class to unittest.IsolatedAsyncioTestCase, as its sibling already is, and repair the two stale assertions.",
+      "location": "tests/codemie/service/mcp/test_toolkit_mcp_toolkit_factory.py:31",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["edge-case"]
+    },
+    {
+      "id": "CR-107",
+      "title": "Workflow paths record instructions that are never rendered and never drained",
+      "problem": "build_agent_for_workflow calls get_tools, which records every workflow server's instructions, but assembles its prompt via _prepare_workflow_system_prompt, which never reads them. The standalone workflow tool node and the two validation paths likewise record and never consume, leaving entries in the execution context for the rest of the run.",
+      "impact": "Two problems. The feature is silently absent for workflow assistant nodes — a server that needs its handshake instructions is mis-driven there with no warning. And the channel is left populated; that it is harmless today depends on which prompt builder each path happens to use, not on anything enforced.",
+      "recommendation": "Workflows are deliberately out of scope for injection, so drain the channel explicitly in the non-assistant path and state in the module docstring what happens to those recordings, rather than leaving it dirty by accident.",
+      "location": "src/codemie/service/assistant_service.py:733-772",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["edge-case"]
+    }
+  ]
+}

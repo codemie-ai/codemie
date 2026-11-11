@@ -396,9 +396,16 @@ class MCPListToolsResponse(BaseModel):
 
     Attributes:
         tools (list[MCPToolDefinition]): List of available tool definitions
+        instructions (str | None): Server-side usage instructions from the MCP
+            `initialize` handshake, relayed by MCP-Connect.
+            Absent for servers that declare none.
     """
 
     tools: list[MCPToolDefinition] = Field(description="List of available tools")
+    instructions: str | None = Field(
+        default=None,
+        description="Server-side usage instructions declared by the MCP server at handshake",
+    )
 
 
 class MCPToolContentItem(BaseModel):

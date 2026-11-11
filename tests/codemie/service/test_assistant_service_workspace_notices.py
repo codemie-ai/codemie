@@ -21,6 +21,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from codemie.service.tools.agent_tools_result import AgentToolsResult
 from codemie.core.models import AssistantChatRequest
 from codemie.core.workflow_models import WorkflowAssistant
 from codemie.rest_api.models.assistant import Assistant
@@ -124,7 +125,10 @@ def test_workflow_builder_prepares_before_building_tools_and_passes_the_notices_
             patch("codemie.service.assistant_service.prepare_skill_workspace", return_value=["n1"])
         )
         get_tools = stack.enter_context(
-            patch("codemie.service.assistant_service.ToolkitService.get_tools", return_value=[])
+            patch(
+                "codemie.service.assistant_service.ToolkitService.collect_agent_tools",
+                return_value=AgentToolsResult(tools=[]),
+            )
         )
         parent.attach_mock(prepare, "prepare")
         parent.attach_mock(get_tools, "get_tools")
@@ -183,7 +187,10 @@ def test_chat_builder_prepares_before_building_tools_and_passes_the_notices_to_t
             patch("codemie.service.assistant_service.prepare_skill_workspace", return_value=["n1"])
         )
         get_tools = stack.enter_context(
-            patch("codemie.service.assistant_service.ToolkitService.get_tools", return_value=[])
+            patch(
+                "codemie.service.assistant_service.ToolkitService.collect_agent_tools",
+                return_value=AgentToolsResult(tools=[]),
+            )
         )
         parent.attach_mock(prepare, "prepare")
         parent.attach_mock(get_tools, "get_tools")

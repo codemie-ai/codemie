@@ -72,6 +72,8 @@ from codemie.rest_api.models.index import (
 from codemie.rest_api.security.user import User
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.mcp.auth_warnings import get_mcp_auth_warnings
+from codemie.service.mcp.server_instructions import MCPServerInstructions, instructions_for_tools
+from codemie.service.tools.agent_tools_result import AgentToolsResult
 from codemie.service.mcp.toolkit_service import MCPToolkitService
 from codemie.service.provider import ProviderToolkitsFactory
 from codemie.service.script_tool_calls.binding import bind_script_registries
@@ -492,7 +494,41 @@ class ToolkitService:
         request_headers: dict[str, str] | None = None,
         owner_user_id: str | None = None,
     ) -> list[BaseTool]:
-        """Main method to collect all tools for an assistant.
+        """Collect the tools for an assistant. See collect_agent_tools for the arguments."""
+        return cls.collect_agent_tools(
+            assistant,
+            request,
+            user,
+            llm_model,
+            request_uuid,
+            is_react=is_react,
+            thread_generator=thread_generator,
+            exclude_extra_context_tools=exclude_extra_context_tools,
+            file_objects=file_objects,
+            mcp_server_args_preprocessor=mcp_server_args_preprocessor,
+            smart_tool_selection_enabled=smart_tool_selection_enabled,
+            request_headers=request_headers,
+            owner_user_id=owner_user_id,
+        ).tools
+
+    @classmethod
+    def collect_agent_tools(
+        cls,
+        assistant: Assistant,
+        request: AssistantChatRequest,
+        user: User,
+        llm_model: str,
+        request_uuid: str,
+        is_react: bool = True,
+        thread_generator: MessageQueue = None,
+        exclude_extra_context_tools: bool = False,
+        file_objects=None,
+        mcp_server_args_preprocessor: Optional[callable] = None,
+        smart_tool_selection_enabled: Optional[bool] = False,
+        request_headers: dict[str, str] | None = None,
+        owner_user_id: str | None = None,
+    ) -> AgentToolsResult:
+        """Main method to collect all tools for an assistant, with the MCP instructions for the prompt.
 
         Per-user OAuth connect gating is NOT done here: tools assemble regardless of connection
         status, and the caller (build_agent / build_agent_for_workflow) applies one aggregate connect
@@ -515,7 +551,7 @@ class ToolkitService:
             smart_tool_selection_enabled: Whether to enable smart tool lookup (defaults to TOOL_SELECTION_ENABLED)
 
         Returns:
-            List of tools for the assistant
+            AgentToolsResult: The assistant's tools, and the instructions of the MCP servers whose tools are kept
         """
         if not file_objects:
             file_objects = []
@@ -597,26 +633,28 @@ class ToolkitService:
             tools.extend(cls.add_file_tools(assistant, file_objects, request_uuid, llm_model=llm_model))
             logger.debug(f"Initialized file tools for assistant `{assistant.name}`. Total tools: {len(tools)}")
 
-        tools.extend(
-            cls._get_tools(
-                assistant=assistant,
-                request=request,
-                user=user,
-                llm_model=llm_model,
-                request_uuid=request_uuid,
-                thread_generator=thread_generator,
-                mcp_server_args_preprocessor=mcp_server_args_preprocessor,
-                request_headers=request_headers,
-                augmented_toolkits=selected_toolkits,
-                owner_user_id=owner_user_id,
-            )
+        loaded_tools, mcp_instructions = cls._get_tools(
+            assistant=assistant,
+            request=request,
+            user=user,
+            llm_model=llm_model,
+            request_uuid=request_uuid,
+            thread_generator=thread_generator,
+            mcp_server_args_preprocessor=mcp_server_args_preprocessor,
+            request_headers=request_headers,
+            augmented_toolkits=selected_toolkits,
+            owner_user_id=owner_user_id,
         )
+        tools.extend(loaded_tools)
 
         tools = cls._append_workspace_image_tool_if_enabled(tools, assistant, request, user)
         tools = cls._append_request_user_input_tool_if_enabled(tools, assistant, thread_generator, request, is_react)
         # Last step: the list is final, so a workspace script can call exactly these tools.
         bind_script_registries(tools, assistant)
-        return tools
+        return AgentToolsResult(
+            tools=tools,
+            mcp_instructions=instructions_for_tools(mcp_instructions, tools),
+        )
 
     @classmethod
     def _append_request_user_input_tool_if_enabled(
@@ -1016,7 +1054,7 @@ class ToolkitService:
         request_headers: dict[str, str] | None = None,
         augmented_toolkits: Optional[list] = None,
         owner_user_id: str | None = None,
-    ) -> list[BaseTool]:
+    ) -> tuple[list[BaseTool], list[MCPServerInstructions]]:
         """Traditional tool collection flow (used when tool search is disabled or fails).
 
         Args:
@@ -1029,9 +1067,10 @@ class ToolkitService:
             mcp_server_args_preprocessor: Optional function to preprocess MCP server arguments
 
         Returns:
-            List of filtered tools using traditional logic
+            The filtered tools, and the instructions of the MCP servers that contributed them
         """
         tools = []
+        mcp_instructions: list[MCPServerInstructions] = []
 
         # Collect all tools from different sources
         # IDE tools
@@ -1054,28 +1093,28 @@ class ToolkitService:
         # MCP tools (includes MCP servers contributed by attached skills)
         if mcp_connect_available(config):
             effective_mcp_server_single_usage = cls._determine_mcp_server_lifecycle(request)
-            tools.extend(
-                MCPToolkitService.get_mcp_server_tools(
-                    cls._merge_skill_mcp_servers(assistant),
-                    owner_user_id or (user.id if user else None),
-                    assistant.project,
-                    request.conversation_id,
-                    request.tools_config,
-                    mcp_server_args_preprocessor,
-                    effective_mcp_server_single_usage,
-                    assistant_id=assistant.id,
-                    workflow_execution_id=getattr(request, 'workflow_execution_id', None),
-                    request_headers=request_headers,
-                    marketplace_scope=bool(assistant.is_global),
-                )
+            mcp_result = MCPToolkitService.get_mcp_server_tools_with_instructions(
+                cls._merge_skill_mcp_servers(assistant),
+                owner_user_id or (user.id if user else None),
+                assistant.project,
+                request.conversation_id,
+                request.tools_config,
+                mcp_server_args_preprocessor,
+                effective_mcp_server_single_usage,
+                assistant_id=assistant.id,
+                workflow_execution_id=getattr(request, 'workflow_execution_id', None),
+                request_headers=request_headers,
+                marketplace_scope=bool(assistant.is_global),
             )
+            tools.extend(mcp_result.tools)
+            mcp_instructions = mcp_result.mcp_instructions
             cls._forward_mcp_auth_warnings_to_request(request)
         elif config.STANDALONE and cls._merge_skill_mcp_servers(assistant):
             logger.warning(
                 "MCP Connect is not available in standalone mode; skipping MCP tools for assistant %s",
                 assistant.id,
             )
-        return cls._process_final_tools_traditional(tools, llm_model, assistant, request_uuid)
+        return cls._process_final_tools_traditional(tools, llm_model, assistant, request_uuid), mcp_instructions
 
     @classmethod
     def _forward_mcp_auth_warnings_to_request(cls, request: AssistantChatRequest) -> None:

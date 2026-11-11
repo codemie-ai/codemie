@@ -202,7 +202,7 @@ def _get_tools(
     with (
         patch.object(ToolkitService, "get_core_tools", return_value=list(core)),
         patch.object(ToolkitService, "add_context_tools", return_value=[]),
-        patch.object(ToolkitService, "_get_tools", return_value=list(others)),
+        patch.object(ToolkitService, "_get_tools", return_value=(list(others), [])),
         patch.object(ToolkitService, "_append_request_user_input_tool_if_enabled", side_effect=append_last),
     ):
         return ToolkitService.get_tools(

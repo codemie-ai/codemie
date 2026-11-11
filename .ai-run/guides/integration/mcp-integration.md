@@ -32,3 +32,15 @@ MCP_CONNECT_INIT_TIMEOUT=120000
 ```
 
 The timeout applies to all transports (stdio, SSE, streamable-http) and both cached and single-use modes.
+
+## Server Instructions
+
+An MCP server may declare usage instructions at handshake. When the `mcpServerInstructions` feature flag is enabled, CodeMie appends them to the system prompt, after the assistant's own prompt, in a delimited block labelled as untrusted server text.
+
+| Variable | Service | Default | Purpose |
+|---|---|---|---|
+| `MCP_INSTRUCTIONS_NONCE_SECRET` | CodeMie | unset | Keys the block delimiters. Set the same value of at least 32 characters on every API replica so a conversation's prompt stays identical across pods and restarts. |
+
+When unset, each process uses its own key. Prompts then differ between instances and restarts, which breaks provider prompt caching, and a warning is logged once per process when instructions are first rendered. A value shorter than 32 characters fails at startup.
+
+Instructions are rendered only for servers whose tools are in the agent's final tool list. Shadowed or filtered servers contribute nothing.

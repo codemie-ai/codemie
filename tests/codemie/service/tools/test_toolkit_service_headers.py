@@ -64,7 +64,7 @@ class TestToolkitServiceGetToolsWithHeaders:
     @patch('codemie.service.tools.toolkit_service.ToolkitService.add_context_tools')
     @patch('codemie.service.tools.toolkit_service.ToolkitService.get_core_tools')
     @patch('codemie.service.tools.toolkit_service.config')
-    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools')
+    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools_with_instructions')
     def test_get_tools_with_mcp_servers_and_headers(
         self,
         mock_get_mcp_tools,
@@ -86,7 +86,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         # Arrange
         _setup_mock_config(mock_config)
         mock_config.MCP_CONNECT_ENABLED = True
-        mock_get_mcp_tools.return_value = []
+        mock_get_mcp_tools.return_value = Mock(tools=[], mcp_instructions=[])
         mock_get_core_tools.return_value = []
         mock_add_context_tools.return_value = []
         mock_add_file_tools.return_value = []
@@ -285,7 +285,7 @@ class TestToolkitServiceGetToolsWithHeaders:
     @patch('codemie.service.tools.toolkit_service.ToolkitService.add_context_tools')
     @patch('codemie.service.tools.toolkit_service.ToolkitService.get_core_tools')
     @patch('codemie.service.tools.toolkit_service.config')
-    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools')
+    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools_with_instructions')
     def test_get_tools_with_mixed_tools(
         self,
         mock_get_mcp_tools,
@@ -307,7 +307,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         # Arrange
         _setup_mock_config(mock_config)
         mock_config.MCP_CONNECT_ENABLED = True
-        mock_get_mcp_tools.return_value = []
+        mock_get_mcp_tools.return_value = Mock(tools=[], mcp_instructions=[])
         mock_get_core_tools.return_value = []
         mock_add_context_tools.return_value = []
         mock_add_file_tools.return_value = []
@@ -362,7 +362,7 @@ class TestToolkitServiceGetToolsWithHeaders:
     @patch('codemie.service.tools.toolkit_service.ToolkitService.add_context_tools')
     @patch('codemie.service.tools.toolkit_service.ToolkitService.get_core_tools')
     @patch('codemie.service.tools.toolkit_service.config')
-    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools')
+    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools_with_instructions')
     def test_get_tools_traditional_flow_with_headers(
         self,
         mock_get_mcp_tools,
@@ -383,7 +383,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         # Arrange
         _setup_mock_config(mock_config)
         mock_config.MCP_CONNECT_ENABLED = True
-        mock_get_mcp_tools.return_value = []
+        mock_get_mcp_tools.return_value = Mock(tools=[], mcp_instructions=[])
         mock_get_core_tools.return_value = []
         mock_add_context_tools.return_value = []
         mock_add_file_tools.return_value = []
@@ -440,7 +440,7 @@ class TestToolkitServiceGetToolsWithHeaders:
     @patch('codemie.service.tools.toolkit_service.ToolkitService.add_context_tools')
     @patch('codemie.service.tools.toolkit_service.ToolkitService.get_core_tools')
     @patch('codemie.service.tools.toolkit_service.config')
-    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools')
+    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools_with_instructions')
     def test_get_tools_without_headers_backward_compat(
         self,
         mock_get_mcp_tools,
@@ -461,7 +461,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         # Arrange
         _setup_mock_config(mock_config)
         mock_config.MCP_CONNECT_ENABLED = True
-        mock_get_mcp_tools.return_value = []
+        mock_get_mcp_tools.return_value = Mock(tools=[], mcp_instructions=[])
         mock_get_core_tools.return_value = []
         mock_add_context_tools.return_value = []
         mock_add_file_tools.return_value = []
@@ -516,7 +516,7 @@ class TestToolkitServiceGetToolsWithHeaders:
     @patch('codemie.service.tools.toolkit_service.ToolkitService._process_final_tools_traditional')
     @patch('codemie.service.tools.toolkit_service.ToolkitService.add_tools_with_creds')
     @patch('codemie.service.tools.toolkit_service.config')
-    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools')
+    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools_with_instructions')
     def test_get_tools_forwards_warning_only_mcp_auth_metadata_to_request(
         self,
         mock_get_mcp_tools,
@@ -540,7 +540,7 @@ class TestToolkitServiceGetToolsWithHeaders:
 
         def _get_mcp_tools(*args, **kwargs):
             record_mcp_auth_warnings([warning_payload])
-            return [mcp_tool]
+            return Mock(tools=[mcp_tool], mcp_instructions=[])
 
         mock_get_mcp_tools.side_effect = _get_mcp_tools
         assistant = Mock(spec=Assistant)
@@ -558,7 +558,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         user.name = 'Test User'
         user.is_admin = False
 
-        tools = ToolkitService._get_tools(
+        tools, _ = ToolkitService._get_tools(
             assistant=assistant,
             request=request,
             user=user,
@@ -587,7 +587,7 @@ class TestToolkitServiceGetToolsWithHeaders:
     @patch('codemie.service.tools.toolkit_service.ToolkitService.add_tools_with_creds')
     @patch('codemie.service.tools.toolkit_service.logger')
     @patch('codemie.service.tools.toolkit_service.config')
-    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools')
+    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools_with_instructions')
     def test_get_tools_mcp_availability_matrix(
         self,
         mock_get_mcp_tools,
@@ -608,7 +608,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         mock_config.MCP_CONNECT_ENABLED = mcp_enabled
         mock_config.MCP_CONNECT_URL = mcp_url
         mock_add_tools_with_creds.return_value = []
-        mock_get_mcp_tools.return_value = []
+        mock_get_mcp_tools.return_value = Mock(tools=[], mcp_instructions=[])
         mock_process_final_tools.side_effect = lambda tools, *_: tools
 
         assistant = Mock(spec=Assistant)

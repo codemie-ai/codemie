@@ -45,6 +45,7 @@ from codemie.repository.repository_factory import FileRepositoryFactory, MCP_IMA
 from codemie.core.json_schema_utils import json_schema_to_model
 from codemie.service.mcp.client import MCPConnectClient
 from codemie.service.mcp.models import (
+    MCPListToolsResponse,
     MCPServerConfig,
     MCPToolDefinition,
     MCPToolInvocationResponse,
@@ -96,6 +97,9 @@ class MCPTool(CodeMieTool):
     # ``name`` when the server-side name contains characters sanitized for
     # LLM-provider compatibility (e.g. AWS Bedrock only allows [a-z0-9_-]).
     mcp_tool_name: str = ""
+    # Configured name of the MCP server this tool was loaded for. Set per load, not per cached
+    # toolkit: the toolkit cache key ignores the server name, so one toolkit can serve several names.
+    server_name: str | None = None
     # Override tokens_size_limit with the value from config
     tokens_size_limit: int = config.MCP_TOOL_TOKENS_SIZE_LIMIT
 
@@ -352,6 +356,7 @@ class ContextAwareMCPTool(MCPTool):
             mcp_server_config=original_tool.mcp_server_config,
             args_schema=original_tool.args_schema,
             mcp_tool_name=original_tool.mcp_tool_name,
+            server_name=original_tool.server_name,
             **kwargs,
         )
         self._execution_context = context
@@ -517,6 +522,9 @@ class MCPToolkit(BaseToolkit):
     mcp_server_config: MCPServerConfig
     tools_definitions: list[MCPToolDefinition]
     tools: list[MCPTool] = []  # Will be populated during initialization
+    # Server-side usage instructions from the MCP handshake.
+    # Rides on the toolkit so a cached toolkit keeps them for its whole lifetime.
+    instructions: str | None = None
 
     class Config:
         """Pydantic model configuration."""
@@ -530,6 +538,7 @@ class MCPToolkit(BaseToolkit):
         mcp_client: MCPConnectClient,
         mcp_server_config: MCPServerConfig,
         tools_definitions: list[MCPToolDefinition],
+        instructions: str | None = None,
     ):
         """
         Initialize an MCP toolkit.
@@ -540,6 +549,8 @@ class MCPToolkit(BaseToolkit):
             mcp_client: Client for communicating with MCP-Connect
             mcp_server_config: Configuration for the MCP server
             tools_definitions: List of tool definitions from the MCP server
+            instructions: Server-side usage instructions from the MCP handshake,
+                or None when the server declares none
         """
         super().__init__(
             name=name,
@@ -547,6 +558,7 @@ class MCPToolkit(BaseToolkit):
             mcp_client=mcp_client,
             mcp_server_config=mcp_server_config,
             tools_definitions=tools_definitions,
+            instructions=instructions,
         )
 
         # Create tools based on definitions
@@ -787,7 +799,8 @@ class MCPToolkitFactory:
 
         try:
             # Get tool definitions from the MCP server; guard against indefinite hang on slow startup.
-            tool_definitions = await self._list_tools_with_init_timeout(server_config, execution_context)
+            tools_response = await self._list_tools_with_init_timeout(server_config, execution_context)
+            tool_definitions = tools_response.tools
 
             # Generate toolkit name and description if not provided
             name = toolkit_name or f"MCP Toolkit ({server_config.command})"
@@ -803,6 +816,7 @@ class MCPToolkitFactory:
                 mcp_client=self.mcp_client,
                 mcp_server_config=server_config,
                 tools_definitions=tool_definitions,
+                instructions=tools_response.instructions,
             )
 
             if tools_tokens_size_limit:
@@ -827,17 +841,20 @@ class MCPToolkitFactory:
         self,
         server_config: MCPServerConfig,
         execution_context: MCPExecutionContext | None,
-    ) -> list[MCPToolDefinition]:
+    ) -> MCPListToolsResponse:
         """
         Fetch tool definitions from the MCP server, bounding the wait so a slow-starting
         server cannot hang toolkit creation indefinitely.
+
+        Returns the whole response rather than just the tools, so the server's
+        handshake instructions survive the call.
 
         Raises:
             asyncio.TimeoutError: If the server does not initialize within MCP_SERVER_INIT_TIMEOUT.
         """
         try:
             return await asyncio.wait_for(
-                self.mcp_client.list_tools(server_config, execution_context),
+                self.mcp_client.list_tools_with_instructions(server_config, execution_context),
                 timeout=config.MCP_SERVER_INIT_TIMEOUT,
             )
         except asyncio.TimeoutError:

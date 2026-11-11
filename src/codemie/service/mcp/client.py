@@ -141,6 +141,28 @@ class MCPConnectClient:
         """
         List tools available in an MCP server with optional execution context.
 
+        Thin wrapper over :meth:`list_tools_with_instructions` that keeps the
+        historic return type. Callers that also need the server's handshake
+        instructions should use that method instead.
+
+        Args:
+            server_config: Configuration for the MCP server
+            execution_context: Optional execution context with user, assistant and workflow info
+
+        Returns:
+            list[MCPToolDefinition]: List of tool definitions available on the server
+        """
+        response = await self.list_tools_with_instructions(server_config, execution_context)
+        return response.tools
+
+    async def list_tools_with_instructions(
+        self,
+        server_config: MCPServerConfig,
+        execution_context: MCPExecutionContext | None = None,
+    ) -> MCPListToolsResponse:
+        """
+        List tools available in an MCP server, keeping the server's instructions.
+
         Args:
             server_config (MCPServerConfig): Configuration for the MCP server including
                                           command, arguments, and environment variables
@@ -148,7 +170,8 @@ class MCPConnectClient:
                                                               user, assistant, and workflow info
 
         Returns:
-            list[MCPToolDefinition]: List of tool definitions available on the server
+            MCPListToolsResponse: The tool definitions plus the `instructions`
+                string the server declared at handshake, when it declared one.
 
         Raises:
             httpx.HTTPError: If there's an issue with the HTTP request (e.g., connection error,
@@ -173,7 +196,7 @@ class MCPConnectClient:
                 response.raise_for_status()  # This will raise an HTTPStatusError for 4xx/5xx responses
                 tools_response = MCPListToolsResponse.model_validate(response.json())
                 logger.debug(f"Found {len(tools_response.tools)} tools")
-                return tools_response.tools
+                return tools_response
 
             except httpx.HTTPStatusError as e:
                 if _is_auth_challenge_response(e.response):

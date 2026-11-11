@@ -28,6 +28,7 @@ from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
 from codemie.service.subagents.builtin_subagents import BuiltinSubagent
+from codemie.service.tools.agent_tools_result import AgentToolsResult
 
 SERVICE = "codemie.service.assistant_service"
 
@@ -117,7 +118,7 @@ def _run(
         patch(f"{SERVICE}.AssistantService._apply_marketplace_tool_mappings"),
         patch(f"{SERVICE}.SkillContributionsResolver.resolve_for_assistant"),
         patch(f"{SERVICE}.prepare_skill_workspace", return_value=[]),
-        patch(f"{SERVICE}.ToolkitService.get_tools", return_value=[]),
+        patch(f"{SERVICE}.ToolkitService.collect_agent_tools", return_value=AgentToolsResult(tools=[])),
         patch("codemie.service.tools.oauth_connect_gate.enforce_oauth_connected"),
         patch(f"{SERVICE}.AssistantService._prepare_system_prompt", return_value=""),
         patch(f"{SERVICE}.config.ENABLE_LANGGRAPH_AITOOLS_AGENT", True),

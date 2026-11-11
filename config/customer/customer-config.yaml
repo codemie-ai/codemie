@@ -356,6 +356,12 @@ components:
         # Every analysis a user starts (a period or settings not cached yet) counts, default settings too.
         maxComputationsPerHour: 30
 
+  - id: "features:mcpServerInstructions"
+    settings:
+      enabled: true
+      name: "MCP Server Instructions"
+      description: "Inject usage instructions that MCP servers declare at handshake into the system prompt"
+
   # Custom (hosted) applications: people upload static web apps, an HTML file or a ZIP build, then open and
   # share them from the Applications page. Off by default. Turning it on also needs the HOSTED_APPS_*
   # deployment settings (hosted-applications/README.md); turning it off hides the feature in

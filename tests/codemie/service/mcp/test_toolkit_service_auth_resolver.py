@@ -29,7 +29,13 @@ from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.service.mcp.client import BUCKET_KEY, MCPConnectClient
-from codemie.service.mcp.models import MCPExecutionContext, MCPServerConfig, MCPToolDefinition, MCPToolLoadException
+from codemie.service.mcp.models import (
+    MCPListToolsResponse,
+    MCPExecutionContext,
+    MCPServerConfig,
+    MCPToolDefinition,
+    MCPToolLoadException,
+)
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.toolkit_service import LegacyTokenResolver, MCPToolkitService
 
@@ -1700,7 +1706,9 @@ def test_get_mcp_server_tools_uses_env_injection_to_isolate_cache_per_user(
 ) -> None:
     mock_client = MagicMock(spec=MCPConnectClient)
     mock_client.base_url = "http://mock-mcp-connect"
-    mock_client.list_tools = AsyncMock(return_value=[_build_tool_definition()])
+    mock_client.list_tools_with_instructions = AsyncMock(
+        return_value=MCPListToolsResponse(tools=[_build_tool_definition()])
+    )
     MCPToolkitService.init_singleton(mock_client)
 
     resolver = _RecordingResolver(name="env", inject_env=True)
@@ -1710,7 +1718,7 @@ def test_get_mcp_server_tools_uses_env_injection_to_isolate_cache_per_user(
     MCPToolkitService.get_mcp_server_tools([mcp_server], user_id="user-a")
     MCPToolkitService.get_mcp_server_tools([mcp_server], user_id="user-b")
 
-    assert mock_client.list_tools.await_count == 2
+    assert mock_client.list_tools_with_instructions.await_count == 2
     assert len(MCPToolkitService.get_instance().toolkit_factory._toolkit_cache) == 2
 
 
@@ -1719,7 +1727,9 @@ def test_get_mcp_server_tools_checks_header_auth_before_reusing_cached_toolkit(
 ) -> None:
     mock_client = MagicMock(spec=MCPConnectClient)
     mock_client.base_url = "http://mock-mcp-connect"
-    mock_client.list_tools = AsyncMock(return_value=[_build_tool_definition()])
+    mock_client.list_tools_with_instructions = AsyncMock(
+        return_value=MCPListToolsResponse(tools=[_build_tool_definition()])
+    )
     MCPToolkitService.init_singleton(mock_client)
 
     auth_error = MCPAuthenticationRequiredException({"auth_config_id": "cfg-1", "status": "authentication_required"})
@@ -1758,7 +1768,7 @@ def test_get_mcp_server_tools_checks_header_auth_before_reusing_cached_toolkit(
             "initiate_url": None,
         }
     ]
-    assert mock_client.list_tools.await_count == 1
+    assert mock_client.list_tools_with_instructions.await_count == 1
     assert len(MCPToolkitService.get_instance().toolkit_factory._toolkit_cache) == 1
 
 
@@ -2055,14 +2065,14 @@ def _capture_list_tools_calls() -> tuple[AsyncMock, list[tuple[MCPServerConfig, 
     async def _record(
         server_config: MCPServerConfig,
         execution_context: MCPExecutionContext | None = None,
-    ) -> list[MCPToolDefinition]:
+    ) -> MCPListToolsResponse:
         captured.append(
             (
                 server_config.model_copy(deep=True),
                 execution_context.model_copy(deep=True) if execution_context is not None else None,
             )
         )
-        return [_build_tool_definition()]
+        return MCPListToolsResponse(tools=[_build_tool_definition()])
 
     return AsyncMock(side_effect=_record), captured
 
@@ -2112,7 +2122,7 @@ def test_get_mcp_server_tools_isolates_auth_headers_per_server(
     mock_list_tools, captured = _capture_list_tools_calls()
     mock_client = MagicMock(spec=MCPConnectClient)
     mock_client.base_url = "http://mock-mcp-connect"
-    mock_client.list_tools = mock_list_tools
+    mock_client.list_tools_with_instructions = mock_list_tools
     MCPToolkitService.init_singleton(mock_client)
 
     resolver = _AuthConfigHeaderResolver(token="OAUTH_TOKEN")
@@ -2158,7 +2168,7 @@ def test_get_mcp_server_tools_does_not_mutate_caller_execution_context(
     mock_list_tools, _captured = _capture_list_tools_calls()
     mock_client = MagicMock(spec=MCPConnectClient)
     mock_client.base_url = "http://mock-mcp-connect"
-    mock_client.list_tools = mock_list_tools
+    mock_client.list_tools_with_instructions = mock_list_tools
     MCPToolkitService.init_singleton(mock_client)
 
     resolver = _AuthConfigHeaderResolver(token="OAUTH_TOKEN")

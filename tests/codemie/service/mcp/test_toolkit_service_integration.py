@@ -25,7 +25,7 @@ from unittest.mock import Mock, patch, MagicMock
 from cachetools import TTLCache
 
 from codemie.service.mcp.client import MCPConnectClient
-from codemie.service.mcp.models import MCPServerConfig, MCPToolDefinition
+from codemie.service.mcp.models import MCPListToolsResponse, MCPServerConfig, MCPToolDefinition
 from codemie.service.mcp.toolkit_service import MCPToolkitService
 
 
@@ -97,9 +97,9 @@ class TestMCPToolkitServiceCacheManagement(unittest.TestCase):
 
         # Setup the client's list_tools method to return mock definitions
         async def mock_list_tools(server_config, execution_context=None):
-            return [mock_tool_definition]
+            return MCPListToolsResponse(tools=[mock_tool_definition])
 
-        mock_client.list_tools = MagicMock(side_effect=mock_list_tools)
+        mock_client.list_tools_with_instructions = MagicMock(side_effect=mock_list_tools)
 
         # Create a real instance of MCPToolkitService with the mock client
         service = MCPToolkitService(mock_client)

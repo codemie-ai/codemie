@@ -222,6 +222,17 @@ customEnv:
         name: codemie-nats-secrets
         key: CODEMIE_PASSWORD
 
+  # MCP_INSTRUCTIONS_NONCE_SECRET keys the delimiters around MCP server instructions in the system prompt.
+  # Set the same value on every API replica (at least 32 characters, e.g. `openssl rand -hex 32`) so a
+  # conversation keeps the same prompt across pods and restarts. Unset, each pod uses its own key,
+  # which breaks provider prompt caching and logs a warning once per pod. The value is checked at startup.
+  # Enable only after creating the secret, because a missing secretKeyRef stops the pods from starting:
+  # - name: MCP_INSTRUCTIONS_NONCE_SECRET
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: codemie-mcp-secrets
+  #       key: MCP_INSTRUCTIONS_NONCE_SECRET
+
   # Tolerations for Code Executor sandbox Job pods (sandbox-jobs mode only).
   # Independent from the top-level `tolerations` value below, which applies only to the
   # AI/Run API pod itself, not to executor Job pods created at runtime.

@@ -20,6 +20,7 @@ from unittest.mock import Mock, patch
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant, ToolPermissionsConfig
 from codemie.rest_api.security.user import User
+from codemie.service.tools.agent_tools_result import AgentToolsResult
 from codemie.service.tools.assistant_factory import AssistantFactory, create_assistant_executors
 
 
@@ -662,7 +663,10 @@ class TestBuildAgentResolvedModel:
             patch("codemie.service.assistant_service.AssistantService._apply_marketplace_tool_mappings"),
             patch("codemie.service.assistant_service.SkillContributionsResolver.resolve_for_assistant"),
             patch("codemie.service.assistant_service.prepare_skill_workspace", return_value=[]),
-            patch("codemie.service.assistant_service.ToolkitService.get_tools", return_value=[]) as get_tools,
+            patch(
+                "codemie.service.assistant_service.ToolkitService.collect_agent_tools",
+                return_value=AgentToolsResult(tools=[]),
+            ) as get_tools,
             patch("codemie.service.tools.oauth_connect_gate.enforce_oauth_connected"),
             patch("codemie.service.assistant_service.AssistantService._prepare_system_prompt", return_value=""),
             patch("codemie.service.assistant_service.AssistantService._configure_langgraph_agent"),

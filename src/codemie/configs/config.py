@@ -18,7 +18,7 @@ from typing import ClassVar, Literal, Self
 
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict, BaseSettings
 
 
@@ -638,6 +638,10 @@ class Config(BaseSettings):
     MCP_TOOLKIT_FACTORY_CACHE_SIZE: int = 50
     MCP_TOOLKIT_FACTORY_CACHE_TTL: int = 600
 
+    # Shared key for MCP server instruction delimiters (>= 32 chars). Unset, each process uses its own key,
+    # so the same conversation can get a different delimiter on another instance (prompt-cache misses).
+    MCP_INSTRUCTIONS_NONCE_SECRET: str | None = None
+
     # Token Exchange Factory configuration
     TOKEN_CACHE_TTL: int = 600  # 10 mins for exchanged tokens
     TOKEN_CACHE_MAX_SIZE: int = 1024  # max entries across all token caches (per-user + per-audience)
@@ -1152,6 +1156,13 @@ class Config(BaseSettings):
         if not (0 <= minute_value <= 59 and 0 <= hour_value <= 23):
             return None
         return minute_value, hour_value
+
+    @field_validator("MCP_INSTRUCTIONS_NONCE_SECRET")
+    @classmethod
+    def _check_mcp_instructions_nonce_secret(cls, value: str | None) -> str | None:
+        if value and len(value) < 32:
+            raise ValueError("MCP_INSTRUCTIONS_NONCE_SECRET must be at least 32 characters")
+        return value
 
     @model_validator(mode="after")
     def _check_cli_analytics_retention(self) -> Self:

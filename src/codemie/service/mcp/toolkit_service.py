@@ -48,6 +48,8 @@ from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.settings import SettingsBase
 from codemie.rest_api.security.user_context import get_current_auth_token, get_current_user
 from codemie.service.mcp.auth_warnings import clear_mcp_auth_warnings, record_mcp_auth_warnings
+from codemie.service.mcp.server_instructions import MCPServerInstructions, make_server_instructions
+from codemie.service.mcp.tools_result import MCPToolsResult
 from codemie.service.mcp.client import MCPConnectClient
 from codemie.service.mcp.auth_protocol import AuthResolverProtocol
 from codemie.service.security.principal_token_resolver import resolve_current_bearer_token
@@ -191,14 +193,43 @@ class MCPToolkitService:
         tools_config: list[ToolConfig] | None = None,
         mcp_server_args_preprocessor: callable | None = None,
         mcp_server_single_usage: bool | None = False,
-        # New parameters for execution context
         assistant_id: str | None = None,
         workflow_execution_id: str | None = None,
         request_headers: dict[str, str] | None = None,
         marketplace_scope: bool = False,
     ) -> list[MCPTool]:
+        """Get MCP tools from a list of MCP servers. See get_mcp_server_tools_with_instructions."""
+        return cls.get_mcp_server_tools_with_instructions(
+            mcp_servers,
+            user_id=user_id,
+            project_name=project_name,
+            conversation_id=conversation_id,
+            tools_config=tools_config,
+            mcp_server_args_preprocessor=mcp_server_args_preprocessor,
+            mcp_server_single_usage=mcp_server_single_usage,
+            assistant_id=assistant_id,
+            workflow_execution_id=workflow_execution_id,
+            request_headers=request_headers,
+            marketplace_scope=marketplace_scope,
+        ).tools
+
+    @classmethod
+    def get_mcp_server_tools_with_instructions(
+        cls,
+        mcp_servers: list[MCPServerDetails],
+        user_id: str | None = None,
+        project_name: str | None = None,
+        conversation_id: str | None = None,
+        tools_config: list[ToolConfig] | None = None,
+        mcp_server_args_preprocessor: callable | None = None,
+        mcp_server_single_usage: bool | None = False,
+        assistant_id: str | None = None,
+        workflow_execution_id: str | None = None,
+        request_headers: dict[str, str] | None = None,
+        marketplace_scope: bool = False,
+    ) -> MCPToolsResult:
         """
-        Get MCP tools from a list of MCP servers with execution context support.
+        Get MCP tools and the instructions their servers declared at handshake.
 
         This method processes each enabled MCP server to extract tools, handling
         configuration, authentication, and error recovery gracefully.
@@ -218,17 +249,19 @@ class MCPToolkitService:
                 per-user integration access to any PROJECT integration (USER stays owner-only)
 
         Returns:
-            List of MCP tools from all successfully processed servers
+            MCPToolsResult: Tools from all successfully processed servers, and one instruction
+            record per server that declared instructions and contributed tools, in load order
         """
         clear_mcp_auth_warnings()
+        instructions: list[MCPServerInstructions] = []
         if not mcp_servers:
-            return []
+            return MCPToolsResult(tools=[], mcp_instructions=instructions)
 
         from codemie.service.mcp.access_control import MCPAccessControlService
 
         mcp_servers = MCPAccessControlService.filter_for_runtime(mcp_servers)
         if not mcp_servers:
-            return []
+            return MCPToolsResult(tools=[], mcp_instructions=instructions)
 
         current_user = get_current_user()
         execution_context = MCPExecutionContext(
@@ -253,6 +286,7 @@ class MCPToolkitService:
             tools_config=tools_config,
             mcp_server_args_preprocessor=mcp_server_args_preprocessor,
             mcp_server_single_usage=mcp_server_single_usage,
+            instructions_out=instructions,
         )
 
         discovery_warnings: list[dict[str, Any]] = []
@@ -275,7 +309,7 @@ class MCPToolkitService:
                 payload["warnings"] = discovery_warnings
             raise MCPAuthenticationRequiredException(payload)
 
-        return tools
+        return MCPToolsResult(tools=tools, mcp_instructions=instructions)
 
     @classmethod
     def _collect_server_results(
@@ -290,6 +324,7 @@ class MCPToolkitService:
         tools_config: list[ToolConfig] | None,
         mcp_server_args_preprocessor: callable | None,
         mcp_server_single_usage: bool | None,
+        instructions_out: list[MCPServerInstructions] | None = None,
     ) -> tuple[list[MCPTool], list[dict[str, Any]], list[dict[str, Any]]]:
         """Iterate enabled servers and bucket results into tools, auth_failures, and discovery_candidates."""
         tools: list[MCPTool] = []
@@ -312,6 +347,7 @@ class MCPToolkitService:
                 tools_config=tools_config,
                 mcp_server_args_preprocessor=mcp_server_args_preprocessor,
                 mcp_server_single_usage=mcp_server_single_usage,
+                instructions_out=instructions_out,
             )
             if auth_failure is not None:
                 auth_failures.append(auth_failure)
@@ -334,6 +370,7 @@ class MCPToolkitService:
         tools_config: list[ToolConfig] | None,
         mcp_server_args_preprocessor: callable | None,
         mcp_server_single_usage: bool | None,
+        instructions_out: list[MCPServerInstructions] | None = None,
     ) -> tuple[list[MCPTool] | None, dict[str, Any] | None, dict[str, Any] | None]:
         """Process one enabled server. Returns (tools, auth_failure, discovery_candidate).
 
@@ -350,6 +387,7 @@ class MCPToolkitService:
                 mcp_server_args_preprocessor=mcp_server_args_preprocessor,
                 mcp_server_single_usage=mcp_server_single_usage,
                 execution_context=per_server_context,
+                instructions_out=instructions_out,
             )
             return server_tools, None, None
         except MCPAuthenticationRequiredException as exc:
@@ -765,6 +803,7 @@ class MCPToolkitService:
         execution_context: MCPExecutionContext | None = None,
         *,
         skip_auth_resolution: bool = False,
+        instructions_out: list[MCPServerInstructions] | None = None,
     ) -> list[MCPTool]:
         """
         Process a single MCP server to extract its tools.
@@ -782,6 +821,7 @@ class MCPToolkitService:
             mcp_server_args_preprocessor: Optional preprocessor for server command arguments
             mcp_server_single_usage: Whether MCP servers should be single-use (True) or persistent (False)
             execution_context: Optional execution context for request-scoped auth and workflow/assistant handling
+            instructions_out: Optional list that receives this server's instruction record when it contributes tools
 
         Returns:
             List of tools from the server after filtering and optional context wrapping
@@ -817,6 +857,12 @@ class MCPToolkitService:
 
             tools = toolkit.get_tools()
             tools = cls._filter_tools_by_config(tools, mcp_server)
+            tools = [tool.model_copy(update={"server_name": mcp_server.name}) for tool in tools]
+
+            if tools and instructions_out is not None:
+                record = make_server_instructions(mcp_server.name, toolkit.instructions)
+                if record is not None:
+                    instructions_out.append(record)
 
             # Create context-aware tools if execution context is provided
             if execution_context:

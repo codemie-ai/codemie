@@ -1,0 +1,32 @@
+{
+  "decision": "approve",
+  "rationale": "All seven findings verified resolved by an adversarial check that proved each fix by running the code or mutating a throwaway copy, never by reading alone. The two that mattered most were proven by mutation in an isolated copy of src+tests: hoisting prompt assembly above tool loading in build_agent makes the new ordering test fail, and reverting the record-after-filter change makes its test fail. No new findings. Three residuals the check raised were fixed in the same round: the module docstring now states what happens to recordings on the non-consuming paths, the soft hyphen was added to the stripped set, and the section-size test bound was tightened to match the real worst case.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"criterion": "1. instructions retrieved before the first tool invocation", "status": "pass", "notes": "carried forward from code-review-final.json"},
+    {"criterion": "2. injected before any tool call is planned or executed", "status": "pass", "notes": "carried forward; the ordering it depends on is now pinned by a test that fails when the two calls are swapped"},
+    {"criterion": "3. Assistants follow them from the first response onward", "status": "pass", "notes": "carried forward"},
+    {"criterion": "4. Skills follow them from the first response onward", "status": "pass", "notes": "carried forward"},
+    {"criterion": "5. subsequent calls reuse the retrieved instructions", "status": "pass", "notes": "carried forward"},
+    {"criterion": "6. backward compatible for servers without instructions", "status": "pass", "notes": "carried forward"},
+    {"criterion": "7. regression coverage for both paths, before tool calls", "status": "pass", "notes": "upgraded from partial by CR-105: test_build_agent_assembles_the_prompt_after_loading_tools drives the real build_agent"}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow.md commit format", "status": "pass", "notes": "carried forward"},
+    {"standard": "pre-commit hooks", "status": "pass", "notes": "carried forward; both hooks pass on every commit"},
+    {"standard": "security-patterns.md — untrusted input handling", "status": "pass", "notes": "upgraded from partial: nonce delimiters, tolerant marker neutralization, NFKC + bidi/zero-width stripping, per-server and section-wide caps"},
+    {"standard": "testing-patterns.md", "status": "pass", "notes": "upgraded from partial: the ordering is pinned and the dead test class now executes"},
+    {"standard": "quality-gates.md", "status": "pass", "notes": "6073 passed in service+agents; the 6 failures reproduce on merge-base (missing a2ui / codemie_enterprise locally); test-harness 193 passed after the fixes"}
+  ],
+  "finding_status": [
+    {"id": "CR-101", "status": "resolved", "evidence": "30 entries x 10,000 chars now render 8,808 characters against MAX_SECTION_CHARS=12000, down from 122,981; the tail declares '[28 further server instruction block(s) omitted: section size limit reached]' and a warning is logged."},
+    {"id": "CR-102", "status": "resolved", "evidence": "The nonce-bearing terminator appears exactly once and ends the section for lowercase, odd-spaced mixed case, exact uppercase and Cyrillic-Е payloads, and for a server_name forging attempt. secrets.token_hex(4) produced five distinct values over five renders."},
+    {"id": "CR-103", "status": "resolved", "evidence": "U+202E, U+200B, U+2028, U+2029, U+FEFF, U+200D, U+2066 and bare CR all measured absent from the output; CRLF and CR normalize to LF. The one residual the check found — U+00AD soft hyphen — was added to the stripped set in this round and verified."},
+    {"id": "CR-104", "status": "resolved", "evidence": "Recording now runs after _filter_tools_by_config and only when the filtered list is non-empty (toolkit_service.py:824-833). Mutation proof in a /tmp copy: reverting to the pre-fix order fails test_a_server_whose_tools_are_all_filtered_out_does_not_reach_the_prompt."},
+    {"id": "CR-105", "status": "resolved", "evidence": "Mutation proof in an isolated copy: hoisting _prepare_system_prompt above the get_tools block in build_agent fails test_build_agent_assembles_the_prompt_after_loading_tools; restoring it passes 8. The misleading docstring was corrected to say it does not pin the ordering and to point at the new test."},
+    {"id": "CR-106", "status": "resolved", "evidence": "Class is IsolatedAsyncioTestCase; pytest -W error::RuntimeWarning gives 11 passed with no 'never awaited' warnings. Mutation proof: breaking the two repaired assertions produces a real failure, so the async bodies execute."},
+    {"id": "CR-107", "status": "resolved", "evidence": "Drain verified at runtime against the real _prepare_workflow_system_prompt: one recorded entry before, empty after, and the returned workflow prompt is unchanged. The assistant path is unaffected (8 passed). The module docstring now states what happens to recordings on the other non-consuming paths."}
+  ],
+  "findings": []
+}
