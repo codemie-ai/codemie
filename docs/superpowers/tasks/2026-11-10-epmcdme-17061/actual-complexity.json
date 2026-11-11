@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-11-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 13,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Core fix spans the membership router (fixed-500 mapping), ProjectAssignmentService member-add path and a new shared_project_budget module, with shared-row helpers consolidated in budget_models/budget_service/project_budget_service (base M). SQLActivityEventRepository.insert/async_insert is a core shared utility with 18 call sites across 6 services, so its failure-semantics change lifts scope to L." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the async ProjectBudgetService._ensure_shared_child_budget, which the new sync ensure_shared_project_budget_row ports into the caller's session (explicit flush to order the insert before the allocation FK). The activity insert change (pre-flush outside the SAVEPOINT so caller failures propagate instead of PendingRollbackError) has no precedent and alters behaviour for every caller (base M). Bumped to L: error-path and transaction-state assertions required a new tests/codemie/sqlite_harness.py, used only by the two new sqlite tests, so no existing test template covered this defensive pattern." },
+    { "dimension": "file_change_estimate", "reason": "Diffstat reports 13 files (870+/88-): 7 source files across rest_api/routers, service/activity, service/budget and service/project, plus 6 test files including a new sqlite harness and new sqlite-backed tests; 11-15 files maps to XL." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared utility SQLActivityEventRepository.insert (18 call sites across project, user management, registration and marketplace workflows)",
+    "Technical Risk bumped from M to L: enumerated error-path cases (PendingRollbackError, fixed 500 on member-add DB failure) with no existing test template; new sqlite harness introduced"
+  ],
+  "split_recommendation": null
+}

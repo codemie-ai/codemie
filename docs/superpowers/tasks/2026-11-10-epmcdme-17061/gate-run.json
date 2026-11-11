@@ -1,0 +1,128 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17061_bugfix",
+  "head": "3e45e229ff29312ac94691ac4d4172abb464173a",
+  "runner": "poetry",
+  "started_at": "2026-11-10T16:20:20Z",
+  "completed_at": "2026-11-10T16:33:41Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1513,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8069,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 921,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 32398,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "8 generic-api-key findings, all in gitignored untracked local files (.codex/config.toml, .mcp.json.lock, run_claude.sh, opencode.json, local/downloaded-logs-20260825-162017.json); none in tracked files or the branch diff. No Auto-fix defined."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 268350,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "30829 passed, 170 skipped, 5 xfailed. Covers the opt-in pre-push pytest step (CODEMIE_PREPUSH_ENABLED, default off)."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "notes": "Skip if met: coverage not requested. Enable with make coverage (sonar-local already wrote coverage.xml as a side effect)."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 406844,
+      "command": "make sonar-local",
+      "exit_code": 2,
+      "notes": "Coverage pytest run passed (30829 passed), then '[sonar-local] sonar-scanner was not found. Install the official SonarScanner CLI or set SONAR_SCANNER_PATH.' Skip if not met (connectedMode.json, sonar-project.properties, SONAR_TOKEN present); guide lists failed Sonar prerequisites as Fail. Analysis never reached the server; install SonarScanner CLI or set SONAR_SCANNER_PATH to enable."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 51304,
+      "command": "make verify",
+      "exit_code": 2,
+      "notes": "ruff and license steps passed; aborted at gitleaks step (same 8 findings in gitignored files), so its test step never ran (unit gate ran make test separately: PASS)."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Skip if met: this run does not open an MR (MR creation is a separate handoff). Owed before MR: make test-harness (docker compose stack, superadmin fixtures, ~/.codemie/test-harness.json present) and paste the summary into the MR '## Test harness' section for the compliance bot."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 569,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '0 commits scanned.' / 'scanned ~0 bytes (0)' - nothing staged. Git hooks are not installed (.git/hooks has only samples, core.hooksPath unset), so this staged scan never ran on the 5 branch commits; enable with make install-hooks. Tree content is covered by the gitleaks gate."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 82,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file> (once per commit in 8b08abb93a031a048e30782fde66efea6e9b3af9..HEAD)",
+      "exit_code": 0,
+      "notes": "All 5 commits in merge_base..HEAD match ^EPMCDME-[0-9]+:. Hook not installed locally, so this is its first run on these commits."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 2412,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "CI job check-alembic-heads and always-on pre-push step. Ran against local origin/main bf59279 without fetch; CI fetches fresh main. Guide 'After merge' says no pipeline exists, but .gitlab-ci.yml defines this job and wait-ci-init."
+    },
+    {
+      "id": "wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "extends .wait-ci-init-template (epm-cdme/codemie-gitlab-templates@0.1.2 pre-ci-guard.yml)",
+      "notes": "Waits on external contexts ci-pipeline and compliance-report; needs GitLab infrastructure, not runnable locally. Only CI can settle these; compliance-report reads the MR description (## Test harness section)."
+    }
+  ],
+  "failures": {
+    "gitleaks": "RuleID:      generic-api-key\nEntropy:     4.293661\nFile:        /workspace/run_claude.sh\nLine:        6\nFingerprint: /workspace/run_claude.sh:generic-api-key:6\n\nFinding:     \"CONTEXT7_API_KEY\": \"REDACTED\"\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json\nLine:        303\nFingerprint: /workspace/opencode.json:generic-api-key:303\n\nFinding:     ...or='invalid_target' auth_config_id=REDACTED server_name=EPAM Pr...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.773684\nFile:        /workspace/local/downloaded-logs-20260825-162017.json\nLine:        7284\nFingerprint: /workspace/local/downloaded-logs-20260825-162017.json:generic-api-key:7284\n\nFinding:     ... error page served: auth_config_id=REDACTED target_origin=https...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.773684\nFile:        /workspace/local/downloaded-logs-20260825-162017.json\nLine:        7313\nFingerprint: /workspace/local/downloaded-logs-20260825-162017.json:generic-api-key:7313\n\nFinding:     auth_config_id\":\"REDACTED\"\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.773684\nTags:        [decoded:base64 decode-depth:1]\nFile:        /workspace/local/downloaded-logs-20260825-162017.json\nLine:        7347\nFingerprint: /workspace/local/downloaded-logs-20260825-162017.json:generic-api-key:7347\n\nFinding:     ...stics: result=error auth_config_id=REDACTED opener_present=True...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.773684\nFile:        /workspace/local/downloaded-logs-20260825-162017.json\nLine:        7855\nFingerprint: /workspace/local/downloaded-logs-20260825-162017.json:generic-api-key:7855\n\n4:21PM INF scanned ~75785362 bytes (75.79 MB) in 32.1s\n4:21PM WRN leaks found: 8\nmake: *** [Makefile:59: gitleaks] Error 1",
+    "sonar-local": "    validate_git_request(request)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_list_with_unknown_alias_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:207: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"jira-prod\", \"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_alias_excluded_by_type_filter_raises_type_mismatch_error\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:217: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"user-cred\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_subsystem_managed_alias_in_list_raises_reserved_error\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:229: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_alias_genuinely_absent_from_project_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:241: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_empty_list_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:249: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferNonTransferableInList::test_copy_blocked_alias_in_list_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:282: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.COPY, _ALL_TYPES, [\"gitlab-hook\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferBothFlagsFalse::test_both_flags_false_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:308: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.MOVE, set(), None)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateProjects::test_rejects_same_source_and_target\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:347: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_projects(\"same\", \"same\")\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/settings/settings_transfer_service.py:426: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n================================ tests coverage ================================\n_______________ coverage: platform linux, python 3.12.12-final-0 _______________\n\nCoverage XML written to file coverage.xml\n=== 30829 passed, 170 skipped, 5 xfailed, 584 warnings in 398.57s (0:06:38) ====\n[sonar-local] sonar-scanner was not found. Install the official SonarScanner CLI or set SONAR_SCANNER_PATH.\nmake: *** [Makefile:72: sonar-local] Error 1",
+    "verify": "RuleID:      generic-api-key\nEntropy:     4.293661\nFile:        /workspace/run_claude.sh\nLine:        6\nFingerprint: /workspace/run_claude.sh:generic-api-key:6\n\nFinding:     \"CONTEXT7_API_KEY\": \"REDACTED\"\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json\nLine:        303\nFingerprint: /workspace/opencode.json:generic-api-key:303\n\nFinding:     ...or='invalid_target' auth_config_id=REDACTED server_name=EPAM Pr...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.773684\nFile:        /workspace/local/downloaded-logs-20260825-162017.json\nLine:        7284\nFingerprint: /workspace/local/downloaded-logs-20260825-162017.json:generic-api-key:7284\n\nFinding:     ... error page served: auth_config_id=REDACTED target_origin=https...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.773684\nFile:        /workspace/local/downloaded-logs-20260825-162017.json\nLine:        7313\nFingerprint: /workspace/local/downloaded-logs-20260825-162017.json:generic-api-key:7313\n\nFinding:     auth_config_id\":\"REDACTED\"\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.773684\nTags:        [decoded:base64 decode-depth:1]\nFile:        /workspace/local/downloaded-logs-20260825-162017.json\nLine:        7347\nFingerprint: /workspace/local/downloaded-logs-20260825-162017.json:generic-api-key:7347\n\nFinding:     ...stics: result=error auth_config_id=REDACTED opener_present=True...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.773684\nFile:        /workspace/local/downloaded-logs-20260825-162017.json\nLine:        7855\nFingerprint: /workspace/local/downloaded-logs-20260825-162017.json:generic-api-key:7855\n\n4:33PM INF scanned ~75925216 bytes (75.93 MB) in 44s\n4:33PM WRN leaks found: 8\nmake: *** [Makefile:59: gitleaks] Error 1"
+  }
+}

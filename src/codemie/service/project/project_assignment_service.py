@@ -51,6 +51,10 @@ from codemie.service.budget.budget_models import (
 )
 from codemie.service.budget.budget_resolution_service import _resolution_cache
 from codemie.service.budget.provider_registry import get_active_provider
+from codemie.service.budget.shared_project_budget import (
+    ensure_shared_project_budget_row,
+    first_equal_member_allocation,
+)
 
 
 _USER_NOT_FOUND = "User not found"
@@ -116,15 +120,7 @@ class ProjectAssignmentService:
            project, category, and budget.
         2. Fall back to the project budget's own soft_budget / max_budget.
         """
-        equal_alloc = session.exec(
-            select(ProjectMemberBudgetAssignment).where(
-                ProjectMemberBudgetAssignment.project_name == project_name,
-                ProjectMemberBudgetAssignment.budget_category == budget_category,
-                ProjectMemberBudgetAssignment.project_budget_id == project_budget_id,
-                ProjectMemberBudgetAssignment.allocation_mode == AllocationMode.EQUAL.value,
-                ProjectMemberBudgetAssignment.deleted_at.is_(None),
-            )
-        ).first()
+        equal_alloc = first_equal_member_allocation(session, project_name, budget_category, project_budget_id)
         if equal_alloc is not None:
             return equal_alloc.allocated_soft_budget, equal_alloc.allocated_max_budget
         return budget.soft_budget, budget.max_budget
@@ -164,6 +160,7 @@ class ProjectAssignmentService:
                     f"reason=budget_row_missing hint=pmba_will_not_be_created_for_this_category"
                 )
                 continue
+            ensure_shared_project_budget_row(session, budget, project_name, actor_id)
             soft_budget, max_budget = ProjectAssignmentService._get_member_added_allocation_amounts(
                 session, project_name, assignment.budget_category, assignment.budget_id, budget
             )

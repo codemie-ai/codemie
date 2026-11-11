@@ -1,0 +1,423 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "deterministic",
+    "rationale": "All 7 prior blocking findings resolved: code findings CR-002, CR-004, CR-005, CR-007 confirmed in the current source of changed files (union annotation, Optional helpers removed, shared-row creation moved to shared_project_budget.py, __future__ import in all 4 new modules); decision findings CR-001, CR-003, CR-006 each carry an id-mapped outcome and rationale in fix_evidence. 2 deferred items (DF-"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "deterministic",
+      "rationale": "full roster ran (blind, edge-case, acceptance, verification-gap, standards); 7 findings: 3 decision_needed (CR-001 workaround home, CR-003 shared-row amounts split from row builder, CR-006 grant-access/reactivate fixed 500) + 4 code-quality (CR-002, CR-004, CR-005, CR-007); 2 deferred; confidence low only because decision items remain"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "deterministic",
+      "rationale": "All 7 prior blocking findings resolved: code findings CR-002, CR-004, CR-005, CR-007 confirmed in the current source of changed files (union annotation, Optional helpers removed, shared-row creation moved to shared_project_budget.py, __future__ import in all 4 new modules); decision findings CR-001, CR-003, CR-006 each carry an id-mapped outcome and rationale in fix_evidence. 2 deferred items (DF-"
+    }
+  ],
+  "reviewed_head": "3e45e229ff29312ac94691ac4d4172abb464173a",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All 7 prior blocking findings resolved: code findings CR-002, CR-004, CR-005, CR-007 confirmed in the current source of changed files (union annotation, Optional helpers removed, shared-row creation moved to shared_project_budget.py, __future__ import in all 4 new modules); decision findings CR-001, CR-003, CR-006 each carry an id-mapped outcome and rationale in fix_evidence. 2 deferred items (DF-001, DF-002) not re-checked by design; business_review and standards_review carried forward from the final round; brief written to code-review-brief.local.md.",
+  "confidence": "low",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 4,
+    "moot": 0,
+    "decided": 3,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "docs/superpowers/tasks/2026-11-10-epmcdme-17061/spec.md",
+      "title": "Remove-and-re-add workaround has no documented home",
+      "problem": "The spec Decision (user, AR-4) chose documenting remove-and-re-add for members who joined a broken project before the fix over a backfill. No backfill was added, which is correct, but the workaround appears only in the spec's Non-goals; nothing in the diff, a guide or another repo doc carries it, and the spec does not say where it should live.",
+      "impact": "Members added to an already-broken project before this fix keep no budget allocation. Without a findable note, admins and support have no recorded way to repair them, so the user-chosen mitigation for skipping the backfill is effectively absent.",
+      "recommendation": "Decide where the workaround is documented (MR description, ticket, or a repo guide) and add it there: members who joined a broken project before the fix must be removed and re-added to get a budget allocation.",
+      "status": "decided",
+      "check_notes": "decision in fix_evidence: document remove-and-re-add in the MR description (Follow-ups / known limitations); rationale given",
+      "fix": {
+        "change": "No code change: remove-and-re-add workaround goes in the MR description under Follow-ups / known limitations (user decision)",
+        "test": "n/a"
+      },
+      "decision": {
+        "outcome": "Document the remove-and-re-add workaround in the MR description only, under Reviewer notes -> Follow-ups / known limitations; no repo file changes.",
+        "rationale": "The MR template has a Follow-ups / known limitations line for deliberately-not-done work (.gitlab/merge_request_templates/Default.md:22); no budget guide exists, error-handling.md covers exception handling, and the spec non-goals rule out editing the provisioning guide."
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/budget_models.py",
+      "line": 70,
+      "title": "Duck-typed equal_share annotated as Any",
+      "problem": "code-quality.md Types And Imports requires spelling out the accepted union for a duck-typed parameter. shared_project_budget_amounts takes equal_share: Any | None, while callers pass a ProjectMemberBudgetAssignment, an EqualMemberShare or None. No Ruff rule in pyproject covers this.",
+      "impact": "Any switches off type checking for the one input that decides the shared row's amounts, so a caller passing an object without allocated_soft_budget/allocated_max_budget fails only at runtime. It breaks a documented project standard that the standards audit marks blocking.",
+      "recommendation": "Annotate equal_share as ProjectMemberBudgetAssignment | EqualMemberShare | None, or as a Protocol carrying allocated_soft_budget and allocated_max_budget.",
+      "status": "resolved",
+      "check_notes": "budget_models.py:70 equal_share is ProjectMemberBudgetAssignment | EqualMemberShare | None; module has __future__ annotations",
+      "fix": {
+        "change": "shared_project_budget_amounts annotates equal_share as ProjectMemberBudgetAssignment | EqualMemberShare | None",
+        "test": "tests/codemie/service/budget/test_shared_project_budget_row.py::test_amounts_follow_the_member_hard_limit_rule"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/service/budget/budget_models.py",
+      "line": 84,
+      "title": "Shared row amounts not owned by row builder",
+      "problem": "Spec Behaviour 1 requires one pure function in budget_models.py that returns the whole shared row, amounts included, used by every creator. build_shared_project_budget_row takes soft_budget/max_budget from the caller and the amount rule is a separate shared_project_budget_amounts. Nothing forces a creator through the rule: _ensure_shared_child_budget_after_resync (project_budget_service.py:1239-1246) passes per-member sample amounts straight in. Acceptance graded the requirement partial.",
+      "impact": "Each creator still decides the shared row's amounts, so the single owner the spec chose over sharing only the field set is not achieved, and creators can diverge on the row's soft/max (e.g. the unenforced max) without a test noticing.",
+      "recommendation": "Decide: either fold the amount rule into build_shared_project_budget_row (take equal_share and enforce_limit instead of soft/max, and check whether routing _ensure_shared_child_budget_after_resync through it changes its results), or record that the two-function split satisfies Behaviour 1.",
+      "status": "decided",
+      "check_notes": "decision in fix_evidence: keep two-function split; resync now routes shared_sample through shared_project_budget_amounts (project_budget_service.py:1290-1295)",
+      "fix": {
+        "change": "Two-function split kept (user decision B); _resync_member_allocations now passes its shared sample through shared_project_budget_amounts, so every shared-row creator applies the one amount rule",
+        "test": "tests/codemie/service/budget/test_shared_project_budget_row.py::test_resync_applies_the_amount_rule_to_the_shared_sample"
+      },
+      "decision": {
+        "outcome": "Option B: keep the two-function split. The shared row's amounts come from the separate pure function shared_project_budget_amounts in budget_models.py, which every creator calls; the resync creator now applies it where the resync sample is formed (project_budget_service._resync_member_allocations), keeping the (max, soft) order. Recorded in the MR description under Deviations from the ticket/spec.",
+        "rationale": "AC6's unchanged budget tests carry the task's no-regression requirement (Jira AC5) and pin _ensure_shared_child_budget's per_member_* kwargs; the single-function shape came from the architecture review, not the task or a requester decision. B removes the resync bypass so every creator applies the one amount rule with the smallest change."
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/project/project_assignment_service.py",
+      "line": 112,
+      "title": "New code uses typing.Optional annotations",
+      "problem": "code-quality.md Types And Imports says to avoid typing.Optional[X] and use X | None. The new _first_equal_allocation returns Optional[ProjectMemberBudgetAssignment] (:112) and the new _ensure_shared_budget_row takes actor_id: Optional[str] (:147). The Ruff config selects no UP rules, so no gate catches it.",
+      "impact": "New code breaks a documented typing standard that the automated gate does not enforce; the standards audit marks code-quality partial, which blocks the review.",
+      "recommendation": "Annotate them as ProjectMemberBudgetAssignment | None and str | None.",
+      "status": "resolved",
+      "check_notes": "_first_equal_allocation and _ensure_shared_budget_row removed; relocated helpers in shared_project_budget.py use X | None",
+      "fix": {
+        "change": "Optional annotations removed with the move: first_equal_member_allocation returns ProjectMemberBudgetAssignment | None, ensure_shared_project_budget_row takes actor_id: str | None",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/project/project_assignment_service.py",
+      "line": 146,
+      "title": "Shared budget row creation in 780-line assignment module",
+      "problem": "code-quality.md Module Cohesion says not to add a concern that is not the file's core responsibility to a file of about 500 lines or more, and to extract first. _ensure_shared_budget_row (shared child Budget row creation with its own amount lookup, flush and logging, :146-181) was added to the 780-line membership assignment service.",
+      "impact": "Ownership of budget-row creation is split between the budget modules and the membership service, against the documented extract-first rule; the standards audit marks it blocking.",
+      "recommendation": "Move the shared-row creation into a budget-owned module (e.g. next to build_shared_project_budget_row) and call it from _sync_project_budget_member_added, keeping it in the caller's session and flushed before the allocation add.",
+      "status": "resolved",
+      "check_notes": "shared-row creation moved to budget-owned shared_project_budget.py; assignment service calls ensure_shared_project_budget_row before the allocation add",
+      "fix": {
+        "change": "Shared-row creation and its equal-allocation lookup moved to new src/codemie/service/budget/shared_project_budget.py; the member-add sync calls it in the caller's session and flushes before the allocation add",
+        "test": "tests/codemie/service/project/test_member_added_shared_budget_sqlite.py"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/service/user/user_access_service.py",
+      "line": 89,
+      "title": "Admin grant-project-access lacks fixed member-add 500",
+      "problem": "POST /v1/admin/users/{user_id}/projects (user_management_router.py:336-349 -> UserAccessService.grant_project_access -> _apply_membership_change, user_access_service.py:185-194) runs the same project_assignment_service.assign_user_to_project member add, which now also inserts the shared row, then session.commit(), with no SQLAlchemyError mapping. Reactivation (user_management_service.py:488-491) re-runs the member-added sync the same way. Only the three membership.py routes use _member_assignment_errors, and no test covers a DB failure on these paths.",
+      "impact": "A DB failure while adding a member through these admin paths reaches the client as an unstructured 500 instead of the fixed 'nothing was saved' message the projects routes now return. AC3 says admin assign routes answer the fixed message, but Behaviour 3 enumerates only the three membership routes, so whether these paths are in scope needs a decision.",
+      "recommendation": "Decide whether AC3 covers grant-project-access (and reactivate). If yes, move _member_assignment_errors to a shared module, wrap the service call and commit in _apply_membership_change (user_access_service.py:185-194) and the reactivate route, and add a test asserting code 500, the fixed message and __cause__ for a flush failure and a commit failure.",
+      "status": "decided",
+      "check_notes": "decision in fix_evidence: grant-project-access and reactivation out of B3 scope, recorded in MR description; rationale given",
+      "fix": {
+        "change": "No code change: grant_project_access and reactivation keep the unstructured 500; scope recorded in the MR description under Deviations (user decision)",
+        "test": "n/a"
+      },
+      "decision": {
+        "outcome": "No: grant_project_access (POST /v1/admin/users/{user_id}/projects) and user reactivation keep today's unstructured 500; the scope is recorded in the MR description under Deviations from the ticket/spec.",
+        "rationale": "The requester's Q1 answer and spec Behaviour 3 name exactly three routes (single, bulk, CSV import); the FK root cause is fixed for the admin paths anyway, and the fixed 'member could not be assigned' message would be wrong for reactivation."
+      }
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/sqlite_harness.py",
+      "title": "New modules miss __future__ annotations import",
+      "problem": "code-quality.md Types And Imports says to add from __future__ import annotations in new modules. None of the 4 new modules has it: tests/codemie/sqlite_harness.py, tests/codemie/service/activity/test_activity_repository_sqlite.py, tests/codemie/service/budget/test_shared_project_budget_row.py, tests/codemie/service/project/test_member_added_shared_budget_sqlite.py.",
+      "impact": "The new modules break a documented project standard that no gate enforces (Ruff selects no FA rules); the standards audit marks it blocking.",
+      "recommendation": "Add from __future__ import annotations after the license header in each of the 4 new modules: tests/codemie/sqlite_harness.py, tests/codemie/service/activity/test_activity_repository_sqlite.py, tests/codemie/service/budget/test_shared_project_budget_row.py, tests/codemie/service/project/test_member_added_shared_budget_sqlite.py.",
+      "status": "resolved",
+      "check_notes": "from __future__ import annotations present in all 4 named new modules",
+      "fix": {
+        "change": "from __future__ import annotations added to the 4 new test/harness modules",
+        "test": "n/a"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/rest_api/routers/projects/membership.py",
+      "line": 48,
+      "title": "Concurrent duplicate assign answered 500, not 409",
+      "problem": "Two concurrent POSTs assigning the same user both pass the non-atomic existence check (project_assignment_service.py:361-376); the loser's unique violation now maps to the fixed 500, so callers cannot tell a conflict from an outage.",
+      "preexisting": "The non-atomic existence check predates this change; before it the same race surfaced as a raw unstructured 500."
+    },
+    {
+      "id": "DF-002",
+      "severity": "major",
+      "file": "src/codemie/service/project/project_assignment_service.py",
+      "line": 147,
+      "title": "Concurrent first-add races shared row insert",
+      "problem": "_ensure_shared_budget_row checks then inserts with no ON CONFLICT; two concurrent first-member adds both see no row and the loser fails on the budgets PK: admins get the fixed 500, an IdP first-login member keeps no budget share.",
+      "preexisting": "Before this change every first add here failed on the FK; the spec Non-goal keeps the residual race out of scope with its outcome recorded."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "B1: missing <budget_id>:shared row created at member add, in the caller's sync transaction, before the allocation",
+      "status": "pass",
+      "notes": "_ensure_shared_budget_row runs before the allocation add (project_assignment_service.py:218); add+flush precede it; test_first_member_creates_shared_row_then_allocation"
+    },
+    {
+      "kind": "spec",
+      "item": "B1: one pure function in budget_models.py returns the whole shared row, amounts included",
+      "status": "partial",
+      "notes": "build_shared_project_budget_row takes soft/max from the caller; amount rule is separate shared_project_budget_amounts; resync creator passes sample amounts directly (CR-003)"
+    },
+    {
+      "kind": "spec",
+      "item": "B1: the new creator and _upsert_child_budget's shared rows build from it; override rows unchanged",
+      "status": "pass",
+      "notes": "_ensure_shared_child_budget upserts build_shared_project_budget_row; override insert fields unchanged"
+    },
+    {
+      "kind": "spec",
+      "item": "B1: created_by is the actor, else the main budget's created_by",
+      "status": "pass",
+      "notes": "budget_models.py actor_id or main_budget.created_by; covered by no-actor and bootstrap tests"
+    },
+    {
+      "kind": "spec",
+      "item": "B1: amounts soft from equal share else main; max via member_effective_max_budget; first member gets main amounts",
+      "status": "pass",
+      "notes": "shared_project_budget_amounts; sqlite tests cover first member and enforce on/off"
+    },
+    {
+      "kind": "spec",
+      "item": "B1: the five existing amount expressions call it with unchanged results",
+      "status": "pass",
+      "notes": "project_budget_service.py:1017, :1694, :2177, :2632 and budget_service.py:1648 route through shared_project_budget_amounts"
+    },
+    {
+      "kind": "spec",
+      "item": "B1: writes the DB row only; provider sync stays deferred (allocation PENDING)",
+      "status": "pass",
+      "notes": "session.add + flush only; test asserts SyncStatus.PENDING"
+    },
+    {
+      "kind": "spec",
+      "item": "B1: an existing shared row is left untouched",
+      "status": "pass",
+      "notes": "session.get early return; test_existing_shared_row_left_untouched"
+    },
+    {
+      "kind": "spec",
+      "item": "B1: covers every member-add caller (single, bulk, CSV, assign_admins, IdP bootstrap, reactivate)",
+      "status": "pass",
+      "notes": "single choke point _sync_project_budget_member_added reached by all callers"
+    },
+    {
+      "kind": "spec",
+      "item": "B2: insert/async_insert propagate a caller pending-write flush failure as the original exception",
+      "status": "pass",
+      "notes": "flush outside the catch-all; sqlite and async propagation tests"
+    },
+    {
+      "kind": "spec",
+      "item": "B2: a failure of the event row itself is still logged and swallowed",
+      "status": "pass",
+      "notes": "begin_nested catch-all retained; test_insert_swallows_event_row_failure_and_caller_commits"
+    },
+    {
+      "kind": "spec",
+      "item": "B2: insert_strict unchanged",
+      "status": "pass",
+      "notes": "no hunk touches insert_strict"
+    },
+    {
+      "kind": "spec",
+      "item": "B3: single, bulk and CSV import routes map SQLAlchemyError to a fixed-message 500",
+      "status": "pass",
+      "notes": "_member_assignment_errors wraps service call and commit on all 3 routes; TestMemberAssignmentDatabaseFailure"
+    },
+    {
+      "kind": "spec",
+      "item": "B3: message carries no DB text and the real cause is logged",
+      "status": "pass",
+      "notes": "DB text only in details; 500 handler logs details and returns sanitized details"
+    },
+    {
+      "kind": "spec",
+      "item": "B3: mapping lives in the routes, not ProjectAssignmentService",
+      "status": "pass",
+      "notes": "mapping only in membership.py"
+    },
+    {
+      "kind": "spec",
+      "item": "B4: provisioning unchanged on the wire; commit-1 failure still generic 500 with cause logged",
+      "status": "pass",
+      "notes": "no provisioning file in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "AC1: shared row then allocation in one transaction, no FK violation, every caller incl. bootstrap, NOT NULL-enforcing session",
+      "status": "pass",
+      "notes": "FK-enforcing sqlite test with created_by NOT NULL and actor_id=None"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: provisioning PUT on empty project then admin assign succeeds with PENDING allocation at <budget_id>:shared",
+      "status": "pending-stage-7",
+      "notes": "mechanism unit-tested; end-to-end PUT + assign is runtime evidence"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: caller pending-write failure propagates, no PendingRollbackError; admin routes fixed 500; provisioning generic 500",
+      "status": "pass",
+      "notes": "sqlite rollback test; router tests assert 500, fixed message and __cause__ (grant-project-access scope: CR-006)"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: event-row failure is logged and swallowed and the caller's transaction commits",
+      "status": "pass",
+      "notes": "test_insert_swallows_event_row_failure_and_caller_commits"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: PUT then resend with admin_emails makes the user admin; second identical resend leaves rows unchanged",
+      "status": "pending-stage-7",
+      "notes": "member-add idempotency unit-tested; provisioning resend convergence needs live-stack evidence"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: existing shared row stores the same rows; existing tests pass unchanged; activity test edits limited to flush stubs",
+      "status": "pending-stage-7",
+      "notes": "existing-row path is read-only; test edits limited as allowed; suite result is Stage 7"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no shared-row creation when a budget group or category is set on an empty project",
+      "status": "pass",
+      "notes": "if allocation_rows guards kept"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no data migration or backfill",
+      "status": "pass",
+      "notes": "none in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: _commit_project IntegrityError retry and its label not narrowed",
+      "status": "pass",
+      "notes": "provisioning_budget_service.py untouched"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no change to provisioning status codes, response bodies or guide",
+      "status": "pass",
+      "notes": "no provisioning router/service/guide file in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no change to provider sync timing, insert_strict or ACTIVITY_EVENTS_ENABLED default",
+      "status": "pass",
+      "notes": "allocation stays PENDING; insert_strict and config untouched"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: concurrent first-add race not handled (no ON CONFLICT DO NOTHING)",
+      "status": "pass",
+      "notes": "plain session.add insert; residual race deferred (DF-002)"
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: create the row in the member-add sync transaction, not via async creator",
+      "status": "pass",
+      "notes": "sync session.add/flush; no async bridge"
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: document remove-and-re-add for members who joined a broken project before the fix, over backfilling",
+      "status": "partial",
+      "notes": "no backfill (correct); workaround only in spec Non-goals, nothing in the diff carries it (CR-001)"
+    },
+    {
+      "kind": "spec",
+      "item": "Verification: test the insert change against a sqlite-backed session",
+      "status": "pass",
+      "notes": "tests/codemie/sqlite_harness.py + test_activity_repository_sqlite.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Verification: member-add tests must see session.get return None for the shared id",
+      "status": "pass",
+      "notes": "real sqlite session with no shared row"
+    },
+    {
+      "kind": "spec",
+      "item": "Verification: reproduce the ticket on a local stack with ACTIVITY_EVENTS_ENABLED on and off",
+      "status": "pending-stage-7",
+      "notes": "runtime evidence owned by Stage 7"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 4 commit subjects in 8b08abb93..HEAD match the documented EPMCDME-####: Description format (git-workflow.md Commit Message Format)"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "headers present; typing.Optional at project_assignment_service.py:112,:147; Any | None at budget_models.py:70; 4 new modules lack __future__ import; shared-row creation added to 780-line module"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "auth dependencies on membership routes untouched; str(SQLAlchemyError) only in details, which the 500 handler (main.py:1655-1663) logs and replaces; new logs carry ids and amounts, no secrets"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Request changes: 3 decision_needed items (shared-row amounts split from the row builder against spec Behaviour 1, CR-003; no documented home for the remove-and-re-add workaround, CR-001; whether admin grant-project-access/reactivate adopt the fixed member-add 500, CR-006) plus 4 documented code-quality violations (CR-002, CR-004, CR-005, CR-007). 2 deferred to docs/superpowers/tasks/2026-11-10-epmcdme-17061/code-review-deferred.local.md (concurrent first-add shared-row race, a spec non-goal; duplicate-assign race answered 500 not 409, pre-existing); 18 lens candidates dismissed after reading the code (e.g. 500 details replaced by the handler, single-transaction add path, no remaining _child_budget_name references). All four lenses and the standards audit ran with no gap; confidence is low only because decision_needed items remain.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

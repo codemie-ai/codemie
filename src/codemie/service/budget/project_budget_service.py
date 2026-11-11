@@ -54,10 +54,14 @@ from codemie.service.budget.budget_models import (
     Budget,
     ProjectBudgetAssignment,
     ProjectBudgetGroup,
+    EqualMemberShare,
     ProjectMemberBudgetAssignment,
     build_override_project_budget_id,
     build_shared_project_budget_id,
+    build_shared_project_budget_row,
+    child_budget_name,
     member_effective_max_budget,
+    shared_project_budget_amounts,
 )
 from codemie.service.activity.activity_models import (
     ActivityDomain,
@@ -83,6 +87,8 @@ _DURATION_RE = re.compile(r"^\d+[smhd]$")
 _CENT = Decimal("0.01")
 PCT_SUM_TOLERANCE = 0.5
 DEFAULT_SOFT_LIMIT_PCT = 80.0
+# Set once when a child budget row is created; an upsert never rewrites them.
+_CHILD_BUDGET_INSERT_ONLY_FIELDS = frozenset({"budget_id", "created_by"})
 
 _LEGACY_CARRY_PRIORITY: list[BudgetCategory] = [
     BudgetCategory.PLATFORM,
@@ -359,12 +365,6 @@ class ProjectBudgetService:
                 _resolution_cache.pop(key, None)
 
     @staticmethod
-    def _child_budget_name(main_budget: Budget, suffix: str) -> str:
-        reserved = len(suffix) + 3
-        base = main_budget.name[: max(1, 128 - reserved)]
-        return f"{base} [{suffix}]"
-
-    @staticmethod
     def _effective_member_budget_id(
         project_budget_id: str,
         allocation: ProjectMemberBudgetAssignment,
@@ -398,48 +398,49 @@ class ProjectBudgetService:
         max_budget: float,
         owner_user_id: str | None = None,
     ) -> Budget:
-        existing = await budget_repository.get_by_id(session, child_budget_id)
-        action = "create" if existing is None else "update"
-        logger.debug(
-            f"budget_event=project_child_budget_upsert_started component=project_budget_service "
-            f"budget_id={child_budget_id!r} parent_budget_id={main_budget.budget_id!r} "
-            f"project_name={project_name!r} budget_category={main_budget.budget_category!r} "
-            f"origin_type={budget_origin_type!r} owner_user_id={owner_user_id!r} action={action}"
-        )
-        fields = {
-            "budget_type": BudgetType.PROJECT.value,
-            "budget_origin_type": budget_origin_type,
-            "parent_budget_id": main_budget.budget_id,
-            "owner_user_id": owner_user_id,
-            "project_name": project_name,
-            "name": self._child_budget_name(
-                main_budget,
-                "shared" if owner_user_id is None else f"user:{owner_user_id[:8]}",
-            ),
-            "description": main_budget.description,
-            "soft_budget": soft_budget,
-            "max_budget": max_budget,
-            "budget_duration": main_budget.budget_duration,
-            "budget_category": main_budget.budget_category,
-            "detached_at": None,
-            "deleted_at": None,
-        }
-        if existing is None:
-            budget = await budget_repository.insert(
-                session,
-                Budget(
-                    budget_id=child_budget_id,
-                    created_by=actor_id,
-                    **fields,
+        return await self._upsert_budget_row(
+            session,
+            {
+                "budget_id": child_budget_id,
+                "created_by": actor_id,
+                "budget_type": BudgetType.PROJECT.value,
+                "budget_origin_type": budget_origin_type,
+                "parent_budget_id": main_budget.budget_id,
+                "owner_user_id": owner_user_id,
+                "project_name": project_name,
+                "name": child_budget_name(
+                    main_budget,
+                    "shared" if owner_user_id is None else f"user:{owner_user_id[:8]}",
                 ),
-            )
+                "description": main_budget.description,
+                "soft_budget": soft_budget,
+                "max_budget": max_budget,
+                "budget_duration": main_budget.budget_duration,
+                "budget_category": main_budget.budget_category,
+                "detached_at": None,
+                "deleted_at": None,
+            },
+        )
+
+    @staticmethod
+    async def _upsert_budget_row(session: AsyncSession, row: dict[str, Any]) -> Budget:
+        """Insert the child budget row, or update every column but its id and creator."""
+        budget_id = row["budget_id"]
+        existing = await budget_repository.get_by_id(session, budget_id)
+        action = "create" if existing is None else "update"
+        log_fields = (
+            f"budget_id={budget_id!r} parent_budget_id={row['parent_budget_id']!r} "
+            f"project_name={row['project_name']!r} budget_category={row['budget_category']!r} "
+            f"origin_type={row['budget_origin_type']!r} owner_user_id={row['owner_user_id']!r} action={action}"
+        )
+        logger.debug(f"budget_event=project_child_budget_upsert_started component=project_budget_service {log_fields}")
+        if existing is None:
+            budget = await budget_repository.insert(session, Budget(**row))
         else:
-            budget = await budget_repository.update(session, child_budget_id, fields)
+            fields = {key: value for key, value in row.items() if key not in _CHILD_BUDGET_INSERT_ONLY_FIELDS}
+            budget = await budget_repository.update(session, budget_id, fields)
         logger.debug(
-            f"budget_event=project_child_budget_upsert_completed component=project_budget_service "
-            f"budget_id={child_budget_id!r} parent_budget_id={main_budget.budget_id!r} "
-            f"project_name={project_name!r} budget_category={main_budget.budget_category!r} "
-            f"origin_type={budget_origin_type!r} owner_user_id={owner_user_id!r} action={action}"
+            f"budget_event=project_child_budget_upsert_completed component=project_budget_service {log_fields}"
         )
         return budget
 
@@ -465,19 +466,19 @@ class ProjectBudgetService:
         *,
         main_budget: Budget,
         project_name: str,
-        actor_id: str,
+        actor_id: str | None,
         per_member_soft_budget: float,
         per_member_max_budget: float,
     ) -> Budget:
-        return await self._upsert_child_budget(
+        return await self._upsert_budget_row(
             session,
-            child_budget_id=build_shared_project_budget_id(main_budget.budget_id),
-            main_budget=main_budget,
-            project_name=project_name,
-            actor_id=actor_id,
-            budget_origin_type="shared_default",
-            soft_budget=per_member_soft_budget,
-            max_budget=per_member_max_budget,
+            build_shared_project_budget_row(
+                main_budget,
+                project_name=project_name,
+                actor_id=actor_id,
+                soft_budget=per_member_soft_budget,
+                max_budget=per_member_max_budget,
+            ),
         )
 
     async def _ensure_override_child_budget(
@@ -1013,15 +1014,16 @@ class ProjectBudgetService:
         self._log_zero_equal_share(
             data.project_name, budget_id, (row.allocated_max_budget for row in allocation_rows), enforce_limit
         )
+        shared_soft, shared_max = shared_project_budget_amounts(
+            budget, allocation_rows[0] if allocation_rows else None, enforce_limit
+        )
         shared_budget = await self._ensure_shared_child_budget(
             session,
             main_budget=budget,
             project_name=data.project_name,
             actor_id=actor_id,
-            per_member_soft_budget=allocation_rows[0].allocated_soft_budget if allocation_rows else budget.soft_budget,
-            per_member_max_budget=allocation_rows[0].allocated_max_budget
-            if (enforce_limit and allocation_rows)
-            else budget.max_budget,
+            per_member_soft_budget=shared_soft,
+            per_member_max_budget=shared_max,
         )
         logger.debug(
             f"budget_event=project_shared_child_budget_selected component=project_budget_service "
@@ -1285,6 +1287,12 @@ class ProjectBudgetService:
                 provider=provider,
             )
             shared_sample = shared_sample or sample
+        if shared_sample is not None:
+            # Samples are (max, soft); the shared row takes them only through the one amount rule.
+            shared_soft, shared_max = shared_project_budget_amounts(
+                budget, EqualMemberShare(shared_sample[1], shared_sample[0]), enforce_limit
+            )
+            shared_sample = (shared_max, shared_soft)
         await self._ensure_shared_child_budget_after_resync(
             session,
             budget_id=budget_id,
@@ -1689,8 +1697,11 @@ class ProjectBudgetService:
         project_name = assignment.project_name if assignment else ""
         # Unenforced equal members share the whole project budget; the shared child row can still
         # hold a per-member share from a time enforcement was on.
-        if not SettingsService.get_enforce_member_spend_limits(project_name):
-            correct_max = budget.max_budget
+        correct_soft, correct_max = shared_project_budget_amounts(
+            budget,
+            EqualMemberShare(correct_soft, correct_max),
+            SettingsService.get_enforce_member_spend_limits(project_name),
+        )
         shared_budget = await self._ensure_shared_child_budget(
             session,
             main_budget=budget,
@@ -2169,15 +2180,14 @@ class ProjectBudgetService:
                 data.project_name, budget_id, (row.allocated_max_budget for row in allocation_rows), enforce_limit
             )
             if allocation_rows:
+                shared_soft, shared_max = shared_project_budget_amounts(budget, allocation_rows[0], enforce_limit)
                 shared_budget = await self._ensure_shared_child_budget(
                     session,
                     main_budget=budget,
                     project_name=data.project_name,
                     actor_id=actor_id,
-                    per_member_soft_budget=allocation_rows[0].allocated_soft_budget,
-                    per_member_max_budget=allocation_rows[0].allocated_max_budget
-                    if enforce_limit
-                    else budget.max_budget,
+                    per_member_soft_budget=shared_soft,
+                    per_member_max_budget=shared_max,
                 )
                 for row in allocation_rows:
                     row.shared_budget_id = shared_budget.budget_id
@@ -2625,13 +2635,14 @@ class ProjectBudgetService:
             group.project_name, budget_id, (row.allocated_max_budget for row in allocation_rows), enforce_limit
         )
         if allocation_rows:
+            shared_soft, shared_max = shared_project_budget_amounts(budget, allocation_rows[0], enforce_limit)
             shared_budget = await self._ensure_shared_child_budget(
                 session,
                 main_budget=budget,
                 project_name=group.project_name,
                 actor_id=actor_id,
-                per_member_soft_budget=allocation_rows[0].allocated_soft_budget,
-                per_member_max_budget=allocation_rows[0].allocated_max_budget if enforce_limit else budget.max_budget,
+                per_member_soft_budget=shared_soft,
+                per_member_max_budget=shared_max,
             )
             for row in allocation_rows:
                 row.shared_budget_id = shared_budget.budget_id

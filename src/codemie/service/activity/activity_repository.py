@@ -15,7 +15,8 @@
 """Repository for activity events.
 
 insert() and async_insert() accept a caller-provided session so the event row
-is committed in the same transaction as the business mutation.
+is committed in the same transaction as the business mutation. They swallow a
+failure of the event row only; a failure of the caller's own pending writes propagates.
 """
 
 from __future__ import annotations
@@ -156,6 +157,9 @@ class SQLActivityEventRepository(ActivityEventRepository):
     def insert(self, event: ActivityEventCreate, session: Session) -> ActivityEvent | None:
         if not config.ACTIVITY_EVENTS_ENABLED:
             return None
+        # begin_nested() flushes the caller's pending writes first; flushing them here, outside the
+        # catch-all, lets their failure reach the caller instead of poisoning its transaction silently.
+        session.flush()
         try:
             with session.begin_nested():
                 row = ActivityEvent(**event.model_dump())
@@ -184,6 +188,8 @@ class SQLActivityEventRepository(ActivityEventRepository):
         """Persist a new event within the caller's async transaction."""
         if not config.ACTIVITY_EVENTS_ENABLED:
             return None
+        # Same as insert(): the caller's pending writes fail into the caller, not the catch-all below.
+        await session.flush()
         try:
             async with session.begin_nested():
                 row = ActivityEvent(**event.model_dump())

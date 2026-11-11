@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from codemie.service.activity.activity_models import (
     ActivityEvent,
@@ -71,7 +72,7 @@ def test_insert_adds_and_flushes_event():
         result = _repo().insert(dto, session)
 
     session.add.assert_called_once()
-    session.flush.assert_called_once()
+    assert session.flush.call_count == 2
     assert result.domain == ActivityDomain.USER_MANAGEMENT
     assert result.event_type == UserManagementEvent.USER_CREATED
     assert result.entity_type == ActivityEntityType.USER
@@ -114,7 +115,19 @@ def test_insert_strict_reraises_flush_failure_while_insert_swallows_it():
         mock_config.ACTIVITY_EVENTS_ENABLED = True
         with pytest.raises(RuntimeError, match="db down"):
             _repo().insert_strict(_create_dto(), session)
+        session.flush.side_effect = [None, RuntimeError("db down")]
         assert _repo().insert(_create_dto(), session) is None
+
+
+def test_insert_disabled_does_not_flush():
+    session = MagicMock()
+
+    with patch("codemie.service.activity.activity_repository.config") as mock_config:
+        mock_config.ACTIVITY_EVENTS_ENABLED = False
+        result = _repo().insert(_create_dto(), session)
+
+    assert result is None
+    session.flush.assert_not_called()
 
 
 def test_insert_domain_level_event_with_no_entity():
@@ -141,7 +154,7 @@ async def test_async_insert_adds_and_flushes_event():
         result = await _repo().async_insert(dto, session)
 
     session.add.assert_called_once()
-    session.flush.assert_called_once()
+    assert session.flush.await_count == 2
     assert result.domain == ActivityDomain.USER_MANAGEMENT
 
 
@@ -193,6 +206,20 @@ async def test_async_insert_strict_returns_none_when_events_disabled():
 def test_hosted_application_domain_and_entity_type_exist():
     assert ActivityDomain.HOSTED_APPLICATION == "hosted_application"
     assert ActivityEntityType.HOSTED_APPLICATION == "hosted_application"
+
+
+@pytest.mark.asyncio
+async def test_async_insert_propagates_callers_flush_failure():
+    session = AsyncMock()
+    session.begin_nested = MagicMock(return_value=AsyncMock())
+    session.flush.side_effect = IntegrityError("INSERT", {}, Exception("FOREIGN KEY constraint failed"))
+
+    with patch("codemie.service.activity.activity_repository.config") as mock_config:
+        mock_config.ACTIVITY_EVENTS_ENABLED = True
+        with pytest.raises(IntegrityError):
+            await _repo().async_insert(_create_dto(), session)
+
+    session.begin_nested.assert_not_called()
 
 
 def test_find_by_entity_executes_query():

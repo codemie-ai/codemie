@@ -14,7 +14,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 from fastapi import APIRouter, Depends, Path, Query, Request, UploadFile
+from sqlalchemy.exc import SQLAlchemyError
 
 from codemie.clients.postgres import get_session
 from codemie.core.exceptions import ExtendedHTTPException
@@ -37,6 +41,17 @@ from codemie.rest_api.routers.projects._common import (
 
 router = APIRouter()
 
+MEMBER_ASSIGNMENT_FAILED_MESSAGE = "The member could not be assigned; nothing was saved."
+
+
+@contextmanager
+def _member_assignment_errors() -> Iterator[None]:
+    """Answer a database failure while adding members with a fixed 500; the handler hides details at 500."""
+    try:
+        yield
+    except SQLAlchemyError as exc:
+        raise ExtendedHTTPException(code=500, message=MEMBER_ASSIGNMENT_FAILED_MESSAGE, details=str(exc)) from exc
+
 
 @router.post("/projects/{projectName}/assignment", response_model=ProjectAssignmentResponse)
 def assign_user_to_project(
@@ -48,7 +63,7 @@ def assign_user_to_project(
     """Assign a user to project if requester is project admin or super admin."""
     from codemie.service.project.project_assignment_service import project_assignment_service
 
-    with get_session() as session:
+    with get_session() as session, _member_assignment_errors():
         result = project_assignment_service.assign_user_to_project(
             session=session,
             project=authorized_project,
@@ -127,7 +142,7 @@ def bulk_assign_users_to_project(
     """
     from codemie.service.project.project_assignment_service import project_assignment_service
 
-    with get_session() as session:
+    with get_session() as session, _member_assignment_errors():
         results = project_assignment_service.bulk_assign_users_to_project(
             session=session,
             project=authorized_project,
@@ -204,7 +219,7 @@ def import_users_from_csv(
             details=f"CSV file must not exceed {MAX_CSV_BYTES // (1024 * 1024)} MB",
         )
 
-    with get_session() as session:
+    with get_session() as session, _member_assignment_errors():
         results = csv_import_service.assign_from_csv(
             session=session,
             content=content,

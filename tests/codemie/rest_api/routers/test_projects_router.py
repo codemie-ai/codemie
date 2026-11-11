@@ -25,9 +25,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError, PendingRollbackError
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.project import (
+    BulkAssignmentRequest,
+    BulkAssignmentUserItem,
     ProjectAssignmentRequest,
     ProjectAssignmentUpdateRequest,
     ProjectCreateRequest,
@@ -52,6 +55,8 @@ from codemie.service.project.project_spending_service import (
 from codemie.rest_api.routers.projects.management import delete_project, update_project, update_project_ownership
 from codemie.rest_api.routers.projects.membership import (
     assign_user_to_project,
+    bulk_assign_users_to_project,
+    import_users_from_csv,
     remove_user_from_project,
     update_user_project_assignment,
 )
@@ -4432,3 +4437,94 @@ class TestRemovedCategorySpend:
         assert summary.total_percent is None
         (row,) = response.spending_widget.data.rows
         assert row.is_assigned is False
+
+
+class TestMemberAssignmentDatabaseFailure:
+    """A database failure while adding members answers a fixed 500 rather than the raw error (EPMCDME-17061)."""
+
+    FAILED_MESSAGE = "The member could not be assigned; nothing was saved."
+
+    @pytest.fixture
+    def mocks(self):
+        with (
+            patch("codemie.rest_api.routers.projects._common.config") as mock_config,
+            patch("codemie.rest_api.routers.projects.membership.get_session") as mock_get_session,
+            patch("codemie.service.project.project_assignment_service.project_assignment_service") as assignment,
+            patch("codemie.service.project.csv_import_service.csv_import_service") as csv_import,
+        ):
+            mock_config.ENABLE_USER_MANAGEMENT = True
+            session = MagicMock()
+            mock_get_session.return_value.__enter__.return_value = session
+            yield SimpleNamespace(
+                session=session,
+                service_calls={
+                    "assign": assignment.assign_user_to_project,
+                    "bulk_assign": assignment.bulk_assign_users_to_project,
+                    "csv_import": csv_import.assign_from_csv,
+                },
+            )
+
+    @staticmethod
+    def _call_route(route: str, user: User):
+        request = MagicMock(
+            method="POST",
+            url=SimpleNamespace(path="/v1/projects/shared-proj/assignment"),
+            state=SimpleNamespace(user=user),
+        )
+        project = MagicMock(project_type="shared")
+        if route == "assign":
+            return assign_user_to_project(
+                request=request,
+                payload=ProjectAssignmentRequest(user_id="target-1", is_project_admin=False),
+                project_name="shared-proj",
+                authorized_project=project,
+            )
+        if route == "bulk_assign":
+            return bulk_assign_users_to_project(
+                request=request,
+                payload=BulkAssignmentRequest(
+                    users=[BulkAssignmentUserItem(user_id="target-1", is_project_admin=False)]
+                ),
+                project_name="shared-proj",
+                authorized_project=project,
+            )
+        upload = MagicMock()
+        upload.file.read.return_value = b"email,role\nalice@example.com,user\n"
+        return import_users_from_csv(
+            request=request, file=upload, project_name="shared-proj", authorized_project=project
+        )
+
+    @pytest.mark.parametrize("route", ["assign", "bulk_assign", "csv_import"])
+    @pytest.mark.parametrize(
+        ("failing_call", "error"),
+        [
+            pytest.param(
+                lambda mocks, route: mocks.service_calls[route],
+                IntegrityError("INSERT", {}, Exception("FOREIGN KEY constraint failed")),
+                id="service-integrity-error",
+            ),
+            pytest.param(
+                lambda mocks, route: mocks.session.commit,
+                PendingRollbackError("This Session's transaction has been rolled back"),
+                id="commit-pending-rollback",
+            ),
+        ],
+    )
+    def test_database_failure_answers_fixed_500(self, mocks, super_admin_user, route, failing_call, error):
+        failing_call(mocks, route).side_effect = error
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            self._call_route(route, super_admin_user)
+
+        assert exc_info.value.code == 500
+        assert exc_info.value.message == self.FAILED_MESSAGE
+        assert exc_info.value.__cause__ is error
+
+    def test_service_http_error_passes_through(self, mocks, super_admin_user):
+        error = ExtendedHTTPException(code=400, message="Invalid user_id format")
+        mocks.service_calls["assign"].side_effect = error
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            self._call_route("assign", super_admin_user)
+
+        assert exc_info.value is error

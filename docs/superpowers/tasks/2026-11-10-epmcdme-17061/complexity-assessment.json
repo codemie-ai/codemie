@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Fix the 500 on first member add to a provisioning-budgeted empty project by creating the missing <budget_id>:shared child budget before member allocations reference it, and stop SQLActivityEventRepository.insert from leaving the session in PendingRollbackError (EPMCDME-17061).",
+  "generated": "2026-11-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base M: three core components across service and repository layers — ProjectAssignmentService._sync_project_budget_member_added (sync), ProjectBudgetService shared-child creation (_ensure_shared_child_budget, zero-member guards in create_project_budget_group and _create_new_group_category), SQLActivityEventRepository.insert; ProvisioningBudgetService._commit_project IntegrityError retry is adjacent. Bumped twice by red flags (core shared utility, multiple workflows). Calibration: nearest example l/epmcdme-10401 (22, L) agrees; m/epmcdme-10203 (15) is lighter (single known pattern, TR S)." },
+    { "dimension": "requirements_clarity", "reason": "Bug, repro and five ACs are concrete, but design decisions are open: where to create the shared child (sync member-add path has no sync creator vs always-create at group time vs both), whether to change insert's swallow semantics for all callers or isolate pending caller state, and AC3's 'meaningful error' versus the provisioning guide's fixed generic 500 body and frozen /v1 status codes. Raw total sat on the 20/21 boundary with Component Scope at XL, so the borderline rule resolves upward; routing is brainstorming either way." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the async idempotent _upsert_child_budget, but all four member-add callers are sync and budget_repository is async-only, so a sync/async bridge or sync variant is new. The insert fix hinges on SQLAlchemy 2.0 begin_nested flushing caller state outside the savepoint, in a utility shared by 46 call sites. Mock-only tests cannot reproduce FK violations and no live-Postgres harness exists. No security-sensitive surface; error-path test templates exist (test_activity_repository.py, provisioning resend tests), so no auto-bump. No schema change or data migration — broken projects self-heal on next member add." },
+    { "dimension": "file_change_estimate", "reason": "About 4-5 source files (project_assignment_service.py, project_budget_service.py, activity_repository.py, budget_repository.py, possibly provisioning_budget_service.py) plus 4-5 test files (assignment, activity repository, provisioning budget, group creation, possibly user management/authentication), 0-1 new, across service/project, service/budget, service/activity, repository and tests — 8-10 modified, 3+ directories." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared utility SQLActivityEventRepository.insert (18 sync + 28 async call sites via the same savepoint pattern)",
+    "Component Scope bumped from L to XL: affects multiple workflows — admin single/bulk/CSV assign, provisioning assign_admins resend, IdP bootstrap sync, user reactivate",
+    "Requirements Clarity bumped from M to L: vague acceptance criterion — AC3 'meaningful error when not recoverable' is undefined and conflicts with the provisioning guide's generic-500 contract"
+  ],
+  "split_recommendation": null
+}

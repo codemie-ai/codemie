@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from pydantic import BaseModel
 from sqlalchemy import Boolean, Column, Index, text
@@ -50,6 +50,64 @@ def member_effective_max_budget(allocation: Any, budget: Any, enforce_limit: boo
     if enforce_limit or getattr(allocation, "allocation_mode", None) == AllocationMode.FIXED.value:
         return allocation.allocated_max_budget
     return budget.max_budget
+
+
+class EqualMemberShare(NamedTuple):
+    """An equal member's amounts; ``member_effective_max_budget`` reads it like an equal-mode allocation."""
+
+    allocated_soft_budget: float
+    allocated_max_budget: float
+
+
+def child_budget_name(main_budget: Budget, suffix: str) -> str:
+    """Return ``<main name> [<suffix>]``, trimming the main name to fit the 128-character column."""
+    reserved = len(suffix) + 3
+    base = main_budget.name[: max(1, 128 - reserved)]
+    return f"{base} [{suffix}]"
+
+
+def shared_project_budget_amounts(
+    main_budget: Budget, equal_share: ProjectMemberBudgetAssignment | EqualMemberShare | None, enforce_limit: bool
+) -> tuple[float, float]:
+    """Return (soft, max) for the shared child row of a project budget.
+
+    Without an equal member share the row mirrors the main budget. Otherwise it holds that share,
+    with the hard limit an equal member gets: the shared row serves equal members only, so the
+    sample's own allocation mode is ignored.
+    """
+    if equal_share is None:
+        return main_budget.soft_budget, main_budget.max_budget
+    share = EqualMemberShare(equal_share.allocated_soft_budget, equal_share.allocated_max_budget)
+    return share.allocated_soft_budget, member_effective_max_budget(share, main_budget, enforce_limit)
+
+
+def build_shared_project_budget_row(
+    main_budget: Budget,
+    *,
+    project_name: str,
+    actor_id: str | None,
+    soft_budget: float,
+    max_budget: float,
+) -> dict[str, Any]:
+    """Return the column values of a project budget's shared child row."""
+    return {
+        "budget_id": build_shared_project_budget_id(main_budget.budget_id),
+        # A system-driven add has no actor; the main budget's creator owns the row then.
+        "created_by": actor_id or main_budget.created_by,
+        "budget_type": BudgetType.PROJECT.value,
+        "budget_origin_type": "shared_default",
+        "parent_budget_id": main_budget.budget_id,
+        "owner_user_id": None,
+        "project_name": project_name,
+        "name": child_budget_name(main_budget, "shared"),
+        "description": main_budget.description,
+        "soft_budget": soft_budget,
+        "max_budget": max_budget,
+        "budget_duration": main_budget.budget_duration,
+        "budget_category": main_budget.budget_category,
+        "detached_at": None,
+        "deleted_at": None,
+    }
 
 
 class BudgetProviderMetadata(BaseModel):

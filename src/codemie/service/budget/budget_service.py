@@ -42,7 +42,11 @@ from codemie.service.activity.activity_models import (
 from codemie.service.activity.activity_repository import activity_event_repository
 from codemie.service.budget.budget_audit import BUDGET_AUDIT_NAME_ONLY_FIELDS, BUDGET_AUDIT_VALUE_FIELDS
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory, BudgetType
-from codemie.service.budget.budget_models import Budget, member_effective_max_budget
+from codemie.service.budget.budget_models import (
+    Budget,
+    member_effective_max_budget,
+    shared_project_budget_amounts,
+)
 from codemie.service.budget.provider_registry import get_active_provider
 from codemie.service.spend.budget_period import parse_budget_reset_at, running_period_start
 
@@ -1655,17 +1659,16 @@ class BudgetService:
             project_budget_service._log_zero_equal_share(
                 project_name, budget_id, (row.allocated_max_budget for row in allocation_rows), enforce_limit
             )
+            shared_soft, shared_max = shared_project_budget_amounts(
+                budget, allocation_rows[0] if allocation_rows else None, enforce_limit
+            )
             shared_budget = await project_budget_service._ensure_shared_child_budget(
                 session,
                 main_budget=budget,
                 project_name=project_name,
                 actor_id=actor_id,
-                per_member_soft_budget=allocation_rows[0].allocated_soft_budget
-                if allocation_rows
-                else state.soft_budget,
-                per_member_max_budget=allocation_rows[0].allocated_max_budget
-                if (enforce_limit and allocation_rows)
-                else state.max_budget,
+                per_member_soft_budget=shared_soft,
+                per_member_max_budget=shared_max,
             )
             for row in allocation_rows:
                 row.shared_budget_id = shared_budget.budget_id
