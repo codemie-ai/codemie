@@ -74,7 +74,27 @@ def _approval_thoughts(thoughts: Iterable[Any] | None) -> list:
 
 
 def is_hidden(assistant: Any) -> bool:
-    return bool(getattr(assistant, "hide_tool_outputs", False))
+    return getattr(assistant, "hide_tool_outputs", False) is True
+
+
+def is_effectively_hidden(execution_assistant: Any, master: Any = None) -> bool:
+    """Fail closed: a version-pinned run cannot reveal tool outputs that its master assistant hides.
+
+    The execution assistant carries the pinned version's own flag; the master is read by id when it is not
+    given. A master that cannot be read counts as hiding.
+    """
+    if is_hidden(execution_assistant) or is_hidden(master):
+        return True
+    if master is not None:
+        return False
+    assistant_id = getattr(execution_assistant, "id", None)
+    if not isinstance(assistant_id, str) or not assistant_id:
+        return False
+    try:
+        return is_hidden_by_id(assistant_id)
+    except Exception as e:
+        logger.warning(f"tool_output_visibility master not readable, hiding: assistant_id={assistant_id} error={e}")
+        return True
 
 
 def _serialize(data: dict, line: str) -> str:

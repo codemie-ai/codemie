@@ -46,6 +46,7 @@ from codemie.agents.supervisor.pre_model_hooks import (
     _build_truncation_abort_pre_model_hook,
     _compose_pre_model_hooks,
     _image_artifact_pre_model_hook,
+    with_truncation_guard,
 )
 from codemie.agents.langgraph_event_adapter import (
     LangGraphCallbackBridge,
@@ -56,13 +57,15 @@ from codemie.agents.tool_confirmation.call_identity import confirmation_state_sc
 from codemie.agents.tool_confirmation.models import ToolCallPendingEvent
 from codemie.agents.tool_confirmation.tool_call_confirmation_mixin import ToolCallConfirmationMixin
 from codemie.agents.tools.agent import WorkspaceAwareAgent
+from codemie.agents.truncation_report import build_status_report
+from codemie.agents.truncation_run_log import checkpoint_messages, merge_turn_messages
 from codemie.core.models import ToolCallPolicy
 from codemie.core.errors import AgentErrorDetails, ErrorCategory, ErrorDetailLevel, ErrorResponse
 from codemie.enterprise.litellm.proxy_router import handle_agent_exception
 from codemie_tools.base.file_object import FileObject
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool as langchain_tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, Send
@@ -112,6 +115,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.background_tasks_service import BackgroundTasksService
 from codemie.service.request_summary_manager import request_summary_manager
 from codemie.service.conversation.history_compaction_service import ConversationHistoryCompactionService
+from codemie.service.assistant.tool_output_visibility import is_effectively_hidden
 from codemie.service.constants import (
     AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY,
     AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS_KEY,
@@ -191,6 +195,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         smart_tool_selection_enabled: Optional[bool] = False,
         tool_selection_limit: Optional[int] = None,
         subagents: Optional[list] = None,
+        subagent_agents: list["LangGraphAgent"] | None = None,
         subagent_descriptions: Optional[dict[str, str]] = None,
         trace_context=None,
         require_tool_confirmation: bool = False,
@@ -206,6 +211,9 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self.description = description
         self.tools = tools
         self.subagents = subagents or []
+        # The built sub-assistant agents behind the compiled graphs in `subagents`: the status report asks
+        # their tools what a call wrote (EPMCDME-16835)
+        self.subagent_agents = subagent_agents or []
         self.subagent_descriptions = subagent_descriptions or {}
         self.request = request
         self.recursion_limit = recursion_limit
@@ -369,7 +377,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 _strip_subagent_task_messages_pre_model_hook,
                 _build_truncation_abort_pre_model_hook(self),
             ),
-            post_model_hook=self._confirmation_hook(all_tools),
+            post_model_hook=self._guarded_post_model_hook(all_tools),
             # The gate's call identities must survive the graph's update reducer (see ConfirmationAgentState).
             state_schema=confirmation_state_schema(self.output_schema),
         )
@@ -397,8 +405,12 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 _image_artifact_pre_model_hook,
                 _build_truncation_abort_pre_model_hook(self),
             ),
-            post_model_hook_factory=self._confirmation_hook,
+            post_model_hook_factory=self._guarded_post_model_hook,
         )
+
+    def _guarded_post_model_hook(self, tools: list[BaseTool]):
+        """The confirmation gate behind a truncation check: a cut-off tool call is never executed (EPMCDME-16835)."""
+        return with_truncation_guard(self, self._confirmation_hook(tools))
 
     def init_agent(self):
         llm, parallel_tool_calling = self._prepare_llm_for_agent()
@@ -995,10 +1007,11 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         time_elapsed = time() - execution_start
         error_response = handle_agent_exception(e)
         llm_error_code = error_response.get_error().error_code.value
-        user_message = (
+        user_message = self._with_truncation_report(
             error_response.get_error().message
             if config.HIDE_AGENT_STREAMING_EXCEPTIONS
-            else self.extended_error(error_response, e)
+            else self.extended_error(error_response, e),
+            e,
         )
         # Surface the error text when nothing succeeded yet, or when the failure is a truncation/limit
         # exit (the partial text is incomplete, so the user needs the explanation). If a sub-agent already
@@ -1099,6 +1112,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         """
         if chunks_collector is None:
             chunks_collector = []
+        self._reset_run_messages(inputs, config)
 
         stream = self.agent_executor.stream(
             inputs,
@@ -1178,6 +1192,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         if not chunk:
             return last_message, has_structured_response, False
 
+        # Before process_chunk: the event adapter can raise the truncation stop for this very chunk
+        self._record_run_messages(chunk)
         self.process_chunk(chunk, chunks_collector)
         self._check_truncation_in_chunk(chunk)
         chunk = self._prepare_chunk_for_processing(chunk)
@@ -1268,8 +1284,59 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
     def _get_user_error_message(self, error: Exception) -> str:
         error_response: ErrorResponse = handle_agent_exception(error)
         if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
-            return error_response.get_error().message
-        return self.extended_error(error_response, error)
+            return self._with_truncation_report(error_response.get_error().message, error)
+        return self._with_truncation_report(self.extended_error(error_response, error), error)
+
+    def _with_truncation_report(self, user_message: str, error: Exception) -> str:
+        """Append what was and was not done to the output-limit message (EPMCDME-16835 AC2/AC3).
+
+        Only for TokenLimitExceededException that carries the run's messages; any other error, or a
+        report that cannot be built, leaves the message as it was. An assistant that hides tool outputs
+        gets the created keys only; a disconnected listener gets no extra model call.
+        """
+        if not isinstance(error, TokenLimitExceededException):
+            return user_message
+        listener_gone = bool(self.thread_generator) and self.thread_generator.is_closed() is True
+        try:
+            tools_by_name = self._report_tools_by_name()
+            hide_tool_outputs = self._report_hides_tool_outputs()
+            turn_messages = merge_turn_messages(getattr(self, "_run_messages", None), error.turn_messages)
+        except Exception as e:
+            # The report path never raises: keys only, from the attached messages, with no tool to ask
+            logger.warning(f"truncation_status_report inputs unavailable, keys only: {type(e).__name__}: {e}")
+            tools_by_name, hide_tool_outputs, turn_messages = {}, True, None
+        report = build_status_report(
+            error,
+            self._initialize_llm,
+            allow_model_call=config.AGENT_TRUNCATION_STATUS_REPORT_ENABLED and not listener_gone,
+            timeout_seconds=config.AGENT_TRUNCATION_STATUS_REPORT_TIMEOUT_SECONDS,
+            tools_by_name=tools_by_name,
+            hide_tool_outputs=hide_tool_outputs,
+            turn_messages=turn_messages,
+        )
+        return f"{user_message}\n\n{report.text}" if report else user_message
+
+    def _report_hides_tool_outputs(self) -> bool:
+        """True when this assistant or a sub-assistant at any depth hides tool outputs: the report draws on the
+        whole tree's calls, so one hiding sub-assistant hides it (fail closed, as the response edge does)."""
+        if self.assistant is not None and is_effectively_hidden(self.assistant):
+            return True
+        for subagent in getattr(self, "subagent_agents", None) or []:
+            hides = getattr(subagent, "_report_hides_tool_outputs", None)
+            if callable(hides) and hides():
+                return True
+        return False
+
+    def _report_tools_by_name(self) -> dict[str, Any]:
+        """This agent's tools and its sub-assistants' tools at any depth by name, so the status report asks each
+        tool what it wrote."""
+        tools: list[Any] = []
+        for subagent in getattr(self, "subagent_agents", None) or []:
+            collect = getattr(subagent, "_report_tools_by_name", None)
+            if callable(collect):
+                tools.extend(collect().values())
+        tools.extend(self.tools or [])
+        return {tool.name: tool for tool in tools if isinstance(getattr(tool, "name", None), str)}
 
     def _get_tool_errors(self):
         return self.tool_error_callback.tool_errors if self.tool_error_callback.has_errors() else None
@@ -1377,6 +1444,67 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             system_prompt = system_prompt + " " + markdown_response_prompt
 
         return system_prompt
+
+    def _reset_run_messages(self, inputs: Any, config: dict | None = None) -> None:
+        """Start this run's message log from the input messages (history plus the user's request).
+
+        The log is what the truncation status report reads when the stop is raised on the consumer
+        side, where only the last message of a chunk is at hand (EPMCDME-16835). A resume (inputs=None
+        or a Command) runs on a new agent instance, so its log starts from the checkpointed graph state
+        the resume continues: the paused turn, with the calls made before the confirmation, at any depth.
+        """
+        messages = inputs.get("messages") if isinstance(inputs, dict) else self._checkpointed_messages(config)
+        self._run_messages = [m for m in messages if isinstance(m, BaseMessage)] if isinstance(messages, list) else []
+        # The log keeps a reference to every message, so the id() of a logged object is never reused
+        self._run_object_ids = {id(m) for m in self._run_messages}
+        self._run_message_ids = {m.id for m in self._run_messages if m.id}
+
+    def _checkpointed_messages(self, config: dict[str, Any] | None) -> list[BaseMessage] | None:
+        """The messages of the checkpoint a resume continues; None when they cannot be read.
+
+        The top-level graph's messages, then the AI and tool messages of its sub-agents at any depth: the same tree
+        the resume reads its confirmations from, so a call confirmed inside a sub-agent is in the log. When the
+        sub-graph states cannot be read, the top-level messages alone are used.
+        """
+        if not config:
+            return None
+        try:
+            return checkpoint_messages(self._resolve_state(config, subgraphs=True))
+        except Exception as e:
+            logger.warning(f"truncation_status_report sub-graph states not read on resume: {type(e).__name__}: {e}")
+        try:
+            return checkpoint_messages(self._resolve_state(config))
+        except Exception as e:
+            logger.warning(f"truncation_status_report run log not seeded on resume: {type(e).__name__}: {e}")
+            return None
+
+    def _record_run_messages(self, chunk: Any) -> None:
+        """Append the AI and tool messages of an "updates" chunk (any node, any subgraph namespace) to the run log once.
+
+        HumanMessages are never taken from updates: the user's request comes from the inputs, and a re-emitted
+        history or a sub-agent's task message would otherwise move the start of the user's turn.
+        """
+        if not isinstance(chunk, tuple) or len(chunk) < 2:
+            return
+        chunk_type, value = chunk[-2], chunk[-1]
+        if chunk_type != "updates" or not isinstance(value, dict) or getattr(self, "_run_messages", None) is None:
+            return
+        for node_state in value.values():
+            for state in node_state if isinstance(node_state, list) else [node_state]:
+                messages = state.get("messages") if isinstance(state, dict) else None
+                if isinstance(messages, list):
+                    self._log_run_messages(messages)
+
+    def _log_run_messages(self, messages: list) -> None:
+        for message in messages:
+            if not isinstance(message, BaseMessage) or isinstance(message, HumanMessage):
+                continue
+            if id(message) in self._run_object_ids or (message.id and message.id in self._run_message_ids):
+                continue
+            self._run_object_ids.add(id(message))
+            if message.id:
+                self._run_message_ids.add(message.id)
+            self._run_messages.append(message)
 
     def _check_truncation_in_chunk(self, chunk: tuple[str, str, Any] | tuple[str, Any]) -> None:
         """Detect max-token truncation for a finished AI message that carries tool calls (A.1).
@@ -1611,7 +1739,9 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         except Exception as e:
             logger.error(f"Unexpected error during terminal truncation detection: {e}", exc_info=True)
 
-    def _safe_check_for_truncation(self, message: AIMessage, author: str | None = None) -> None:
+    def _safe_check_for_truncation(
+        self, message: AIMessage, author: str | None = None, turn_messages: list | None = None
+    ) -> None:
         """
         Safely check for truncation with error handling.
 
@@ -1625,7 +1755,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             TokenLimitExceededException: If response was truncated (expected, stops execution)
         """
         try:
-            self._check_for_truncated_response(message, author=author)
+            self._check_for_truncated_response(message, author=author, turn_messages=turn_messages)
         except TokenLimitExceededException:
             # Re-raise token limit exceptions as they're expected and should stop execution
             raise
@@ -1673,7 +1803,9 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
 
         return f"while generating {', '.join(incomplete_tools)} arguments"
 
-    def _check_for_truncated_response(self, message: AIMessage, author: str | None = None) -> None:
+    def _check_for_truncated_response(
+        self, message: AIMessage, author: str | None = None, turn_messages: list | None = None
+    ) -> None:
         """
         Validate that LLM response wasn't truncated due to max_tokens limit.
 
@@ -1686,6 +1818,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
 
         Args:
             message: AIMessage from LLM containing tool_calls
+            turn_messages: the graph state's messages when the caller has them (the pre-model hook);
+                otherwise this run's message log is attached, for the truncation status report
 
         Raises:
             TokenLimitExceededException: If response was truncated (finish_reason='length'
@@ -1725,6 +1859,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             message=error_message,
             model=self.llm_model,
             truncation_reason=truncation_indicator,
+            turn_messages=list(turn_messages) if turn_messages is not None else getattr(self, "_run_messages", None),
+            truncated_message=message,
         )
 
     def _parse_tool_message(

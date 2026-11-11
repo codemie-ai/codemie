@@ -15,12 +15,17 @@
 from typing import TYPE_CHECKING, Any, Callable
 
 from langchain_core.messages import AIMessage, HumanMessage, ImageContentBlock, ToolMessage
+from langchain_core.runnables import RunnableConfig
 
 from codemie.agents.image_artifact_hook import accumulate_artifact, make_image_message
 from codemie.core.exceptions import StreamAbortedException
 
 if TYPE_CHECKING:
     from codemie.agents.langgraph_agent import LangGraphAgent
+
+# Working-state key under which _compose_pre_model_hooks keeps the graph's messages unchanged, since
+# earlier hooks replace "messages" with what they prepare for the model
+ORIGINAL_MESSAGES_KEY = "__codemie_original_messages__"
 
 
 def _image_artifact_pre_model_hook(state: dict) -> dict:
@@ -51,11 +56,11 @@ def _image_artifact_pre_model_hook(state: dict) -> dict:
 def _find_last_turn_ai_message(messages: list) -> AIMessage | None:
     """Return the most recent AIMessage produced since the current turn's HumanMessage.
 
-    A truncated tool-call response is usually followed by a ToolMessage (the tool still
-    ran, possibly with corrupted/garbage args, since LangGraph's default `ToolNode`
-    swallows tool errors into a ToolMessage rather than raising) before the node's next
-    model call. Checking only the literal last message would miss that truncation
-    entirely once a ToolMessage sits on top of it, so this scans back past any
+    `with_truncation_guard` stops a cut-off tool call before the tools node runs it, so this pre-model
+    check is a backstop: for a graph built without the guard, the truncated tool-call response would be
+    followed by a ToolMessage (LangGraph's default `ToolNode` swallows tool errors into a ToolMessage
+    rather than raising) before the node's next model call. Checking only the literal last message would
+    miss that truncation once a ToolMessage sits on top of it, so this scans back past any
     ToolMessages to the AIMessage that produced them. It stops at the nearest preceding
     HumanMessage so a brand-new turn is never checked against a previous, already
     reported, turn's truncated response.
@@ -84,6 +89,21 @@ def _is_incomplete_tool_call(message: AIMessage) -> bool:
     return bool(message.tool_calls or message.invalid_tool_calls)
 
 
+def _raise_if_run_stopped(agent: "LangGraphAgent") -> None:
+    """Stop this node when the owning stream was closed or cancelled, or the consumer aborted the run.
+
+    Checked on the shared thread_generator, not a per-instance flag: a sibling sub-agent is its own separate
+    LangGraphAgent and would never see one (EPMCDME-16233).
+    """
+    thread_generator = agent.thread_generator
+    if thread_generator is None:
+        return
+    if thread_generator.is_closed():
+        raise StreamAbortedException(f"stream for agent {agent.agent_name} was closed or cancelled")
+    if thread_generator.is_consumer_aborted():
+        raise StreamAbortedException(f"consumer aborted the run while agent {agent.agent_name} was still running")
+
+
 def _build_truncation_abort_pre_model_hook(agent: "LangGraphAgent") -> Callable[[dict[str, Any]], None]:
     """Build a pre_model_hook that fails this node's next model call when the owning
     stream was closed/cancelled, when the consumer aborted the run for any other reason, or
@@ -96,24 +116,45 @@ def _build_truncation_abort_pre_model_hook(agent: "LangGraphAgent") -> Callable[
     """
 
     def truncation_abort_pre_model_hook(state: dict[str, Any]) -> None:
-        thread_generator = agent.thread_generator
-        if thread_generator is not None:
-            if thread_generator.is_closed():
-                raise StreamAbortedException(f"stream for agent {agent.agent_name} was closed or cancelled")
-            # EPMCDME-16233: checked on the shared thread_generator, not a per-instance flag -
-            # a sibling sub-agent is its own separate LangGraphAgent and would never see one.
-            if thread_generator.is_consumer_aborted():
-                raise StreamAbortedException(
-                    f"consumer aborted the run while agent {agent.agent_name} was still running"
-                )
+        _raise_if_run_stopped(agent)
 
-        last_ai_message = _find_last_turn_ai_message(state.get("messages") or [])
+        # The graph's own messages, not what earlier composed hooks prepared for the model (compacted
+        # history, an injected image HumanMessage): the turn and its truncated call live there (EPMCDME-16835)
+        messages = state.get(ORIGINAL_MESSAGES_KEY) or state.get("messages") or []
+        last_ai_message = _find_last_turn_ai_message(messages)
         if last_ai_message is not None and _is_incomplete_tool_call(last_ai_message):
-            agent._safe_check_for_truncation(last_ai_message)
+            # The state holds the whole turn, including tool calls the consumer has not seen yet
+            # (smart tool selection runs the loop inside one node), for the status report
+            agent._safe_check_for_truncation(last_ai_message, turn_messages=messages)
 
         return None
 
     return truncation_abort_pre_model_hook
+
+
+def with_truncation_guard(agent: "LangGraphAgent", post_model_hook: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap an agent's post_model_hook so the tools node never runs a call made after the run was stopped.
+
+    Two stops are checked before the confirmation gate and the tools node:
+    - this model call's tool call was cut off at the output limit: a sub-assistant runs as a subgraph inside
+      its parent's node and does not wait for the stream consumer, so the consumer-side stop comes too late
+      for it and its tools node would run the cut-off call with partial arguments (EPMCDME-16835, found live
+      2026-11-10). A single agent's stream waits for the consumer, so there this check is a backstop;
+    - the stream was closed or the consumer aborted the run: closing the stream waits for every running task,
+      so a sub-assistant handed work in parallel with the cut-off one would otherwise run the complete calls of
+      a model call that finished during that wait (re-review AR-1).
+    A tool call already executing when the run stops still finishes; the status report hedges for that.
+    """
+
+    def truncation_guarded_post_model_hook(state: Any, config: RunnableConfig) -> Any:
+        messages = state.get("messages") if isinstance(state, dict) else getattr(state, "messages", None)
+        last_message = messages[-1] if isinstance(messages, list) and messages else None
+        if isinstance(last_message, AIMessage) and _is_incomplete_tool_call(last_message):
+            agent._safe_check_for_truncation(last_message, turn_messages=messages)
+            _raise_if_run_stopped(agent)
+        return post_model_hook(state, config)
+
+    return truncation_guarded_post_model_hook
 
 
 def _compose_pre_model_hooks(*hooks) -> Any | None:
@@ -123,6 +164,7 @@ def _compose_pre_model_hooks(*hooks) -> Any | None:
 
     def composed_pre_model_hook(state: dict[str, Any]) -> dict[str, Any]:
         working_state = dict(state)
+        working_state[ORIGINAL_MESSAGES_KEY] = state.get("messages")
         combined_updates: dict[str, Any] = {}
 
         for hook in active_hooks:

@@ -1837,6 +1837,70 @@ class TestMaxOutputTokensForwarding:
 
         assert lines == ["llm_output_limit model=gpt-4o-2024-11-20 max_tokens=unset source=proxy_default"]
 
+    @staticmethod
+    def _router_from_proxy_catalog(router_name: str = "claude-router-standard"):
+        """Map a router and its tiers from raw /model/info entries and store them as the live catalog does,
+        returning the stored router entry (EPMCDME-16835)."""
+        from pathlib import Path
+
+        from codemie.configs.llm_config import LiteLLMModels, LLMConfig
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+        from codemie.service.llm_service.llm_service import LLMService
+
+        def tier(name: str, bedrock_id: str, max_output_tokens: int) -> dict:
+            return {
+                "model_name": name,
+                "litellm_params": {"model": f"bedrock/{bedrock_id}"},
+                "model_info": {
+                    "litellm_provider": "bedrock",
+                    "max_output_tokens": max_output_tokens,
+                    "supported_openai_params": ["max_tokens", "temperature"],
+                },
+            }
+
+        router = {
+            "model_name": router_name,
+            "litellm_params": {"model": "auto_router/complexity_router"},
+            "model_info": {
+                "supported_openai_params": ["max_tokens", "temperature"],
+                "litellm_router": {
+                    "tiers": {
+                        "simple": {"model": "claude-haiku-5-5"},
+                        "medium": {"model": "claude-haiku-5-5"},
+                        "complex": {"model": "claude-sonnet-5"},
+                        "reasoning": {"model": "claude-sonnet-5"},
+                    }
+                },
+            },
+        }
+        raw = [
+            router,
+            # Different tier limits, so only the minimum can produce the asserted max_tokens
+            tier("claude-haiku-5-5", "eu.anthropic.claude-haiku-5-5", 64000),
+            tier("claude-sonnet-5", "eu.anthropic.claude-sonnet-5", 128000),
+        ]
+        service = LLMService(
+            LLMConfig(yaml_file=Path("tests/service/llm_test_config.yaml"), llm_models=[], embeddings_models=[])
+        )
+        service.initialize_default_litellm_models(LiteLLMModels(chat_models=[map_litellm_to_llm_model(m) for m in raw]))
+        return next(m for m in service.default_litellm_models if m.base_name == router_name)
+
+    def test_router_from_proxy_catalog_forwards_tier_limit_end_to_end(self):
+        kwargs = self._create(self._router_from_proxy_catalog())
+
+        assert kwargs["max_tokens"] == 64000
+
+    def test_router_from_proxy_catalog_logs_model_config_source(self):
+        lines = self._create_logged(self._router_from_proxy_catalog())
+
+        assert lines == ["llm_output_limit model=claude-router-standard max_tokens=64000 source=model_config"]
+
+    def test_router_alias_without_claude_over_claude_tiers_forwards_tier_limit(self):
+        """A router named without "claude" still forwards its derived limit when every tier is Claude."""
+        kwargs = self._create(self._router_from_proxy_catalog("router-standard"))
+
+        assert kwargs["max_tokens"] == 64000
+
 
 class TestFilterLiteLLMParamsMaxTokensForwarding:
     """EPMCDME-14145 criterion 3: confirm max_tokens forwarding through the LiteLLM proxy path."""

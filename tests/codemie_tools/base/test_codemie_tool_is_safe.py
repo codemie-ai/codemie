@@ -81,3 +81,18 @@ def test_http_method_is_safe_lowercase_get_returns_true():
 
 def test_http_method_is_safe_custom_key():
     assert CodeMieTool._http_method_is_safe({"verb": "GET"}, method_key="verb") is True
+
+
+# --- CodeMieTool.written_refs default (EPMCDME-16835) ---
+
+
+def test_default_written_refs_cannot_tell_for_a_mutating_call(tool):
+    assert tool.written_refs({"method": "POST"}, '{"key": "PROJ-1"}') is None
+
+
+def test_default_written_refs_is_empty_for_a_safe_call():
+    class _SafeTool(_Concrete):
+        def is_safe(self, args: dict) -> bool:
+            return True
+
+    assert _SafeTool().written_refs({}, '{"key": "PROJ-1"}') == ()

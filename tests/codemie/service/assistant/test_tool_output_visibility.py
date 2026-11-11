@@ -376,3 +376,39 @@ def test_stream_waiting_step_keeps_parent_id():
     thought = {"id": "w", "parent_id": "handoff", "author_name": "t", "input_text": "{}", "interrupted": True}
     out = json.loads(tov.strip_chunk(line(thought=thought)))
     assert out["thought"]["parent_id"] == "handoff"
+
+
+class TestIsEffectivelyHidden:
+    """One fail-closed rule for the route edge and the truncation status report (EPMCDME-16835)."""
+
+    def test_execution_or_given_master_hiding_hides_without_a_lookup(self):
+        with patch(A) as lookup:
+            assert tov.is_effectively_hidden(SimpleNamespace(id="a", hide_tool_outputs=True)) is True
+            assert (
+                tov.is_effectively_hidden(
+                    SimpleNamespace(id="a", hide_tool_outputs=False), SimpleNamespace(hide_tool_outputs=True)
+                )
+                is True
+            )
+            assert (
+                tov.is_effectively_hidden(
+                    SimpleNamespace(id="a", hide_tool_outputs=False), SimpleNamespace(hide_tool_outputs=False)
+                )
+                is False
+            )
+        lookup.assert_not_called()
+
+    def test_pinned_version_reads_the_master_by_id(self):
+        with patch(A, return_value=[SimpleNamespace(id="a", hide_tool_outputs=True)]):
+            assert tov.is_effectively_hidden(SimpleNamespace(id="a", hide_tool_outputs=False)) is True
+        with patch(A, return_value=[SimpleNamespace(id="a", hide_tool_outputs=False)]):
+            assert tov.is_effectively_hidden(SimpleNamespace(id="a", hide_tool_outputs=False)) is False
+
+    def test_unreadable_master_counts_as_hiding(self):
+        with patch(A, side_effect=RuntimeError("db down")):
+            assert tov.is_effectively_hidden(SimpleNamespace(id="a", hide_tool_outputs=False)) is True
+
+    def test_no_id_means_no_lookup(self):
+        with patch(A) as lookup:
+            assert tov.is_effectively_hidden(SimpleNamespace(hide_tool_outputs=False)) is False
+        lookup.assert_not_called()

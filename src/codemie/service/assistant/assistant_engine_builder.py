@@ -354,6 +354,7 @@ class LangGraphAssistantBuilder:
 
         if handles:
             agent_kwargs["subagents"] = [handle.executor for handle in handles]
+            agent_kwargs["subagent_agents"] = [handle.agent for handle in handles]
             # Use injected callback for descriptions (makes this helper testable and
             # keeps runtime behavior customizable by the caller).
             agent_kwargs["subagent_descriptions"] = built_subagent_descriptions(

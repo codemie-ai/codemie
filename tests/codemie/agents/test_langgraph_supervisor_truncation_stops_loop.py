@@ -29,7 +29,7 @@ from langgraph_supervisor import create_supervisor
 from pydantic import Field
 
 from codemie.agents.langgraph_agent import LangGraphAgent
-from codemie.agents.supervisor.pre_model_hooks import _build_truncation_abort_pre_model_hook
+from codemie.agents.supervisor.pre_model_hooks import _build_truncation_abort_pre_model_hook, with_truncation_guard
 from codemie.core.exceptions import StreamAbortedException, TokenLimitExceededException
 
 
@@ -323,3 +323,259 @@ class TestRealAgentConstructionWiresTruncationHook:
 
         assert isinstance(raised, StreamAbortedException)
         assert model.call_count == 0
+
+
+_executed_calls: list[str] = []
+
+
+@langchain_tool("recording_child_tool")
+def recording_child_tool(param: str) -> str:
+    """A sub-agent tool that records each run, so a test can tell whether a cut-off call executed."""
+    _executed_calls.append(param)
+    return f"did {param}"
+
+
+def _handoff_supervisor(child, supervisor_model):
+    handoff_tool = LangGraphAgent._create_custom_handoff_tool(
+        agent_name="analyst",
+        name="transfer_to_analyst",
+        description="Sub-assistant: Analyst",
+    )
+    return create_supervisor(
+        model=supervisor_model,
+        agents=[child],
+        tools=[handoff_tool],
+        add_handoff_back_messages=False,
+        output_mode="last_message",
+    ).compile()
+
+
+def _handoff_then_final_model():
+    return RecordingFakeChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "transfer_to_analyst", "args": {"task": "do it"}, "id": "call-1", "type": "tool_call"}
+                ],
+            ),
+            AIMessage(content="supervisor final"),
+        ]
+    )
+
+
+class TestPostModelTruncationGuard:
+    """EPMCDME-16835: a sub-assistant's cut-off tool call is never executed with partial arguments."""
+
+    def setup_method(self):
+        _executed_calls.clear()
+
+    def test_subagent_cut_off_tool_call_is_not_executed(self):
+        fake_child_agent = _fake_agent("analyst")
+        gate = Mock(return_value={})
+        child_model = RecordingFakeChatModel(
+            responses=[_truncated_tool_call_message("recording_child_tool"), AIMessage(content="never reached")]
+        )
+        child = create_react_agent(
+            model=child_model,
+            tools=[recording_child_tool],
+            name="analyst",
+            post_model_hook=with_truncation_guard(fake_child_agent, gate),
+        )
+        app = _handoff_supervisor(child, _handoff_then_final_model())
+
+        try:
+            app.invoke({"messages": [HumanMessage(content="hi")]})
+            raised = None
+        except Exception as exc:  # noqa: BLE001 - captured for the assertion below
+            raised = exc
+
+        assert isinstance(raised, TokenLimitExceededException)
+        assert _executed_calls == []
+        gate.assert_not_called()
+        # The sub-agent's turn rides along for the status report
+        assert raised.turn_messages and raised.turn_messages[-1].response_metadata == {"finish_reason": "length"}
+
+    def test_complete_tool_call_passes_through_to_the_gate_and_runs(self):
+        fake_child_agent = _fake_agent("analyst")
+        gate = Mock(return_value={})
+        child_model = RecordingFakeChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "recording_child_tool", "args": {"param": "ok"}, "id": "c1"}],
+                    response_metadata={"finish_reason": "tool_calls"},
+                ),
+                AIMessage(content="child final"),
+            ]
+        )
+        child = create_react_agent(
+            model=child_model,
+            tools=[recording_child_tool],
+            name="analyst",
+            post_model_hook=with_truncation_guard(fake_child_agent, gate),
+        )
+        app = _handoff_supervisor(child, _handoff_then_final_model())
+
+        result = app.invoke({"messages": [HumanMessage(content="hi")]})
+
+        assert _executed_calls == ["ok"]
+        assert gate.call_count == 2
+        assert result["messages"][-1].content == "supervisor final"
+
+    @staticmethod
+    def _complete_call_child(fake_child_agent, gate):
+        child_model = RecordingFakeChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "recording_child_tool", "args": {"param": "sibling"}, "id": "c1"}],
+                    response_metadata={"finish_reason": "tool_calls"},
+                ),
+                AIMessage(content="child final"),
+            ]
+        )
+        return create_react_agent(
+            model=child_model,
+            tools=[recording_child_tool],
+            name="analyst",
+            post_model_hook=with_truncation_guard(fake_child_agent, gate),
+        )
+
+    def test_sibling_complete_call_does_not_run_after_the_consumer_aborted(self):
+        # A parallel sibling whose model call finishes while the stream closes after another
+        # sub-assistant's cut-off call: the consumer has already marked the run aborted
+        fake_child_agent = _fake_agent("analyst")
+        fake_child_agent.thread_generator.is_consumer_aborted = Mock(return_value=True)
+        gate = Mock(return_value={})
+        app = _handoff_supervisor(self._complete_call_child(fake_child_agent, gate), _handoff_then_final_model())
+
+        try:
+            app.invoke({"messages": [HumanMessage(content="hi")]})
+            raised = None
+        except Exception as exc:  # noqa: BLE001 - captured for the assertion below
+            raised = exc
+
+        assert isinstance(raised, StreamAbortedException)
+        assert _executed_calls == []
+        gate.assert_not_called()
+
+    def test_sibling_complete_call_does_not_run_after_the_stream_closed(self):
+        fake_child_agent = _fake_agent("analyst", stream_closed=True)
+        gate = Mock(return_value={})
+        app = _handoff_supervisor(self._complete_call_child(fake_child_agent, gate), _handoff_then_final_model())
+
+        try:
+            app.invoke({"messages": [HumanMessage(content="hi")]})
+            raised = None
+        except Exception as exc:  # noqa: BLE001 - captured for the assertion below
+            raised = exc
+
+        assert isinstance(raised, StreamAbortedException)
+        assert _executed_calls == []
+        gate.assert_not_called()
+
+    def test_agent_builds_its_post_model_hook_behind_the_guard(self):
+        agent = _fake_agent("analyst")
+        gate = Mock(return_value={"ok": True})
+        agent._confirmation_hook = Mock(return_value=gate)
+
+        hook = agent._guarded_post_model_hook([recording_child_tool])
+
+        agent._confirmation_hook.assert_called_once_with([recording_child_tool])
+        assert hook({"messages": [AIMessage(content="done")]}, {}) == {"ok": True}
+
+
+class TestBuildersWireTheTruncationGuard:
+    """CR-010: the guard goes through LangGraphAgent's own builders, so a cut-off call never reaches a tools node."""
+
+    def setup_method(self):
+        _executed_calls.clear()
+
+    @staticmethod
+    def _run(agent: LangGraphAgent) -> Exception | None:
+        try:
+            agent.agent_executor.invoke({"messages": [HumanMessage(content="hi")]})
+        except Exception as exc:  # noqa: BLE001 - captured for the assertion below
+            return exc
+        return None
+
+    @staticmethod
+    def _open_stream() -> Mock:
+        return Mock(
+            is_closed=Mock(return_value=False), is_consumer_aborted=Mock(return_value=False), cancellation_reason=None
+        )
+
+    def test_single_agent_builder_does_not_run_a_cut_off_call(self):
+        model = RecordingFakeChatModel(
+            responses=[_truncated_tool_call_message("recording_child_tool"), AIMessage(content="never reached")]
+        )
+        assistant = Mock()
+        assistant.project = "test"
+
+        with patch.object(LangGraphAgent, "_initialize_llm", return_value=model):
+            agent = LangGraphAgent(
+                agent_name="Worker",
+                description="Single agent",
+                tools=[recording_child_tool],
+                request=_mock_request(),
+                system_prompt="You are a worker.",
+                request_uuid="test_uuid",
+                user=_mock_user(),
+                llm_model="gpt-4.1",
+                assistant=assistant,
+                thread_generator=self._open_stream(),
+            )
+
+        raised = self._run(agent)
+
+        assert isinstance(raised, TokenLimitExceededException)
+        assert _executed_calls == []
+        assert model.call_count == 1
+
+    def test_supervisor_builder_does_not_run_a_cut_off_call(self):
+        child = create_react_agent(
+            model=RecordingFakeChatModel(responses=[AIMessage(content="child final")]), tools=[], name="analyst"
+        )
+        supervisor_model = RecordingFakeChatModel(
+            responses=[_truncated_tool_call_message("recording_child_tool"), AIMessage(content="never reached")]
+        )
+        assistant = Mock()
+        assistant.project = "test"
+
+        with patch.object(LangGraphAgent, "_initialize_llm", return_value=supervisor_model):
+            agent = LangGraphAgent(
+                agent_name="Supervisor",
+                description="Supervisor agent",
+                tools=[recording_child_tool],
+                request=_mock_request(),
+                system_prompt="You are a supervisor.",
+                request_uuid="test_uuid",
+                user=_mock_user(),
+                llm_model="gpt-4.1",
+                assistant=assistant,
+                subagents=[child],
+                thread_generator=self._open_stream(),
+            )
+
+        raised = self._run(agent)
+
+        assert isinstance(raised, TokenLimitExceededException)
+        assert _executed_calls == []
+        assert supervisor_model.call_count == 1
+
+    def test_built_post_model_hook_stops_a_cut_off_call_before_the_gate(self):
+        agent = _fake_agent("analyst")
+        gate = Mock(return_value={})
+        agent._confirmation_hook = Mock(return_value=gate)
+        hook = agent._guarded_post_model_hook([recording_child_tool])
+        truncated = _truncated_tool_call_message("recording_child_tool")
+
+        try:
+            hook({"messages": [HumanMessage(content="hi"), truncated]}, {})
+            raised = None
+        except Exception as exc:  # noqa: BLE001 - captured for the assertion below
+            raised = exc
+
+        assert isinstance(raised, TokenLimitExceededException)
+        gate.assert_not_called()

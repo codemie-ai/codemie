@@ -119,6 +119,12 @@ class JiraInput(BaseModel):
     )
 
 
+# Paths of the calls written_refs recognises, after it normalises the URL (EPMCDME-16835)
+_SEARCH_PATH = r"/rest/api/(\d+|latest)/search"
+_ISSUE_CREATE_PATH = r"/rest/api/(\d+|latest)/issue/?$"
+_BULK_CREATE_PATH = r"/rest/api/(\d+|latest)/issue/bulk/?$"
+
+
 class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
     script_callable = True
     config: JiraConfig
@@ -134,6 +140,47 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
 
     def is_safe(self, args: dict) -> bool:
         return self._http_method_is_safe(args)
+
+    def written_refs(self, args: dict, output: str) -> tuple[str, ...] | None:
+        """Issue keys a successful write call created or changed.
+
+        Read calls (GET, and POST to a search endpoint) write nothing. An issue create names the key from the
+        response body, a bulk create every key in its `issues`; any other write names the issue keys in its URL.
+        A create whose response body cannot be read, or a POST to an endpoint not recognised here that names no
+        key, returns None, so the caller falls back to the output itself.
+        """
+        if self.is_safe(args):
+            return ()
+        # The URL as the model may send it: with or without the leading slash, `latest` for the version, a query
+        path = "/" + str(args.get("relative_url") or "").strip().split("?", 1)[0].lstrip("/")
+        if re.match(_SEARCH_PATH, path):
+            return ()
+        method = str(args.get("method") or "").strip().upper()
+        body = self._response_body(output)
+        if method == "POST" and re.match(_ISSUE_CREATE_PATH, path):
+            key = body.get("key") if isinstance(body, dict) else None
+            # A create whose response cannot be read may still have created an issue: cannot tell, not "nothing"
+            return (key,) if isinstance(key, str) and key else None
+        if method == "POST" and re.match(_BULK_CREATE_PATH, path):
+            issues = body.get("issues") if isinstance(body, dict) else None
+            if not isinstance(issues, list):
+                return None
+            keys = [issue.get("key") for issue in issues if isinstance(issue, dict)]
+            return tuple(key for key in keys if isinstance(key, str) and key)
+        keys = tuple(dict.fromkeys(re.findall(r"\b[A-Z][A-Z0-9_]+-\d+\b", path)))
+        return None if not keys and method == "POST" else keys
+
+    @staticmethod
+    def _response_body(output: str) -> Any:
+        """The JSON body of an HttpResult text (`HTTP: METHOD url -> status reason {body}`), or None."""
+        start = output.find("{")
+        if start < 0:
+            return None
+        try:
+            body, _ = json.JSONDecoder().raw_decode(output[start:])
+        except ValueError:
+            return None
+        return body
 
     def __init__(self, config: JiraConfig):
         super().__init__(config=config)

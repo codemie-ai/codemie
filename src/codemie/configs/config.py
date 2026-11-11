@@ -898,6 +898,13 @@ class Config(BaseSettings):
 
     AI_AGENT_RECURSION_LIMIT: int = 150
     AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS: int = 5
+    # When a run stops at the output token limit, one extra model call (no tools) writes what was and was not
+    # done. False keeps only the code-built list of completed tool calls (EPMCDME-16835)
+    AGENT_TRUNCATION_STATUS_REPORT_ENABLED: bool = True
+    # Longest wait for that extra call (also its request timeout); on expiry the code-built list is shown instead.
+    # Keep it well below the stream inactivity timeout (AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS), which the wait counts
+    # against on the streaming path
+    AGENT_TRUNCATION_STATUS_REPORT_TIMEOUT_SECONDS: float = 30.0
     # Inactivity timeout of the stream consumer: no chunk for this long ends the run. None derives it from the
     # longest tool timeout plus AI_AGENT_QUEUE_POLL_TIMEOUT_MARGIN_SECONDS (see ai_agent_queue_poll_timeout_default)
     AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS: int | None = None

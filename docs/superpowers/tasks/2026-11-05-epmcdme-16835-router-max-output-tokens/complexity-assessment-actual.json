@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "mode": "actual",
+  "task": "When a declared LiteLLM auto-router has no positive max_output_tokens, LLMService sets it at catalog load to the smallest positive max_output_tokens among its distinct tier models; it stays unset and a warning is logged when any tier is unresolved or has no positive limit; an explicit router value wins (EPMCDME-16835).",
+  "generated": "2026-11-06T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "The only production change is in LLMService: a module helper _is_positive_limit, the static method _router_max_output_tokens (a near copy of the existing _router_max_input_tokens: distinct tier names, minimum, None when any tier is unknown) and _apply_router_output_limits, called once at the start of initialize_default_litellm_models. llm_factory forwarding is unchanged and LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS still turns forwarding off. Residual risks are small: the catalog LLMModel objects are changed in place at load, the bool/zero/negative guards matter because a value above any tier's own limit would make the provider reject the request, and per-user catalogs from get_user_allowed_models do not go through initialize_default_litellm_models, so they do not get a derived limit. Rollback means reverting one call." },
+    { "dimension": "file_change_estimate", "reason": "3 files modified, 0 new (276 insertions, 2 deletions). Only one is a source file (+45 lines in service/llm_service). The other two are tests: test_llm_service_litellm_integration.py (+175) and tests/enterprise/litellm/test_llm_factory.py (+58, catalog-to-max_tokens forwarding end to end). The changes span 3 directories, but 2 of them hold only tests, so this stays at S." },
+    { "dimension": "requirements_clarity", "reason": "The plan left two policy choices open. The implementation settled both: return None for unresolved tiers, as the max_input_tokens precedent does, and log the derivation. The final code review still found one gap, a missing warning log when derivation fails, plus a missing end-to-end proof of the minimum. Both were fixed and approved in the review re-check. This is a small clarification cost, consistent with S." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null,
+  "delta_vs_planned": "No change: actual 10/S matches planned 10/S on every dimension. The work stayed in the service layer as predicted (1 source file and 2 test files, no config, migration, API or dependency changes). The test share was larger than planned (233 of 276 added lines), and the review added a warning log and an end-to-end min-forwarding test. Neither was enough to raise any dimension. The total sits on the 9/10 XS/S boundary. It stays S because of how dense the edge-case tests are (bool, zero, negative, missing tier, explicit value wins) and because of the review loop."
+}

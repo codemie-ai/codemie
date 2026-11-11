@@ -119,6 +119,15 @@ class CodeMieTool(BaseTool):
         """
         return False
 
+    def written_refs(self, args: dict, output: str) -> tuple[str, ...] | None:
+        """Keys of the resources a finished, successful call created or changed, from its args and output text.
+
+        `()` means the call wrote nothing that has a key; None means this tool cannot tell, and the caller
+        reads the output itself. Default: `()` for a safe (read-only) call, None otherwise. Override in tools
+        whose write results carry keys the user needs (the truncation status report names them, EPMCDME-16835).
+        """
+        return () if self.is_safe(args) else None
+
     def _parse_input(self, tool_input: Union[str, dict], tool_call_id: Optional[str]) -> Union[str, dict[str, Any]]:
         """Override _parse_input to catch all exceptions and raise ToolException.
 

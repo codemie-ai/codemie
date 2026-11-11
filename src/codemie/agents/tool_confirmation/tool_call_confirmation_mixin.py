@@ -400,9 +400,12 @@ class ToolCallConfirmationMixin:
             metadata=metadata,
         )
 
-    def _resolve_state(self, config: dict) -> Any:
+    def _resolve_state(self, config: dict[str, Any], subgraphs: bool = False) -> Any:
+        """The checkpointed graph state; `subgraphs` also loads the sub-graph state of each task of the next step."""
         thread_id = config.get("thread_id", self.conversation_id)
         state_config = {**config, "configurable": {**config.get("configurable", {}), "thread_id": thread_id}}
+        if subgraphs:
+            return self.agent_executor.get_state(state_config, subgraphs=True)
         return self.agent_executor.get_state(state_config)
 
     def _find_thought(self, thought_id: str) -> dict[str, Any] | None:

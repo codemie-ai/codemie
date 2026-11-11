@@ -39,7 +39,12 @@ from codemie.service.request_summary_manager import request_summary_manager
 from codemie.service.spend.origin_context import spend_origin
 from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.assistant.assistant_version_service import AssistantVersionService
-from codemie.service.assistant.tool_output_visibility import apply_to_response, is_hidden, strip_response
+from codemie.service.assistant.tool_output_visibility import (
+    apply_to_response,
+    is_effectively_hidden,
+    is_hidden,
+    strip_response,
+)
 
 
 def _apply_skill_ids_to_assistant(assistant: Assistant, request_skill_ids: list[str]) -> None:
@@ -87,7 +92,7 @@ def _apply_version_or_default(assistant: Assistant, request: AssistantChatReques
 
 def _effective_hide_tool_outputs(master: Assistant, execution_assistant: Assistant) -> bool:
     """Fail closed: a version-pinned request cannot reveal tool outputs the master assistant hides."""
-    return is_hidden(master) or is_hidden(execution_assistant)
+    return is_effectively_hidden(execution_assistant, master)
 
 
 def _prepare_assistant_for_execution(assistant: Assistant, request: AssistantChatRequest) -> Assistant:

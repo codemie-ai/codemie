@@ -1,0 +1,51 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran against the spec; every spec requirement passes. Two actionable findings: a router whose limit can't be derived stays at the proxy default with no log line, and the end-to-end test uses equal tier limits so it can't show the minimum reaching max_tokens. 3 deferred (pre-existing or out of scope): duplicate deployments collapsed last-wins upstream in _map_raw_models, a router naming another router as a tier depends on catalog order, YAML-fallback routers get no derivation. 13 dismissed: stale in-place value (catalog objects are re-mapped fresh on every load), float/str tier values (pydantic coerces int), optional tiers/crash paths (RouterTiers fields are required), non-claude aliases and explicit router value above tier min (spec decisions), large max_tokens quota (agreed with user), relative yaml path and exact log list (existing repo test patterns), log volume (catalog loads are rare), router/tier features.max_tokens=False (already visible as source=disabled_by_feature; Claude tiers accept max_tokens).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "Declared LiteLLM auto-router without positive max_output_tokens gets min across distinct tier models at catalog store", "status": "pass", "notes": "_apply_router_output_limits + _router_max_output_tokens; test_router_without_limit_gets_min_of_tiers, test_returns_min_across_distinct_tiers"},
+    {"kind": "spec", "item": "Existing forwarding sends max_tokens for the router unchanged; log source=model_config", "status": "pass", "notes": "llm_factory untouched; test_router_from_proxy_catalog_forwards_tier_limit_end_to_end, test_router_from_proxy_catalog_logs_model_config_source"},
+    {"kind": "spec", "item": "One INFO log per derived router (router, value, source=router_tiers)", "status": "pass", "notes": "test_logs_derived_limit, test_does_not_log_when_router_limit_is_its_own"},
+    {"kind": "spec", "item": "Never send max_tokens above any tier's limit", "status": "pass", "notes": "min across all distinct tiers; unknown/invalid tier returns None"},
+    {"kind": "spec", "item": "Never override a positive router-declared max_output_tokens", "status": "pass", "notes": "test_router_own_positive_limit_wins"},
+    {"kind": "spec", "item": "Never break the catalog load because of router data", "status": "pass", "notes": "RouterTiers fields required and validated; lookups via dict.get/getattr; no raising path"},
+    {"kind": "spec", "item": "Decided behaviour table (own value kept; invalid own value derived; unknown tier unset; tiers absent unset; non-router untouched)", "status": "pass", "notes": "TestRouterOutputLimitOnCatalogLoad and TestRouterMaxOutputTokens cover each row"},
+    {"kind": "spec", "item": "'Positive' = int, not bool, > 0", "status": "pass", "notes": "_is_positive_limit; test_tier_value_must_be_positive_int, test_tier_string_value_is_unknown"},
+    {"kind": "spec", "item": "Tier names resolve by base_name against the same catalog list being stored", "status": "pass", "notes": "by_name built from user_models.chat_models"},
+    {"kind": "spec", "item": "Applied in initialize_default_litellm_models (startup, recovery, admin reload)", "status": "pass", "notes": "first line of initialize_default_litellm_models"},
+    {"kind": "spec", "item": "No eager codemie.enterprise imports in llm_service.py", "status": "pass", "notes": "no imports added"},
+    {"kind": "spec", "item": "LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS kill switch still disables forwarding", "status": "pass", "notes": "llm_factory gating untouched"},
+    {"kind": "spec", "item": "Seam tests: helper plus outer-boundary max_tokens assertion", "status": "pass", "notes": "boundary test present; equal tier limits noted as CR-002"},
+    {"kind": "spec", "item": "Non-goals: proxy config, Jira prompt, tier behaviour, non-claude aliases, switchyard, API schema", "status": "na", "notes": "untouched"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "3 commits, all 'EPMCDME-16835: <Description>' per git-workflow.md"},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff format + ruff check clean (make ruff steps run individually)"},
+    {"kind": "security", "status": "pass", "notes": "no auth, input, secret or I/O handling changed; log line carries model name and an int only"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/llm_service/llm_service.py",
+      "line": 194,
+      "title": "Underived router limit is silent",
+      "problem": "When _router_max_output_tokens returns None (tier missing, disabled or without a positive limit), _apply_router_output_limits skips the router without logging.",
+      "impact": "The router silently falls back to the proxy default and keeps cutting replies at 4096, the exact failure this ticket fixes, with nothing at load time naming the router or the cause.",
+      "recommendation": "Log a WARNING for a declared router with tiers whose limit can't be derived, e.g. 'router_output_limit model=<name> max_output_tokens=unset source=unresolved_tiers', and test it."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/enterprise/litellm/test_llm_factory.py",
+      "line": 1771,
+      "title": "End-to-end test can't tell min from any tier",
+      "problem": "_router_from_proxy_catalog gives both tiers max_output_tokens 128000, so the boundary assertion passes whether the code takes the min, the max or a single tier.",
+      "impact": "A regression that forwards a larger tier's limit (which a smaller tier would reject) would pass the outer-boundary seam test.",
+      "recommendation": "Give the two tiers different limits (e.g. haiku 64000, sonnet 128000) and assert max_tokens == 64000 and the matching llm_output_limit line."
+    }
+  ]
+}

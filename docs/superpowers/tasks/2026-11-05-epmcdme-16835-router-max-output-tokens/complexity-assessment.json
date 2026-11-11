@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "task": "When a declared LiteLLM auto-router has no max_output_tokens, set it at catalog load to the smallest positive max_output_tokens among its tier models, so codemie forwards max_tokens for router requests (EPMCDME-16835).",
+  "generated": "2026-11-05T16:30:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "The change copies the LLMService._router_max_input_tokens pattern: resolve tiers by base_name and take the minimum. The forwarding in llm_factory (_resolve_max_output_tokens / _build_chat_model_base_args) already handles a positive max_output_tokens and stays unchanged. LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS can turn it off. The one real correctness risk is sending a value above some tier's limit, and taking the minimum across all tiers prevents that. Other residual risks: the Claude-name gate on the router alias, and the lazy-import rule against circular imports." },
+    { "dimension": "requirements_clarity", "reason": "Scope, out-of-scope items and acceptance criteria are explicit: forward max_tokens = min tier max_output_tokens, an explicit router value still wins, and regression tests cover derivation and forwarding. Two small policy choices are left: for unknown or disabled tiers, use the minimum over the known tiers or return None conservatively (the max_input_tokens precedent), and whether to log the derivation." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

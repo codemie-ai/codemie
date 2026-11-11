@@ -300,6 +300,9 @@ class TokenLimitExceededException(ValueError):
         message (str): Detailed error message with fix instructions
         model (str): The LLM model that hit the token limit
         truncation_reason (str): The API response reason (e.g., 'finish_reason=length')
+        turn_messages (list | None): Messages of the run known at the stop, used to tell the
+            user what was and was not done (EPMCDME-16835)
+        truncated_message (Any | None): The truncated AIMessage itself
 
     Example:
         raise TokenLimitExceededException(
@@ -314,10 +317,14 @@ class TokenLimitExceededException(ValueError):
         message: str,
         model: Optional[str] = None,
         truncation_reason: Optional[str] = None,
+        turn_messages: Optional[list] = None,
+        truncated_message: Optional[Any] = None,
     ):
         self.message = message
         self.model = model
         self.truncation_reason = truncation_reason
+        self.turn_messages = turn_messages
+        self.truncated_message = truncated_message
         super().__init__(message)
 
 

@@ -201,6 +201,8 @@ def test_tree_flag_is_own_or_any_child_and_subagents_are_the_executors():
     assert tree is True
     assert kwargs["require_tool_confirmation"] is False
     assert kwargs["subagents"] == [quiet.executor, loud.executor]
+    # The built agents travel beside their graphs, so the status report can ask their tools what they wrote
+    assert kwargs["subagent_agents"] == [quiet.agent, loud.agent]
 
     tree, _ = _configure_with(resolved=auto, is_root=True, children=[quiet])
     assert tree is False

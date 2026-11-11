@@ -1,0 +1,122 @@
+{
+  "decision": "approve",
+  "rationale": "Both blocking findings resolved in bc8311f63 against baseline 8664e31d5: underived routers now log a WARNING (source=unresolved_tiers) with tests for warn/no-warn, and the end-to-end test uses 64000/128000 tiers and asserts 64000 (verified it fails when min is swapped for max). Fix-up adds one log call and tests only; no new high-risk issue. Area tests 774 passed, ruff clean.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Declared LiteLLM auto-router without positive max_output_tokens gets min across distinct tier models at catalog store",
+      "status": "pass",
+      "notes": "_apply_router_output_limits + _router_max_output_tokens; test_router_without_limit_gets_min_of_tiers, test_returns_min_across_distinct_tiers"
+    },
+    {
+      "kind": "spec",
+      "item": "Existing forwarding sends max_tokens for the router unchanged; log source=model_config",
+      "status": "pass",
+      "notes": "llm_factory untouched; test_router_from_proxy_catalog_forwards_tier_limit_end_to_end, test_router_from_proxy_catalog_logs_model_config_source"
+    },
+    {
+      "kind": "spec",
+      "item": "One INFO log per derived router (router, value, source=router_tiers)",
+      "status": "pass",
+      "notes": "test_logs_derived_limit, test_does_not_log_when_router_limit_is_its_own"
+    },
+    {
+      "kind": "spec",
+      "item": "Never send max_tokens above any tier's limit",
+      "status": "pass",
+      "notes": "min across all distinct tiers; unknown/invalid tier returns None"
+    },
+    {
+      "kind": "spec",
+      "item": "Never override a positive router-declared max_output_tokens",
+      "status": "pass",
+      "notes": "test_router_own_positive_limit_wins"
+    },
+    {
+      "kind": "spec",
+      "item": "Never break the catalog load because of router data",
+      "status": "pass",
+      "notes": "RouterTiers fields required and validated; lookups via dict.get/getattr; no raising path"
+    },
+    {
+      "kind": "spec",
+      "item": "Decided behaviour table (own value kept; invalid own value derived; unknown tier unset; tiers absent unset; non-router untouched)",
+      "status": "pass",
+      "notes": "TestRouterOutputLimitOnCatalogLoad and TestRouterMaxOutputTokens cover each row"
+    },
+    {
+      "kind": "spec",
+      "item": "'Positive' = int, not bool, > 0",
+      "status": "pass",
+      "notes": "_is_positive_limit; test_tier_value_must_be_positive_int, test_tier_string_value_is_unknown"
+    },
+    {
+      "kind": "spec",
+      "item": "Tier names resolve by base_name against the same catalog list being stored",
+      "status": "pass",
+      "notes": "by_name built from user_models.chat_models"
+    },
+    {
+      "kind": "spec",
+      "item": "Applied in initialize_default_litellm_models (startup, recovery, admin reload)",
+      "status": "pass",
+      "notes": "first line of initialize_default_litellm_models"
+    },
+    {
+      "kind": "spec",
+      "item": "No eager codemie.enterprise imports in llm_service.py",
+      "status": "pass",
+      "notes": "no imports added"
+    },
+    {
+      "kind": "spec",
+      "item": "LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS kill switch still disables forwarding",
+      "status": "pass",
+      "notes": "llm_factory gating untouched"
+    },
+    {
+      "kind": "spec",
+      "item": "Seam tests: helper plus outer-boundary max_tokens assertion",
+      "status": "pass",
+      "notes": "boundary test present; equal tier limits noted as CR-002"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals: proxy config, Jira prompt, tier behaviour, non-claude aliases, switchyard, API schema",
+      "status": "na",
+      "notes": "untouched"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "3 commits, all 'EPMCDME-16835: <Description>' per git-workflow.md"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "ruff format + ruff check clean (make ruff steps run individually)"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no auth, input, secret or I/O handling changed; log line carries model name and an int only"
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "logger.warning('router_output_limit model=<name> max_output_tokens=unset source=unresolved_tiers') on the derived-is-None branch; test_warns_when_router_limit_cannot_be_derived, test_does_not_warn_when_router_limit_is_derived"
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "tiers haiku=64000, sonnet=128000; asserts max_tokens == 64000 and log max_tokens=64000; fails with max()"
+    }
+  ]
+}

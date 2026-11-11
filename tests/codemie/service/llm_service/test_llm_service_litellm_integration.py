@@ -19,11 +19,21 @@ enterprise package for model management and gracefully falls back to YAML
 configuration when LiteLLM is not available.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codemie.configs.llm_config import LLMConfig, LLMModel, LLMProvider, LiteLLMModels, ModelSwitchyard, RoutingMode
+from codemie.configs.llm_config import (
+    LiteLLMModels,
+    LiteLLMRouterConfig,
+    LLMConfig,
+    LLMModel,
+    LLMProvider,
+    ModelSwitchyard,
+    RouterTier,
+    RouterTiers,
+    RoutingMode,
+)
 from codemie.service.llm_service.llm_service import LLMService
 
 
@@ -453,3 +463,207 @@ class TestLiteLLMDeploymentNames:
             deployment_name = llm_service.get_embedding_deployment_name("litellm-ada-002")
 
             assert deployment_name == "litellm-ada-002"
+
+
+def _tiers(simple: str, medium: str, complex_: str, reasoning: str) -> RouterTiers:
+    return RouterTiers(
+        simple=RouterTier(model=simple),
+        medium=RouterTier(model=medium),
+        complex=RouterTier(model=complex_),
+        reasoning=RouterTier(model=reasoning),
+    )
+
+
+def _chat_model(base_name: str, max_output_tokens=None, **overrides) -> LLMModel:
+    return LLMModel(
+        base_name=base_name,
+        deployment_name=base_name,
+        label=base_name,
+        enabled=True,
+        provider=LLMProvider.AWS_BEDROCK,
+        max_output_tokens=max_output_tokens,
+        **overrides,
+    )
+
+
+class TestRouterMaxOutputTokens:
+    """A router's output limit is the smallest positive max_output_tokens across its distinct tier models;
+    any unknown tier leaves it unset (EPMCDME-16835)."""
+
+    def test_returns_min_across_distinct_tiers(self):
+        by_name = {"a": _chat_model("a", 128000), "b": _chat_model("b", 64000), "c": _chat_model("c", 128000)}
+
+        assert LLMService._router_max_output_tokens(_tiers("a", "a", "b", "c"), by_name) == 64000
+
+    def test_shared_tier_model_resolves_once(self):
+        by_name = {"a": _chat_model("a", 128000), "b": _chat_model("b", 128000)}
+
+        assert LLMService._router_max_output_tokens(_tiers("a", "a", "b", "b"), by_name) == 128000
+
+    def test_none_when_tiers_absent(self):
+        assert LLMService._router_max_output_tokens(None, {"a": _chat_model("a", 128000)}) is None
+
+    def test_none_when_any_tier_missing_from_catalog(self):
+        by_name = {"a": _chat_model("a", 128000), "b": _chat_model("b", 64000)}
+
+        assert LLMService._router_max_output_tokens(_tiers("a", "a", "b", "missing"), by_name) is None
+
+    def test_none_when_any_tier_has_no_limit(self):
+        by_name = {"a": _chat_model("a", 128000), "b": _chat_model("b", None)}
+
+        assert LLMService._router_max_output_tokens(_tiers("a", "a", "b", "b"), by_name) is None
+
+    @pytest.mark.parametrize("value", [0, -1, True])
+    def test_tier_value_must_be_positive_int(self, value):
+        # model_copy skips validation, so True stays a bool instead of being coerced to 1
+        by_name = {"a": _chat_model("a", 128000), "b": _chat_model("b").model_copy(update={"max_output_tokens": value})}
+
+        assert LLMService._router_max_output_tokens(_tiers("a", "a", "b", "b"), by_name) is None
+
+    def test_tier_string_value_is_unknown(self):
+        tier_b = MagicMock()
+        tier_b.max_output_tokens = "128000"
+        by_name = {"a": _chat_model("a", 128000), "b": tier_b}
+
+        assert LLMService._router_max_output_tokens(_tiers("a", "a", "b", "b"), by_name) is None
+
+    def test_tier_naming_the_router_itself_is_unknown(self):
+        router = _chat_model(
+            "router", None, litellm_router=LiteLLMRouterConfig(tiers=_tiers("a", "a", "router", "router"))
+        )
+        by_name = {"a": _chat_model("a", 128000), "router": router}
+
+        assert LLMService._router_max_output_tokens(router.litellm_router.tiers, by_name) is None
+
+
+class TestRouterOutputLimitOnCatalogLoad:
+    """Storing the LiteLLM catalog fills in a router's missing output limit from its tiers (EPMCDME-16835)."""
+
+    ROUTER = "claude-router-standard"
+
+    @classmethod
+    def _router(cls, max_output_tokens=None) -> LLMModel:
+        return _chat_model(
+            cls.ROUTER,
+            max_output_tokens,
+            litellm_router=LiteLLMRouterConfig(tiers=_tiers("a", "a", "b", "b")),
+        )
+
+    @classmethod
+    def _stored_router(cls, service: LLMService) -> LLMModel:
+        return next(m for m in service.default_litellm_models if m.base_name == cls.ROUTER)
+
+    def test_router_without_limit_gets_min_of_tiers(self, llm_service):
+        models = [self._router(), _chat_model("a", 128000), _chat_model("b", 64000)]
+
+        llm_service.initialize_default_litellm_models(LiteLLMModels(chat_models=models))
+
+        assert self._stored_router(llm_service).max_output_tokens == 64000
+
+    def test_router_own_positive_limit_wins(self, llm_service):
+        models = [self._router(32000), _chat_model("a", 128000), _chat_model("b", 64000)]
+
+        llm_service.initialize_default_litellm_models(LiteLLMModels(chat_models=models))
+
+        assert self._stored_router(llm_service).max_output_tokens == 32000
+
+    def test_router_invalid_own_limit_is_derived(self, llm_service):
+        models = [self._router(0), _chat_model("a", 128000), _chat_model("b", 64000)]
+
+        llm_service.initialize_default_litellm_models(LiteLLMModels(chat_models=models))
+
+        assert self._stored_router(llm_service).max_output_tokens == 64000
+
+    def test_router_with_unknown_tier_stays_unset(self, llm_service):
+        models = [self._router(), _chat_model("a", 128000)]
+
+        llm_service.initialize_default_litellm_models(LiteLLMModels(chat_models=models))
+
+        assert self._stored_router(llm_service).max_output_tokens is None
+
+    def test_non_router_models_untouched(self, llm_service):
+        models = [self._router(), _chat_model("a", 128000), _chat_model("b", 64000), _chat_model("plain", None)]
+
+        llm_service.initialize_default_litellm_models(LiteLLMModels(chat_models=models))
+
+        limits = {m.base_name: m.max_output_tokens for m in llm_service.default_litellm_models}
+        assert limits == {self.ROUTER: 64000, "a": 128000, "b": 64000, "plain": None}
+
+    def test_logs_derived_limit(self, llm_service):
+        models = [self._router(), _chat_model("a", 128000), _chat_model("b", 64000)]
+
+        with patch("codemie.service.llm_service.llm_service.logger") as mock_logger:
+            llm_service.initialize_default_litellm_models(LiteLLMModels(chat_models=models))
+
+        lines = [call.args[0] for call in mock_logger.info.call_args_list]
+        assert (
+            f"router_output_limit model={self.ROUTER} max_output_tokens=64000 source=router_tiers forwarded=true"
+            in lines
+        )
+
+    def test_router_alias_without_claude_over_claude_tiers_is_marked_claude_family(self, llm_service):
+        tiers = _tiers("claude-haiku", "claude-haiku", "opus-latest", "opus-latest")
+        router = _chat_model("router-standard", None, litellm_router=LiteLLMRouterConfig(tiers=tiers))
+        tier_a, tier_b = _chat_model("claude-haiku", 128000), _chat_model("opus-latest", 64000, claude_family=True)
+
+        with patch("codemie.service.llm_service.llm_service.logger") as mock_logger:
+            llm_service.initialize_default_litellm_models(LiteLLMModels(chat_models=[router, tier_a, tier_b]))
+
+        stored = next(m for m in llm_service.default_litellm_models if m.base_name == "router-standard")
+        assert stored.claude_family is True
+        assert stored.max_output_tokens == 64000
+        lines = [call.args[0] for call in mock_logger.info.call_args_list]
+        assert any(line.endswith("forwarded=true") for line in lines if line.startswith("router_output_limit"))
+
+    def test_router_over_non_claude_tiers_logs_that_nothing_is_forwarded(self, llm_service):
+        router = _chat_model("router-gpt", None, litellm_router=LiteLLMRouterConfig(tiers=_tiers("a", "a", "b", "b")))
+
+        with patch("codemie.service.llm_service.llm_service.logger") as mock_logger:
+            llm_service.initialize_default_litellm_models(
+                LiteLLMModels(chat_models=[router, _chat_model("a", 128000), _chat_model("b", 64000)])
+            )
+
+        stored = next(m for m in llm_service.default_litellm_models if m.base_name == "router-gpt")
+        assert stored.claude_family is False
+        lines = [call.args[0] for call in mock_logger.info.call_args_list]
+        assert (
+            "router_output_limit model=router-gpt max_output_tokens=64000 source=router_tiers forwarded=false" in lines
+        )
+
+    def test_reload_recomputes_the_limit_from_the_new_tiers(self, llm_service):
+        llm_service.initialize_default_litellm_models(
+            LiteLLMModels(chat_models=[self._router(), _chat_model("a", 128000), _chat_model("b", 64000)])
+        )
+
+        llm_service.initialize_default_litellm_models(
+            LiteLLMModels(chat_models=[self._router(), _chat_model("a", 128000), _chat_model("b", 32000)])
+        )
+
+        assert self._stored_router(llm_service).max_output_tokens == 32000
+
+    def test_warns_when_router_limit_cannot_be_derived(self, llm_service):
+        models = [self._router(), _chat_model("a", 128000)]
+
+        with patch("codemie.service.llm_service.llm_service.logger") as mock_logger:
+            llm_service.initialize_default_litellm_models(LiteLLMModels(chat_models=models))
+
+        mock_logger.warning.assert_called_once_with(
+            f"router_output_limit model={self.ROUTER} max_output_tokens=unset source=unresolved_tiers"
+        )
+
+    def test_does_not_warn_when_router_limit_is_derived(self, llm_service):
+        models = [self._router(), _chat_model("a", 128000), _chat_model("b", 64000)]
+
+        with patch("codemie.service.llm_service.llm_service.logger") as mock_logger:
+            llm_service.initialize_default_litellm_models(LiteLLMModels(chat_models=models))
+
+        mock_logger.warning.assert_not_called()
+
+    def test_does_not_log_when_router_limit_is_its_own(self, llm_service):
+        models = [self._router(32000), _chat_model("a", 128000), _chat_model("b", 64000)]
+
+        with patch("codemie.service.llm_service.llm_service.logger") as mock_logger:
+            llm_service.initialize_default_litellm_models(LiteLLMModels(chat_models=models))
+
+        lines = [call.args[0] for call in mock_logger.info.call_args_list]
+        assert not any(line.startswith("router_output_limit") for line in lines)

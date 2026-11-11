@@ -1043,7 +1043,10 @@ class TestSubagentToolConfirmationPolicy:
             LangGraphAgent(**base_config)
             mock_create_smart_react.assert_called_once()
             hook_factory = mock_create_smart_react.call_args.kwargs["post_model_hook_factory"]
-            assert hook_factory([]) is mock_hook.return_value
+            # The gate sits behind the truncation guard (EPMCDME-16835): a plain call reaches the gate unchanged
+            state, run_config = {"messages": []}, {}
+            assert hook_factory([])(state, run_config) is mock_hook.return_value.return_value
+            mock_hook.return_value.assert_called_once_with(state, run_config)
 
         assert mock_hook.call_args.kwargs == {"is_subagent": True, "pauses_own_calls": True, "resumable": True}
 

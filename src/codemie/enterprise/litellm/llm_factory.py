@@ -397,13 +397,13 @@ def _resolve_max_output_tokens(llm_model_details: "LLMModel") -> Optional[int]:
     profile is missing from LiteLLM's model map), while other providers get no limit unless one is sent.
     A Claude model behind an alias is recognised by `claude_family`, set from the proxy's underlying model.
     """
-    is_claude = "claude" in (llm_model_details.base_name or "").lower() or llm_model_details.claude_family is True
-    if not is_claude:
+    from codemie.configs.llm_config import LLMModel, is_positive_token_limit
+
+    # Called unbound so a details object that only quacks like LLMModel is judged by the same rule
+    if not LLMModel.is_claude(llm_model_details):
         return None
     value = getattr(llm_model_details, "max_output_tokens", None)
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        return None
-    return value
+    return value if is_positive_token_limit(value) else None
 
 
 def _build_chat_model_base_args(

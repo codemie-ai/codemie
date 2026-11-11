@@ -33,6 +33,7 @@ from codemie.configs.llm_config import (
     RouterTier,
     RouterTiers,
     build_switchyard_routers,
+    is_positive_token_limit,
     llm_config,
 )
 
@@ -150,19 +151,66 @@ class LLMService:
         return RouterTiers(simple=efficient_tier, medium=efficient_tier, complex=capable_tier, reasoning=capable_tier)
 
     @staticmethod
-    def _router_max_input_tokens(tiers: RouterTiers | None, by_name: dict[str, LLMModel]) -> int | None:
-        """Minimum max_input_tokens across a router's distinct tier models. None when tiers are absent
-        or any tier model is unresolved/windowless: an unknown tier must never allow a 1M opt-in."""
+    def _router_tier_models(tiers: RouterTiers | None, by_name: dict[str, LLMModel]) -> list[LLMModel] | None:
+        """A router's distinct tier models; None when tiers are absent or any tier model is unresolved.
+
+        The single rule behind every value a router derives from its tiers: an unknown tier makes the
+        value unknown, never a guess from the tiers that did resolve."""
         if tiers is None:
             return None
         names = {tiers.simple.model, tiers.medium.model, tiers.complex.model, tiers.reasoning.model}
-        windows: list[int] = []
-        for name in names:
-            tier_model = by_name.get(name)
-            if tier_model is None or tier_model.max_input_tokens is None:
-                return None
-            windows.append(tier_model.max_input_tokens)
-        return min(windows)
+        tier_models = [by_name.get(name) for name in names]
+        return None if any(tier_model is None for tier_model in tier_models) else tier_models
+
+    @staticmethod
+    def _router_max_input_tokens(tiers: RouterTiers | None, by_name: dict[str, LLMModel]) -> int | None:
+        """Minimum max_input_tokens across a router's distinct tier models. None when tiers are absent
+        or any tier model is unresolved/windowless: an unknown tier must never allow a 1M opt-in."""
+        tier_models = LLMService._router_tier_models(tiers, by_name)
+        if tier_models is None or any(tier_model.max_input_tokens is None for tier_model in tier_models):
+            return None
+        return min(tier_model.max_input_tokens for tier_model in tier_models)
+
+    @staticmethod
+    def _router_max_output_tokens(tiers: RouterTiers | None, by_name: dict[str, LLMModel]) -> int | None:
+        """Minimum max_output_tokens across a router's distinct tier models. None when tiers are absent
+        or any tier model is unresolved or has no positive limit: a limit above an unknown tier's own
+        could make the provider reject the whole request."""
+        tier_models = LLMService._router_tier_models(tiers, by_name)
+        if tier_models is None or not all(is_positive_token_limit(m.max_output_tokens) for m in tier_models):
+            return None
+        return min(tier_model.max_output_tokens for tier_model in tier_models)
+
+    @staticmethod
+    def _apply_router_output_limits(chat_models: list[LLMModel]) -> None:
+        """Give each declared LiteLLM auto-router without its own positive max_output_tokens the limit
+        derived from its tiers. A router entry carries no provider metadata, so without this codemie
+        forwards no max_tokens for it and the proxy default (4096) cuts replies short.
+
+        A router whose tiers are all Claude is marked `claude_family`, so the limit is forwarded whatever
+        the router's alias; otherwise the forwarding check would skip a router named without "claude"."""
+        by_name = {model.base_name: model for model in chat_models}
+        for model in chat_models:
+            if not model.is_declared_litellm_router():
+                continue
+            tier_models = LLMService._router_tier_models(model.litellm_router.tiers, by_name)
+            if tier_models and all(tier_model.is_claude() for tier_model in tier_models):
+                model.claude_family = True
+            if is_positive_token_limit(model.max_output_tokens):
+                continue
+            derived = LLMService._router_max_output_tokens(model.litellm_router.tiers, by_name)
+            if derived is None:
+                # A tier is missing, disabled or has no limit, so the proxy default still caps this router
+                logger.warning(
+                    f"router_output_limit model={model.base_name} max_output_tokens=unset source=unresolved_tiers"
+                )
+                continue
+            model.max_output_tokens = derived
+            forwarded = model.is_claude()
+            logger.info(
+                f"router_output_limit model={model.base_name} max_output_tokens={derived} "
+                f"source=router_tiers forwarded={str(forwarded).lower()}"
+            )
 
     def _build_switchyard_router_option(
         self,
@@ -740,6 +788,8 @@ class LLMService:
         return model_name and self.BASE_NAME_CLAUDE in model_name
 
     def initialize_default_litellm_models(self, user_models: LiteLLMModels) -> None:
+        self._apply_router_output_limits(user_models.chat_models)
+
         # Store the models
         self._default_litellm_models = user_models.chat_models
         self._default_litellm_embeddings = user_models.embedding_models

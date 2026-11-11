@@ -226,6 +226,11 @@ class SttConfig(BaseModel):
     request_timeout_seconds: float | None = Field(default=None, gt=0)
 
 
+def is_positive_token_limit(value: object) -> bool:
+    """True for a usable token limit: a positive int that is not a bool."""
+    return not isinstance(value, bool) and isinstance(value, int) and value > 0
+
+
 class LLMModel(BaseModel):
     base_name: str
     deployment_name: str
@@ -263,6 +268,10 @@ class LLMModel(BaseModel):
         if ModelCategory.GLOBAL in self.default_for_categories:
             self.default = True
         return self
+
+    def is_claude(self) -> bool:
+        """True for a Claude model: by name, or behind an alias the proxy maps to Claude (`claude_family`)."""
+        return "claude" in (self.base_name or "").lower() or self.claude_family is True
 
     def is_default_for(self, category: ModelCategory) -> bool:
         """Checks if the model is a default for the specified category."""
