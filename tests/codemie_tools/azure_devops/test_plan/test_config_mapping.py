@@ -121,7 +121,7 @@ def test_limit_default_value():
     config = AzureDevOpsTestPlanConfig(
         organization_url="https://dev.azure.com/my-org", project="my-project", token="my-token"
     )
-    assert config.limit == 5
+    assert config.limit == 100
 
 
 def test_limit_custom_value():

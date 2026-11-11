@@ -66,6 +66,10 @@ GET_TEST_PLAN_TOOL = ToolMetadata(
         Arguments:
         - plan_id (int, optional): ID of the test plan to get. If not provided, returns all test plans
         - project (str, optional): Project ID or project name. If not provided, uses the default project configured in the toolkit
+        - limit (int, optional): Maximum number of items to return; any integer >= 1, or -1 for all. If omitted, the integration default applies
+
+        If more items were retrieved than the limit, the result is an object with 'items' and a 'notice' stating how many are shown; pass limit=-1 to get everything retrieved.
+        limit trims the result after it is fetched; Azure DevOps is not asked for fewer items. This tool does not paginate, so items beyond the first batch the server returns cannot be reached, even with limit=-1.
         """,
     label="Get Test Plan",
     user_description="""
@@ -140,6 +144,10 @@ GET_TEST_SUITE_TOOL = ToolMetadata(
         - plan_id (int): ID of the test plan that contains the suites
         - suite_id (int, optional): ID of the suite to get. If not provided, returns all test suites in the plan
         - project (str, optional): Project ID or project name. If not provided, uses the default project configured in the toolkit
+        - limit (int, optional): Maximum number of items to return; any integer >= 1, or -1 for all. If omitted, the integration default applies
+
+        If more items were retrieved than the limit, the result is an object with 'items' and a 'notice' stating how many are shown; pass limit=-1 to get everything retrieved.
+        limit trims the result after it is fetched; Azure DevOps is not asked for fewer items. This tool does not paginate, so items beyond the first batch the server returns cannot be reached, even with limit=-1.
         """,
     label="Get Test Suite",
     user_description="""
@@ -211,6 +219,10 @@ GET_TEST_CASES_TOOL = ToolMetadata(
         - plan_id (int): ID of the test plan for which test cases are requested
         - suite_id (int): ID of the test suite for which test cases are requested
         - project (str, optional): Project ID or project name. If not provided, uses the default project configured in the toolkit
+        - limit (int, optional): Maximum number of items to return; any integer >= 1, or -1 for all. If omitted, the integration default applies
+
+        If more items were retrieved than the limit, the result is an object with 'items' and a 'notice' stating how many are shown; pass limit=-1 to get everything retrieved.
+        limit trims the result after it is fetched; Azure DevOps is not asked for fewer items. This tool does not paginate, so items beyond the first batch the server returns cannot be reached, even with limit=-1.
         """,
     label="Get Test Cases",
     user_description="""

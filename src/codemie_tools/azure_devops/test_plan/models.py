@@ -12,14 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Dict, Any
+from typing import Annotated, Optional, Dict, Any
 
-from pydantic import BaseModel, Field, model_validator, AliasChoices
+from pydantic import AfterValidator, BaseModel, Field, model_validator, AliasChoices
 
 from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes, RequiredField
 
 # Constants for repeated field descriptions
 PROJECT_DESCRIPTION = "Project ID or project name"
+
+LIMIT_DESCRIPTION = (
+    "Max items to return: an integer >= 1, or -1 for all. Omit for the integration default. "
+    "Trimmed results include a notice. Applied after the SDK fetches the first server batch "
+    "(no page-size param, continuation_token unused), so items beyond that batch are unreachable."
+)
+
+
+def check_list_limit(value: Optional[int]) -> Optional[int]:
+    """Accept None (use the default), -1 (all) or an integer >= 1; reject everything else."""
+    if value is None or value == -1 or value >= 1:
+        return value
+    raise ValueError("limit must be -1 (all) or an integer >= 1")
+
+
+ListLimit = Annotated[Optional[int], AfterValidator(check_list_limit)]
 
 
 class AzureDevOpsTestPlanConfig(CodeMieToolConfig):
@@ -54,7 +70,15 @@ class AzureDevOpsTestPlanConfig(CodeMieToolConfig):
         },
     )
 
-    limit: Optional[int] = Field(default=5, description="Default number of items to return in queries")
+    limit: Optional[int] = Field(
+        default=100,
+        description=(
+            "Default item count for test plan, suite and case listings when the model omits limit; "
+            "the model can override it per call, -1 returns all. Trims the first batch the SDK returns. "
+            "It does not lower what is requested from Azure DevOps, and later batches are never requested "
+            "because the tools do not pass continuation_token."
+        ),
+    )
 
     @model_validator(mode="before")
     def build_organization_url(cls, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -93,6 +117,7 @@ class DeleteTestPlanInput(BaseModel):
 class GetTestPlanInput(BaseModel):
     plan_id: Optional[int] = Field(description="ID of the test plan to get", default=None)
     project: Optional[str] = Field(description=PROJECT_DESCRIPTION, default=None)
+    limit: ListLimit = Field(default=None, description=LIMIT_DESCRIPTION)
 
 
 class CreateTestSuiteInput(BaseModel):
@@ -111,6 +136,7 @@ class GetTestSuiteInput(BaseModel):
     plan_id: int = Field(description="ID of the test plan that contains the suites")
     suite_id: Optional[int] = Field(description="ID of the suite to get", default=None)
     project: Optional[str] = Field(description=PROJECT_DESCRIPTION, default=None)
+    limit: ListLimit = Field(default=None, description=LIMIT_DESCRIPTION)
 
 
 class AddTestCaseInput(BaseModel):
@@ -133,3 +159,4 @@ class GetTestCasesInput(BaseModel):
     plan_id: int = Field(description="ID of the test plan for which test cases are requested")
     suite_id: int = Field(description="ID of the test suite for which test cases are requested")
     project: Optional[str] = Field(description=PROJECT_DESCRIPTION, default=None)
+    limit: ListLimit = Field(default=None, description=LIMIT_DESCRIPTION)

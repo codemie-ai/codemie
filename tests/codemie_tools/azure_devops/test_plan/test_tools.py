@@ -13,17 +13,51 @@
 # limitations under the License.
 
 from unittest.mock import MagicMock
+
+import pytest
 from azure.devops.v7_0.test_plan.models import TestPlan, TestSuite, TestCase
+from langchain_core.tools import ToolException
 
 from codemie_tools.azure_devops.test_plan.models import AzureDevOpsTestPlanConfig
 from codemie_tools.azure_devops.test_plan.tools import (
     CreateTestPlanTool,
     GetTestPlanTool,
+    GetTestSuiteTool,
     CreateTestSuiteTool,
     AddTestCaseTool,
     GetTestCaseTool,
     GetTestCasesTool,
 )
+
+
+def _make_items(n, spec):
+    items = []
+    for i in range(n):
+        item = MagicMock(spec=spec)
+        item.as_dict.return_value = {"id": i}
+        items.append(item)
+    return items
+
+
+def _make_tool(tool_cls, method, spec, count, config_limit=None):
+    config_kwargs = {} if config_limit is None else {"limit": config_limit}
+    config = AzureDevOpsTestPlanConfig(
+        organization_url="https://dev.azure.com/org", token="fake-token", project="test-project", **config_kwargs
+    )
+    tool = tool_cls(config=config)
+    mock_client = MagicMock()
+    # getattr keeps one parametrized table for the three list tools, each with its own client method
+    getattr(mock_client, method).return_value = _make_items(count, spec)
+    tool._client = mock_client
+    return tool
+
+
+LIST_CASES = [
+    (GetTestPlanTool, "get_test_plans", "test plans", TestPlan, {}),
+    (GetTestSuiteTool, "get_test_suites_for_plan", "test suites", TestSuite, {"plan_id": 1}),
+    (GetTestCasesTool, "get_test_case_list", "test cases", TestCase, {"plan_id": 1, "suite_id": 1}),
+]
+LIST_CASE_IDS = ["plans", "suites", "cases"]
 
 
 class TestCreateTestPlanTool:
@@ -73,6 +107,20 @@ class TestGetTestPlanTool:
 
         result = tool.execute(project="test-project")
         assert result == [{"id": 1, "name": "Test Plan 1"}]
+
+    def test_get_test_plan_by_id_ignores_limit(self):
+        config = AzureDevOpsTestPlanConfig(
+            organization_url="https://dev.azure.com/org", token="fake-token", project="test-project", limit=5
+        )
+        tool = GetTestPlanTool(config=config)
+
+        mock_client = MagicMock()
+        mock_test_plan = MagicMock(spec=TestPlan)
+        mock_test_plan.as_dict.return_value = {"id": 1, "name": "Test Plan 1"}
+        mock_client.get_test_plan_by_id.return_value = mock_test_plan
+        tool._client = mock_client
+
+        assert tool.execute(plan_id=1, limit=1) == {"id": 1, "name": "Test Plan 1"}
 
 
 class TestCreateTestSuiteTool:
@@ -149,3 +197,68 @@ class TestGetTestCasesTool:
 
         result = tool.execute(plan_id=1, suite_id=1, project="test-project")
         assert result == [{"id": 1, "name": "Test Case 1"}]
+
+
+@pytest.mark.parametrize("tool_cls, method, kind, spec, kwargs", LIST_CASES, ids=LIST_CASE_IDS)
+class TestListLimit:
+    def test_omitted_limit_uses_config_limit(self, tool_cls, method, kind, spec, kwargs):
+        tool = _make_tool(tool_cls, method, spec, 8, config_limit=2)
+        result = tool.execute(**kwargs)
+        assert len(result["items"]) == 2
+        assert result["notice"]
+
+    def test_default_config_limit_is_100(self, tool_cls, method, kind, spec, kwargs):
+        tool = _make_tool(tool_cls, method, spec, 150)
+        result = tool.execute(**kwargs)
+        assert len(result["items"]) == 100
+        assert "100 of 150 " + kind in result["notice"]
+
+    def test_explicit_limit_overrides_config(self, tool_cls, method, kind, spec, kwargs):
+        tool = _make_tool(tool_cls, method, spec, 8, config_limit=2)
+        assert len(tool.execute(**kwargs, limit=5)["items"]) == 5
+
+    def test_minus_one_returns_all_without_notice(self, tool_cls, method, kind, spec, kwargs):
+        tool = _make_tool(tool_cls, method, spec, 150, config_limit=2)
+        result = tool.execute(**kwargs, limit=-1)
+        assert isinstance(result, list)
+        assert len(result) == 150
+
+    @pytest.mark.parametrize("limit", [3, 10])
+    def test_limit_equal_or_above_count_is_plain_list(self, tool_cls, method, kind, spec, kwargs, limit):
+        tool = _make_tool(tool_cls, method, spec, 3)
+        assert tool.execute(**kwargs, limit=limit) == [{"id": 0}, {"id": 1}, {"id": 2}]
+
+    def test_limit_below_count_returns_notice(self, tool_cls, method, kind, spec, kwargs):
+        tool = _make_tool(tool_cls, method, spec, 5)
+        result = tool.execute(**kwargs, limit=3)
+        assert result["items"] == [{"id": 0}, {"id": 1}, {"id": 2}]
+        assert "3 of 5 " + kind in result["notice"]
+        assert "limit=-1" in result["notice"]
+
+    def test_notice_does_not_mention_integration(self, tool_cls, method, kind, spec, kwargs):
+        notice = _make_tool(tool_cls, method, spec, 5).execute(**kwargs, limit=3)["notice"].lower()
+        assert "integration" not in notice
+        assert "setting" not in notice
+
+    @pytest.mark.parametrize("limit", [0, -2])
+    def test_invalid_limit_direct_call_rejected(self, tool_cls, method, kind, spec, kwargs, limit):
+        tool = _make_tool(tool_cls, method, spec, 5)
+        with pytest.raises(ToolException):
+            tool.execute(**kwargs, limit=limit)
+
+    @pytest.mark.parametrize("limit", [0, -2])
+    def test_limit_helper_rejects_non_positive(self, tool_cls, method, kind, spec, kwargs, limit):
+        tool = _make_tool(tool_cls, method, spec, 5)
+        with pytest.raises(ValueError):
+            tool._limit_results([], "x", limit)
+
+    def test_invalid_config_limit_rejected(self, tool_cls, method, kind, spec, kwargs):
+        tool = _make_tool(tool_cls, method, spec, 5, config_limit=0)
+        with pytest.raises(ToolException):
+            tool.execute(**kwargs)
+
+    def test_description_documents_limit(self, tool_cls, method, kind, spec, kwargs):
+        description = _make_tool(tool_cls, method, spec, 0).description
+        for expected in ("limit (int, optional)", "-1", "integration default", "notice", "paginat"):
+            assert expected in description
+        assert "default 100" not in description

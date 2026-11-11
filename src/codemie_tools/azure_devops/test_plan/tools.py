@@ -38,6 +38,7 @@ from codemie_tools.azure_devops.test_plan.models import (
     AddTestCaseInput,
     GetTestCaseInput,
     GetTestCasesInput,
+    check_list_limit,
 )
 from codemie_tools.azure_devops.test_plan.tools_vars import (
     CREATE_TEST_PLAN_TOOL,
@@ -82,6 +83,26 @@ class BaseAzureDevOpsTestPlanTool(CodeMieTool):
     def _client(self, value: TestPlanClient) -> None:
         """Set the Azure DevOps client (useful for testing)."""
         self.__client = value
+
+    def _limit_results(self, items: list, kind: str, limit: Optional[int]) -> list[dict] | dict:
+        """Trim a fetched list to the effective limit (explicit `limit`, else `config.limit`).
+
+        The SDK paginates in batches and takes no page-size or limit parameter, so only the first server
+        batch is fetched. Azure DevOps returns a continuation_token for the rest; these tools ignore it, so
+        the limit only trims that batch. "N of M" counts that batch, not a server total.
+        """
+        effective = limit if limit is not None else self.config.limit
+        check_list_limit(effective)
+        result = [item.as_dict() for item in items]
+        if effective is None or effective == -1 or len(result) <= effective:
+            return result
+        return {
+            "items": result[:effective],
+            "notice": (
+                f"Showing {effective} of {len(result)} {kind} retrieved from Azure DevOps (first batch only, "
+                f"not a server total). Pass limit=-1 (or a larger limit) to see the rest."
+            ),
+        }
 
 
 class CreateTestPlanTool(BaseAzureDevOpsTestPlanTool):
@@ -139,7 +160,7 @@ class GetTestPlanTool(BaseAzureDevOpsTestPlanTool):
     description: str = GET_TEST_PLAN_TOOL.description
     args_schema: Type[BaseModel] = GetTestPlanInput
 
-    def execute(self, plan_id: Optional[int] = None, project: Optional[str] = None):
+    def execute(self, plan_id: Optional[int] = None, project: Optional[str] = None, limit: Optional[int] = None):
         """Get a test plan or list of test plans in Azure DevOps."""
         # Use provided project or default from config if not provided
         project_to_use = project or self.config.project
@@ -150,7 +171,7 @@ class GetTestPlanTool(BaseAzureDevOpsTestPlanTool):
                 return test_plan.as_dict()
             else:
                 test_plans = self._client.get_test_plans(project_to_use)
-                return [plan.as_dict() for plan in test_plans[: self.config.limit]]
+                return self._limit_results(test_plans, "test plans", limit)
         except Exception as e:
             logger.error(f"Error getting test plan(s): {e}")
             raise ToolException(f"Error getting test plan(s): {e}")
@@ -211,7 +232,9 @@ class GetTestSuiteTool(BaseAzureDevOpsTestPlanTool):
     description: str = GET_TEST_SUITE_TOOL.description
     args_schema: Type[BaseModel] = GetTestSuiteInput
 
-    def execute(self, plan_id: int, suite_id: Optional[int] = None, project: Optional[str] = None):
+    def execute(
+        self, plan_id: int, suite_id: Optional[int] = None, project: Optional[str] = None, limit: Optional[int] = None
+    ):
         """Get a test suite or list of test suites in Azure DevOps."""
         # Use provided project or default from config if not provided
         project_to_use = project or self.config.project
@@ -222,7 +245,7 @@ class GetTestSuiteTool(BaseAzureDevOpsTestPlanTool):
                 return test_suite.as_dict()
             else:
                 test_suites = self._client.get_test_suites_for_plan(project_to_use, plan_id)
-                return [suite.as_dict() for suite in test_suites[: self.config.limit]]
+                return self._limit_results(test_suites, "test suites", limit)
         except Exception as e:
             logger.error(f"Error getting test suite(s): {e}")
             raise ToolException(f"Error getting test suite(s): {e}")
@@ -303,14 +326,14 @@ class GetTestCasesTool(BaseAzureDevOpsTestPlanTool):
     description: str = GET_TEST_CASES_TOOL.description
     args_schema: Type[BaseModel] = GetTestCasesInput
 
-    def execute(self, plan_id: int, suite_id: int, project: Optional[str] = None):
+    def execute(self, plan_id: int, suite_id: int, project: Optional[str] = None, limit: Optional[int] = None):
         """Get test cases from a suite in Azure DevOps."""
         # Use provided project or default from config if not provided
         project_to_use = project or self.config.project
 
         try:
             test_cases = self._client.get_test_case_list(project_to_use, plan_id, suite_id)
-            return [test_case.as_dict() for test_case in test_cases[: self.config.limit]]
+            return self._limit_results(test_cases, "test cases", limit)
         except Exception as e:
             logger.error(f"Error getting test cases: {e}")
             raise ToolException(f"Error getting test cases: {e}")

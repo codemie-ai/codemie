@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 5,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Shared _limit_results helper plus check_list_limit validator on three list tools (GetTestPlanTool, GetTestSuiteTool, GetTestCasesTool); validates model-supplied limit (-1 or >=1) at the tool-arg boundary. Default change 5 to 100 alters behavior but is a reversible config default. No exact precedent for the truncation-notice return shape (list vs dict)."
+    },
+    { "dimension": "component_scope", "reason": "Three tool classes, one base-class helper and the pydantic input/config models in the single azure_devops/test_plan package; pattern is clear."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

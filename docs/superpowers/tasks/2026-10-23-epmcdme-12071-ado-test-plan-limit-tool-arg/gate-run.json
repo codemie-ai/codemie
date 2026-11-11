@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "branch": "epmcdme-12071",
+  "head": "0c1ccefb569351b540b8882ef924f8ba9ae0f763",
+  "runner": "poetry",
+  "started_at": "2026-10-23T14:50:00Z",
+  "completed_at": "2026-10-23T15:25:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 15000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 12000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "no leaks found"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1597450,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "User-reported local run with the enterprise Makefile change applied: 0 failed, 21239 passed, 186 skipped, 311 warnings in 104.36s. Supersedes the runner's earlier FAIL (59 failed, 1 error, 22177 passed in 26:37, run without the Makefile change). Not run or verified by the flow."
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "pre-push hook (opt-in via CODEMIE_PREPUSH_ENABLED); not run because it would re-run the full 26-minute test suite and needs network/Sonar server; only the Sonar server/CI can settle it."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "MR-only gate; needs docker stack, superadmin fixtures and ~/.codemie/test-harness.json."
+    }
+  ],
+  "failures": {}
+}
