@@ -143,6 +143,15 @@ class ApplicationRepository:
         assigned_budget_exists = select(ProjectBudgetAssignment.id).where(*conditions).exists()
         return statement.where(assigned_budget_exists)
 
+    @staticmethod
+    def _apply_cost_center_filter(
+        statement: Select[tuple[Application]], cost_center_ids: list[UUID] | None
+    ) -> Select[tuple[Application]]:
+        """Filter projects assigned to any selected cost center."""
+        if not cost_center_ids:
+            return statement
+        return statement.where(Application.cost_center_id.in_(cost_center_ids))
+
     def get_by_name(self, session: Session, name: str) -> Optional[Application]:
         """Get application by name
 
@@ -358,6 +367,7 @@ class ApplicationRepository:
         per_page: int = 20,
         has_assigned_budgets: bool = False,
         budget_category: str | None = None,
+        cost_center_ids: list[UUID] | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
     ) -> tuple[list[Application], int]:
@@ -400,6 +410,7 @@ class ApplicationRepository:
             budget_category=budget_category,
         )
 
+        count_base_statement = self._apply_cost_center_filter(count_base_statement, cost_center_ids)
         # Count total (with filters applied, without ANY ordering for performance)
         count_statement = select(func.count()).select_from(count_base_statement.subquery())
         total_count = session.exec(count_statement).one()
@@ -418,6 +429,7 @@ class ApplicationRepository:
             has_assigned_budgets=has_assigned_budgets,
             budget_category=budget_category,
         )
+        data_statement = self._apply_cost_center_filter(data_statement, cost_center_ids)
 
         if sort_by and sort_by in self._SORT_COLUMN_MAP:
             col = self._SORT_COLUMN_MAP[sort_by]

@@ -75,10 +75,11 @@ def _project_audit_snapshot(project: Application) -> dict[str, object]:
 def _is_valid_model_identifier(model_id: str) -> bool:
     """Check if a model identifier has valid format.
 
-    Valid format: alphanumeric characters, hyphens, underscores, dots, and colons.
-    Examples: "gpt-4", "claude-3-opus", "model_v2", "azure:gpt-4", "local.model"
+    Valid format: alphanumeric characters, hyphens, underscores, dots, colons, and "@".
+    Examples: "gpt-4", "claude-3-opus", "model_v2", "azure:gpt-4", "local.model",
+    "claude-opus-4-5@20251101" (Vertex AI version suffix)
     """
-    pattern = re.compile(r"^[a-zA-Z0-9._:-]+$")
+    pattern = re.compile(r"^[a-zA-Z0-9._:@-]+$")
     return pattern.match(model_id) is not None
 
 

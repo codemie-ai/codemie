@@ -75385,6 +75385,28 @@
               "title": "Sort Order",
               "type": "string"
             }
+          },
+          {
+            "description": "Return projects assigned to any of these cost centers",
+            "in": "query",
+            "name": "cost_center_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Return projects assigned to any of these cost centers",
+              "title": "Cost Center Ids"
+            }
           }
         ],
         "responses": {

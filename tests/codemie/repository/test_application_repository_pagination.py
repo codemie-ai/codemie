@@ -244,3 +244,52 @@ class TestApplicationRepositoryPaginationIntegration:
         mock_search.assert_called()
         call_args = mock_search.call_args[0]
         assert call_args[1] == "analytics_%dashboard"
+
+    def test_cost_center_filter_applies_to_count_and_data_but_not_when_omitted(self):
+        """Cost-center membership limits both total count and page rows."""
+        from uuid import UUID
+
+        cost_center_ids = [
+            UUID("11111111-1111-4111-8111-111111111111"),
+            UUID("22222222-2222-4222-8222-222222222222"),
+        ]
+
+        for selected_ids, expected_filter in ((cost_center_ids, True), (None, False)):
+            mock_session = MagicMock()
+            mock_session.exec.return_value.one.return_value = 2
+            mock_session.exec.return_value.all.return_value = []
+
+            application_repository.list_visible_projects_paginated(
+                session=mock_session,
+                user_id="admin-1",
+                is_admin=True,
+                cost_center_ids=selected_ids,
+            )
+
+            for call in mock_session.exec.call_args_list:
+                query = _compile_sql(call.args[0])
+                assert ("applications.cost_center_id in" in query) is expected_filter
+
+    def test_cost_center_filter_combines_with_search_budget_and_visibility(self):
+        """Both pagination queries apply all filters for a non-admin."""
+        mock_session = MagicMock()
+        mock_session.exec.return_value.one.return_value = 0
+        mock_session.exec.return_value.all.return_value = []
+
+        application_repository.list_visible_projects_paginated(
+            session=mock_session,
+            user_id="user-1",
+            is_admin=False,
+            search="cod",
+            has_assigned_budgets=True,
+            budget_category="premium_models",
+            cost_center_ids=["11111111-1111-4111-8111-111111111111"],
+        )
+
+        assert mock_session.exec.call_count == 2
+        for call in mock_session.exec.call_args_list:
+            query = _compile_sql(call.args[0])
+            assert "applications.name ilike" in query
+            assert "budget_category = 'premium_models'" in query
+            assert "user_projects" in query
+            assert "applications.cost_center_id in" in query

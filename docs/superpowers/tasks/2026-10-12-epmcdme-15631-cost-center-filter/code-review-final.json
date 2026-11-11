@@ -1,0 +1,35 @@
+{
+  "decision": "request-changes",
+  "confidence": "low",
+  "rationale": "AC2 is partially unmet: a bare empty cost_center_ids value reaches UUID validation and returns 422 instead of preserving the unfiltered behavior. Two model-identifier validation concerns are deferred as explicitly outside this ticket's scope; their live reachability was not confirmed.",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {"kind":"spec","item":"AC1: GET project list accepts a repeated cost_center_ids query parameter","status":"pass","notes":"Endpoint declares a list-valued UUID query parameter; repeated values pass through."},
+    {"kind":"spec","item":"AC2: Omitted or empty cost_center_ids applies no Cost Center filter (existing behavior unchanged)","status":"partial","notes":"Omitted is unfiltered; a bare empty value fails UUID validation with 422."},
+    {"kind":"spec","item":"AC3: With one or more IDs, only projects assigned to at least one selected Cost Center are returned","status":"pass","notes":"Repository applies the cost-center IN predicate to the filtered project queries."},
+    {"kind":"spec","item":"AC4: IDs pass through project_visibility_service.py unchanged; existing visibility rules still apply","status":"pass","notes":"The service forwards the IDs and existing visibility branches remain in place."},
+    {"kind":"spec","item":"AC5: Cost Center predicate applied to both page query and count query","status":"pass","notes":"Predicate is applied to both count and page statements."},
+    {"kind":"spec","item":"AC6: Filter combines with existing search and budget filters using AND","status":"pass","notes":"Chained query predicates compose with AND."},
+    {"kind":"spec","item":"AC7: No new environment variables or configuration","status":"pass","notes":"No configuration changes are part of the diff."},
+    {"kind":"spec","item":"Out of ticket scope: @ allowed in model identifiers (commit 84d556949)","status":"na","notes":"Spec explicitly keeps this separate model-identifier change outside ticket scope."}
+  ],
+  "standards_review": [
+    {"kind":"commit-format","status":"na","notes":"Standards audit intentionally omitted by compact profile."},
+    {"kind":"code-quality","status":"na","notes":"Standards audit intentionally omitted by compact profile."},
+    {"kind":"security","status":"na","notes":"Standards audit intentionally omitted by compact profile."}
+  ],
+  "findings": [
+    {
+      "id":"CR-001",
+      "kind":"code",
+      "severity":"critical",
+      "triage":"patch",
+      "file":"src/codemie/rest_api/routers/projects.py",
+      "line":885,
+      "title":"Empty cost-center filter returns 422",
+      "problem":"A bare cost_center_ids= query value is not normalized away before UUID parsing, so the empty string fails validation.",
+      "impact":"The required empty-filter behavior regresses: clients receive 422 instead of an unfiltered project list.",
+      "recommendation":"Normalize empty query values before UUID validation so an empty value applies no filter."
+    }
+  ]
+}

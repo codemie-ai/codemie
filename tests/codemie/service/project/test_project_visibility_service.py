@@ -91,6 +91,7 @@ class TestProjectVisibilityService:
                 page=0,
                 per_page=20,
                 include_counters=True,
+                cost_center_ids=None,
             )
 
         assert total_count == 1

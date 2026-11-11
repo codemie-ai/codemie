@@ -19,11 +19,12 @@ from datetime import datetime, UTC
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.project import (
@@ -42,6 +43,7 @@ from codemie.rest_api.models.project import (
     SpendingWidgetRow,
 )
 from codemie.rest_api.routers.projects import router as projects_router
+from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.routers.projects._common import _authorize_project_access, _raise_project_not_found
 from codemie.service.project.project_spending_service import (
     attach_project_detail_spending,
@@ -234,6 +236,47 @@ class TestProjectCreationEndpoint:
 
 
 class TestProjectsVisibilityEndpoints:
+    def test_list_projects_parses_repeated_cost_center_ids_and_rejects_invalid_uuid(self):
+        selected = [
+            UUID("11111111-1111-4111-8111-111111111111"),
+            UUID("22222222-2222-4222-8222-222222222222"),
+        ]
+        app = FastAPI()
+        app.include_router(projects_router)
+        app.dependency_overrides[authenticate] = lambda: User(
+            id="api-user", username="test", email="test@example.com", is_admin=False
+        )
+        with (
+            patch("codemie.rest_api.routers.projects.crud._ensure_user_management_enabled"),
+            patch("codemie.rest_api.routers.projects.crud._list_projects_sync", return_value=([], 0)) as list_sync,
+        ):
+            client = TestClient(app)
+            response = client.get(
+                "/v1/projects",
+                params=[("cost_center_ids", str(value)) for value in selected],
+            )
+            assert response.status_code == 200
+            assert response.json()["pagination"]["total"] == 0
+            assert client.get("/v1/projects?cost_center_ids=bad").status_code == 422
+
+        assert list_sync.call_args.kwargs["cost_center_ids"] == selected
+
+    def test_list_projects_treats_empty_cost_center_ids_as_no_filter(self):
+        app = FastAPI()
+        app.include_router(projects_router)
+        app.dependency_overrides[authenticate] = lambda: User(
+            id="api-user", username="test", email="test@example.com", is_admin=False
+        )
+        with (
+            patch("codemie.rest_api.routers.projects.crud._ensure_user_management_enabled"),
+            patch("codemie.rest_api.routers.projects.crud._list_projects_sync", return_value=([], 0)) as list_sync,
+        ):
+            client = TestClient(app)
+            response = client.get("/v1/projects?cost_center_ids=")
+            assert response.status_code == 200
+
+        assert list_sync.call_args.kwargs["cost_center_ids"] is None
+
     @patch("codemie.rest_api.routers.projects._common.config")
     @patch("codemie.rest_api.routers.projects.crud.get_session")
     @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
@@ -275,6 +318,7 @@ class TestProjectsVisibilityEndpoints:
             budget_category=None,
             sort_by=None,
             sort_order="asc",
+            cost_center_ids=None,
             user=regular_user,
         )
 
@@ -298,6 +342,7 @@ class TestProjectsVisibilityEndpoints:
             include_counters=True,
             sort_by=None,
             sort_order="asc",
+            cost_center_ids=None,
         )
 
     @patch("codemie.rest_api.routers.projects._common.config")
@@ -527,6 +572,7 @@ class TestProjectsVisibilityEndpoints:
             include_budgets=False,
             has_assigned_budgets=False,
             budget_category=None,
+            cost_center_ids=None,
             user=regular_user,
         )
 
@@ -560,6 +606,7 @@ class TestProjectsVisibilityEndpoints:
             include_budgets=False,
             has_assigned_budgets=False,
             budget_category=None,
+            cost_center_ids=None,
             user=regular_user,
         )
 
@@ -618,6 +665,7 @@ class TestProjectsVisibilityEndpoints:
             budget_category=None,
             sort_by=None,
             sort_order="asc",
+            cost_center_ids=None,
             user=super_admin_user,
         )
 
@@ -636,6 +684,7 @@ class TestProjectsVisibilityEndpoints:
             include_counters=True,
             sort_by=None,
             sort_order="asc",
+            cost_center_ids=None,
         )
 
     @patch("codemie.rest_api.routers.projects._common.config")
@@ -734,6 +783,7 @@ class TestProjectsVisibilityEndpoints:
             sort_by=None,
             sort_order="asc",
             user=regular_user,
+            cost_center_ids=None,
         )
 
         assert len(result.data[0].budgets) == 1
@@ -2971,6 +3021,7 @@ class TestPersonalProjectSpending:
             budget_category=None,
             sort_by=None,
             sort_order='asc',
+            cost_center_ids=None,
             user=regular_user,
         )
 
@@ -3727,6 +3778,22 @@ class TestAllowedModelsEndpoint:
         models = ["gpt-4", "claude-3-sonnet", "gpt-3.5-turbo"]
         result = ProjectService.validate_allowed_models(models)
         assert result == models
+
+    def test_validate_allowed_models_accepts_vertex_version_suffix(self):
+        from codemie.service.project.project_service import ProjectService
+
+        models = ["claude-opus-4-5@20251101-websearch"]
+        assert ProjectService.validate_allowed_models(models) == models
+
+    @pytest.mark.parametrize("model_id", ["gpt 4", "gpt/4", "gpt-4;drop"])
+    def test_validate_allowed_models_rejects_invalid_characters(self, model_id):
+        from codemie.service.project.project_service import ProjectService
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.validate_allowed_models([model_id])
+
+        assert exc_info.value.code == 400
+        assert model_id in exc_info.value.message
 
     @patch("codemie.service.llm_service.llm_service.llm_service")
     def test_validate_at_least_one_chat_model_accepts_none(self, mock_llm_service):

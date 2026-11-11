@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Optional
+from uuid import UUID
 
 from sqlmodel import Session
 
@@ -57,6 +58,7 @@ class ProjectVisibilityService:
         has_assigned_budgets: bool = False,
         budget_category: str | None = None,
         include_counters: bool = True,
+        cost_center_ids: list[UUID] | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
     ) -> tuple[list[dict], int]:
@@ -79,6 +81,7 @@ class ProjectVisibilityService:
             per_page=per_page,
             has_assigned_budgets=has_assigned_budgets,
             budget_category=budget_category,
+            cost_center_ids=cost_center_ids,
             sort_by=sort_by,
             sort_order=sort_order,
         )

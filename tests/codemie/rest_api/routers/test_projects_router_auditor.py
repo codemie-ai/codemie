@@ -116,6 +116,7 @@ class TestProjectsRouterAuditorRouteLevel:
             budget_category=None,
             sort_by=None,
             sort_order="asc",
+            cost_center_ids=None,
             user=_make_auditor(),
         )
 

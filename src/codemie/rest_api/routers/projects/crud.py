@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query, Request
+from pydantic import BeforeValidator
 
 from codemie.clients.postgres import get_session
 from codemie.configs import config
@@ -67,6 +69,14 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _drop_blank_query_values(values: list[str] | None) -> list[str] | None:
+    """Drop empty repeated query values so `?param=` means no filter."""
+    if values is None:
+        return None
+    kept = [value for value in values if value.strip()]
+    return kept or None
+
+
 def _list_projects_sync(
     user_id: str,
     is_admin: bool,
@@ -75,6 +85,7 @@ def _list_projects_sync(
     per_page: int,
     has_assigned_budgets: bool,
     budget_category: str | None,
+    cost_center_ids: list[UUID] | None,
     include_counters: bool,
     sort_by: str | None,
     sort_order: str,
@@ -90,6 +101,7 @@ def _list_projects_sync(
             per_page=per_page,
             has_assigned_budgets=has_assigned_budgets,
             budget_category=budget_category,
+            cost_center_ids=cost_center_ids,
             include_counters=include_counters,
             sort_by=sort_by,
             sort_order=sort_order,
@@ -254,6 +266,11 @@ async def list_projects(
         None, description="Sort field; ignored when search is active (relevance ordering takes precedence)"
     ),
     sort_order: Literal["asc", "desc"] = Query("asc", description="Sort direction"),
+    cost_center_ids: Annotated[
+        list[UUID] | None,
+        Query(description="Return projects assigned to any of these cost centers"),
+        BeforeValidator(_drop_blank_query_values),
+    ] = None,
     user: User = Depends(authenticate),
 ):
     """List projects visible to current user with pagination and search.
@@ -281,6 +298,7 @@ async def list_projects(
         per_page=per_page,
         has_assigned_budgets=has_assigned_budgets,
         budget_category=_budget_category_value(budget_category),
+        cost_center_ids=cost_center_ids,
         include_counters=include_counters,
         sort_by=sort_by,
         sort_order=sort_order,
