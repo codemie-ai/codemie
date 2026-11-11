@@ -22,6 +22,19 @@ Treat LiteLLM proxy behavior as provider-backed enterprise functionality.
 
 Evidence: app startup registers LiteLLM providers conditionally at `src/codemie/rest_api/main.py:265`.
 
+### Output Token Limit (`max_tokens`)
+
+The LiteLLM factory sends `max_tokens` only for a Claude model (`LLMModel.is_claude`: name, or `claude_family`) with a positive `max_output_tokens`, and only when `LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS` is on. Without it the proxy default (4096) cuts replies. A declared auto-router has no provider metadata of its own. When the catalog is stored, a router without its own limit gets the minimum `max_output_tokens` of its distinct tier models. If every tier is Claude, the router is also marked `claude_family`, so the limit is sent whatever the router's alias.
+
+| Avoid | Prefer |
+|---|---|
+| Guessing a router limit from the tiers that resolved | Leave it unset when any tier is missing or has no limit. A limit above a tier's own makes the provider reject the request. The `router_output_limit ... source=unresolved_tiers` warning is logged. |
+| Writing your own `isinstance(..., int) and > 0` checks | `is_positive_token_limit` (rejects `bool`) |
+| Matching `"claude"` in the model name | `LLMModel.is_claude()` |
+| A new value derived from router tiers with its own resolution | `LLMService._router_tier_models` (any unresolved tier gives `None`) |
+
+Evidence: `src/codemie/service/llm_service/llm_service.py:185` (`_apply_router_output_limits`, called from `initialize_default_litellm_models` at `:791`); `src/codemie/enterprise/litellm/llm_factory.py:393`; `src/codemie/configs/llm_config.py:229`, `:272`.
+
 ## Outbound Request Tagging
 
 Direct provider calls and LiteLLM-proxied calls tag traffic through different mechanisms.

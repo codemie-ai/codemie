@@ -22,6 +22,24 @@ Add or update focused tests when tool schema, serialization, or provider behavio
 
 Evidence: existing toolkit tests live under `tests/codemie_tools/` and agent tool tests under `tests/codemie/agents/tools/`.
 
+## Write Classification (`is_safe`, `written_refs`)
+
+A tool that creates or changes external records must override `is_safe(args)` (True only for read-only calls) and `written_refs(args, output)`. `written_refs` tells the truncation status report which records a finished, successful call wrote. When a run stops at the output limit, that report names those keys to the user.
+
+| Return | Meaning |
+|---|---|
+| `()` | The call wrote nothing that has a key (read, search) |
+| `("KEY-1", ...)` | Keys the call created or changed |
+| `None` | The tool cannot tell. For a call that is not a read, the report then falls back to `"key"` fields in the output text that look like issue keys (`PROJ-123`). Records with other identifiers are not found, so a tool whose records do not use issue keys must implement `written_refs`. |
+
+| Avoid | Prefer |
+|---|---|
+| Returning `()` for a write you do not recognise, or for a create whose response body cannot be parsed | `None`. The call may still have written something. |
+| Matching the raw URL argument | Normalise it first (leading slash, query string, API version such as `latest`) |
+| Raising from `written_refs` | Return `None`. The caller already ignores exceptions, but logs them only at debug level. |
+
+Evidence: default at `src/codemie_tools/base/codemie_tool.py:122` (`()` for a safe call, `None` otherwise); reference override `GenericJiraIssueTool.written_refs` at `src/codemie_tools/core/project_management/jira/tools.py:144`; consumer `_tool_written_refs` at `src/codemie/agents/truncation_report.py:210`; tests at `tests/codemie_tools/core/project_management/jira/test_written_refs.py`.
+
 ## Registry
 
 A new `CodeMieTool` subclass registers itself in `codemie_tools/base/tool_registry.py` automatically; new static facts about tool classes extend `ToolRecord` there, not a new scan.

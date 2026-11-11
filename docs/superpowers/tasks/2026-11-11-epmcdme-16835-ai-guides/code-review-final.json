@@ -1,0 +1,37 @@
+{
+  "decision": "request-changes",
+  "rationale": "One blocking doc inaccuracy (CR-001): custom-tool-creation.md says a None written_refs falls back to any \"key\" field, but the fallback only matches issue-key-shaped values on non-read calls. Compact profile with no spec (acceptance n/a, blind/verification-gap not in roster, standards audit not expected), so confidence is low; 1 deferred to code-review-deferred.local.md (Jira written_refs returns () for keyless PUT/DELETE, pre-existing code outside this docs-only MR); 4 edge-case candidates dismissed as accurate or trivial omissions.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of the compact profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of the compact profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of the compact profile." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": ".ai-run/guides/agents/custom-tool-creation.md",
+      "line": 33,
+      "title": "None fallback overstated in tool-creation guide",
+      "problem": "The written_refs contract table says that when a tool returns None the report 'falls back to \"key\" fields in the output text'. In source the fallback (_written_keys in src/codemie/agents/truncation_report.py:202, regex _ISSUE_KEY_IN_JSON at :52) only matches \"key\" values shaped like a Jira issue key ([A-Z][A-Z0-9_]+-\\d+) and returns () for read methods; numeric or other-shaped keys are never found.",
+      "impact": "The default CodeMieTool.written_refs returns None for every non-safe call (src/codemie_tools/base/codemie_tool.py:122), so the fallback is live for every write tool that does not override it. An author of a non-Jira write tool (ADO work items, Confluence pages with numeric ids) following this guide will rely on the fallback, and the truncation status report will then tell the user no records were written when some were.",
+      "recommendation": "Reword the `None` row to say the report falls back to `\"key\"` fields whose value is shaped like a Jira issue key (`[A-Z][A-Z0-9_]+-\\d+`, e.g. PROJ-123), only for non-read (non-GET) calls; state that other key shapes (numeric ADO/Confluence ids, etc.) are not found, so a tool whose writes carry such keys must override `written_refs` to return them. Optionally cite `_written_keys` / `_ISSUE_KEY_IN_JSON` in `src/codemie/agents/truncation_report.py` as evidence."
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie_tools/core/project_management/jira/tools.py",
+      "line": 171,
+      "title": "Jira written_refs returns () for keyless PUT/DELETE",
+      "problem": "PUT/DELETE whose URL has no uppercase issue key (numeric id, lowercase key) returns () instead of None, so the status report omits a real edit.",
+      "preexisting": "Code behaviour, not introduced by this docs-only MR; the jira-integration.md row describing it is accurate."
+    }
+  ]
+}
