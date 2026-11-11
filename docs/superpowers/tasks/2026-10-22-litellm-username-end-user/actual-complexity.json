@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-10-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 43,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Rename of user_email to username across the LiteLLM identity chain touches agents, datasource processors, enterprise/litellm (llm_factory, dependencies, proxy_router, budget adapter, runtime sync), REST routers/handlers, budget and monitoring services, logger config and authentication. Many components but a mechanical rename with no new abstractions, so L rather than XL." },
+    { "dimension": "technical_risk", "reason": "Behavior edits change the LiteLLM end_user identity (email to username) for datasource indexing and REST direct LLM/embedding calls, plus a personal-project guard edit in the identity resolver and authentication.py. This affects budget attribution and an auth-adjacent identity path, with metric label names deliberately kept stable. Rename is largely pattern-following, and fallback behavior is covered by tests." },
+    { "dimension": "file_change_estimate", "reason": "43 files changed (31 source, 12 test), 547 insertions and 320 deletions. Per the diffstat mapping (16+ files) this is XXL, though almost all edits are small and mechanical." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped to L: touches authentication.py and the identity used for LiteLLM end_user budget attribution (auth-adjacent)",
+    "Touches core shared utilities (llm_service utils, logger config, core dependencies): considered for Component Scope, held at L because the changes are mechanical renames"
+  ],
+  "split_recommendation": null
+}

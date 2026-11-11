@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Optional
 
 from codemie.configs import config
-from codemie.configs.logger import current_user_email, logger, logging_user_id
+from codemie.configs.logger import current_username, logger, logging_user_id
 from codemie.core.dependecies import get_project_for_metric
 from codemie.core.exceptions import WorkflowGenerationError
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem, GuardrailMode, GuardrailSource
@@ -131,7 +131,7 @@ class WorkflowGeneratorService:
                     base_attributes={
                         MetricsAttributes.LLM_MODEL: llm_model,
                         MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.USER_NAME: current_username.get("-"),
                         MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )
@@ -150,7 +150,7 @@ class WorkflowGeneratorService:
                     attributes={
                         MetricsAttributes.LLM_MODEL: llm_model or "default",
                         MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.USER_NAME: current_username.get("-"),
                         MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )
@@ -224,7 +224,7 @@ class WorkflowGeneratorService:
                     base_attributes={
                         MetricsAttributes.LLM_MODEL: llm_model,
                         MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.USER_NAME: current_username.get("-"),
                         MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )

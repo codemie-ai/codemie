@@ -168,7 +168,7 @@ async def authenticate(
             uuid=request.state.uuid,
             user_id=user.id,
             conversation_id='-',
-            user_email=user.email,
+            username=user.username,
         )
 
         return user

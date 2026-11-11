@@ -988,9 +988,9 @@ class WorkflowExecutor:
         if self.user:
             from codemie.configs.logger import set_logging_info
 
-            user_email = self.user.username or self.user.id
+            username = self.user.username or self.user.id
             set_logging_info(
-                uuid=self.execution_id, user_id=self.user.id, conversation_id=self.execution_id, user_email=user_email
+                uuid=self.execution_id, user_id=self.user.id, conversation_id=self.execution_id, username=username
             )
 
             # # Set LiteLLM context with user's credentials for workflow execution
@@ -1000,7 +1000,7 @@ class WorkflowExecutor:
             set_llm_context(self.workflow_config, None, self.user)
 
             logger.debug(
-                f"Set user context for workflow execution: user_email={user_email}, "
+                f"Set user context for workflow execution: username={username}, "
                 f"execution_id={self.execution_id}, project={self.workflow_config.project}"
             )
 

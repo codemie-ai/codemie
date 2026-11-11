@@ -133,25 +133,25 @@ class TestModelRouting:
         clients.litellm_factory.assert_not_called()
 
     def test_litellm_client_is_built_with_the_user_context_and_identity(self, clients, user):
-        from codemie.configs.logger import current_user_email, logging_user_id
+        from codemie.configs.logger import current_username, logging_user_id
         from codemie.core.dependecies import litellm_context
         from codemie.rest_api.models.settings import LiteLLMContext, LiteLLMCredentials
 
         context = LiteLLMContext(credentials=LiteLLMCredentials(api_key="user-key"), current_project="proj")
         _prepare(clients.litellm, _raw())
-        tokens = (litellm_context.set(context), current_user_email.set("user@example.com"), logging_user_id.set("u-1"))
+        tokens = (litellm_context.set(context), current_username.set("jdoe"), logging_user_id.set("u-1"))
         try:
             with patch("codemie.service.llm_service.utils.set_llm_context"):
                 stt_service.transcribe(_audio(), user=user, model_name="custom-stt")
         finally:
             litellm_context.reset(tokens[0])
-            current_user_email.reset(tokens[1])
+            current_username.reset(tokens[1])
             logging_user_id.reset(tokens[2])
 
         factory_kwargs = clients.litellm_factory.call_args.kwargs
         assert factory_kwargs["llm_model_details"].base_name == "custom-stt"
         assert factory_kwargs["litellm_context"] is context
-        assert factory_kwargs["user_email"] == "user@example.com"
+        assert factory_kwargs["username"] == "jdoe"
         assert factory_kwargs["user_id"] == "u-1"
 
     def test_named_litellm_model_uses_the_litellm_client(self, clients, user):

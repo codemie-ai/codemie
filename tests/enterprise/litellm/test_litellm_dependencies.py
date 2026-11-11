@@ -885,3 +885,30 @@ class TestSoftLimitNotificationHook:
             result = check_user_budget("test-user", budget_id=None, user_id="u1")
 
         assert result is mock_customer
+
+
+class TestBudgetLimitReportersEmitUsername:
+    def test_hard_limit_metric_user_email_attribute_is_username(self):
+        from codemie.enterprise.litellm.dependencies import _report_hard_limit_exceeded
+        from codemie.service.monitoring.metrics_constants import MetricsAttributes
+
+        with patch("codemie.service.monitoring.base_monitoring_service.send_log_metric") as mock_send:
+            _report_hard_limit_exceeded("jdoe", "uid-1", "budget-1", 12.0, 10.0)
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert attributes[MetricsAttributes.USER_EMAIL] == "jdoe"
+        assert attributes[MetricsAttributes.USER_NAME] == "jdoe"
+
+    def test_soft_limit_metric_user_email_attribute_is_username(self):
+        from codemie.enterprise.litellm.dependencies import _report_soft_limit_exceeded
+        from codemie.service.monitoring.metrics_constants import MetricsAttributes
+
+        with (
+            patch("codemie.service.monitoring.base_monitoring_service.send_log_metric") as mock_send,
+            patch("codemie.enterprise.litellm.dependencies._dispatch_soft_limit_notification"),
+        ):
+            _report_soft_limit_exceeded("jdoe", "uid-1", "budget-1", 8.0, 5.0)
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert attributes[MetricsAttributes.USER_EMAIL] == "jdoe"
+        assert attributes[MetricsAttributes.USER_NAME] == "jdoe"

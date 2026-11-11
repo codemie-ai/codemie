@@ -369,7 +369,7 @@ class ConversationService:
         # Starlette runs scheduled background tasks in the outer request task,
         # not the copy_context() snapshot active here (see save_chat_history's
         # set_llm_context re-set for why this context is special: it holds the
-        # correct litellm_context/dial_credentials/current_user_email). Snapshot
+        # correct litellm_context/dial_credentials/current_username). Snapshot
         # it now and run the naming task inside it, or get_llm_by_credentials
         # sees an empty/stale context and every rename silently no-ops.
         naming_context = contextvars.copy_context()

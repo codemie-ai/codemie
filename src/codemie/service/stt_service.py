@@ -24,7 +24,7 @@ import openai
 
 from codemie.configs import config, logger
 from codemie.configs.llm_config import CostConfig, LLMModel, SttConfig
-from codemie.configs.logger import current_user_email, logging_user_id
+from codemie.configs.logger import current_username, logging_user_id
 from codemie.core.exceptions import ExtendedHTTPException, UnknownSttModelError
 from codemie.enterprise.observability import get_observability_provider
 from codemie.service.llm_service.llm_service import llm_service
@@ -237,12 +237,12 @@ class SttService:
             return self._build_legacy_client(), config.STT_MODEL_NAME, False
 
         from codemie.enterprise.litellm import get_litellm_stt_client
-        from codemie.core.dependecies import litellm_context
+        from codemie.core.dependecies import _resolve_username, litellm_context
 
         client = get_litellm_stt_client(
             llm_model_details=model,
             litellm_context=litellm_context.get(None),
-            user_email=current_user_email.get(None),
+            username=_resolve_username(current_username.get()),
             user_id=logging_user_id.get(None),
         )
         if client is None:

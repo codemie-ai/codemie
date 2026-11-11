@@ -19,7 +19,7 @@ from typing import Optional
 from opentelemetry import metrics
 
 from codemie.configs import logger, config
-from codemie.configs.logger import current_user_email, logging_user_id
+from codemie.configs.logger import current_username, logging_user_id
 from codemie.configs.script_call_log_guard import allow_metric_record
 from codemie.service.monitoring.metrics_constants import MetricsAttributes
 
@@ -108,7 +108,7 @@ def emit_llm_token_metric(name: str, request_id: Optional[str], base_attributes:
         name=name,
         attributes={
             **base_attributes,
-            MetricsAttributes.USER_EMAIL: current_user_email.get("-"),
+            MetricsAttributes.USER_EMAIL: current_username.get("-"),
             **token_attributes,
         },
     )

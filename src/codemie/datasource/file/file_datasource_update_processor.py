@@ -201,7 +201,7 @@ class FileDatasourceUpdateProcessor(FileDatasourceProcessor):
                 )
                 if self.user:
                     set_llm_context(None, self.index.project_name, self.user)
-                    set_logging_info(uuid=self.request_uuid, user_id=self.user.id, user_email=self.user.username)
+                    set_logging_info(uuid=self.request_uuid, user_id=self.user.id, username=self.user.username)
 
                 # init_index() already set all counters and status flags
                 # (completed, error, is_fetching, is_queued) synchronously before

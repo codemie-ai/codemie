@@ -27,7 +27,7 @@ from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs import config, logger
 from codemie.configs.llm_config import LLMProvider, LLMModel
-from codemie.configs.logger import current_user_email, logging_user_id
+from codemie.configs.logger import current_username, logging_user_id
 from codemie.core.constants import (
     DEFAULT_MAX_OUTPUT_TOKENS_4K,
     DEFAULT_MAX_OUTPUT_TOKENS_8K,
@@ -59,14 +59,14 @@ def get_embeddings_model(
 
     # Try LiteLLM path (abstracted - returns None if not available)
     context = litellm_context.get(None)
-    user_email = _resolve_user_email(current_user_email.get())
+    username = _resolve_username(current_username.get())
     user_id = logging_user_id.get(None)
 
     litellm_embeddings = get_litellm_embedding_model(
         embedding_model=embedding_model,
         llm_model_details=llm_model_details,
         litellm_context=context,
-        user_email=user_email,
+        username=username,
         user_id=user_id,
         request_id=request_id,
     )
@@ -160,11 +160,11 @@ def get_budget_fallback_from() -> str | None:
 
 
 def get_project_for_metric() -> str:
-    """Return project for metric attribution. Falls back to user email when project is unknown."""
+    """Return project for metric attribution. Falls back to username when project is unknown."""
     project = get_current_project()
     if project:
         return project
-    return current_user_email.get("-")
+    return current_username.get("-")
 
 
 def set_disable_prompt_cache(disable: bool):
@@ -219,15 +219,15 @@ def _should_wrap_llm_client(llm_model_details: LLMModel, llm: Any) -> bool:
     return not (hasattr(llm, 'model_name') and llm.model_name)
 
 
-def _resolve_user_email(user_email: str | None) -> str | None:
-    if not user_email or user_email in ("-", "unknown"):
+def _resolve_username(username: str | None) -> str | None:
+    if not username or username in ("-", "unknown"):
         from codemie.rest_api.security.user_context import get_current_user
 
         current_user = get_current_user()
         if current_user:
-            return current_user.email or current_user.username or None
+            return current_user.username or current_user.email or None
 
-    return user_email
+    return username
 
 
 def enforce_allowed_model(
@@ -265,7 +265,7 @@ def get_llm_by_credentials(
     )
 
     context = litellm_context.get(None)
-    user_email = _resolve_user_email(current_user_email.get())
+    username = _resolve_username(current_username.get())
     user_id = logging_user_id.get(None)
 
     # `request_id` reaches a header for the first time here. It was previously consumed only to
@@ -274,7 +274,7 @@ def get_llm_by_credentials(
     litellm_llm = get_litellm_chat_model(
         llm_model_details=llm_model_details,
         litellm_context=context,
-        user_email=user_email,
+        username=username,
         user_id=user_id,
         temperature=temperature,
         top_p=top_p,

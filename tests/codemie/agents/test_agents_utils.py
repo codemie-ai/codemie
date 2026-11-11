@@ -485,7 +485,7 @@ class TestEmitLlmErrorLog:
     @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
     @patch("codemie.enterprise.litellm.proxy_router.logging_uuid")
     @patch("codemie.enterprise.litellm.proxy_router.logging_conversation_id")
-    @patch("codemie.enterprise.litellm.proxy_router.current_user_email")
+    @patch("codemie.enterprise.litellm.proxy_router.current_username")
     @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_emits_correct_metric_name_and_context_attributes(
         self, mock_uid, mock_email, mock_conv, mock_uuid, mock_send
@@ -515,7 +515,7 @@ class TestEmitLlmErrorLog:
     @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
     @patch("codemie.enterprise.litellm.proxy_router.logging_uuid")
     @patch("codemie.enterprise.litellm.proxy_router.logging_conversation_id")
-    @patch("codemie.enterprise.litellm.proxy_router.current_user_email")
+    @patch("codemie.enterprise.litellm.proxy_router.current_username")
     @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_extracts_model_and_provider_from_exception(self, mock_uid, mock_email, mock_conv, mock_uuid, mock_send):
         mock_uid.get.return_value = "-"
@@ -543,7 +543,7 @@ class TestEmitLlmErrorLog:
     @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
     @patch("codemie.enterprise.litellm.proxy_router.logging_uuid")
     @patch("codemie.enterprise.litellm.proxy_router.logging_conversation_id")
-    @patch("codemie.enterprise.litellm.proxy_router.current_user_email")
+    @patch("codemie.enterprise.litellm.proxy_router.current_username")
     @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_omits_exc_fields_when_no_exception(self, mock_uid, mock_email, mock_conv, mock_uuid, mock_send):
         mock_uid.get.return_value = "-"
@@ -566,7 +566,7 @@ class TestEmitLlmErrorLog:
     @patch("codemie.enterprise.litellm.proxy_router.send_log_metric", side_effect=RuntimeError("send failed"))
     @patch("codemie.enterprise.litellm.proxy_router.logging_uuid")
     @patch("codemie.enterprise.litellm.proxy_router.logging_conversation_id")
-    @patch("codemie.enterprise.litellm.proxy_router.current_user_email")
+    @patch("codemie.enterprise.litellm.proxy_router.current_username")
     @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_swallows_exceptions_to_avoid_masking_original_error(
         self, mock_uid, mock_email, mock_conv, mock_uuid, mock_send

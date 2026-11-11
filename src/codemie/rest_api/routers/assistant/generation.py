@@ -72,7 +72,7 @@ def generate_assistant(raw_request: Request, request: AssistantGeneratorRequest,
     """
     try:
         request_id = raw_request.state.uuid
-        set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+        set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
 
         # Set LiteLLM context with user's credentials
         from codemie.service.llm_service.utils import set_llm_context
@@ -111,7 +111,7 @@ def generate_assistant_prompt(
     """
     try:
         request_id = raw_request.state.uuid
-        set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+        set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
 
         # Set LiteLLM context with user's credentials
         from codemie.service.llm_service.utils import set_llm_context
@@ -151,7 +151,7 @@ def refine_with_ai(
     """
     try:
         request_id = raw_request.state.uuid
-        set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+        set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
 
         # Set LiteLLM context with user's credentials
         from codemie.service.llm_service.utils import set_llm_context

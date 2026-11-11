@@ -14,6 +14,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from codemie.service.spend.origin_context import current_origin
 from codemie.service.spend.traffic_class import TrafficOrigin
 
@@ -62,6 +64,30 @@ class TestBaseDatasourceProcessorLLMContext:
         BaseDatasourceProcessor._setup_processing_context(processor)
 
         mock_set_llm_context.assert_called_once_with(processor.index, None, processor.user)
+
+    @pytest.mark.parametrize(
+        ("email", "username", "expected"),
+        [
+            ("a@x.com", "alice", "alice"),
+            ("a@x.com", "", "a@x.com"),
+            ("", "", "user-abc"),
+        ],
+    )
+    @patch('codemie.service.llm_service.utils.set_llm_context')
+    @patch('codemie.datasource.base_datasource_processor.set_logging_info')
+    @patch('codemie.datasource.base_datasource_processor.DatasourceMonitoringCallback')
+    def test_logging_username_prefers_username_then_email_then_id(
+        self, mock_callback_cls, mock_set_logging, mock_set_llm_context, email, username, expected
+    ):
+        from codemie.datasource.base_datasource_processor import BaseDatasourceProcessor
+
+        processor = self._make_processor(project_space_visible=False)
+        processor.user.email = email
+        processor.user.username = username
+
+        BaseDatasourceProcessor._setup_processing_context(processor)
+
+        mock_set_logging.assert_called_once_with(uuid="req-uuid-1", user_id="user-abc", username=expected)
 
 
 class TestBaseDatasourceProcessorSpendOrigin:

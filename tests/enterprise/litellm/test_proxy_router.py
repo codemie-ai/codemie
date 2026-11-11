@@ -583,9 +583,9 @@ class TestResolveProjectBudgetRuntime:
 
         call_order: list[str] = []
 
-        async def _ensure_side_effect(*, user_id: str, user_email: str, project_name: str, budget_category):
+        async def _ensure_side_effect(*, user_id: str, username: str, project_name: str, budget_category):
             assert user_id == user.id
-            assert user_email == user.username
+            assert username == user.username
             assert project_name == "project-a"
             assert budget_category == CoreBudgetCategory.CLI
             call_order.append("ensure")
@@ -1270,7 +1270,7 @@ class TestResolveBudgetAttributionStream:
 
         assert await _collect_stream(result) == b"{}"
         mock_check_user_budget.assert_called_once_with(
-            user_email="user@example.com_codemie_premium_models",
+            username="user@example.com_codemie_premium_models",
             budget_id="premium_models",
             user_id=user.id,
         )
@@ -1314,7 +1314,7 @@ class TestResolveBudgetAttributionStream:
 
         assert await _collect_stream(result) == b"{}"
         mock_check_user_budget.assert_called_once_with(
-            user_email="user@example.com_codemie_premium_models",
+            username="user@example.com_codemie_premium_models",
             budget_id="runtime-premium-budget",
             user_id=user.id,
         )
@@ -1339,7 +1339,7 @@ class TestResolveBudgetAttributionStream:
 
         assert await _collect_stream(result) == b"{}"
         mock_check_user_budget.assert_called_once_with(
-            user_email="user@example.com", budget_id="default", user_id=user.id
+            username="user@example.com", budget_id="default", user_id=user.id
         )
         assert request_info["litellm_customer_id"] == "user@example.com"
 
@@ -1383,7 +1383,7 @@ class TestResolveBudgetAttributionStream:
 
         assert await _collect_stream(result) == b"{}"
         mock_check_user_budget.assert_called_once_with(
-            user_email="user@example.com",
+            username="user@example.com",
             budget_id="platform-budget",
             user_id="user-1",
         )
@@ -1429,7 +1429,7 @@ class TestResolveBudgetAttributionStream:
 
         assert await _collect_stream(result) == b"{}"
         mock_check_user_budget.assert_called_once_with(
-            user_email="user@example.com_codemie_cli",
+            username="user@example.com_codemie_cli",
             budget_id="cli-budget",
             user_id="user-1",
         )

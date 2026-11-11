@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from codemie.chains.pure_chat_chain import PureChatChain
-from codemie.configs.logger import current_user_email, logging_user_id
+from codemie.configs.logger import current_username, logging_user_id
 from codemie.core.dependecies import get_llm_by_credentials, get_project_for_metric
 from codemie.core.models import AssistantChatRequest
 from codemie.service.llm_service.llm_service import llm_service
@@ -48,7 +48,7 @@ class WorkflowOutputChangeRequestService:
                     base_attributes={
                         MetricsAttributes.LLM_MODEL: llm_model or "default",
                         MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.USER_NAME: current_username.get("-"),
                         MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )

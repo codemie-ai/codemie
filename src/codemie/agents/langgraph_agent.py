@@ -277,7 +277,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             uuid=request_uuid,
             user_id=user.id,
             conversation_id=self.conversation_id,
-            user_email=user.username,
+            username=user.username,
         )
         self.verbose = verbose
         self.is_react = is_react
@@ -877,7 +877,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 uuid=self.request_uuid,
                 user_id=self.user.id,
                 conversation_id=self.conversation_id,
-                user_email=self.user.username,
+                username=self.user.username,
             )
             set_llm_context(self.assistant, None, self.user, self.llm_model)
 

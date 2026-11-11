@@ -29,7 +29,7 @@ import yaml
 from fastapi import status
 
 from codemie.configs import logger
-from codemie.configs.logger import current_user_email, logging_user_id
+from codemie.configs.logger import current_username, logging_user_id
 from codemie.core.ability import Ability, Action
 from codemie.core.dependecies import get_llm_by_credentials, get_project_for_metric
 from codemie.service.monitoring.base_monitoring_service import emit_llm_token_metric
@@ -1737,7 +1737,7 @@ description: {skill.description}
                     base_attributes={
                         MetricsAttributes.LLM_MODEL: model_to_use or "default",
                         MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.USER_NAME: current_username.get("-"),
                         MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )

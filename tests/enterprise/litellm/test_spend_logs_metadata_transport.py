@@ -106,7 +106,7 @@ class TestChatCarriesEverythingButTheRunIdAtConstruction:
                 user_id=USER_ID,
                 category=BudgetCategory.PLATFORM,
                 litellm_context=SimpleNamespace(current_project="acme", credentials=None, principal_email=None),
-                user_email="alice@example.com",
+                username="alice@example.com",
             )
         payload = metadata_in(spend_logs_metadata_header(**values))
         assert "codemie_run_id" not in payload
@@ -127,7 +127,7 @@ class TestChatCarriesEverythingButTheRunIdAtConstruction:
                 litellm_context=LiteLLMContext(
                     credentials=None, current_project="alice@example.com", principal_email="alice@example.com"
                 ),
-                user_email="alice",
+                username="alice",
             )
         payload = metadata_in(spend_logs_metadata_header(**values))
         assert "codemie_project" not in payload
@@ -148,7 +148,7 @@ class TestChatCarriesEverythingButTheRunIdAtConstruction:
                     user_id=USER_ID,
                     category=BudgetCategory.PLATFORM,
                     litellm_context=None,
-                    user_email=None,
+                    username=None,
                 )
         assert values["workflow_id"] == "wf-7"
 
@@ -163,7 +163,7 @@ class TestChatCarriesEverythingButTheRunIdAtConstruction:
                 user_id=USER_ID,
                 category=None,
                 litellm_context=None,
-                user_email=None,
+                username=None,
             )
         payload = metadata_in(spend_logs_metadata_header(**values))
         assert payload == {"codemie_request_id": "req-1"}
@@ -357,7 +357,7 @@ class TestTheOwnCredentialsBypassStillSendsIdentity:
                 category = llm_factory._configure_direct_runtime_overrides(
                     llm_model_details=model_details,
                     litellm_context=SimpleNamespace(current_project=None, credentials=creds, principal_email=None),
-                    user_email="alice@example.com",
+                    username="alice@example.com",
                     user_id=USER_ID,
                     creds=creds,
                     merged_headers={},
@@ -796,7 +796,7 @@ class TestTheOriginIsReadAtConstructionAndAgainPerCall:
                     user_id=USER_ID,
                     category=BudgetCategory.PLATFORM,
                     litellm_context=None,
-                    user_email=None,
+                    username=None,
                 )
 
     def _payload_of_a_call(self, attribution: dict, call_time_origin: str | None):
@@ -865,7 +865,7 @@ class TestTheEmbeddingsHeaderCarriesTheOriginToo:
                     embedding_model="text-embedding-ada-002",
                     llm_model_details=model_details,
                     litellm_context=None,
-                    user_email="alice@example.com",
+                    username="alice@example.com",
                     user_id=USER_ID,
                 )
 
@@ -891,7 +891,7 @@ class TestTheSttClientCarriesIdentityAndOriginToo:
             patch("codemie.enterprise.litellm.dependencies.check_user_budget"),
         ):
             with spend_origin(TrafficOrigin.CLI):
-                client = get_litellm_stt_client(model, None, "alice@example.com", USER_ID)
+                client = get_litellm_stt_client(model, None, "alice", USER_ID)
 
         payload = metadata_in(client.default_headers)
         assert payload["codemie_user_id"] == USER_ID

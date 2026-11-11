@@ -189,7 +189,7 @@ class ToolCallConfirmationMixin:
             uuid=self.request_uuid,
             user_id=self.user.id,
             conversation_id=self.conversation_id,
-            user_email=self.user.username,
+            username=self.user.username,
         )
         set_llm_context(self.assistant, None, self.user, self.llm_model)
         execution_start = time()

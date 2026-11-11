@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Make LiteLLM end_user use username instead of email for datasource indexing and REST direct LLM/embedding calls (3 behavior edits) and rename user_email to username across the LiteLLM identity chain, keeping metric label names unchanged.",
+  "generated": "2026-10-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Identity chain crosses logging context (configs/logger), auth, core dependencies, datasource base processor, enterprise LiteLLM factory/dependencies/budget adapters, and budget services. Mostly mechanical rename with no new abstractions; scored XL because a core shared utility (logging context var) and several subsystems are touched." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing username usage in hedged_handler, file_datasource_update_processor and _unfunded_project, which covers the rename but not the llm_factory has_real_project_context guard (current_project is email-named personal project vs username), currently masked by has_project_budget_scopes. Keyword-only signatures mean a missed call site fails with TypeError at runtime; metric label values shift for dashboards; new username-form LiteLLM customers restart budget/spend continuity." },
+    { "dimension": "file_change_estimate", "reason": "About 12 named production files plus unenumerated set_logging_info/current_user_email callers (about 16 files by codegraph) and about 9+ test modules with roughly 120 occurrences; 0 new files, but 16+ modified files across many directories. Each edit is small and mechanical." },
+    { "dimension": "affected_layers", "reason": "API/auth, service (budget, monitoring), datasource, enterprise LiteLLM external integration, with a cross-cutting logging-context concern changed in several layers. No schema or migration." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utility (logging context var / set_logging_info) used by about 39 callers",
+    "Technical Risk at L: identity change affects LiteLLM customer ids and spend continuity; guard in llm_factory has no exact precedent"
+  ],
+  "split_recommendation": null
+}

@@ -779,7 +779,7 @@ def generate_skill(raw_request: Request, request: SkillGeneratorRequest, user: U
     from codemie.service.llm_service.utils import set_llm_context
 
     request_id = raw_request.state.uuid
-    set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+    set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
     set_llm_context(None, user.current_project, user)
 
     return SkillGeneratorService.generate_skill_details(
@@ -807,7 +807,7 @@ def refine_skill(raw_request: Request, request: SkillRefineRequest, user: User =
     from codemie.service.llm_service.utils import set_llm_context
 
     request_id = raw_request.state.uuid
-    set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+    set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
     set_llm_context(None, user.current_project, user)
 
     return SkillGeneratorService.refine_skill_details(
@@ -843,7 +843,7 @@ def generate_skill_instructions(
 
         from codemie.configs.logger import set_logging_info
 
-        set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+        set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
 
         # Set LiteLLM context with user's credentials
         from codemie.service.llm_service.utils import set_llm_context

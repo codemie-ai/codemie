@@ -167,7 +167,7 @@ class TestSttClientTimeout:
             patch("codemie.enterprise.litellm.stt_client._generate_litellm_headers", return_value={}),
             patch("codemie.enterprise.litellm.stt_client._configure_direct_runtime_overrides"),
         ):
-            return get_litellm_stt_client(model, None, "user@example.com")
+            return get_litellm_stt_client(model, None, "jdoe")
 
     def test_default_timeout_is_above_the_usual_server_limit(self, litellm_active):
         assert self._client(_model()).timeout == 300.0
@@ -193,11 +193,11 @@ class TestSttClientCredentials:
         from codemie.rest_api.models.settings import LiteLLMContext, LiteLLMCredentials
 
         creds = LiteLLMCredentials(api_key=api_key) if api_key else None
-        return LiteLLMContext(credentials=creds, current_project="proj", personal_project="user@example.com")
+        return LiteLLMContext(credentials=creds, current_project="proj", personal_project="jdoe")
 
     def test_the_user_key_is_used_and_no_customer_is_attributed_for_a_personal_key(self, litellm_active):
         with patch("codemie.enterprise.litellm.stt_client._generate_litellm_headers", return_value={}):
-            client = get_litellm_stt_client(_model(), self._context("user-key"), "user@example.com", "u-1")
+            client = get_litellm_stt_client(_model(), self._context("user-key"), "jdoe", "u-1")
 
         assert client.api_key == "user-key"
         assert "x-litellm-customer-id" not in client.default_headers
@@ -207,7 +207,7 @@ class TestSttClientCredentials:
             patch("codemie.enterprise.litellm.stt_client._generate_litellm_headers", return_value={}),
             patch("codemie.enterprise.litellm.stt_client._configure_direct_runtime_overrides"),
         ):
-            client = get_litellm_stt_client(_model(), self._context(None), "user@example.com", "u-1")
+            client = get_litellm_stt_client(_model(), self._context(None), "jdoe", "u-1")
 
         assert client.api_key == "app-key"
 
@@ -216,12 +216,12 @@ class TestSttClientFactory:
     def test_returns_none_when_litellm_is_not_enabled(self, monkeypatch):
         monkeypatch.setattr(config, "LLM_PROXY_MODE", LLMProxyMode.lite_llm)
         with patch("codemie.enterprise.litellm.dependencies.is_litellm_enabled", return_value=False):
-            assert get_litellm_stt_client(_model(), None, "user@example.com") is None
+            assert get_litellm_stt_client(_model(), None, "jdoe") is None
 
     def test_returns_none_when_the_proxy_mode_is_not_litellm(self, monkeypatch):
         monkeypatch.setattr(config, "LLM_PROXY_MODE", LLMProxyMode.internal)
         with patch("codemie.enterprise.litellm.dependencies.is_litellm_enabled", return_value=True):
-            assert get_litellm_stt_client(_model(), None, "user@example.com") is None
+            assert get_litellm_stt_client(_model(), None, "jdoe") is None
 
     def test_client_points_at_litellm_with_the_app_key(self, litellm_active):
         with (
@@ -230,7 +230,7 @@ class TestSttClientFactory:
             ),
             patch("codemie.enterprise.litellm.stt_client._configure_direct_runtime_overrides"),
         ):
-            client = get_litellm_stt_client(_model(), None, "user@example.com", "user-1")
+            client = get_litellm_stt_client(_model(), None, "jdoe", "user-1")
 
         assert str(client.base_url).rstrip("/") == "https://litellm.example"
         assert client.api_key == "app-key"
@@ -244,6 +244,6 @@ class TestSttClientFactory:
             patch("codemie.enterprise.litellm.llm_factory._get_direct_request_category_budget_id", return_value=None),
             patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
         ):
-            client = get_litellm_stt_client(_model(), None, "user@example.com", "uid-1")
+            client = get_litellm_stt_client(_model(), None, "jdoe", "uid-1")
 
-        assert client.default_headers["x-litellm-customer-id"] == "user@example.com"
+        assert client.default_headers["x-litellm-customer-id"] == "jdoe"

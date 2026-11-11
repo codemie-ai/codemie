@@ -101,7 +101,7 @@ class BaseDatasourceProcessor(ABC):
         self.cron_expression = cron_expression
         self._reset_chunk_numbering()
         if user:
-            set_logging_info(uuid=request_uuid, user_id=user.id, user_email=user.username)
+            set_logging_info(uuid=request_uuid, user_id=user.id, username=user.username)
         # Capture the active OTel context from the HTTP handler thread so that process(),
         # which runs in a background thread with no inherited contextvars, can attach it
         # and make the datasource.process span a child of the HTTP request span.
@@ -296,7 +296,7 @@ class BaseDatasourceProcessor(ABC):
             set_logging_info(
                 uuid=self.request_uuid,
                 user_id=self.user.id,
-                user_email=getattr(self.user, 'email', None) or self.user.username or self.user.id,
+                username=getattr(self.user, 'username', None) or getattr(self.user, 'email', None) or self.user.id,
             )
 
     def _notify_callbacks_on_complete(self, result) -> None:

@@ -37,7 +37,7 @@ def test_set_logging_info(input_logger_data: tuple, expected_logger_data: tuple)
     attributes = {attr_name: attr_val for attr_val, attr_name in zip(input_logger_data, attr_names)}
 
     # Isolate from other tests / prior ContextVar values
-    set_logging_info(uuid="-", user_id="-", conversation_id="-", user_email="-")
+    set_logging_info(uuid="-", user_id="-", conversation_id="-", username="-")
     set_logging_info(**attributes)
 
     assert logging_uuid.get() == expected_logger_data[0]
@@ -47,8 +47,8 @@ def test_set_logging_info(input_logger_data: tuple, expected_logger_data: tuple)
 
 def test_set_logging_info_preserves_conversation_id_when_omitted() -> None:
     """Refreshing uuid/user_id must not wipe an already-bound conversation_id."""
-    set_logging_info(uuid="u1", user_id="user-1", conversation_id="conv-keep", user_email="a@b.c")
-    set_logging_info(uuid="u2", user_id="user-2", user_email="a@b.c")
+    set_logging_info(uuid="u1", user_id="user-1", conversation_id="conv-keep", username="a@b.c")
+    set_logging_info(uuid="u2", user_id="user-2", username="a@b.c")
 
     assert logging_uuid.get() == "u2"
     assert logging_user_id.get() == "user-2"
@@ -66,19 +66,19 @@ def test_copy_and_restore_logging_context() -> None:
         logging_uuid,
         logging_user_id,
         logging_conversation_id,
-        current_user_email,
+        current_username,
     )
 
     set_logging_info(
         uuid="snap-uuid",
         user_id="snap-user",
         conversation_id="snap-conv",
-        user_email="snap@example.com",
+        username="snap@example.com",
     )
     snapshot = copy_logging_context()
 
     # Simulate context reset (new task)
-    set_logging_info(uuid="-", user_id="-", conversation_id="-", user_email="-")
+    set_logging_info(uuid="-", user_id="-", conversation_id="-", username="-")
 
     # Restore from snapshot
     restore_logging_context(snapshot)
@@ -86,7 +86,7 @@ def test_copy_and_restore_logging_context() -> None:
     assert logging_uuid.get() == "snap-uuid"
     assert logging_user_id.get() == "snap-user"
     assert logging_conversation_id.get() == "snap-conv"
-    assert current_user_email.get() == "snap@example.com"
+    assert current_username.get() == "snap@example.com"
 
 
 def test_logging_context_propagates_to_new_thread() -> None:
@@ -94,14 +94,14 @@ def test_logging_context_propagates_to_new_thread() -> None:
     from codemie.configs.logger import (
         copy_logging_context,
         restore_logging_context,
-        current_user_email,
+        current_username,
     )
 
     set_logging_info(
         uuid="test-uuid",
         user_id="user-abc",
         conversation_id="conv-xyz",
-        user_email="user@example.com",
+        username="user@example.com",
     )
     snapshot = copy_logging_context()
     captured: dict[str, str] = {}
@@ -111,7 +111,7 @@ def test_logging_context_propagates_to_new_thread() -> None:
         captured["uuid"] = logging_uuid.get()
         captured["user_id"] = logging_user_id.get()
         captured["conversation_id"] = logging_conversation_id.get()
-        captured["user_email"] = current_user_email.get()
+        captured["username"] = current_username.get()
 
     thread = threading.Thread(target=worker)
     thread.start()
@@ -121,5 +121,5 @@ def test_logging_context_propagates_to_new_thread() -> None:
         "uuid": "test-uuid",
         "user_id": "user-abc",
         "conversation_id": "conv-xyz",
-        "user_email": "user@example.com",
+        "username": "user@example.com",
     }

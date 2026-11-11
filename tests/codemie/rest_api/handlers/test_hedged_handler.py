@@ -1312,7 +1312,7 @@ class TestLoggingContextConversationId:
         """None on the request means omit: an already-bound conversation_id is kept."""
         from codemie.configs.logger import set_logging_info as real_set
 
-        real_set(uuid="pre", user_id="user-1", conversation_id="conv-keep", user_email="pre@example.com")
+        real_set(uuid="pre", user_id="user-1", conversation_id="conv-keep", username="pre@example.com")
         request_.conversation_id = None
         restored: dict[str, str] = {}
 
@@ -1432,7 +1432,7 @@ class TestLoggingContextConversationId:
 
                 response = handler._handle_stream(request_, raw_request, time())
                 # Middleware / request teardown clears ContextVars before body streams.
-                real_set(uuid="-", user_id="-", conversation_id="-", user_email="-")
+                real_set(uuid="-", user_id="-", conversation_id="-", username="-")
                 asyncio.run(_consume(response.body_iterator))
         finally:
             codemie_logger.removeHandler(cap)

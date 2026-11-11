@@ -32,7 +32,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.header_decoding import decode_attribution_header
 from codemie.service.monitoring.base_monitoring_service import limit_string, send_log_metric
 from codemie.service.monitoring.metrics_constants import MetricsAttributes, LLM_ERROR_TOTAL_METRIC
-from codemie.configs.logger import logging_user_id, current_user_email, logging_conversation_id, logging_uuid
+from codemie.configs.logger import logging_user_id, current_username, logging_conversation_id, logging_uuid
 from codemie.core.errors import ErrorResponse, ExceptionClassificationPipeline
 
 if TYPE_CHECKING:
@@ -1086,7 +1086,7 @@ async def _create_global_budget_body_stream(
         f"budget_id={budget_id!r} model={llm_model!r}"
     )
 
-    customer = check_user_budget(user_email=username, budget_id=budget_id, user_id=user.id)
+    customer = check_user_budget(username=username, budget_id=budget_id, user_id=user.id)
     await budget_service.track_proxy_budget_assignment_for_request(
         user_id=user.id,
         category=category,
@@ -1118,7 +1118,7 @@ async def _resolve_project_budget_runtime(user: User, category: BudgetCategory, 
     )
     await ensure_project_member_runtime_ready(
         user_id=user.id,
-        user_email=user.username,
+        username=user.username,
         project_name=project_name,
         budget_category=core_category,
     )
@@ -1140,7 +1140,7 @@ async def _resolve_project_budget_runtime(user: User, category: BudgetCategory, 
     )
 
     provider_result = await budget_resolution_service.dispatch_runtime(
-        resolved, user_id=user.id, user_email=user.username, model=request_info.get(LLM_MODEL)
+        resolved, user_id=user.id, username=user.username, model=request_info.get(LLM_MODEL)
     )
     if provider_result is None:
         logger.debug(
@@ -1326,7 +1326,7 @@ def emit_llm_error_log(
             MetricsAttributes.LLM_ERROR_CODE: error_code,
             MetricsAttributes.ERROR: limit_string(error_message),
             MetricsAttributes.USER_ID: logging_user_id.get("-"),
-            MetricsAttributes.USER_EMAIL: current_user_email.get("-"),
+            MetricsAttributes.USER_EMAIL: current_username.get("-"),
             MetricsAttributes.CONVERSATION_ID: logging_conversation_id.get("-"),
             MetricsAttributes.REQUEST_UUID: logging_uuid.get("-"),
             MetricsAttributes.REQUEST_ID: logging_uuid.get("-"),
@@ -1759,7 +1759,7 @@ def _build_premium_budget_error_body(body_bytes: bytes) -> bytes | None:
     Returns replacement JSON bytes with a user-friendly message when all conditions hold:
       1. The response body is valid JSON with ``error.type == "budget_exceeded"``.
       2. The error message contains ``_{budget_name} over budget`` — i.e. the LiteLLM
-         ``end_user`` was the derived premium identity ``{email}_{budget_name}``.
+         ``end_user`` was the derived premium identity ``{username}_{budget_name}``.
       3. The premium models budget feature is enabled (a ``premium_models`` budget
          is configured in ``predefined budgets``).
 
@@ -1782,7 +1782,7 @@ def _build_premium_budget_error_body(body_bytes: bytes) -> bytes | None:
     if error.get("type") != "budget_exceeded":
         return None
 
-    # The end_user injected into LiteLLM for premium models is "{email}_{budget_name}".
+    # The end_user injected into LiteLLM for premium models is "{username}_{budget_name}".
     # LiteLLM surfaces it in the message as: "End User=<identity> over budget."
     error_message = error.get("message", "")
     if f"_{budget_name} over budget" not in error_message:

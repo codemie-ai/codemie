@@ -292,7 +292,7 @@ class LiteLLMChatOpenAI(AzureChatOpenAI):
 def create_litellm_chat_model(
     llm_model_details: "LLMModel",
     litellm_context: Optional["LiteLLMContext"],
-    user_email: Optional[str],
+    username: Optional[str],
     user_id: Optional[str] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
@@ -312,7 +312,7 @@ def create_litellm_chat_model(
     Args:
         llm_model_details: LLM model configuration from core
         litellm_context: Optional LiteLLM context with credentials and project info
-        user_email: User email for budget tracking
+        username: Username for budget tracking
         temperature: Optional temperature override
         top_p: Optional top_p override
         streaming: Enable streaming responses
@@ -348,7 +348,7 @@ def create_litellm_chat_model(
     resolved_category = _configure_direct_runtime_overrides(
         llm_model_details=llm_model_details,
         litellm_context=litellm_context,
-        user_email=user_email,
+        username=username,
         user_id=user_id,
         creds=creds,
         merged_headers=merged_headers,
@@ -367,7 +367,7 @@ def create_litellm_chat_model(
         user_id=user_id,
         category=resolved_category,
         litellm_context=litellm_context,
-        user_email=user_email,
+        username=username,
     )
     # The construction-time copy carries no run id: one model object serves every iteration of an
     # agent loop, so a run id fixed here would name one call for many.
@@ -546,7 +546,7 @@ def _mirror_budget_assignment(*, user_id: str | None, customer: Any | None, cate
 def _try_apply_premium_budget(
     *,
     llm_model_details: "LLMModel",
-    user_email: Optional[str],
+    username: Optional[str],
     user_id: Optional[str],
     request_params: dict[str, Any],
     merged_headers: dict[str, str],
@@ -564,10 +564,10 @@ def _try_apply_premium_budget(
     if has_project_context:
         return False
 
-    if not user_email:
+    if not username:
         return False
 
-    premium_username = get_premium_username(user_email, llm_model_details.base_name)
+    premium_username = get_premium_username(username, llm_model_details.base_name)
     if premium_username is None:
         return False
 
@@ -579,12 +579,12 @@ def _try_apply_premium_budget(
 
     logger.info(
         f"budget_event=runtime_mode_selected component=litellm_llm_factory "
-        f"user_id={user_id!r} username={user_email!r} model={llm_model_details.base_name!r} "
+        f"user_id={user_id!r} username={username!r} model={llm_model_details.base_name!r} "
         f"mode={RuntimeBudgetMode.GLOBAL_OR_PERSONAL_BUDGET.value!r} "
         f"budget_category={LiteLLMBudgetCategory.PREMIUM_MODELS.value!r} "
         f"litellm_customer_key={premium_username!r}"
     )
-    customer = check_user_budget(user_email=premium_username, user_id=user_id, budget_id=premium_budget_id)
+    customer = check_user_budget(username=premium_username, user_id=user_id, budget_id=premium_budget_id)
     merged_headers[LITELLM_CUSTOMER_ID_HEADER] = premium_username
     _mirror_budget_assignment(user_id=user_id, customer=customer, category=CoreBudgetCategory.PREMIUM_MODELS)
     return True
@@ -593,7 +593,7 @@ def _try_apply_premium_budget(
 def _apply_platform_budget(
     *,
     llm_model_details: "LLMModel",
-    user_email: Optional[str],
+    username: Optional[str],
     user_id: Optional[str],
     request_params: dict[str, Any],
     merged_headers: dict[str, str],
@@ -607,19 +607,19 @@ def _apply_platform_budget(
     ) or get_category_budget_id(LiteLLMBudgetCategory.PLATFORM)
     logger.info(
         f"budget_event=runtime_mode_selected component=litellm_llm_factory "
-        f"user_id={user_id!r} username={user_email!r} model={llm_model_details.base_name!r} "
+        f"user_id={user_id!r} username={username!r} model={llm_model_details.base_name!r} "
         f"mode={RuntimeBudgetMode.GLOBAL_OR_PERSONAL_BUDGET.value!r} "
-        f"litellm_customer_key={user_email!r}"
+        f"litellm_customer_key={username!r}"
     )
-    customer = check_user_budget(user_email=user_email, user_id=user_id, budget_id=platform_budget_id)
-    if user_email is not None:
-        merged_headers[LITELLM_CUSTOMER_ID_HEADER] = user_email
+    customer = check_user_budget(username=username, user_id=user_id, budget_id=platform_budget_id)
+    if username is not None:
+        merged_headers[LITELLM_CUSTOMER_ID_HEADER] = username
     _mirror_budget_assignment(user_id=user_id, customer=customer, category=CoreBudgetCategory.PLATFORM)
 
 
 def _project_in_context(
     litellm_context: Optional["LiteLLMContext"],
-    user_email: Optional[str],
+    username: Optional[str],
 ) -> str | None:
     """The project this call is being made inside, or None.
 
@@ -629,13 +629,13 @@ def _project_in_context(
     "project" named after them, landing a well-formed `project_scoped` row attributed to something
     that is not a project - no error, no NULL, nothing to notice - and out of their personal figure.
 
-    **`user_email` is the LiteLLM customer key, which is the username**, so it names the personal
+    **`username` is the LiteLLM customer key, which is the username**, so it names the personal
     scope only where the username is the email. `principal_email` is the email itself; both are
     checked, so the comparison holds whichever identity provider made the user.
     """
     if not litellm_context or not litellm_context.current_project:
         return None
-    if litellm_context.current_project in {user_email, litellm_context.principal_email} - {None}:
+    if litellm_context.current_project in {username, litellm_context.principal_email} - {None}:
         return None
     return litellm_context.current_project
 
@@ -646,7 +646,7 @@ def _spend_attribution_values(
     user_id: Optional[str],
     category: Optional["CoreBudgetCategory"],
     litellm_context: Optional["LiteLLMContext"],
-    user_email: Optional[str],
+    username: Optional[str],
 ) -> dict[str, str | None]:
     """Everything the spend-logs metadata header needs except the per-call run id.
 
@@ -672,7 +672,7 @@ def _spend_attribution_values(
         "request_id": request_id,
         "user_id": user_id,
         "category": category.value if category is not None else None,
-        "project": _project_in_context(litellm_context, user_email),
+        "project": _project_in_context(litellm_context, username),
         "workflow_id": get_current_workflow_id(),
         "origin": origin.value if origin else None,
     }
@@ -680,7 +680,7 @@ def _spend_attribution_values(
 
 def _classify_direct_traffic(
     llm_model_details: "LLMModel",
-    user_email: Optional[str],
+    username: Optional[str],
 ) -> "CoreBudgetCategory":
     """What KIND of traffic this is, independent of which budget pays for it.
 
@@ -698,7 +698,7 @@ def _classify_direct_traffic(
 
     from .dependencies import get_premium_username
 
-    if user_email and get_premium_username(user_email, llm_model_details.base_name) is not None:
+    if username and get_premium_username(username, llm_model_details.base_name) is not None:
         return CoreBudgetCategory.PREMIUM_MODELS
     # Direct runtime traffic is never CLI - that arrives through the proxy.
     return CoreBudgetCategory.PLATFORM
@@ -727,7 +727,7 @@ def _configure_direct_runtime_overrides(
     *,
     llm_model_details: "LLMModel",
     litellm_context: Optional["LiteLLMContext"],
-    user_email: Optional[str],
+    username: Optional[str],
     user_id: Optional[str],
     creds: Optional["LiteLLMCredentials"],
     merged_headers: dict[str, str],
@@ -749,7 +749,7 @@ def _configure_direct_runtime_overrides(
     if creds:
         logger.info(
             f"budget_event=runtime_mode_selected component=litellm_llm_factory "
-            f"user_id={user_id!r} username={user_email!r} "
+            f"user_id={user_id!r} username={username!r} "
             f"mode={RuntimeBudgetMode.USER_CREDENTIALS_BYPASS.value!r} reason=own_credentials"
         )
         # Personal-key bypass never injects the member customer: the request is paid by
@@ -763,7 +763,7 @@ def _configure_direct_runtime_overrides(
         # holder depending on the username/email alias set, which exists as insurance rather than as
         # a path anything should rely on. The category is the traffic's own kind, not a budget
         # selection, because no budget is selected here.
-        return _classify_direct_traffic(llm_model_details, user_email)
+        return _classify_direct_traffic(llm_model_details, username)
 
     # Context creation can already flag a fallback for analytics. Resolve the original
     # project for this model so that annotation never changes category precedence, and a
@@ -782,7 +782,7 @@ def _configure_direct_runtime_overrides(
         llm_model_details=llm_model_details,
         litellm_context=runtime_context,
         user_id=user_id,
-        user_email=user_email,
+        username=username,
     )
 
     if _has_project_runtime_overrides(
@@ -800,7 +800,7 @@ def _configure_direct_runtime_overrides(
         )
         logger.info(
             f"budget_event=runtime_provider_overrides_applied component=litellm_llm_factory "
-            f"user_id={user_id!r} username={user_email!r} model={llm_model_details.base_name!r} "
+            f"user_id={user_id!r} username={username!r} model={llm_model_details.base_name!r} "
             f"api_key_present={project_runtime_api_key is not None} "
             f"api_key_fingerprint={_anonymized_key_fingerprint(project_runtime_api_key)!r} "
             f"base_url_present={project_runtime_base_url is not None} "
@@ -810,20 +810,21 @@ def _configure_direct_runtime_overrides(
         )
         return project_runtime_category
 
-    # current_project equals user_email when a personal user accesses a global assistant
-    # (_resolve_effective_project returns user.email for non-members). That is not a real
-    # project context — treat it the same as current_project=None for budget routing.
+    # current_project equals personal_project (or username when personal_project is unset) when a personal
+    # user accesses a global assistant (_resolve_effective_project returns the email-named personal project
+    # for non-members). That is not a real project context — treat it the same as current_project=None for
+    # budget routing.
     # A project with no budget scopes (has_project_budget_scopes=False) also falls through
     # to personal/default budget — same behaviour as an own (no-project) assistant.
     has_real_project_context = bool(
         runtime_context
         and runtime_context.current_project
-        and runtime_context.current_project != user_email
+        and runtime_context.current_project != (runtime_context.personal_project or username)
         and has_project_budget_scopes
     )
     if _try_apply_premium_budget(
         llm_model_details=llm_model_details,
-        user_email=user_email,
+        username=username,
         user_id=user_id,
         request_params=request_params,
         merged_headers=merged_headers,
@@ -834,7 +835,7 @@ def _configure_direct_runtime_overrides(
 
     _apply_platform_budget(
         llm_model_details=llm_model_details,
-        user_email=user_email,
+        username=username,
         user_id=user_id,
         request_params=request_params,
         merged_headers=merged_headers,
@@ -969,7 +970,7 @@ def _resolve_direct_budget_availability(project_name: str, user_id: str) -> Dire
 
 def _resolve_direct_budget_category(
     *,
-    user_email: str,
+    username: str,
     llm_model: str,
     availability: DirectBudgetAvailability,
 ) -> "CoreBudgetCategory":
@@ -980,12 +981,12 @@ def _resolve_direct_budget_category(
 
     premium_budget_id = availability.user_budget_ids.get(CoreBudgetCategory.PREMIUM_MODELS.value)
     if (
-        get_premium_username(user_email, llm_model) is not None
+        get_premium_username(username, llm_model) is not None
         and CoreBudgetCategory.PREMIUM_MODELS in availability.project_scopes
     ):
         logger.info(
             f"budget_event=runtime_category_selected component=litellm_llm_factory "
-            f"username={user_email!r} model={llm_model!r} "
+            f"username={username!r} model={llm_model!r} "
             f"budget_category={CoreBudgetCategory.PREMIUM_MODELS.value!r} reason=project_premium_scope"
         )
         return CoreBudgetCategory.PREMIUM_MODELS
@@ -994,20 +995,20 @@ def _resolve_direct_budget_category(
         premium_budget_id = premium_budget_id or get_category_budget_id(LiteLLMBudgetCategory.PREMIUM_MODELS)
 
     if (
-        get_premium_username(user_email, llm_model) is not None
+        get_premium_username(username, llm_model) is not None
         and premium_budget_id
         and (not availability.project_scopes or CoreBudgetCategory.PREMIUM_MODELS in availability.project_scopes)
     ):
         logger.info(
             f"budget_event=runtime_category_selected component=litellm_llm_factory "
-            f"username={user_email!r} model={llm_model!r} "
+            f"username={username!r} model={llm_model!r} "
             f"budget_category={CoreBudgetCategory.PREMIUM_MODELS.value!r} reason=premium_model_no_project_scope"
         )
         return CoreBudgetCategory.PREMIUM_MODELS
 
     logger.info(
         f"budget_event=runtime_category_selected component=litellm_llm_factory "
-        f"username={user_email!r} model={llm_model!r} "
+        f"username={username!r} model={llm_model!r} "
         f"budget_category={CoreBudgetCategory.PLATFORM.value!r} reason=platform_default"
     )
     return CoreBudgetCategory.PLATFORM
@@ -1018,7 +1019,7 @@ def _resolve_direct_project_budget_runtime(
     llm_model_details: "LLMModel",
     litellm_context: Optional["LiteLLMContext"],
     user_id: Optional[str],
-    user_email: Optional[str],
+    username: Optional[str],
 ) -> tuple[dict[str, str], str | None, str | None, bool, Optional["CoreBudgetCategory"]]:
     """Resolve project budget headers for direct LiteLLM chat model usage.
 
@@ -1028,10 +1029,10 @@ def _resolve_direct_project_budget_runtime(
     the attribution header names the same category the routing chose, rather than a second guess at
     it.
     """
-    if not litellm_context or not litellm_context.current_project or not user_id or not user_email:
+    if not litellm_context or not litellm_context.current_project or not user_id or not username:
         logger.info(
             f"budget_event=budget_resolution_global_fallback component=litellm_llm_factory path=sync "
-            f"user_id={user_id!r} username={user_email!r} "
+            f"user_id={user_id!r} username={username!r} "
             f"project_name={(litellm_context.current_project if litellm_context else None)!r} "
             f"model={llm_model_details.base_name!r} reason=missing_context_or_project"
         )
@@ -1049,14 +1050,14 @@ def _resolve_direct_project_budget_runtime(
     if not availability.project_scopes:
         logger.info(
             f"budget_event=budget_resolution_global_fallback component=litellm_llm_factory path=sync "
-            f"user_id={user_id!r} username={user_email!r} "
+            f"user_id={user_id!r} username={username!r} "
             f"project_name={litellm_context.current_project!r} "
             f"model={llm_model_details.base_name!r} reason=no_project_budget_scopes"
         )
         return {}, None, None, False, None
 
     category = _resolve_direct_budget_category(
-        user_email=user_email,
+        username=username,
         llm_model=llm_model_details.base_name,
         availability=availability,
     )
@@ -1064,12 +1065,12 @@ def _resolve_direct_project_budget_runtime(
     project_name = litellm_context.current_project
     logger.info(
         f"budget_event=runtime_category_selected component=litellm_llm_factory "
-        f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+        f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
         f"budget_category={category.value!r} model={llm_model_details.base_name!r}"
     )
     ensure_project_member_runtime_ready_sync(
         user_id=user_id,
-        user_email=user_email,
+        username=username,
         project_name=project_name,
         budget_category=category,
     )
@@ -1081,19 +1082,19 @@ def _resolve_direct_project_budget_runtime(
     )
     logger.info(
         f"budget_event=runtime_budget_resolved component=litellm_llm_factory "
-        f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+        f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
         f"budget_category={category.value!r} scope={resolved.scope.value!r} "
         f"budget_id={resolved.budget_id!r} effective_budget_id={resolved.effective_budget_id!r} "
         f"shared_budget_id={resolved.shared_budget_id!r} override_budget_id={resolved.override_budget_id!r} "
         f"allocation_id={resolved.member_allocation_id!r} model={llm_model_details.base_name!r}"
     )
     provider_result = budget_resolution_service.dispatch_runtime_sync(
-        resolved, user_id=user_id, user_email=user_email, model=llm_model_details.base_name
+        resolved, user_id=user_id, username=username, model=llm_model_details.base_name
     )
     if provider_result is None:
         logger.info(
             f"budget_event=runtime_project_budget_resolution_skipped component=litellm_llm_factory "
-            f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+            f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
             f"budget_category={category.value!r} model={llm_model_details.base_name!r} "
             f"reason=no_provider_result"
         )
@@ -1108,7 +1109,7 @@ def _resolve_direct_project_budget_runtime(
     runtime_user = provider_result.headers.get(LITELLM_CUSTOMER_ID_HEADER)
     logger.info(
         f"budget_event=runtime_mode_selected component=litellm_llm_factory "
-        f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+        f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
         f"budget_category={category.value!r} model={llm_model_details.base_name!r} "
         f"mode={selection.mode.value!r} "
         f"api_key_present={provider_result.api_key is not None} "
@@ -1131,7 +1132,7 @@ def create_litellm_embedding_model(
     embedding_model: str,
     llm_model_details: "LLMModel",
     litellm_context: Optional["LiteLLMContext"],
-    user_email: Optional[str],
+    username: Optional[str],
     user_id: Optional[str] = None,
     request_id: Optional[str] = None,
 ) -> "AzureOpenAIEmbeddings":
@@ -1145,7 +1146,7 @@ def create_litellm_embedding_model(
         embedding_model: Model name for embeddings
         llm_model_details: Model configuration details
         litellm_context: Optional LiteLLM context with credentials
-        user_email: User email for budget tracking
+        username: Username for budget tracking
         user_id: Codemie user id for project member budget tracking
 
     Returns:
@@ -1163,7 +1164,7 @@ def create_litellm_embedding_model(
     resolved_category = _configure_direct_runtime_overrides(
         llm_model_details=llm_model_details,
         litellm_context=litellm_context,
-        user_email=user_email,
+        username=username,
         user_id=user_id,
         creds=creds,
         merged_headers=merged_headers,
@@ -1180,7 +1181,7 @@ def create_litellm_embedding_model(
         user_id=user_id,
         category=resolved_category,
         litellm_context=litellm_context,
-        user_email=user_email,
+        username=username,
     )
     embedding_run_id = str(uuid.uuid4())
     merged_headers.update(spend_logs_metadata_header(**attribution, run_id=embedding_run_id))
@@ -1339,7 +1340,7 @@ def _log_output_limit(llm_model_details: "LLMModel", filtered_args: dict[str, An
 def get_litellm_chat_model(
     llm_model_details: "LLMModel",
     litellm_context: Optional["LiteLLMContext"],
-    user_email: Optional[str],
+    username: Optional[str],
     user_id: Optional[str] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
@@ -1361,7 +1362,7 @@ def get_litellm_chat_model(
     Args:
         llm_model_details: Model configuration
         litellm_context: LiteLLM context with credentials
-        user_email: User email for budget tracking
+        username: Username for budget tracking
         temperature: Optional temperature override
         top_p: Optional top_p override
         streaming: Enable streaming
@@ -1385,7 +1386,7 @@ def get_litellm_chat_model(
         return create_litellm_chat_model(
             llm_model_details=llm_model_details,
             litellm_context=litellm_context,
-            user_email=user_email,
+            username=username,
             user_id=user_id,
             temperature=temperature,
             top_p=top_p,
@@ -1401,7 +1402,7 @@ def get_litellm_embedding_model(
     embedding_model: str,
     llm_model_details: "LLMModel",
     litellm_context: Optional["LiteLLMContext"],
-    user_email: Optional[str],
+    username: Optional[str],
     user_id: Optional[str] = None,
     request_id: Optional[str] = None,
 ) -> Optional["AzureOpenAIEmbeddings"]:
@@ -1414,7 +1415,7 @@ def get_litellm_embedding_model(
         embedding_model: Model name
         llm_model_details: Model configuration
         litellm_context: LiteLLM context with credentials
-        user_email: User email for budget tracking
+        username: Username for budget tracking
         user_id: Codemie user id for project member budget tracking
 
     Returns:
@@ -1442,7 +1443,7 @@ def get_litellm_embedding_model(
             embedding_model=embedding_model,
             llm_model_details=llm_model_details,
             litellm_context=litellm_context,
-            user_email=user_email,
+            username=username,
             user_id=user_id,
             request_id=request_id,
         )

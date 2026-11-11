@@ -259,3 +259,17 @@ class TestRecordDurationMetric:
         duration, attributes = histogram.record.call_args.args
         assert duration == self.DURATION_SECONDS
         assert MetricsAttributes.USER_ID not in attributes
+
+
+def test_emit_llm_token_metric_sets_user_email_attribute_to_bound_username():
+    with (
+        patch("codemie.service.monitoring.base_monitoring_service.current_username") as mock_username,
+        patch("codemie.service.monitoring.base_monitoring_service.send_log_metric") as mock_send,
+    ):
+        mock_username.get.return_value = "jdoe"
+
+        emit_llm_token_metric("some_metric", None, {"k": "v"})
+
+    attributes = mock_send.call_args.kwargs["attributes"]
+    assert attributes[MetricsAttributes.USER_EMAIL] == "jdoe"
+    assert attributes["k"] == "v"

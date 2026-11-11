@@ -135,7 +135,7 @@ async def test_syncs_member_allocation_and_persists_runtime_metadata():
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -194,7 +194,7 @@ async def test_skips_sync_when_member_provider_ref_already_exists():
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -241,7 +241,7 @@ async def test_skips_sync_when_member_provider_ref_exists_in_raw_metadata():
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -303,7 +303,7 @@ async def test_resyncs_when_provider_member_ref_exists_but_budget_id_is_missing(
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -342,7 +342,7 @@ async def test_skips_sync_when_resolved_scope_is_not_project():
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -385,7 +385,7 @@ async def test_raises_runtime_error_when_allocation_is_missing():
         with pytest.raises(RuntimeError, match="allocation missing"):
             await ensure_project_member_runtime_ready(
                 user_id=USER_ID,
-                user_email=USER_EMAIL,
+                username=USER_EMAIL,
                 project_name=PROJECT_NAME,
                 budget_category=BUDGET_CATEGORY,
             )
@@ -430,7 +430,7 @@ async def test_raises_runtime_error_when_resolved_budget_id_is_missing():
         with pytest.raises(RuntimeError, match="missing budget_id"):
             await ensure_project_member_runtime_ready(
                 user_id=USER_ID,
-                user_email=USER_EMAIL,
+                username=USER_EMAIL,
                 project_name=PROJECT_NAME,
                 budget_category=BUDGET_CATEGORY,
             )
@@ -475,7 +475,7 @@ async def test_raises_runtime_error_when_budget_is_missing():
         with pytest.raises(RuntimeError, match="Budget not found"):
             await ensure_project_member_runtime_ready(
                 user_id=USER_ID,
-                user_email=USER_EMAIL,
+                username=USER_EMAIL,
                 project_name=PROJECT_NAME,
                 budget_category=BUDGET_CATEGORY,
             )
@@ -527,7 +527,7 @@ async def test_raises_runtime_error_when_provider_sync_raises():
         with pytest.raises(RuntimeError, match="provider boom"):
             await ensure_project_member_runtime_ready(
                 user_id=USER_ID,
-                user_email=USER_EMAIL,
+                username=USER_EMAIL,
                 project_name=PROJECT_NAME,
                 budget_category=BUDGET_CATEGORY,
             )
@@ -585,7 +585,7 @@ async def test_raises_runtime_error_when_provider_sync_status_is_not_ok_or_noop(
         with pytest.raises(RuntimeError, match="unexpected sync_status"):
             await ensure_project_member_runtime_ready(
                 user_id=USER_ID,
-                user_email=USER_EMAIL,
+                username=USER_EMAIL,
                 project_name=PROJECT_NAME,
                 budget_category=BUDGET_CATEGORY,
             )
@@ -647,7 +647,7 @@ async def test_runtime_sync_proceeds_when_enforcement_disabled():
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -708,7 +708,7 @@ async def test_runtime_sync_passes_full_project_budget_when_enforcement_disabled
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -731,7 +731,7 @@ def test_sync_wrapper_uses_asyncio_run_when_no_running_event_loop():
     ):
         ensure_project_member_runtime_ready_sync(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -761,7 +761,7 @@ def test_sync_wrapper_uses_helper_thread_when_loop_exists():
         mock_thread.return_value.start.side_effect = lambda: mock_thread.call_args.kwargs["target"]()
         ensure_project_member_runtime_ready_sync(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -795,7 +795,7 @@ def test_sync_wrapper_propagates_exception_from_helper_thread():
         with pytest.raises(RuntimeError, match="thread boom"):
             ensure_project_member_runtime_ready_sync(
                 user_id=USER_ID,
-                user_email=USER_EMAIL,
+                username=USER_EMAIL,
                 project_name=PROJECT_NAME,
                 budget_category=BUDGET_CATEGORY,
             )
@@ -1014,7 +1014,7 @@ async def test_resyncs_when_stored_enforce_limit_is_missing():
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -1086,7 +1086,7 @@ async def test_resyncs_when_enforce_limit_flag_changed():
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -1135,7 +1135,7 @@ async def test_skips_sync_when_enforce_limit_matches_stored():
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -1198,7 +1198,7 @@ async def test_enforce_limit_stored_in_metadata_after_sync():
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )
@@ -1367,7 +1367,7 @@ async def test_runtime_sync_keeps_override_cap_when_enforcement_disabled():
     ):
         await ensure_project_member_runtime_ready(
             user_id=USER_ID,
-            user_email=USER_EMAIL,
+            username=USER_EMAIL,
             project_name=PROJECT_NAME,
             budget_category=BUDGET_CATEGORY,
         )

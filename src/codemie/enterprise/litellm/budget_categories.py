@@ -42,10 +42,10 @@ def derive_category_from_user_id(user_id: str) -> BudgetCategory:
 
     Inverse of ``build_user_id``: strips ``_codemie_{category.value}`` suffixes
     to identify the category.  Returns ``BudgetCategory.PLATFORM`` when no known
-    suffix is found (plain email address).
+    suffix is found (plain username).
 
     Args:
-        user_id: LiteLLM customer user_id, e.g. ``alice@example.com_codemie_cli``.
+        user_id: LiteLLM customer user_id, e.g. ``alice_codemie_cli``.
 
     Returns:
         Matching BudgetCategory, or PLATFORM as the default fallback.

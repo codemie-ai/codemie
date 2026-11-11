@@ -66,7 +66,7 @@ def _bind_request_logging_context(
         uuid=request_uuid or handler.request_uuid or "-",
         user_id=handler.user.id,
         conversation_id=request.conversation_id,
-        user_email=getattr(handler.user, "username", None) or getattr(handler.user, "email", None) or "-",
+        username=getattr(handler.user, "username", None) or getattr(handler.user, "email", None) or "-",
     )
 
 

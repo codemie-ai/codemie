@@ -115,6 +115,22 @@ async def test_authenticate_sets_both_tokens_in_context(mocker):
 
 
 @pytest.mark.anyio
+async def test_authenticate_sets_logging_username_from_user_username(mocker):
+    clear_current_auth_token()
+    clear_current_client_access_token()
+    user = User(id="u1", username="alice", email="a@x.com")
+
+    with patch("codemie.configs.logger.set_logging_info") as set_logging_info_mock:
+        await _authenticate_with_user(mocker, user)
+
+    set_logging_info_mock.assert_called_once()
+    assert set_logging_info_mock.call_args.kwargs["username"] == "alice"
+
+    clear_current_auth_token()
+    clear_current_client_access_token()
+
+
+@pytest.mark.anyio
 async def test_admin_access_only_success(mocker):
     request = mocker.MagicMock()
     request.state.user = User(id='1', username='test', roles=['admin'])

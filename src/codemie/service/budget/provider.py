@@ -61,7 +61,7 @@ class BudgetRuntimeContext(BaseModel):
     budget_category: BudgetCategory
     budget_id: str | None
     user_id: str
-    user_email: str | None
+    username: str | None
     model: str | None = None
     provider_metadata: dict[str, Any] = Field(default_factory=dict)
     member_provider_metadata: dict[str, Any] = Field(default_factory=dict)

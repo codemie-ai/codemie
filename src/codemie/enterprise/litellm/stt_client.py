@@ -35,7 +35,7 @@ _STT_REQUEST_TIMEOUT_SECONDS = 300.0
 def get_litellm_stt_client(
     llm_model_details: "LLMModel",
     litellm_context: "LiteLLMContext | None",
-    user_email: str | None,
+    username: str | None,
     user_id: str | None = None,
 ) -> "OpenAI | None":
     """Return an OpenAI client for the LiteLLM proxy, for audio transcription.
@@ -63,7 +63,7 @@ def get_litellm_stt_client(
     resolved_category = _configure_direct_runtime_overrides(
         llm_model_details=llm_model_details,
         litellm_context=litellm_context,
-        user_email=user_email,
+        username=username,
         user_id=user_id,
         creds=creds,
         merged_headers=merged_headers,
@@ -77,7 +77,7 @@ def get_litellm_stt_client(
         user_id=user_id,
         category=resolved_category,
         litellm_context=litellm_context,
-        user_email=user_email,
+        username=username,
     )
     merged_headers.update(spend_logs_metadata_header(**attribution, run_id=str(uuid.uuid4())))
 

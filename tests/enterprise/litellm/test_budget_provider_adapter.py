@@ -909,7 +909,7 @@ def _runtime_context(member_provider_metadata: dict) -> BudgetRuntimeContext:
         budget_category=BudgetCategory.CLI,
         budget_id="budget-1",
         user_id="user-1",
-        user_email="user@example.com",
+        username="user@example.com",
         model="gpt-4.1",
         member_provider_metadata=member_provider_metadata,
     )

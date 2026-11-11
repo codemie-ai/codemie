@@ -981,7 +981,7 @@ if config.WORKFLOW_GENERATION_ENABLED:
             raise_access_denied("refine")
 
         request_id = raw_request.state.uuid
-        set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+        set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
         set_llm_context(None, user.current_project, user)
 
         try:

@@ -20,7 +20,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from codemie.configs.logger import current_user_email, logger, logging_user_id
+from codemie.configs.logger import current_username, logger, logging_user_id
 from codemie.core.dependecies import get_llm_by_credentials, get_project_for_metric
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.assistant_generator import RecommendationAction, RefineGeneratorResponse
@@ -140,7 +140,7 @@ class SkillGeneratorService:
                     base_attributes={
                         MetricsAttributes.LLM_MODEL: llm_model,
                         MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.USER_NAME: current_username.get("-"),
                         MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )
@@ -160,7 +160,7 @@ class SkillGeneratorService:
                     attributes={
                         MetricsAttributes.LLM_MODEL: llm_model or "default",
                         MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.USER_NAME: current_username.get("-"),
                         MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )
@@ -283,7 +283,7 @@ class SkillGeneratorService:
                     base_attributes={
                         MetricsAttributes.LLM_MODEL: llm_model or "default",
                         MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.USER_NAME: current_username.get("-"),
                         MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )
@@ -299,7 +299,7 @@ class SkillGeneratorService:
                     attributes={
                         MetricsAttributes.LLM_MODEL: llm_model or "default",
                         MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.USER_NAME: current_username.get("-"),
                         MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )

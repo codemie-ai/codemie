@@ -29,7 +29,7 @@ class LoggingContextSnapshot(TypedDict):
     uuid: str
     user_id: str
     conversation_id: str
-    user_email: str
+    username: str
 
 
 class LogFormatter(uvicorn.logging.DefaultFormatter):
@@ -96,7 +96,7 @@ class LogConfig(BaseModel):
 
 logging_uuid = contextvars.ContextVar("uuid")
 logging_user_id = contextvars.ContextVar("user_id")
-current_user_email = contextvars.ContextVar("user_email", default="unknown")
+current_username = contextvars.ContextVar("username", default="unknown")
 logging_conversation_id = contextvars.ContextVar("conversation_id")
 # Guarded: a record created while a script tool call runs is redacted (see script_call_log_guard).
 old_factory = guarded_record_factory(logging.getLogRecordFactory())
@@ -165,7 +165,7 @@ def set_logging_info(
     uuid: str = '-',
     user_id: str = '-',
     conversation_id: str | None = None,
-    user_email: str = "-",
+    username: str = "-",
 ):
     """
     Set correlation fields for the current log record.
@@ -177,14 +177,14 @@ def set_logging_info(
     # Prevent sending nullable attributes
     uuid = uuid if uuid is not None else '-'
     user_id = user_id if user_id is not None else '-'
-    user_email = user_email if user_email is not None else '-'
+    username = username if username is not None else '-'
     if conversation_id is None:
         conversation_id = _LOGGING_CONVERSATION_ID_OMIT
     if conversation_id is _LOGGING_CONVERSATION_ID_OMIT:
         conversation_id = logging_conversation_id.get('-')
     logging_uuid.set(uuid)
     logging_user_id.set(user_id)
-    current_user_email.set(user_email)
+    current_username.set(username)
     logging_conversation_id.set(conversation_id)
 
     logging.setLogRecordFactory(record_factory)
@@ -208,7 +208,7 @@ def copy_logging_context() -> LoggingContextSnapshot:
         "uuid": logging_uuid.get("-"),
         "user_id": logging_user_id.get("-"),
         "conversation_id": logging_conversation_id.get("-"),
-        "user_email": current_user_email.get("unknown"),
+        "username": current_username.get("unknown"),
     }
 
 
@@ -221,7 +221,7 @@ def restore_logging_context(snapshot: LoggingContextSnapshot) -> None:
         uuid=snapshot["uuid"],
         user_id=snapshot["user_id"],
         conversation_id=snapshot["conversation_id"],
-        user_email=snapshot["user_email"],
+        username=snapshot["username"],
     )
 
 

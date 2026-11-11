@@ -58,7 +58,7 @@ from typing import Any, Optional
 import httpx
 from langchain_core.runnables import RunnableConfig
 
-from codemie.configs.logger import current_user_email, logger, logging_user_id
+from codemie.configs.logger import current_username, logger, logging_user_id
 from codemie.core.dependecies import get_project_for_metric
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.assistant import Assistant
@@ -240,7 +240,7 @@ class LLMAssessmentService:
             base_attributes={
                 MetricsAttributes.LLM_MODEL: model_name,
                 MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                MetricsAttributes.USER_NAME: current_username.get("-"),
                 MetricsAttributes.PROJECT: get_project_for_metric(),
                 MetricsAttributes.ASSISTANT_ID: assistant_id,
             },

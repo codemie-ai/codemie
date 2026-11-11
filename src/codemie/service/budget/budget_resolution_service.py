@@ -241,7 +241,7 @@ class BudgetResolutionService:
         resolved: ResolvedBudgetContext,
         *,
         user_id: str,
-        user_email: str | None,
+        username: str | None,
         model: str | None = None,
     ) -> "BudgetRuntimeContext | None":
         """Build a BudgetRuntimeContext when scope is PROJECT; return None otherwise.
@@ -260,7 +260,7 @@ class BudgetResolutionService:
             budget_category=resolved.budget_category,
             budget_id=resolved.budget_id,
             user_id=user_id,
-            user_email=user_email,
+            username=username,
             model=model,
             provider_metadata=resolved.provider_metadata,
             member_provider_metadata=resolved.member_provider_metadata,
@@ -271,15 +271,15 @@ class BudgetResolutionService:
         resolved: ResolvedBudgetContext,
         *,
         user_id: str,
-        user_email: str | None,
+        username: str | None,
         model: str | None,
     ) -> "BudgetRuntimeProviderResult | None":
         """Build context and dispatch to the active provider (async path)."""
-        context = self.build_runtime_context(resolved, user_id=user_id, user_email=user_email, model=model)
+        context = self.build_runtime_context(resolved, user_id=user_id, username=username, model=model)
         if context is None:
             logger.debug(
                 f"budget_event=runtime_provider_dispatch_skipped component=budget_resolution_service "
-                f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+                f"user_id={user_id!r} username={username!r} project_name={resolved.project_name!r} "
                 f"budget_category={resolved.budget_category.value!r} scope={resolved.scope.value!r} "
                 f"reason=global_scope"
             )
@@ -289,14 +289,14 @@ class BudgetResolutionService:
         provider = get_active_provider()
         logger.debug(
             f"budget_event=runtime_provider_dispatch_started component=budget_resolution_service "
-            f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+            f"user_id={user_id!r} username={username!r} project_name={resolved.project_name!r} "
             f"budget_id={resolved.budget_id!r} budget_category={resolved.budget_category.value!r} "
             f"model={model!r} provider={provider.provider_name!r}"
         )
         result = await provider.resolve_runtime(context=context)
         logger.debug(
             f"budget_event=runtime_provider_dispatch_completed component=budget_resolution_service "
-            f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+            f"user_id={user_id!r} username={username!r} project_name={resolved.project_name!r} "
             f"budget_id={resolved.budget_id!r} budget_category={resolved.budget_category.value!r} "
             f"provider={result.provider!r} api_key_present={result.api_key is not None} "
             f"base_url_present={result.base_url is not None} headers_applied={bool(result.headers)}"
@@ -308,15 +308,15 @@ class BudgetResolutionService:
         resolved: ResolvedBudgetContext,
         *,
         user_id: str,
-        user_email: str | None,
+        username: str | None,
         model: str | None,
     ) -> "BudgetRuntimeProviderResult | None":
         """Build context and dispatch to the active provider (sync path)."""
-        context = self.build_runtime_context(resolved, user_id=user_id, user_email=user_email, model=model)
+        context = self.build_runtime_context(resolved, user_id=user_id, username=username, model=model)
         if context is None:
             logger.debug(
                 f"budget_event=runtime_provider_dispatch_skipped component=budget_resolution_service path=sync "
-                f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+                f"user_id={user_id!r} username={username!r} project_name={resolved.project_name!r} "
                 f"budget_category={resolved.budget_category.value!r} scope={resolved.scope.value!r} "
                 f"reason=global_scope"
             )
@@ -326,14 +326,14 @@ class BudgetResolutionService:
         provider = get_active_provider()
         logger.debug(
             f"budget_event=runtime_provider_dispatch_started component=budget_resolution_service path=sync "
-            f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+            f"user_id={user_id!r} username={username!r} project_name={resolved.project_name!r} "
             f"budget_id={resolved.budget_id!r} budget_category={resolved.budget_category.value!r} "
             f"model={model!r} provider={provider.provider_name!r}"
         )
         result = provider.resolve_runtime_sync(context=context)
         logger.debug(
             f"budget_event=runtime_provider_dispatch_completed component=budget_resolution_service path=sync "
-            f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+            f"user_id={user_id!r} username={username!r} project_name={resolved.project_name!r} "
             f"budget_id={resolved.budget_id!r} budget_category={resolved.budget_category.value!r} "
             f"provider={result.provider!r} api_key_present={result.api_key is not None} "
             f"base_url_present={result.base_url is not None} headers_applied={bool(result.headers)}"

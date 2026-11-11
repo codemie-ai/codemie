@@ -93,7 +93,7 @@ def _effective_budget_id_for_member(
 async def ensure_project_member_runtime_ready(
     *,
     user_id: str,
-    user_email: str,
+    username: str,
     project_name: str,
     budget_category: BudgetCategory,
 ) -> None:
@@ -101,7 +101,7 @@ async def ensure_project_member_runtime_ready(
 
     logger.debug(
         f"budget_event=runtime_member_sync_check_started component=project_member_runtime_sync "
-        f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+        f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
         f"budget_category={budget_category.value!r}"
     )
     async with get_async_session() as session:
@@ -114,7 +114,7 @@ async def ensure_project_member_runtime_ready(
         if resolved.scope != BudgetScope.PROJECT:
             logger.warning(
                 f"budget_event=runtime_member_sync_skipped component=project_member_runtime_sync "
-                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
                 f"budget_category={budget_category.value!r} scope={resolved.scope.value!r} reason=global_scope "
                 f"hint=project_budget_not_resolved_for_user"
             )
@@ -135,7 +135,7 @@ async def ensure_project_member_runtime_ready(
             if isinstance(stored_enforce_limit, bool) and stored_enforce_limit == enforce_limit:
                 logger.debug(
                     f"budget_event=runtime_member_sync_skipped component=project_member_runtime_sync "
-                    f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                    f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
                     f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
                     f"provider_member_ref={current_provider_member_ref!r} "
                     f"provider_budget_id={current_provider_budget_id!r} reason=provider_metadata_current"
@@ -153,7 +153,7 @@ async def ensure_project_member_runtime_ready(
         if allocation is None:
             logger.error(
                 f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
-                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
                 f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
                 f"reason=missing_allocation error=None"
             )
@@ -164,7 +164,7 @@ async def ensure_project_member_runtime_ready(
         if resolved.budget_id is None:
             logger.error(
                 f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
-                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
                 f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
                 f"reason=missing_resolved_budget_id error=None"
             )
@@ -177,7 +177,7 @@ async def ensure_project_member_runtime_ready(
         if budget is None:
             logger.error(
                 f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
-                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
                 f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
                 f"reason=missing_budget_row error=None"
             )
@@ -200,7 +200,7 @@ async def ensure_project_member_runtime_ready(
         try:
             logger.debug(
                 f"budget_event=runtime_member_sync_started component=project_member_runtime_sync "
-                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
                 f"budget_id={resolved.budget_id!r} effective_budget_id={effective_budget_id!r} "
                 f"budget_category={budget_category.value!r} allocation_id={allocation.id!r}"
             )
@@ -212,7 +212,7 @@ async def ensure_project_member_runtime_ready(
         except Exception as exc:
             logger.error(
                 f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
-                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
                 f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
                 f"reason=provider_sync_failed error={exc}",
                 exc_info=True,
@@ -226,7 +226,7 @@ async def ensure_project_member_runtime_ready(
         if sync_status not in _ALLOWED_SYNC_STATUSES:
             logger.error(
                 f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
-                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
                 f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
                 f"reason=unexpected_sync_status sync_status={sync_status!r} error=None"
             )
@@ -237,7 +237,7 @@ async def ensure_project_member_runtime_ready(
         if not member_state.provider_budget_id:
             logger.error(
                 f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
-                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
                 f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
                 f"reason=missing_provider_budget_id sync_status={sync_status!r} error=None"
             )
@@ -259,7 +259,7 @@ async def ensure_project_member_runtime_ready(
         await session.commit()
         logger.debug(
             f"budget_event=runtime_member_sync_completed component=project_member_runtime_sync "
-            f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+            f"user_id={user_id!r} username={username!r} project_name={project_name!r} "
             f"budget_id={resolved.budget_id!r} effective_budget_id={effective_budget_id!r} "
             f"budget_category={budget_category.value!r} allocation_id={allocation_id!r} "
             f"provider={member_state.provider!r} provider_member_ref={member_state.provider_member_ref!r} "
@@ -376,13 +376,13 @@ def resync_project_member_allocations_sync(project_name: str, enforce_limit: boo
 def ensure_project_member_runtime_ready_sync(
     *,
     user_id: str,
-    user_email: str,
+    username: str,
     project_name: str,
     budget_category: BudgetCategory,
 ) -> None:
     coro = ensure_project_member_runtime_ready(
         user_id=user_id,
-        user_email=user_email,
+        username=username,
         project_name=project_name,
         budget_category=budget_category,
     )

@@ -1244,7 +1244,7 @@ class LiteLLMBudgetEnforcementProvider:
                 project_base_url = None  # budget-managed keys always route through the global LiteLLM proxy
         logger.debug(
             f"budget_event=runtime_project_credentials_resolved component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} user_id={context.user_id!r} username={context.user_email!r} "
+            f"provider={_PROVIDER_NAME!r} user_id={context.user_id!r} username={context.username!r} "
             f"project_name={context.project_name!r} budget_id={context.budget_id!r} "
             f"budget_category={context.budget_category.value!r} model={context.model!r} "
             f"key_alias={project_key_alias!r} api_key_present={project_api_key is not None} "
@@ -1254,14 +1254,14 @@ class LiteLLMBudgetEnforcementProvider:
         provider_member_ref = _metadata_value(context.member_provider_metadata, "provider_member_ref")
         logger.debug(
             f"budget_event=runtime_mode_selected component=litellm_budget_provider provider={_PROVIDER_NAME!r} "
-            f"user_id={context.user_id!r} username={context.user_email!r} project_name={context.project_name!r} "
+            f"user_id={context.user_id!r} username={context.username!r} project_name={context.project_name!r} "
             f"budget_id={context.budget_id!r} budget_category={context.budget_category.value!r} "
             f"model={context.model!r} provider_member_ref={provider_member_ref!r}"
         )
         if provider_member_ref:
             logger.debug(
                 f"budget_event=runtime_provider_overrides_applied component=litellm_budget_provider "
-                f"provider={_PROVIDER_NAME!r} user_id={context.user_id!r} username={context.user_email!r} "
+                f"provider={_PROVIDER_NAME!r} user_id={context.user_id!r} username={context.username!r} "
                 f"project_name={context.project_name!r} budget_id={context.budget_id!r} "
                 f"budget_category={context.budget_category.value!r} model={context.model!r} "
                 f"api_key_present={project_api_key is not None} base_url_present={project_base_url is not None} "
@@ -1276,7 +1276,7 @@ class LiteLLMBudgetEnforcementProvider:
             )
         logger.debug(
             f"budget_event=runtime_provider_overrides_applied component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} user_id={context.user_id!r} username={context.user_email!r} "
+            f"provider={_PROVIDER_NAME!r} user_id={context.user_id!r} username={context.username!r} "
             f"project_name={context.project_name!r} budget_id={context.budget_id!r} "
             f"budget_category={context.budget_category.value!r} model={context.model!r} "
             f"api_key_present={project_api_key is not None} base_url_present={project_base_url is not None} "

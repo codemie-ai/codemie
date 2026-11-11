@@ -379,7 +379,7 @@ def _dispatch_soft_limit_notification(
 
 
 def _report_hard_limit_exceeded(
-    user_email: str,
+    username: str,
     user_id: str | None,
     budget_id: str | None,
     current_spend: float,
@@ -392,15 +392,15 @@ def _report_hard_limit_exceeded(
 
     logger.warning(
         f"budget_event=personal_budget_hard_limit_exceeded component=dependencies "
-        f"username={user_email!r} user_id={user_id!r} budget_id={budget_id!r} "
+        f"username={username!r} user_id={user_id!r} budget_id={budget_id!r} "
         f"spend={current_spend!r} hard_limit={hard_limit!r}"
     )
     send_log_metric(
         LLM_HARD_BUDGET_LIMIT,
         attributes={
             MetricsAttributes.USER_ID: user_id,
-            MetricsAttributes.USER_NAME: user_email,
-            MetricsAttributes.USER_EMAIL: user_email,
+            MetricsAttributes.USER_NAME: username,
+            MetricsAttributes.USER_EMAIL: username,
             "hard_limit": hard_limit,
             "spent": current_spend,
         },
@@ -408,7 +408,7 @@ def _report_hard_limit_exceeded(
 
 
 def _report_soft_limit_exceeded(
-    user_email: str,
+    username: str,
     user_id: str | None,
     budget_id: str | None,
     current_spend: float,
@@ -421,15 +421,15 @@ def _report_soft_limit_exceeded(
 
     logger.warning(
         f"budget_event=personal_budget_soft_limit_exceeded component=dependencies "
-        f"username={user_email!r} user_id={user_id!r} budget_id={budget_id!r} "
+        f"username={username!r} user_id={user_id!r} budget_id={budget_id!r} "
         f"spend={current_spend!r} soft_limit={soft_limit!r}"
     )
     send_log_metric(
         LLM_SOFT_BUDGET_LIMIT,
         attributes={
             MetricsAttributes.USER_ID: user_id,
-            MetricsAttributes.USER_NAME: user_email,
-            MetricsAttributes.USER_EMAIL: user_email,
+            MetricsAttributes.USER_NAME: username,
+            MetricsAttributes.USER_EMAIL: username,
             "soft_limit": soft_limit,
             "spent": current_spend,
         },
@@ -437,7 +437,7 @@ def _report_soft_limit_exceeded(
     _dispatch_soft_limit_notification(budget_id, current_spend, soft_limit)
 
 
-def check_user_budget(user_email: str, budget_id: str | None = None, user_id: str | None = None):
+def check_user_budget(username: str, budget_id: str | None = None, user_id: str | None = None):
     """
     Check if user is within budget limits with caching and metrics.
 
@@ -448,7 +448,7 @@ def check_user_budget(user_email: str, budget_id: str | None = None, user_id: st
     - Cache optimization (5-min TTL)
 
     Args:
-        user_email: User email (used as LiteLLM username / budget identity key)
+        username: LiteLLM username / budget identity key
         budget_id: Optional explicit LiteLLM budget id to attach to this user. When
             omitted, the enterprise service default budget selection is used.
         user_id: Actual database user ID sent in metrics as USER_ID attribute. When
@@ -460,7 +460,7 @@ def check_user_budget(user_email: str, budget_id: str | None = None, user_id: st
     Usage:
         from codemie.enterprise.litellm import check_user_budget
 
-        customer = check_user_budget(user_email, user_id=user_id)
+        customer = check_user_budget(username, user_id=user_id)
         if customer is None:
             # Budget check disabled or failed - continue with request
             pass
@@ -471,41 +471,41 @@ def check_user_budget(user_email: str, budget_id: str | None = None, user_id: st
     if litellm is None:
         logger.info(
             f"budget_event=personal_budget_check_skipped component=dependencies "
-            f"username={user_email!r} user_id={user_id!r} budget_id={budget_id!r} "
+            f"username={username!r} user_id={user_id!r} budget_id={budget_id!r} "
             f"reason=litellm_unavailable"
         )
         return None
 
     logger.info(
         f"budget_event=personal_budget_check_started component=dependencies "
-        f"username={user_email!r} user_id={user_id!r} budget_id={budget_id!r}"
+        f"username={username!r} user_id={user_id!r} budget_id={budget_id!r}"
     )
 
     try:
         # Try cache first
-        customer = litellm._get_cached_customer(user_email)
+        customer = litellm._get_cached_customer(username)
 
         if customer:
             logger.info(
                 f"budget_event=personal_budget_check_cache_hit component=dependencies "
-                f"username={user_email!r} user_id={user_id!r} budget_id={budget_id!r}"
+                f"username={username!r} user_id={user_id!r} budget_id={budget_id!r}"
             )
         else:
             logger.info(
                 f"budget_event=personal_budget_check_cache_miss component=dependencies "
-                f"username={user_email!r} user_id={user_id!r} budget_id={budget_id!r}"
+                f"username={username!r} user_id={user_id!r} budget_id={budget_id!r}"
             )
             if budget_id is None:
-                customer = litellm.get_or_create_customer_with_budget(user_email)
+                customer = litellm.get_or_create_customer_with_budget(username)
             else:
-                customer = litellm.get_or_create_customer_with_budget(user_email, budget_id=budget_id)
+                customer = litellm.get_or_create_customer_with_budget(username, budget_id=budget_id)
 
             if customer:
-                litellm._cache_customer(user_email, customer)
+                litellm._cache_customer(username, customer)
             else:
                 logger.warning(
                     f"budget_event=personal_budget_check_failed component=dependencies "
-                    f"username={user_email!r} user_id={user_id!r} budget_id={budget_id!r} "
+                    f"username={username!r} user_id={user_id!r} budget_id={budget_id!r} "
                     f"reason=empty_customer_result action=fail_open"
                 )
                 return None
@@ -514,7 +514,7 @@ def check_user_budget(user_email: str, budget_id: str | None = None, user_id: st
         if not customer.litellm_budget_table:
             logger.warning(
                 f"budget_event=personal_budget_check_no_table component=dependencies "
-                f"username={user_email!r} user_id={user_id!r} budget_id={budget_id!r} "
+                f"username={username!r} user_id={user_id!r} budget_id={budget_id!r} "
                 f"reason=no_budget_table action=allow"
             )
             return customer
@@ -526,24 +526,24 @@ def check_user_budget(user_email: str, budget_id: str | None = None, user_id: st
 
         logger.info(
             f"budget_event=personal_budget_check_completed component=dependencies "
-            f"username={user_email!r} user_id={user_id!r} budget_id={budget_id!r} "
+            f"username={username!r} user_id={user_id!r} budget_id={budget_id!r} "
             f"spend={current_spend!r} soft_limit={soft_limit!r} hard_limit={hard_limit!r}"
         )
 
         # Check hard budget limit
         if hard_limit is not None and current_spend >= hard_limit:
-            _report_hard_limit_exceeded(user_email, user_id, budget_id, current_spend, hard_limit)
+            _report_hard_limit_exceeded(username, user_id, budget_id, current_spend, hard_limit)
 
         # Check soft budget limit
         if soft_limit is not None and current_spend >= soft_limit:
-            _report_soft_limit_exceeded(user_email, user_id, budget_id, current_spend, soft_limit)
+            _report_soft_limit_exceeded(username, user_id, budget_id, current_spend, soft_limit)
 
         return customer
 
     except Exception as e:
         logger.error(
             f"budget_event=personal_budget_check_failed component=dependencies "
-            f"username={user_email!r} user_id={user_id!r} budget_id={budget_id!r} "
+            f"username={username!r} user_id={user_id!r} budget_id={budget_id!r} "
             f"error={e}",
             exc_info=True,
         )
@@ -601,10 +601,10 @@ def is_premium_model(model: str) -> bool:
     return any(alias.lower() in model_lower for alias in aliases)
 
 
-def get_premium_username(user_email: str, model: str) -> str | None:
+def get_premium_username(username: str, model: str) -> str | None:
     """Derive the LiteLLM username for premium budget attribution.
 
-    Returns the stable category-based user_id (``{user_email}_codemie_premium_models``)
+    Returns the stable category-based user_id (``{username}_codemie_premium_models``)
     when *model* matches a configured premium alias; otherwise ``None``. The username
     uses a fixed category suffix, independent of the configured budget_id.
     """
@@ -613,13 +613,13 @@ def get_premium_username(user_email: str, model: str) -> str | None:
     if not is_premium_model(model):
         return None
 
-    return build_user_id(user_email, BudgetCategory.PREMIUM_MODELS)
+    return build_user_id(username, BudgetCategory.PREMIUM_MODELS)
 
 
-def get_proxy_username(user_email: str) -> str | None:
+def get_proxy_username(username: str) -> str | None:
     """Derive the LiteLLM username for proxy budget attribution.
 
-    Returns the stable category-based user_id (``{user_email}_codemie_cli``)
+    Returns the stable category-based user_id (``{username}_codemie_cli``)
     when the cli budget feature is enabled; otherwise ``None``.
     """
     from codemie.enterprise.litellm.budget_categories import BudgetCategory, build_user_id
@@ -627,17 +627,17 @@ def get_proxy_username(user_email: str) -> str | None:
     if not is_proxy_budget_enabled():
         return None
 
-    return build_user_id(user_email, BudgetCategory.CLI)
+    return build_user_id(username, BudgetCategory.CLI)
 
 
-def get_premium_customer_spending(user_email: str, on_raise: bool = False) -> dict | None:
-    """Get spending for the derived premium budget identity ``{user_email}_{budget_id}``.
+def get_premium_customer_spending(username: str, on_raise: bool = False) -> dict | None:
+    """Get spending for the derived premium budget identity ``{username}_{budget_id}``.
 
     Returns ``None`` when no premium_models budget is configured in predefined budgets
     or when the underlying LiteLLM service is unavailable.
 
     Args:
-        user_email: The authenticated user's email / LiteLLM username.
+        username: The authenticated user's LiteLLM username.
         on_raise: When True, re-raises backend errors instead of returning None.
     """
     from codemie.configs import logger
@@ -649,16 +649,16 @@ def get_premium_customer_spending(user_email: str, on_raise: bool = False) -> di
 
     from codemie.enterprise.litellm.budget_categories import build_user_id
 
-    derived_id = build_user_id(user_email, BudgetCategory.PREMIUM_MODELS)
+    derived_id = build_user_id(username, BudgetCategory.PREMIUM_MODELS)
     logger.debug(f"Fetching premium customer spending for derived id: {derived_id}")
     return get_customer_spending(derived_id, on_raise=on_raise)
 
 
-def get_proxy_customer_spending(user_email: str, on_raise: bool = False) -> dict | None:
-    """Get spending for the derived proxy budget identity ``{user_email}_{budget_name}``."""
+def get_proxy_customer_spending(username: str, on_raise: bool = False) -> dict | None:
+    """Get spending for the derived proxy budget identity ``{username}_{budget_name}``."""
     from codemie.configs import logger
 
-    derived_id = get_proxy_username(user_email)
+    derived_id = get_proxy_username(username)
     if not derived_id:
         logger.debug("Proxy budget name not configured, skipping proxy spending lookup")
         return None

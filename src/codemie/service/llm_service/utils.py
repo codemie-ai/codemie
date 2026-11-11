@@ -99,7 +99,7 @@ def _unfunded_project(
             from codemie.service.llm_service.llm_service import llm_service
 
             category = _resolve_direct_budget_category(
-                user_email=user.username,
+                username=user.username,
                 llm_model=llm_service.get_model_details(llm_model).base_name,
                 availability=DirectBudgetAvailability(project_scopes=scopes),
             )

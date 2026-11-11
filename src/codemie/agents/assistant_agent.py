@@ -217,7 +217,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
             uuid=request_uuid,
             user_id=user.id,
             conversation_id=self.conversation_id,
-            user_email=user.username,
+            username=user.username,
         )
         self.agent_name = agent_name
         self.verbose = verbose
@@ -664,7 +664,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
             uuid=self.request_uuid,
             user_id=self.user.id,
             conversation_id=self.conversation_id,
-            user_email=self.user.username,
+            username=self.user.username,
         )
 
         if self.is_pure_chain():

@@ -22,6 +22,7 @@ from codemie.core.dependecies import (
     get_anthropic_llm,
     get_bedrock_llm,
     get_llm_by_credentials,
+    get_project_for_metric,
     get_vertex_llm,
 )
 
@@ -80,10 +81,10 @@ class TestLLMClientWrapper:
 
 class TestGetLLMByCredentialsUserFallback:
     """
-    Fallback to get_current_user() when current_user_email context variable is not set.
+    Fallback to get_current_user() when current_username context variable is not set.
 
     This ensures that tools creating internal LLM instances use the correct user's budget
-    for LiteLLM tracking, even when the current_user_email context variable is not set
+    for LiteLLM tracking, even when the current_username context variable is not set
     (e.g., during toolkit initialization before agent sets logging context).
     """
 
@@ -93,7 +94,7 @@ class TestGetLLMByCredentialsUserFallback:
         with (
             patch('codemie.core.dependecies.llm_service') as mock_llm_service,
             patch('codemie.core.dependecies.litellm_context') as mock_litellm_context,
-            patch('codemie.core.dependecies.current_user_email') as mock_current_user_email,
+            patch('codemie.core.dependecies.current_username') as mock_current_username,
             patch('codemie.core.dependecies.logging_user_id') as mock_logging_user_id,
             patch('codemie.enterprise.litellm.get_litellm_chat_model') as mock_get_litellm,
             patch('codemie.core.dependecies.logger') as mock_logger,
@@ -120,7 +121,7 @@ class TestGetLLMByCredentialsUserFallback:
             yield {
                 'llm_service': mock_llm_service,
                 'litellm_context': mock_litellm_context,
-                'current_user_email': mock_current_user_email,
+                'current_username': mock_current_username,
                 'logging_user_id': mock_logging_user_id,
                 'get_litellm_chat_model': mock_get_litellm,
                 'logger': mock_logger,
@@ -134,10 +135,10 @@ class TestGetLLMByCredentialsUserFallback:
         user.username = username
         return user
 
-    def test_normal_flow_with_valid_user_email(self, mock_dependencies):
-        """Test normal flow when current_user_email context variable is set correctly"""
+    def test_normal_flow_with_valid_username(self, mock_dependencies):
+        """Test normal flow when current_username context variable is set correctly"""
         # Setup: Context variable has valid user email
-        mock_dependencies['current_user_email'].get.return_value = "john@example.com"
+        mock_dependencies['current_username'].get.return_value = "john@example.com"
 
         # Execute
         get_llm_by_credentials(llm_model="gpt-4")
@@ -145,51 +146,51 @@ class TestGetLLMByCredentialsUserFallback:
         # Verify: LiteLLM called with correct user email (no fallback needed)
         mock_dependencies['get_litellm_chat_model'].assert_called_once()
         call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-        assert call_kwargs['user_email'] == "john@example.com"
+        assert call_kwargs['username'] == "john@example.com"
 
     def test_fallback_when_context_is_unknown(self, mock_dependencies):
-        """Test fallback to get_current_user() when current_user_email returns 'unknown'"""
-        mock_dependencies['current_user_email'].get.return_value = "unknown"
+        """Test fallback to get_current_user() when current_username returns 'unknown'"""
+        mock_dependencies['current_username'].get.return_value = "unknown"
         mock_dependencies['get_current_user'].return_value = self._make_current_user(email="user@example.com")
 
         get_llm_by_credentials(llm_model="gpt-4")
 
         call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-        assert call_kwargs['user_email'] == "user@example.com"
+        assert call_kwargs['username'] == "user@example.com"
 
     def test_fallback_when_context_is_dash(self, mock_dependencies):
-        """Test fallback to get_current_user() when current_user_email returns '-'"""
-        mock_dependencies['current_user_email'].get.return_value = "-"
+        """Test fallback to get_current_user() when current_username returns '-'"""
+        mock_dependencies['current_username'].get.return_value = "-"
         mock_dependencies['get_current_user'].return_value = self._make_current_user(email="user@example.com")
 
         get_llm_by_credentials(llm_model="gpt-4")
 
         call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-        assert call_kwargs['user_email'] == "user@example.com"
+        assert call_kwargs['username'] == "user@example.com"
 
     def test_fallback_when_context_is_empty(self, mock_dependencies):
-        """Test fallback to get_current_user() when current_user_email returns empty string"""
-        mock_dependencies['current_user_email'].get.return_value = ""
+        """Test fallback to get_current_user() when current_username returns empty string"""
+        mock_dependencies['current_username'].get.return_value = ""
         mock_dependencies['get_current_user'].return_value = self._make_current_user(email="user@example.com")
 
         get_llm_by_credentials(llm_model="gpt-4")
 
         call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-        assert call_kwargs['user_email'] == "user@example.com"
+        assert call_kwargs['username'] == "user@example.com"
 
     def test_fallback_when_context_is_none(self, mock_dependencies):
-        """Test fallback to get_current_user() when current_user_email returns None"""
-        mock_dependencies['current_user_email'].get.return_value = None
+        """Test fallback to get_current_user() when current_username returns None"""
+        mock_dependencies['current_username'].get.return_value = None
         mock_dependencies['get_current_user'].return_value = self._make_current_user(email="user@example.com")
 
         get_llm_by_credentials(llm_model="gpt-4")
 
         call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-        assert call_kwargs['user_email'] == "user@example.com"
+        assert call_kwargs['username'] == "user@example.com"
 
     def test_fallback_uses_username_when_email_absent(self, mock_dependencies):
         """Test fallback uses username when current user has no email"""
-        mock_dependencies['current_user_email'].get.return_value = "unknown"
+        mock_dependencies['current_username'].get.return_value = "unknown"
         mock_dependencies['get_current_user'].return_value = self._make_current_user(
             email=None, username="user@example.com"
         )
@@ -197,32 +198,32 @@ class TestGetLLMByCredentialsUserFallback:
         get_llm_by_credentials(llm_model="gpt-4")
 
         call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-        assert call_kwargs['user_email'] == "user@example.com"
+        assert call_kwargs['username'] == "user@example.com"
 
     def test_no_fallback_when_no_current_user(self, mock_dependencies):
-        """Test graceful handling when current_user_email is invalid and no request user (system operations)"""
-        mock_dependencies['current_user_email'].get.return_value = "unknown"
+        """Test graceful handling when current_username is invalid and no request user (system operations)"""
+        mock_dependencies['current_username'].get.return_value = "unknown"
         mock_dependencies['get_current_user'].return_value = None
 
         get_llm_by_credentials(llm_model="gpt-4")
 
         # No valid user: original "unknown" value is passed through unchanged
         call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-        assert call_kwargs['user_email'] == "unknown"
+        assert call_kwargs['username'] == "unknown"
 
     def test_no_fallback_when_no_current_user_dash(self, mock_dependencies):
-        """Test graceful handling when current_user_email is '-' and no request user"""
-        mock_dependencies['current_user_email'].get.return_value = "-"
+        """Test graceful handling when current_username is '-' and no request user"""
+        mock_dependencies['current_username'].get.return_value = "-"
         mock_dependencies['get_current_user'].return_value = None
 
         get_llm_by_credentials(llm_model="gpt-4")
 
         call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-        assert call_kwargs['user_email'] == "-"
+        assert call_kwargs['username'] == "-"
 
     def test_fallback_with_different_llm_models(self, mock_dependencies):
         """Test fallback works with different LLM models"""
-        mock_dependencies['current_user_email'].get.return_value = "unknown"
+        mock_dependencies['current_username'].get.return_value = "unknown"
         mock_dependencies['get_current_user'].return_value = self._make_current_user(email="user@example.com")
 
         for model_name in ["gpt-4", "gpt-3.5-turbo", "claude-3-opus"]:
@@ -231,11 +232,11 @@ class TestGetLLMByCredentialsUserFallback:
             get_llm_by_credentials(llm_model=model_name)
 
             call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-            assert call_kwargs['user_email'] == "user@example.com"
+            assert call_kwargs['username'] == "user@example.com"
 
     def test_fallback_preserves_other_parameters(self, mock_dependencies):
         """Test that fallback doesn't affect other parameters"""
-        mock_dependencies['current_user_email'].get.return_value = "unknown"
+        mock_dependencies['current_username'].get.return_value = "unknown"
         mock_dependencies['get_current_user'].return_value = self._make_current_user(email="user@example.com")
 
         get_llm_by_credentials(
@@ -243,7 +244,7 @@ class TestGetLLMByCredentialsUserFallback:
         )
 
         call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-        assert call_kwargs['user_email'] == "user@example.com"
+        assert call_kwargs['username'] == "user@example.com"
         assert call_kwargs['temperature'] == 0.7
         assert call_kwargs['top_p'] == 0.9
         assert not call_kwargs['streaming']
@@ -254,7 +255,7 @@ class TestGetLLMByCredentialsUserFallback:
         get_current_user() must resolve the email from the active request state.
         """
         # Context variable still holds the middleware default — agent hasn't set it yet
-        mock_dependencies['current_user_email'].get.return_value = "-"
+        mock_dependencies['current_username'].get.return_value = "-"
 
         # Request state has the authenticated user
         mock_dependencies['get_current_user'].return_value = self._make_current_user(email="user@example.com")
@@ -262,11 +263,78 @@ class TestGetLLMByCredentialsUserFallback:
         get_llm_by_credentials(llm_model="gpt-4")
 
         call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
-        assert call_kwargs['user_email'] == "user@example.com"
+        assert call_kwargs['username'] == "user@example.com"
 
         # Verify: UUID is NOT used (that was the original bug)
-        assert call_kwargs['user_email'] != "-"
-        assert call_kwargs['user_email'] != "unknown"
+        assert call_kwargs['username'] != "-"
+        assert call_kwargs['username'] != "unknown"
+
+    def test_fallback_prefers_username_over_email(self, mock_dependencies):
+        mock_dependencies['current_username'].get.return_value = "unknown"
+        mock_dependencies['get_current_user'].return_value = self._make_current_user(
+            email="user@example.com", username="jdoe"
+        )
+
+        get_llm_by_credentials(llm_model="gpt-4")
+
+        call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
+        assert call_kwargs['username'] == "jdoe"
+
+    def test_fallback_uses_email_when_username_empty(self, mock_dependencies):
+        mock_dependencies['current_username'].get.return_value = "-"
+        mock_dependencies['get_current_user'].return_value = self._make_current_user(
+            email="user@example.com", username=""
+        )
+
+        get_llm_by_credentials(llm_model="gpt-4")
+
+        call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
+        assert call_kwargs['username'] == "user@example.com"
+
+    def test_fallback_username_and_email_both_empty_returns_none(self, mock_dependencies):
+        mock_dependencies['current_username'].get.return_value = "unknown"
+        mock_dependencies['get_current_user'].return_value = self._make_current_user(email=None, username="")
+
+        get_llm_by_credentials(llm_model="gpt-4")
+
+        call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
+        assert call_kwargs['username'] is None
+
+    @pytest.mark.parametrize("placeholder", ["unknown", "-"])
+    def test_placeholder_passes_through_when_no_current_user(self, mock_dependencies, placeholder):
+        mock_dependencies['current_username'].get.return_value = placeholder
+        mock_dependencies['get_current_user'].return_value = None
+
+        get_llm_by_credentials(llm_model="gpt-4")
+
+        call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
+        assert call_kwargs['username'] == placeholder
+
+    def test_valid_context_username_is_not_replaced_by_current_user(self, mock_dependencies):
+        mock_dependencies['current_username'].get.return_value = "ctx-user"
+        mock_dependencies['get_current_user'].return_value = self._make_current_user(
+            email="user@example.com", username="jdoe"
+        )
+
+        get_llm_by_credentials(llm_model="gpt-4")
+
+        call_kwargs = mock_dependencies['get_litellm_chat_model'].call_args[1]
+        assert call_kwargs['username'] == "ctx-user"
+
+    def test_get_embeddings_model_passes_current_user_username(self, mock_dependencies):
+        from codemie.core.dependecies import get_embeddings_model
+
+        mock_dependencies['current_username'].get.return_value = "unknown"
+        mock_dependencies['get_current_user'].return_value = self._make_current_user(
+            email="user@example.com", username="jdoe"
+        )
+        embeddings = Mock()
+
+        with patch('codemie.enterprise.litellm.get_litellm_embedding_model', return_value=embeddings) as mock_embed:
+            result = get_embeddings_model("text-embedding")
+
+        assert result is embeddings
+        assert mock_embed.call_args[1]["username"] == "jdoe"
 
 
 def _model_details(temperature_supported, top_p_supported=True, base_name="gemini-2.5-pro"):
@@ -387,3 +455,19 @@ class TestGetVertexLlmTemperature:
     @pytest.mark.parametrize("base_name", ["gemini-2.5-pro", "claude-sonnet-4"])
     def test_passes_temperature_when_supported(self, base_name):
         assert self._call(True, 0.5, base_name)["temperature"] == 0.5
+
+
+class TestGetProjectForMetric:
+    def test_falls_back_to_current_username_without_context_project(self):
+        with patch('codemie.core.dependecies.get_current_project', return_value=""):
+            with patch('codemie.core.dependecies.current_username') as mock_current_username:
+                mock_current_username.get.return_value = "jdoe"
+
+                assert get_project_for_metric() == "jdoe"
+
+    def test_context_project_wins_over_username(self):
+        with patch('codemie.core.dependecies.get_current_project', return_value="project-x"):
+            with patch('codemie.core.dependecies.current_username') as mock_current_username:
+                mock_current_username.get.return_value = "jdoe"
+
+                assert get_project_for_metric() == "project-x"

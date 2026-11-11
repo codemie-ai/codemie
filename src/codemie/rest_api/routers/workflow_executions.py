@@ -525,7 +525,7 @@ def request_workflow_execution_output_changes(
     if not Ability(user).can(Action.READ, workflow_config):
         raise_access_denied("view")
 
-    set_logging_info(uuid=raw_request.state.uuid, user_id=user.id, user_email=user.username)
+    set_logging_info(uuid=raw_request.state.uuid, user_id=user.id, username=user.username)
     set_llm_context(None, user.current_project, user)
 
     try:
