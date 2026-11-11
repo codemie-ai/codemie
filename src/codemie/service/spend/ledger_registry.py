@@ -292,6 +292,9 @@ class _NoopSpendLedger:
         # ledger here that will ever respond to one - so neither run_id nor request_id is looked up.
         return RequestCost.unavailable()
 
+    async def costs_for_requests(self, request_ids: Sequence[str]) -> dict[str, RequestCost]:
+        return dict.fromkeys(request_ids, RequestCost.unavailable())
+
     async def request_count(
         self,
         period: TimeRange,

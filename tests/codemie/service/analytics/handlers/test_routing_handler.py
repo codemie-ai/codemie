@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import math
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -26,6 +26,8 @@ from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.money_coverage import SETTLED_AGG, UNSETTLED_AGG
 from codemie.service.analytics.handlers.routing_handler import MONEY_SUM_AGG, PATH_MONEY_COLUMNS, RoutingHandler
 from codemie.service.analytics.metric_names import MetricName
+
+REPOSITORY_MODULE = "codemie.repository.metrics_elastic_repository"
 
 
 @pytest.fixture
@@ -391,6 +393,21 @@ class TestGetDecisionTimeline:
 
         assert "data" in result
         handler._pipeline.execute_search_rows.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_decision_timeline_es_body_has_no_sort(self, mock_user):
+        es_client = MagicMock()
+        es_client.search = AsyncMock(return_value={"hits": {"hits": [], "total": {"value": 0}}})
+        with (
+            patch(f"{REPOSITORY_MODULE}.ElasticSearchClient.is_configured", return_value=True),
+            patch(f"{REPOSITORY_MODULE}.ElasticSearchClient.get_async_client", return_value=es_client),
+        ):
+            repository = MetricsElasticRepository()
+
+        await RoutingHandler(mock_user, repository).get_decision_timeline(time_period="last_7_days")
+
+        body = es_client.search.call_args.kwargs["body"]
+        assert set(body) == {"query", "size", "from"}
 
     def test_parses_routing_decision_fields(self, handler):
         result = handler._parse_decision_timeline(

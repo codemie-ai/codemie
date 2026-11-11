@@ -43053,6 +43053,189 @@
         ]
       }
     },
+    "/v1/analytics/assistants-requests": {
+      "get": {
+        "description": "One row per assistant request (a `conversation_assistant_usage` metric document), newest first.\n\n**Chat vs request:** a chat is a conversation (`conversation_id`); `assistants-chats` `total_chats` counts them. A request is one assistant turn, i.e. one HTTP request identified by `request_id`; `assistants-chats` `total_messages` counts them. \"Runs\" is reserved for workflows.\n\n**Field availability:** tokens, cost, `execution_time` (seconds) and `status` are returned per request. Error message and error class are not stored in the metric, so only `status` is available. Requests made with `save_history=False` and requests to virtual assistants emit no usage document and are absent here, exactly as they are from `assistants-chats`. Attributes missing from a document (older documents may lack `request_id`) are returned as `null`.\n\n**Paging:** `page`/`per_page` page through the matching rows newest first. Elasticsearch counts and serves at most the first 10,000 matching rows, so `total_count` stops at 10,000; narrow the date range or add filters to reach older rows.\n\n**Cost:** `money_spent` comes from the LiteLLM spend ledger for requests made on or after the ledger's coverage start, and from the metric document for older requests and on deployments without the ledger. A cost the ledger has not recorded yet is `null` with `spend_unavailable: true`; if the ledger cannot be read, the document's value is returned with `spend_unavailable: true`. `cached_tokens_money_spent` is always the document's value.\n\n**Reconciliation with `assistants-chats`** (totals match only for the same filters and date range):\n- `assistants-chats` groups by `assistant_id` and shows each assistant's current name; filter here by `assistant_id` to list the requests behind one of its rows.\n- `total_cost_usd` there reads the same sources as `money_spent` here, so it equals their sum once every request's cost is recorded; rows with `spend_unavailable: true` account for a gap. Neither includes `cached_tokens_money_spent`.\n- `total_tokens` is `input_tokens + output_tokens` and excludes `cache_read_input_tokens`.\n- `avg_time_seconds` there is an average of per-conversation averages, not the mean of request `execution_time`.\n- `error_rate_percent` and failed counts there are per conversation (any non-success request fails the chat); `status` here is per request.\n- The date filter applies per request `@timestamp`, so one conversation can be split across ranges, while `assistants-chats` counts a chat in every range containing at least one of its requests.",
+        "operationId": "get_assistants_requests_v1_analytics_assistants_requests_get",
+        "parameters": [
+          {
+            "description": "Filter by client source (platform, teams, cli, sdk, chrome_extension, or other)",
+            "in": "query",
+            "name": "client_source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ClientSource"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by client source (platform, teams, cli, sdk, chrome_extension, or other)",
+              "title": "Client Source"
+            }
+          },
+          {
+            "description": "Exact assistant id",
+            "in": "query",
+            "name": "assistant_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact assistant id",
+              "title": "Assistant Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "users",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Users"
+            }
+          },
+          {
+            "in": "query",
+            "name": "projects",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Projects"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TabularResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get per-request assistant analytics",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
     "/v1/analytics/budget-hard-limit": {
       "get": {
         "description": "Get budget hard limit analytics.",

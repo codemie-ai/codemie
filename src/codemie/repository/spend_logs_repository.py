@@ -1014,6 +1014,19 @@ class SpendLogsRepository:
         result = await session.execute(select(func.sum(Row.spend)).where(predicate))
         return result.scalar_one_or_none()
 
+    async def sum_for_request_ids(self, session: AsyncSession, request_ids: Sequence[str]) -> dict[str, Decimal]:
+        """`sum_for_correlation_id(request_id=...)` for many ids in one statement, and unbounded in time for its reason.
+
+        An id with no row is absent from the result, which is the `None` of the single-id read.
+        """
+        statement = (
+            select(Row.codemie_request_id, func.sum(Row.spend))
+            .where(request_resolved(tuple(request_ids)))
+            .group_by(Row.codemie_request_id)
+        )
+        result = await session.execute(statement)
+        return dict(result.tuples().all())
+
     async def count_requests(self, session: AsyncSession, period: TimeRange) -> int:
         """How many requests a period saw - **distinct calls, not rows**.
 

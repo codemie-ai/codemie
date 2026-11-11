@@ -47,7 +47,7 @@ from codemie.service.spend.coverage import (
     SpendResult,
     TimeRange,
 )
-from codemie.service.spend.ledger import AccessScope, ReportFilter
+from codemie.service.spend.ledger import AccessScope, ReportFilter, RequestCost
 from codemie.service.spend.ledger_registry import register_ledger_coverage, reset_ledgers
 from codemie.service.spend.rendering import RenderedSpend, render_spend
 
@@ -76,6 +76,7 @@ ABOVE_FLOOR_ONLY = datetime(2026, 7, 1, tzinfo=timezone.utc)
 EVERY_WINDOW_BELOW = datetime(2999, 1, 1, tzinfo=timezone.utc)
 
 PORT = "codemie.service.analytics.handlers.assistant_handler.spend_service.aggregate_by_dimension"
+REQUEST_COSTS_PORT = "codemie.service.analytics.handlers.assistant_handler.spend_service.costs_for_requests"
 ASSISTANT_DIRECTORY = "codemie.rest_api.models.assistant.Assistant.get_ids_by_names"
 REGISTERED_COVERAGE = "codemie.service.analytics.handlers.assistant_handler.ledger_coverage"
 
@@ -496,6 +497,337 @@ class TestGetAgentsUsage:
         # Assert
         assert len(rows) == 1
         assert rows[0]["last_error"] == "N/A"
+
+
+ASSISTANTS_REQUESTS_COLUMNS = [
+    "request_id",
+    "timestamp",
+    "conversation_id",
+    "assistant_id",
+    "assistant_name",
+    "user_id",
+    "user_name",
+    "user_email",
+    "project",
+    "llm_model",
+    "client_source",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_input_tokens",
+    "money_spent",
+    "cached_tokens_money_spent",
+    "execution_time",
+    "status",
+]
+
+
+def _request_hit(timestamp: str, **attributes) -> dict:
+    base = {
+        "assistant_id": "a-1",
+        "assistant_name": "Helper",
+        "user_id": "u-1",
+        "user_name": "User One",
+        "user_email": "u1@example.com",
+        "project": "proj-a",
+        "llm_model": "gpt-5",
+        "client_source": "platform",
+        "status": "success",
+    }
+    return {"_source": {"@timestamp": timestamp, "attributes": {**base, **attributes}}}
+
+
+REQUEST_DOCS = {
+    "hits": {
+        "total": {"value": 3, "relation": "eq"},
+        "hits": [
+            _request_hit(
+                "2026-10-29T12:00:00Z",
+                request_id="r-3",
+                conversation_id="c-2",
+                input_tokens=300,
+                output_tokens=120,
+                cache_read_input_tokens=40,
+                money_spent=0.03,
+                cached_tokens_money_spent=0.004,
+                execution_time=3.5,
+            ),
+            _request_hit(
+                "2026-10-29T11:00:00Z",
+                request_id="r-2",
+                conversation_id="c-1",
+                input_tokens=200,
+                output_tokens=80,
+                cache_read_input_tokens=0,
+                money_spent=0.02,
+                cached_tokens_money_spent=0.0,
+                execution_time=2.0,
+                status="error",
+            ),
+            _request_hit(
+                "2026-10-29T10:00:00Z",
+                request_id="r-1",
+                conversation_id="c-1",
+                input_tokens=100,
+                output_tokens=60,
+                cache_read_input_tokens=0,
+                money_spent=0.01,
+                cached_tokens_money_spent=0.0,
+                execution_time=1.0,
+            ),
+        ],
+    }
+}
+
+
+def _esql_sum(values: list) -> float | None:
+    present = [value for value in values if value is not None]
+    return sum(present) if present else None
+
+
+def _esql_chats_result(search_result: dict) -> dict:
+    """Aggregate search hits the way the assistants-chats ES|QL query does, with ES|QL null semantics."""
+    conversations: dict[tuple[str, str, str], list[dict]] = {}
+    for hit in search_result["hits"]["hits"]:
+        attributes = hit["_source"]["attributes"]
+        key = (attributes["assistant_id"], attributes["assistant_name"], attributes["conversation_id"])
+        conversations.setdefault(key, []).append(attributes)
+
+    assistants: dict[tuple[str, str], list[dict]] = {}
+    for (assistant_id, assistant_name, _), docs in conversations.items():
+        tokens = [
+            None
+            if doc.get("input_tokens") is None or doc.get("output_tokens") is None
+            else doc["input_tokens"] + doc["output_tokens"]
+            for doc in docs
+        ]
+        assistants.setdefault((assistant_id, assistant_name), []).append(
+            {
+                "messages": len(docs),
+                "tokens": _esql_sum(tokens),
+                "errors": sum(1 for doc in docs if doc.get("status") != "success"),
+                "users": {doc.get("user_name") for doc in docs},
+            }
+        )
+
+    column_names = [
+        "attributes.assistant_id.keyword",
+        "assistant_name",
+        "total_conversations",
+        "total_messages",
+        "unique_users",
+        "min_messages_per_chat",
+        "median_messages_rounded",
+        "avg_messages_rounded",
+        "max_messages_per_chat",
+        "successful_operations",
+        "total_errors",
+        "error_rate_percent",
+        "total_tokens",
+        "avg_execution_rounded",
+    ]
+    values = []
+    for (assistant_id, assistant_name), chats in assistants.items():
+        messages = [chat["messages"] for chat in chats]
+        total_messages = sum(messages)
+        total_errors = sum(chat["errors"] for chat in chats)
+        values.append(
+            [
+                assistant_id,
+                assistant_name,
+                len(chats),
+                total_messages,
+                len(set().union(*(chat["users"] for chat in chats))),
+                min(messages),
+                float(sorted(messages)[len(messages) // 2]),
+                round(total_messages / len(chats), 2),
+                max(messages),
+                total_messages - total_errors,
+                total_errors,
+                round(sum(1 for chat in chats if chat["errors"]) / len(chats) * 100, 2),
+                _esql_sum([chat["tokens"] for chat in chats]),
+                None,
+            ]
+        )
+    return {"columns": [{"name": name} for name in column_names], "values": values}
+
+
+class TestGetAssistantsRequests:
+    """Tests for get_assistants_requests and its row parser."""
+
+    @pytest.mark.asyncio
+    async def test_assistants_requests_columns_exact_order(self, handler, mock_repository):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+
+        result = await handler.get_assistants_requests(time_period="last_30_days")
+
+        assert [column["id"] for column in result["data"]["columns"]] == ASSISTANTS_REQUESTS_COLUMNS
+
+    @pytest.mark.asyncio
+    async def test_assistants_requests_column_labels_and_formats(self, handler, mock_repository):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+
+        result = await handler.get_assistants_requests(time_period="last_30_days")
+
+        columns = {column["id"]: column for column in result["data"]["columns"]}
+        assert columns["request_id"]["label"] == "Request"
+        assert columns["timestamp"]["label"] == "Date"
+        assert columns["llm_model"]["label"] == "Model"
+        assert columns["execution_time"]["label"] == "Time (s)"
+        assert columns["money_spent"] == {
+            "id": "money_spent",
+            "label": "Cost ($)",
+            "type": "number",
+            "format": "currency",
+        }
+        assert columns["cached_tokens_money_spent"]["format"] == "currency"
+
+    @pytest.mark.asyncio
+    async def test_assistants_requests_query_shape(self, handler, mock_repository):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+
+        await handler.get_assistants_requests(time_period="last_30_days", page=2, per_page=50, assistant_id="a-1")
+
+        call = mock_repository.execute_search_query.call_args
+        query_filters = call.args[0]["bool"]["filter"]
+        assert {"terms": {"metric_name.keyword": [MetricName.CONVERSATION_ASSISTANT_USAGE.value]}} in query_filters
+        assert {"term": {"attributes.assistant_id.keyword": "a-1"}} in query_filters
+        assert call.kwargs == {
+            "size": 50,
+            "from_": 100,
+            "sort": [
+                {"@timestamp": {"order": "desc", "unmapped_type": "date"}},
+                {"attributes.request_id.keyword": {"order": "desc", "unmapped_type": "keyword"}},
+            ],
+        }
+
+    def test_parse_assistants_requests_nulls_and_total_tokens(self):
+        input_only_hit = _request_hit("2026-10-29T09:30:00Z", conversation_id="c-1", input_tokens=100)
+        no_tokens_hit = {"_source": {"@timestamp": "2026-10-29T09:00:00Z", "attributes": {"request_id": "r-0"}}}
+        result = {"hits": {"hits": [*REQUEST_DOCS["hits"]["hits"][:2], input_only_hit, no_tokens_hit]}}
+
+        rows = AssistantHandler._parse_assistants_requests(result)
+
+        assert all(list(row) == ASSISTANTS_REQUESTS_COLUMNS for row in rows)
+        assert rows[0]["total_tokens"] == 420
+        assert rows[0]["timestamp"] == "2026-10-29T12:00:00Z"
+        assert rows[2]["request_id"] is None
+        assert rows[2]["output_tokens"] is None
+        assert rows[2]["cache_read_input_tokens"] is None
+        assert rows[2]["total_tokens"] == 100
+        assert rows[3]["total_tokens"] == 0
+        assert rows[3]["assistant_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_assistants_requests_reconcile_with_chats_totals(self, handler, mock_repository):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+        mock_repository.execute_esql_query.return_value = _esql_chats_result(REQUEST_DOCS)
+
+        request_costs = {request_id: RequestCost.settled(Decimal("0.25")) for request_id in ("r-1", "r-2", "r-3")}
+        with (
+            _cutover_at(ABOVE_FLOOR_ONLY),
+            patch(REQUEST_COSTS_PORT, new=AsyncMock(return_value=request_costs)),
+            _directory(Helper="a-1"),
+            _patched_port({"a-1": SpendResult(figure=Decimal("0.75"))}, expect_period=None),
+        ):
+            requests = await handler.get_assistants_requests(time_period="last_30_days")
+            chats = await handler.get_assistants_chats(time_period="last_30_days")
+
+        rows = requests["data"]["rows"]
+        chat_rows = chats["data"]["rows"]
+        assert len(rows) == requests["pagination"]["total_count"] == sum(row["total_messages"] for row in chat_rows)
+        assert sum(row["total_tokens"] for row in rows) == sum(row["total_tokens"] for row in chat_rows)
+        assert sum(row["money_spent"] for row in rows) == pytest.approx(sum(row["total_cost_usd"] for row in chat_rows))
+
+
+#: Between `r-1` (10:00) and `r-2` (11:00) of `REQUEST_DOCS`: `r-1` is older than the ledger, the rest are not.
+REQUESTS_FLOOR = datetime(2026, 10, 29, 10, 30, tzinfo=timezone.utc)
+
+
+def _request_costs(costs: dict[str, RequestCost]):
+    return patch(REQUEST_COSTS_PORT, new=AsyncMock(return_value=costs))
+
+
+def _money(result: dict) -> list[tuple[float | None, bool]]:
+    return [(row["money_spent"], row["spend_unavailable"]) for row in result["data"]["rows"]]
+
+
+class TestAssistantsRequestsCostComesFromTheLedger:
+    """Cost is the ledger's from its start date on, and the metric document's own before it."""
+
+    @pytest.mark.asyncio
+    async def test_newer_requests_take_the_ledger_cost_and_older_ones_keep_their_own(self, handler, mock_repository):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+        costs = {"r-3": RequestCost.settled(Decimal("0.5")), "r-2": RequestCost.settled(Decimal("0"))}
+
+        with _cutover_at(REQUESTS_FLOOR), _request_costs(costs) as port:
+            result = await handler.get_assistants_requests(time_period="last_30_days")
+
+        assert _money(result) == [(0.5, False), (0.0, False), (0.01, False)]
+        port.assert_awaited_once_with(["r-3", "r-2"])
+
+    @pytest.mark.asyncio
+    async def test_a_cost_still_pending_in_the_ledger_is_empty_and_flagged(self, handler, mock_repository):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+        costs = {"r-3": RequestCost.pending(), "r-2": RequestCost.settled(Decimal("0.02"))}
+
+        with _cutover_at(REQUESTS_FLOOR), _request_costs(costs):
+            result = await handler.get_assistants_requests(time_period="last_30_days")
+
+        assert _money(result) == [(None, True), (0.02, False), (0.01, False)]
+
+    @pytest.mark.asyncio
+    async def test_a_cost_the_ledger_cannot_answer_keeps_the_documents_own_and_is_flagged(
+        self, handler, mock_repository
+    ):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+        costs = {"r-3": RequestCost.unavailable(), "r-2": RequestCost.settled(Decimal("0.02"))}
+
+        with _cutover_at(REQUESTS_FLOOR), _request_costs(costs):
+            result = await handler.get_assistants_requests(time_period="last_30_days")
+
+        assert _money(result) == [(0.03, True), (0.02, False), (0.01, False)]
+
+    @pytest.mark.asyncio
+    async def test_without_an_activated_ledger_every_request_keeps_its_own_cost(self, handler, mock_repository):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+
+        with _cutover_at(None), _request_costs({}) as port:
+            result = await handler.get_assistants_requests(time_period="last_30_days")
+
+        assert _money(result) == [(0.03, False), (0.02, False), (0.01, False)]
+        port.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_page_older_than_the_ledger_does_not_ask_it(self, handler, mock_repository):
+        mock_repository.execute_search_query.return_value = REQUEST_DOCS
+
+        with _cutover_at(datetime(2026, 11, 1, tzinfo=timezone.utc)), _request_costs({}) as port:
+            result = await handler.get_assistants_requests(time_period="last_30_days")
+
+        assert _money(result) == [(0.03, False), (0.02, False), (0.01, False)]
+        port.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_request_without_an_id_keeps_its_own_cost(self, handler, mock_repository):
+        hit = _request_hit("2026-10-29T12:00:00Z", conversation_id="c-1", money_spent=0.04)
+        mock_repository.execute_search_query.return_value = {"hits": {"total": {"value": 1}, "hits": [hit]}}
+
+        with _cutover_at(ABOVE_FLOOR_ONLY), _request_costs({}) as port:
+            result = await handler.get_assistants_requests(time_period="last_30_days")
+
+        assert _money(result) == [(0.04, False)]
+        port.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_older_request_without_a_stored_cost_is_empty_and_flagged(self, handler, mock_repository):
+        hit = _request_hit("2026-10-29T10:00:00Z", request_id="r-1", conversation_id="c-1")
+        mock_repository.execute_search_query.return_value = {"hits": {"total": {"value": 1}, "hits": [hit]}}
+
+        with _cutover_at(REQUESTS_FLOOR), _request_costs({}):
+            result = await handler.get_assistants_requests(time_period="last_30_days")
+
+        assert _money(result) == [(None, True)]
 
 
 class TestTheDisplayNameComesFromTheOwningEntity:

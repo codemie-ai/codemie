@@ -899,6 +899,79 @@ class TestAnalyticsQueryPipeline:
         # Assert
         mock_builder.add_client_source_filter.assert_not_called()
 
+    # ===== assistant_id Tests =====
+
+    @pytest.fixture
+    def plain_user(self):
+        user = MagicMock(id="user-1", project_names=["proj-a"], admin_project_names=[])
+        user.is_admin = False
+        user.is_auditor = False
+        return user
+
+    def test_build_query_adds_assistant_term_and_keeps_access_filter(
+        self, plain_user, mock_repository, sample_start_dt, sample_end_dt
+    ):
+        pipeline = AnalyticsQueryPipeline(user=plain_user, repository=mock_repository)
+
+        query = pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters(assistant_id="a-1"))
+
+        assert {"term": {"attributes.assistant_id.keyword": "a-1"}} in query["bool"]["filter"]
+        access_filter = query["bool"]["must"][0]
+        plain_clause = access_filter["bool"]["should"][0]
+        assert plain_clause["bool"]["must"] == [
+            {"term": {"attributes.user_id.keyword": "user-1"}},
+            {"terms": {"attributes.project.keyword": ["proj-a"]}},
+        ]
+        assert access_filter["bool"]["minimum_should_match"] == 1
+
+    @pytest.mark.parametrize("assistant_id", ["", None])
+    def test_build_query_skips_assistant_term_when_empty(
+        self, assistant_id, plain_user, mock_repository, sample_start_dt, sample_end_dt
+    ):
+        pipeline = AnalyticsQueryPipeline(user=plain_user, repository=mock_repository)
+
+        query = pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters(assistant_id=assistant_id))
+
+        assert "attributes.assistant_id.keyword" not in str(query)
+
+    # ===== execute_search_rows Tests =====
+
+    @patch("codemie.service.analytics.query_pipeline.ResponseFormatter")
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_execute_search_rows_forwards_sort(
+        self, mock_time_parser, mock_query_builder_class, mock_formatter, pipeline, mock_repository
+    ):
+        mock_time_parser.parse.return_value = (datetime(2024, 1, 1), datetime(2024, 1, 31))
+        mock_query_builder_class.return_value.build.return_value = {"query": "built"}
+        mock_repository.execute_search_query.return_value = {"hits": {"hits": [], "total": {"value": 0}}}
+        sort = [{"@timestamp": {"order": "desc"}}]
+
+        await pipeline.execute_search_rows(
+            result_parser=MagicMock(return_value=[]),
+            columns=[],
+            filters=AnalyticsQueryFilters(page=2, per_page=5),
+            sort=sort,
+        )
+
+        mock_repository.execute_search_query.assert_called_once_with({"query": "built"}, size=5, from_=10, sort=sort)
+
+    @patch("codemie.service.analytics.query_pipeline.ResponseFormatter")
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_execute_search_rows_omits_sort_by_default(
+        self, mock_time_parser, mock_query_builder_class, mock_formatter, pipeline, mock_repository
+    ):
+        mock_time_parser.parse.return_value = (datetime(2024, 1, 1), datetime(2024, 1, 31))
+        mock_query_builder_class.return_value.build.return_value = {"query": "built"}
+        mock_repository.execute_search_query.return_value = {"hits": {"hits": [], "total": {"value": 0}}}
+
+        await pipeline.execute_search_rows(result_parser=MagicMock(return_value=[]), columns=[])
+
+        mock_repository.execute_search_query.assert_called_once_with({"query": "built"}, size=20, from_=0)
+
     def test_build_filters_applied_includes_client_source_when_set(self, pipeline, sample_start_dt, sample_end_dt):
         """Verify filters_applied includes client_source when provided."""
         # Act
@@ -922,6 +995,24 @@ class TestAnalyticsQueryPipeline:
 
         # Assert
         assert filters["client_source"] is None
+
+    def test_build_filters_applied_includes_assistant_id_when_set(self, pipeline, sample_start_dt, sample_end_dt):
+        filters = pipeline._build_filters_applied(
+            AnalyticsQueryFilters(time_period="last_30_days", assistant_id="a-1"),
+            sample_start_dt,
+            sample_end_dt,
+        )
+
+        assert filters["assistant_id"] == "a-1"
+
+    def test_build_filters_applied_assistant_id_defaults_to_none(self, pipeline, sample_start_dt, sample_end_dt):
+        filters = pipeline._build_filters_applied(
+            AnalyticsQueryFilters(time_period="last_30_days"),
+            sample_start_dt,
+            sample_end_dt,
+        )
+
+        assert filters["assistant_id"] is None
 
     @patch("codemie.service.analytics.query_pipeline.TotalsCalculator")
     @patch("codemie.service.analytics.query_pipeline.ResponseFormatter")

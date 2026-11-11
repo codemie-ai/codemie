@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import copy
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
+from typing import Any
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
@@ -40,7 +41,7 @@ from codemie.service.analytics.handlers.user_identity_resolver import UserIdenti
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline, EnrichedRows
 from codemie.service.spend.coverage import SpendDimension, TimeRange
-from codemie.service.spend.ledger import ReportFilter
+from codemie.service.spend.ledger import ReportFilter, RequestCost
 from codemie.service.spend.ledger_registry import ledger_coverage
 from codemie.service.spend.rendering import (
     RenderedSpend,
@@ -57,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 # Elasticsearch field constants
 ASSISTANT_NAME_KEYWORD_FIELD = "attributes.assistant_name.keyword"
+REQUEST_ID_KEYWORD_FIELD = "attributes.request_id.keyword"
 #: What a table groups on **wherever every document it spans carries it**: the spend port keys the
 #: assistant dimension on this id, so one bucket and one figure name the same thing. The name above is
 #: then a label only - mutable and not unique, so grouping by it splits one assistant across a rename
@@ -81,6 +83,8 @@ DISPLAY_NAME_AGG = "display_name"
 # their own money columns in Elasticsearch and are not addressed by these.
 CHATS_MONEY_COLUMN = "total_cost_usd"
 CHATS_COST_PER_OP_COLUMN = "cost_per_op_usd"
+
+REQUESTS_MONEY_COLUMN = "money_spent"
 
 #: Carries the grouping id from the parser to the enricher, which is the only reader of it: the port
 #: is keyed on the id while the table displays the name. Consumed there, so it reaches no response.
@@ -255,6 +259,121 @@ FROM codemie_metrics_logs*
                 report_filter=await report_filter_for(users, projects),
             ),
         )
+
+    async def get_assistants_requests(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+        client_source: str | None = None,
+        assistant_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Get one row per assistant request (conversation_assistant_usage document), newest first."""
+        logger.info("Requesting assistants-requests analytics")
+
+        return await self._pipeline.execute_search_rows(
+            result_parser=self._parse_assistants_requests,
+            columns=self._get_assistants_requests_columns(),
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.CONVERSATION_ASSISTANT_USAGE.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+                client_source=client_source,
+                assistant_id=assistant_id,
+            ),
+            sort=[
+                {TIMESTAMP_FIELD: {"order": "desc", "unmapped_type": "date"}},
+                {REQUEST_ID_KEYWORD_FIELD: {"order": "desc", "unmapped_type": "keyword"}},
+            ],
+            row_enricher=self._cost_requests,
+        )
+
+    async def _cost_requests(self, rows: list[dict], start_dt: datetime, end_dt: datetime) -> EnrichedRows:
+        """Each request's cost from the ledger from its coverage floor on, and the document's own below it.
+
+        The same split the other money tables make, read per request: one ledger read for the page.
+        Without an activated ledger nothing is asked and every row keeps the document's cost.
+        """
+        coverage = ledger_coverage()
+        floor = pre_floor_boundary(coverage)
+        asked = [
+            row["request_id"]
+            for row in rows
+            if coverage.activated and row["request_id"] and not self._before_floor(row["timestamp"], floor)
+        ]
+        costs = await spend_service.costs_for_requests(asked) if asked else {}
+        apply_spend_cells(rows, [self._request_spend(row, costs) for row in rows], REQUESTS_MONEY_COLUMN)
+        return EnrichedRows(rows=rows)
+
+    @staticmethod
+    def _before_floor(timestamp: str | None, floor: datetime | None) -> bool:
+        if floor is None or timestamp is None:
+            return False
+        emitted = datetime.fromisoformat(timestamp)
+        return (emitted if emitted.tzinfo else emitted.replace(tzinfo=timezone.utc)) < floor
+
+    @staticmethod
+    def _request_spend(row: dict, costs: dict[str, RequestCost]) -> RenderedSpend:
+        """The ledger's settled figure; none while pending; else the document's own, flagged if the ledger failed it."""
+        cost = costs.get(row["request_id"])
+        if cost is not None and cost.is_settled and cost.figure is not None:
+            return RenderedSpend(figure=float(cost.figure), unavailable=False, partial=False, missing_amount=None)
+        if cost is not None and cost.is_pending:
+            return RenderedSpend(figure=None, unavailable=True, partial=False, missing_amount=None)
+        stored = row[REQUESTS_MONEY_COLUMN]
+        return RenderedSpend(
+            figure=stored, unavailable=stored is None or cost is not None, partial=False, missing_amount=None
+        )
+
+    @staticmethod
+    def _parse_assistants_requests(result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Map each conversation_assistant_usage hit to a row; absent attributes become None."""
+        rows = []
+        for hit in result.get("hits", {}).get("hits", []):
+            source = hit.get("_source", {})
+            attributes = source.get("attributes", {})
+            row = {
+                column["id"]: attributes.get(column["id"])
+                for column in AssistantHandler._get_assistants_requests_columns()
+            }
+            row["timestamp"] = source.get(TIMESTAMP_FIELD)
+            row["total_tokens"] = (attributes.get("input_tokens") or 0) + (attributes.get("output_tokens") or 0)
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _get_assistants_requests_columns() -> list[dict[str, Any]]:
+        """Get column definitions for assistants/requests response."""
+        return [
+            {"id": "request_id", "label": "Request", "type": "string"},
+            {"id": "timestamp", "label": "Date", "type": "date"},
+            {"id": "conversation_id", "label": "Conversation", "type": "string"},
+            {"id": "assistant_id", "label": "Assistant ID", "type": "string"},
+            {"id": "assistant_name", "label": "Assistant", "type": "string"},
+            {"id": "user_id", "label": "User ID", "type": "string"},
+            {"id": "user_name", "label": "User", "type": "string"},
+            {"id": "user_email", "label": "User Email", "type": "string"},
+            {"id": "project", "label": "Project", "type": "string"},
+            {"id": "llm_model", "label": "Model", "type": "string"},
+            {"id": "client_source", "label": "Client Source", "type": "string"},
+            {"id": "input_tokens", "label": "Input Tokens", "type": "number"},
+            {"id": "output_tokens", "label": "Output Tokens", "type": "number"},
+            {"id": "total_tokens", "label": "Total Tokens", "type": "number"},
+            {"id": "cache_read_input_tokens", "label": "Cache Read Tokens", "type": "number"},
+            {"id": "money_spent", "label": "Cost ($)", "type": "number", "format": "currency"},
+            {"id": "cached_tokens_money_spent", "label": "Cached Cost ($)", "type": "number", "format": "currency"},
+            {"id": "execution_time", "label": "Time (s)", "type": "number"},
+            {"id": "status", "label": "Status", "type": "string"},
+        ]
 
     async def _enrich_assistants_spending(
         self,

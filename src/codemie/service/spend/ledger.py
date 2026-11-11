@@ -993,6 +993,14 @@ class SpendLedger(Protocol):
         """
         ...
 
+    async def costs_for_requests(self, request_ids: Sequence[str]) -> dict[str, RequestCost]:
+        """`cost_for_request(request_id=...)` for every id of a page, in one read.
+
+        Each answer is the one `cost_for_request` gives for that id. An id left out of the mapping is
+        read by the caller as this ledger having no figure for it.
+        """
+        ...
+
     async def request_count(
         self,
         period: TimeRange,

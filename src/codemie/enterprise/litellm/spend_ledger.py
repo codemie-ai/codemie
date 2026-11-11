@@ -678,6 +678,21 @@ class SpendLogsLedger:
 
         return RequestCost.pending() if total is None else RequestCost.settled(total)
 
+    async def costs_for_requests(self, request_ids: Sequence[str]) -> dict[str, RequestCost]:
+        """`cost_for_request(request_id=...)` for every id, from one statement."""
+        if not request_ids:
+            return {}
+        if not self._coverage.activated:
+            return dict.fromkeys(request_ids, RequestCost.unavailable())
+
+        async with self._session_factory() as session:
+            totals = await self._repository.sum_for_request_ids(session, request_ids)
+
+        return {
+            request_id: RequestCost.settled(totals[request_id]) if request_id in totals else RequestCost.pending()
+            for request_id in request_ids
+        }
+
     async def request_count(
         self,
         period: TimeRange,

@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Any
 
 from elastic_transport import TransportError
 from elasticsearch import ApiError, AsyncElasticsearch, NotFoundError
@@ -225,13 +226,20 @@ class MetricsElasticRepository:
                 help=ANALYTICS_QUERY_HELP_MSG,
             ) from e
 
-    async def execute_search_query(self, query: dict, size: int = 20, from_: int = 0) -> dict:
+    async def execute_search_query(
+        self,
+        query: dict,
+        size: int = 20,
+        from_: int = 0,
+        sort: list[dict[str, Any]] | None = None,
+    ) -> dict:
         """Execute search query with pagination.
 
         Args:
             query: Elasticsearch query dict
             size: Number of results to return
             from_: Offset for pagination
+            sort: Optional sort clause, added to the body only when provided
 
         Returns:
             Raw Elasticsearch response dict
@@ -243,6 +251,8 @@ class MetricsElasticRepository:
             return self._handle_unavailable({"hits": {"hits": [], "total": {"value": 0}}}, reason=NOT_CONFIGURED_REASON)
         try:
             body = {"query": query, "size": size, "from": from_}
+            if sort is not None:
+                body["sort"] = sort
             logger.debug(f"Executing search query on index {self._index}, body={body}")
             start_time = time.time()
             result = await self._client.search(index=self._index, body=body, request_timeout=DEFAULT_REQUEST_TIMEOUT)

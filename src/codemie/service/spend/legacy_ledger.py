@@ -470,6 +470,9 @@ class LegacySpendLedger:
         """
         return await self._es.cost_for_request(run_id=run_id, request_id=request_id)
 
+    async def costs_for_requests(self, request_ids: Sequence[str]) -> dict[str, RequestCost]:
+        return await self._es.costs_for_requests(request_ids)
+
     async def request_count(
         self,
         period: TimeRange,

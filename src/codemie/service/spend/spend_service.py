@@ -79,6 +79,24 @@ def _distinct_ledgers() -> list[SpendLedger]:
     return seen
 
 
+def _combined_cost(costs: Sequence[RequestCost | None]) -> RequestCost:
+    """One request's cost from each ledger's answer, `None` standing for a read that failed."""
+    # A read that **failed** is unknown, which is weaker than the "no figure is coming for this
+    # record" a ledger states by answering unavailable - so it cannot be one of the fallbacks
+    # combined below, and is marked absent instead. An unknown part cannot be settled: reporting
+    # the half that landed as final is the same fabricated total the pending rule prevents.
+    if any(cost is None for cost in costs):
+        return RequestCost.unavailable()
+
+    settled = [cost.figure for cost in costs if cost.is_settled and cost.figure is not None]
+
+    if any(cost.is_pending for cost in costs):
+        return RequestCost.pending()
+    if settled:
+        return RequestCost.settled(sum(settled, Decimal("0")))
+    return RequestCost.unavailable()
+
+
 def _combined_groups(
     per_ledger: Sequence[Mapping[SpendGroup, SpendResult]], period: TimeRange
 ) -> dict[SpendGroup, SpendResult]:
@@ -562,21 +580,32 @@ class SpendService:
             await self._ask(ledger, read, None, ledger.cost_for_request(run_id=run_id, request_id=request_id), None)
             for ledger in _distinct_ledgers()
         ]
+        return _combined_cost(costs)
 
-        # A read that **failed** is unknown, which is weaker than the "no figure is coming for this
-        # record" a ledger states by answering unavailable - so it cannot be one of the fallbacks
-        # combined below, and is marked absent instead. An unknown part cannot be settled: reporting
-        # the half that landed as final is the same fabricated total the pending rule prevents.
-        if any(cost is None for cost in costs):
-            return RequestCost.unavailable()
+    async def costs_for_requests(self, request_ids: Sequence[str]) -> dict[str, RequestCost]:
+        """`cost_for_request(request_id=...)` for every id of a page, in one read per ledger.
 
-        settled = [cost.figure for cost in costs if cost.is_settled and cost.figure is not None]
+        Each id is combined across ledgers exactly as `cost_for_request` combines one. An id a ledger
+        left out is that ledger answering unavailable for it; a ledger that failed leaves every id
+        unavailable.
+        """
+        requested = list(dict.fromkeys(request_ids))
+        if not requested:
+            return {}
 
-        if any(cost.is_pending for cost in costs):
-            return RequestCost.pending()
-        if settled:
-            return RequestCost.settled(sum(settled, Decimal("0")))
-        return RequestCost.unavailable()
+        per_ledger: list[dict[str, RequestCost] | None] = [
+            await self._ask(ledger, "costs_for_requests", None, ledger.costs_for_requests(requested), None)
+            for ledger in _distinct_ledgers()
+        ]
+        return {
+            request_id: _combined_cost(
+                [
+                    None if answers is None else answers.get(request_id, RequestCost.unavailable())
+                    for answers in per_ledger
+                ]
+            )
+            for request_id in requested
+        }
 
     async def request_count(
         self,

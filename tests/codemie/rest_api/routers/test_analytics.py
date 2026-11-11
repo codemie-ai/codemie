@@ -523,6 +523,45 @@ class TestPaginationEndpoints:
         assert isinstance(response, JSONResponse)
 
 
+class TestAssistantsRequestsEndpoint:
+    """Tests for the /v1/analytics/assistants-requests endpoint."""
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
+    async def test_assistants_requests_route_forwards_filters(
+        self, mock_service_class, mock_user, sample_tabular_response_data
+    ):
+        from codemie.rest_api.routers.analytics._common import AnalyticsQueryParams
+        from codemie.rest_api.routers.analytics.usage import get_assistants_requests
+        from codemie.rest_api.utils.client_context import ClientSource
+
+        mock_service = AsyncMock()
+        mock_service.get_assistants_requests.return_value = sample_tabular_response_data
+        mock_service_class.return_value = mock_service
+
+        response = await get_assistants_requests(
+            user=mock_user,
+            params=AnalyticsQueryParams(
+                time_period="last_7_days", users="u1@example.com, u2@example.com", projects="p1", page=3, per_page=40
+            ),
+            client_source=ClientSource.MS_TEAMS_BOT,
+            assistant_id="a-1",
+        )
+
+        mock_service.get_assistants_requests.assert_called_once_with(
+            time_period="last_7_days",
+            start_date=None,
+            end_date=None,
+            users=["u1@example.com", "u2@example.com"],
+            projects=["p1"],
+            page=3,
+            per_page=40,
+            client_source="ms-teams-bot",
+            assistant_id="a-1",
+        )
+        assert isinstance(response, JSONResponse)
+
+
 class TestWorkflowsEndpoint:
     """Tests for the /v1/analytics/workflows endpoint."""
 

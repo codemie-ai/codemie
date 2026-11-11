@@ -202,6 +202,10 @@ class _RecordingLedger:
         self.cost_calls += 1
         return self._cost
 
+    async def costs_for_requests(self, request_ids):
+        self.cost_calls += 1
+        return {request_id: self._cost for request_id in request_ids}
+
 
 def _pair(legacy_result: SpendResult | None = None, current_result: SpendResult | None = None, **kwargs):
     legacy = _RecordingLedger("legacy", legacy_result, **kwargs)
@@ -671,6 +675,18 @@ class TestAnIdLookupHasNoPeriodToRouteOn:
         assert current.cost_calls == 1
         assert legacy.cost_calls == 0, "the legacy engine's answer is unavailable by design and adds nothing"
         assert legacy.periods == [], "no period may be invented to route an id-keyed read on"
+
+    def test_the_current_ledger_answers_a_page_of_requests_alone(self):
+        legacy = _RecordingLedger("legacy", cost=RequestCost.settled(Decimal("99")))
+        current = _RecordingLedger("current", cost=RequestCost.settled(Decimal("0.42")))
+        cutover = CutoverSpendLedger(legacy, current, FLOOR)
+
+        costs = asyncio.run(cutover.costs_for_requests(["q-1", "q-2"]))
+
+        assert costs == {"q-1": RequestCost.settled(Decimal("0.42")), "q-2": RequestCost.settled(Decimal("0.42"))}
+        assert current.cost_calls == 1
+        assert legacy.cost_calls == 0
+        assert legacy.periods == []
 
 
 class TestTheFloorIsRequiredAndResolved:

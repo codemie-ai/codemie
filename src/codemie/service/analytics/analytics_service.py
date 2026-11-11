@@ -382,6 +382,31 @@ class AnalyticsService:
             client_source=client_source,
         )
 
+    async def get_assistants_requests(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+        client_source: str | None = None,
+        assistant_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Get one analytics row per assistant request, newest first."""
+        return await self._assistant_handler.get_assistants_requests(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+            client_source=client_source,
+            assistant_id=assistant_id,
+        )
+
     async def get_agents_usage(
         self,
         time_period: str | None = None,

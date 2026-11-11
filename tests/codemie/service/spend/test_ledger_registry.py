@@ -154,6 +154,13 @@ class TestTheUnregisteredCase:
         assert cost.state is CostState.UNAVAILABLE
         assert cost.figure is None
 
+    @pytest.mark.asyncio
+    async def test_with_nothing_registered_a_page_of_requests_is_unavailable(self):
+        ledger = get_spend_ledger(LLMCallClass.CHAT)
+        costs = await ledger.costs_for_requests(["q-1"])
+
+        assert costs == {"q-1": RequestCost.unavailable()}
+
     def test_the_noop_satisfies_the_port(self):
         assert isinstance(get_spend_ledger(LLMCallClass.CHAT), SpendLedger)
 

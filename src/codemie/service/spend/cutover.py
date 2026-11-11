@@ -538,6 +538,10 @@ class CutoverSpendLedger:
         """
         return await self._current.cost_for_request(run_id=run_id, request_id=request_id)
 
+    async def costs_for_requests(self, request_ids: Sequence[str]) -> dict[str, RequestCost]:
+        """The current ledger's answer alone, for the reason `cost_for_request` gives."""
+        return await self._current.costs_for_requests(request_ids)
+
     async def request_count(
         self,
         period: TimeRange,

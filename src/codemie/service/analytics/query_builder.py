@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 PROJECT_FIELD = "attributes.project.keyword"
 USER_ID_FIELD = "attributes.user_id.keyword"
 CLIENT_SOURCE_FIELD = "attributes.client_source.keyword"
+ASSISTANT_ID_FIELD = "attributes.assistant_id.keyword"
 
 
 class SecureQueryBuilder:
@@ -240,6 +241,19 @@ class SecureQueryBuilder:
         """
         if client_source:
             self._query["bool"]["filter"].append({"term": {CLIENT_SOURCE_FIELD: client_source}})
+        return self
+
+    def add_assistant_filter(self, assistant_id: str) -> SecureQueryBuilder:
+        """Add assistant filter to query (exact match, single value).
+
+        Args:
+            assistant_id: Assistant id to filter on
+
+        Returns:
+            Self for method chaining
+        """
+        if assistant_id:
+            self._query["bool"]["filter"].append({"term": {ASSISTANT_ID_FIELD: assistant_id}})
         return self
 
     def add_project_filter(self, projects: list[str]) -> SecureQueryBuilder:

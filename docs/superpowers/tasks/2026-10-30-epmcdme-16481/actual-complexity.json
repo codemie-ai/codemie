@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-10-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 13,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New GET /v1/analytics/assistants-requests router endpoint, AnalyticsService passthrough and AssistantHandler.get_assistants_requests, plus extensions to shared analytics plumbing used by every analytics endpoint: MetricsElasticRepository search (optional sort / track_total_hits), AnalyticsQueryPipeline (new hit-row search path, assistant_id filter) and SecureQueryBuilder (add_assistant_filter). Base M across API/Service/Repository, bumped to L for touching shared utilities." },
+    { "dimension": "file_change_estimate", "reason": "13 files changed (diffstat), mapped to XL. Only 6 are source files; 7 are tests plus the OpenAPI baseline, so the implementation footprint is closer to M than the file count suggests." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing aggregation-based analytics endpoints; this adds a document-hit paging path with a 10,000 result-window guard (HTTP 400) and deterministic sort, which is a modest new approach. Access control reuses the existing SecureQueryBuilder project/user scoping, so no security gap; read-only, trivially reversible." },
+    { "dimension": "requirements_clarity", "reason": "Behaviour is precisely specified in the endpoint description (field availability, paging limit, reconciliation with assistants-chats); only minor semantic caveats remained." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared analytics utilities (metrics repository search, query pipeline, secure query builder)"
+  ],
+  "split_recommendation": null
+}

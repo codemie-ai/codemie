@@ -1,0 +1,157 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16481_per-run-assistant-analytics",
+  "head": "52c67f097f60f3da77c23cc48080258d349c6dfb",
+  "runner": "custom",
+  "started_at": "2026-10-30T12:12:05Z",
+  "completed_at": "2026-10-30T12:37:21Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4005,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "ruff format left all 3131 files unchanged; ruff check clean"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 17362,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2194,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Skip if: Docker unavailable -- 'which: no docker in (...)'; Podman is installed and live but the Makefile target hardcodes 'docker run'. Enable with a docker CLI (or a docker->podman shim on PATH). Secret scan of this branch is still owed: CI does not run it."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 1383656,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "Out of scope: the user asked mid-run for related tests only, so the full suite was aborted. Before the abort it had stalled at 94% for about 6 minutes, with all 3 xdist workers at 0 CPU; the workers were killed and replaced, then the whole run was stopped. F/E marks were seen in the progress output, but no summary was produced."
+    },
+    {
+      "id": "affected",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 24591,
+      "command": "poetry run pytest tests/codemie/service/analytics tests/codemie/rest_api/routers/test_analytics.py tests/codemie/repository/test_metrics_elastic_repository.py tests/codemie/rest_api/router_guards",
+      "exit_code": 1,
+      "notes": "4 failed, 950 passed, 8 skipped, 7 errors. All 11 are in tests/codemie/rest_api/router_guards: the app_probe subprocess exits 1 with 'OSError: [WinError 10106] The requested service provider could not be loaded or initialized', which looks environmental (Windows socket init in the child process). Every analytics service, handler, router and repository test passed. test_openapi_snapshot::test_openapi_matches_baseline did not get as far as comparing the changed openapi.json baseline."
+    },
+    {
+      "id": "test-cli-analytics-live",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "Skip if: change does not touch src/codemie/repository/cli_analytics/postgres/ -- it does not"
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: user did not request coverage"
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 327,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip (exit 0): '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable by setting SONAR_TOKEN in env or .env.local. No pipeline runs Sonar, so this check is still owed."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Composite of ruff, license, gitleaks and test; each component was evaluated as its own gate above"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if: not opening a merge request -- this is the Stage 7 gate run, not the MR. It is required later for the MR '## Test harness' section."
+    },
+    {
+      "id": "hook-ruff-staged",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": null,
+      "notes": "pre-commit hook, staged-only; nothing is staged. Formatting is covered by the lint gate. Note: .git/hooks contains only *.sample files, so the pre-commit framework is not installed and the branch commits never went through any hook."
+    },
+    {
+      "id": "hook-gitleaks-staged",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": null,
+      "notes": "Scans staged changes only (gitleaks protect --staged), and nothing is staged, so it would scan nothing. Hooks are not installed, so the 4 branch commits were never secret-scanned at commit time. The full-tree gitleaks gate is SKIPPED (no docker CLI)."
+    },
+    {
+      "id": "hook-commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 2458,
+      "command": "for c in $(git rev-list origin/main..HEAD); do git log -1 --format=%B $c > <run_dir>/gate-logs.local/msg.txt; bash scripts/git-hooks/commit_msg.sh <run_dir>/gate-logs.local/msg.txt || exit 1; done",
+      "exit_code": 0,
+      "notes": "All 4 branch commits match ^EPMCDME-[0-9]+:"
+    },
+    {
+      "id": "hook-pre-push",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": null,
+      "notes": "Opt-in (CODEMIE_PREPUSH_ENABLED, default off). Its pytest part (tests/ minus tests/enterprise, with coverage) is outside the user-requested scope; its sonar part is the sonar-local gate (SKIPPED)."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml wait-ci-init (pre-ci-guard template)",
+      "exit_code": null,
+      "notes": "Waits on external GitLab status contexts 'ci-pipeline' and 'compliance-report'; there is nothing to run locally. compliance-report is the MR description bot (needs the '## Test harness' section)."
+    }
+  ],
+  "failures": {
+    "affected": "                    text=True,\n                    timeout=_PROBE_TIMEOUT_SECONDS,\n                )\n            except subprocess.TimeoutExpired as timeout:\n                raise RuntimeError(\n                    f\"app_probe timed out after {_PROBE_TIMEOUT_SECONDS}s\\nstderr:\\n{_as_text(timeout.stderr)}\"\n                ) from timeout\n            if result.returncode != 0:\n>               raise RuntimeError(f\"app_probe failed with exit code {result.returncode}\\nstderr:\\n{result.stderr}\")\nE               RuntimeError: app_probe failed with exit code 1\nE               stderr:\nE               Traceback (most recent call last):\nE                 File \"C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\tests\\codemie\\rest_api\\router_guards\\app_probe.py\", line 34, in <module>\nE                   from unittest.mock import MagicMock, patch\nE                 File \"C:\\Users\\KostiantynPshenychny\\AppData\\Roaming\\uv\\python\\cpython-3.12.15-windows-x86_64-none\\Lib\\unittest\\mock.py\", line 26, in <module>\nE                   import asyncio\nE                 File \"C:\\Users\\KostiantynPshenychny\\AppData\\Roaming\\uv\\python\\cpython-3.12.15-windows-x86_64-none\\Lib\\asyncio\\__init__.py\", line 43, in <module>\nE                   from .windows_events import *\nE                 File \"C:\\Users\\KostiantynPshenychny\\AppData\\Roaming\\uv\\python\\cpython-3.12.15-windows-x86_64-none\\Lib\\asyncio\\windows_events.py\", line 8, in <module>\nE                   import _overlapped\nE               OSError: [WinError 10106] The requested service provider could not be loaded or initialized\n\ntests\\codemie\\rest_api\\router_guards\\guarded_app.py:100: RuntimeError\n============================== warnings summary ===============================\n.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44\n.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44\n.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44\n  C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44: FutureWarning: grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In October 2026, google-auth will raise its minimum requirements to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography\n    warnings.warn(\n\ntests/codemie/service/analytics/handlers/test_member_spend_service.py::TestPersonalProjectExclusion::test_enforced_only_keeps_projects_with_enforcement_enabled\ntests/codemie/service/analytics/handlers/test_member_spend_service.py::TestEffectiveLimits::test_enforcement_off_fixed_reset_date_comes_from_the_binding_budget[project-cap-binds]\ntests/codemie/rest_api/routers/test_analytics.py::TestGetUserKeySpending::test_user_id_returns_404_when_target_not_found\n  C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.\n    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ===========================\nFAILED tests/codemie/rest_api/router_guards/test_baseline.py::test_matching_live_object_passes\nFAILED tests/codemie/rest_api/router_guards/test_route_precedence.py::test_baseline_order_is_preserved\nFAILED tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline\nFAILED tests/codemie/rest_api/router_guards/test_route_precedence.py::test_new_overlapping_pairs_are_reported_but_never_fail\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[index]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[budget]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[users]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[local-auth]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[workflow-generation]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_routes_are_registered_on_the_app\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_building_the_app_attempts_no_network_connection\n======= 4 failed, 950 passed, 8 skipped, 6 warnings, 7 errors in 20.01s ======="
+  }
+}

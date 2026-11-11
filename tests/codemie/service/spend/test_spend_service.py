@@ -71,10 +71,23 @@ _UNSET = object()
 
 
 class _StubLedger:
-    def __init__(self, name, result=None, cost=None, count=0, *, buckets=None, groups=None, groups_by_filter=None):
+    def __init__(
+        self,
+        name,
+        result=None,
+        cost=None,
+        count=0,
+        *,
+        buckets=None,
+        groups=None,
+        groups_by_filter=None,
+        request_costs=None,
+    ):
         self.ledger_name = name
         self._result = result if result is not None else SpendResult(figure=Decimal("10"))
         self._cost = cost or RequestCost.unavailable()
+        self._request_costs = dict(request_costs or {})
+        self.request_ids_seen: list[list[str]] = []
         self._count = count
         self._buckets = dict(buckets or {})
         self._groups = dict(groups or {})
@@ -138,6 +151,14 @@ class _StubLedger:
 
     async def cost_for_request(self, *, run_id=None, request_id=None):
         return self._cost
+
+    async def costs_for_requests(self, request_ids):
+        self.request_ids_seen.append(list(request_ids))
+        return {
+            request_id: self._request_costs[request_id]
+            for request_id in request_ids
+            if request_id in self._request_costs
+        }
 
     async def request_count(self, period, scope=None, resolved_ids=()):
         return self._count
@@ -397,6 +418,66 @@ class TestTheGrainOfAnIdLookupIsTheCallersChoice:
         with registry({LLMCallClass.CHAT: only, LLMCallClass.EMBEDDINGS: only}):
             cost = asyncio.run(SERVICE.cost_for_request(run_id="r-1"))
         assert cost.figure == Decimal("4"), "8 would mean the ledger was asked twice"
+
+
+class TestAPageOfRequestsIsCostedInOneReadPerLedger:
+    """`costs_for_requests` answers each request exactly as `cost_for_request` would, in one read per ledger."""
+
+    def test_each_ledger_is_asked_once_with_every_distinct_id(self):
+        a = _StubLedger("a", request_costs={"q-1": RequestCost.settled(Decimal("2"))})
+        b = _StubLedger("b", request_costs={"q-2": RequestCost.settled(Decimal("1"))})
+        with registry({LLMCallClass.CHAT: a, LLMCallClass.EMBEDDINGS: b}):
+            asyncio.run(SERVICE.costs_for_requests(["q-1", "q-2", "q-1"]))
+
+        assert a.request_ids_seen == [["q-1", "q-2"]]
+        assert b.request_ids_seen == [["q-1", "q-2"]]
+
+    def test_settled_figures_across_ledgers_are_summed_per_request(self):
+        a = _StubLedger("a", request_costs={"q-1": RequestCost.settled(Decimal("2"))})
+        b = _StubLedger("b", request_costs={"q-1": RequestCost.settled(Decimal("3"))})
+        with registry({LLMCallClass.CHAT: a, LLMCallClass.EMBEDDINGS: b}):
+            costs = asyncio.run(SERVICE.costs_for_requests(["q-1"]))
+
+        assert costs["q-1"] == RequestCost.settled(Decimal("5"))
+
+    def test_a_request_one_ledger_did_not_answer_for_takes_the_others_figure(self):
+        a = _StubLedger("a", request_costs={"q-1": RequestCost.settled(Decimal("2"))})
+        b = _StubLedger("b")
+        with registry({LLMCallClass.CHAT: a, LLMCallClass.EMBEDDINGS: b}):
+            costs = asyncio.run(SERVICE.costs_for_requests(["q-1"]))
+
+        assert costs["q-1"] == RequestCost.settled(Decimal("2"))
+
+    def test_a_partly_settled_request_is_pending(self):
+        landed = _StubLedger("a", request_costs={"q-1": RequestCost.settled(Decimal("2"))})
+        waiting = _StubLedger("b", request_costs={"q-1": RequestCost.pending()})
+        with registry({LLMCallClass.CHAT: landed, LLMCallClass.EMBEDDINGS: waiting}):
+            costs = asyncio.run(SERVICE.costs_for_requests(["q-1"]))
+
+        assert costs["q-1"] == RequestCost.pending()
+
+    def test_a_request_no_ledger_answered_for_is_unavailable(self):
+        blank = _StubLedger("a")
+        with registry({LLMCallClass.CHAT: blank, LLMCallClass.EMBEDDINGS: blank}):
+            costs = asyncio.run(SERVICE.costs_for_requests(["q-1"]))
+
+        assert costs == {"q-1": RequestCost.unavailable()}
+
+    def test_a_single_ledger_serving_both_classes_is_asked_once(self):
+        only = _StubLedger("a", request_costs={"q-1": RequestCost.settled(Decimal("4"))})
+        with registry({LLMCallClass.CHAT: only, LLMCallClass.EMBEDDINGS: only}):
+            costs = asyncio.run(SERVICE.costs_for_requests(["q-1"]))
+
+        assert costs["q-1"] == RequestCost.settled(Decimal("4"))
+        assert only.request_ids_seen == [["q-1"]]
+
+    def test_no_ids_asks_no_ledger(self):
+        only = _StubLedger("a")
+        with registry({LLMCallClass.CHAT: only, LLMCallClass.EMBEDDINGS: only}):
+            costs = asyncio.run(SERVICE.costs_for_requests([]))
+
+        assert costs == {}
+        assert only.request_ids_seen == []
 
 
 def _no_metric_store_ids():
@@ -852,6 +933,9 @@ class _HealthyLedger:
     async def cost_for_request(self, *, run_id=None, request_id=None):
         return RequestCost.settled(Decimal("2"))
 
+    async def costs_for_requests(self, request_ids):
+        return {request_id: RequestCost.settled(Decimal("2")) for request_id in request_ids}
+
     async def request_count(self, period, scope=None, resolved_ids=()):
         return 5
 
@@ -1117,6 +1201,12 @@ class TestAnUnreadableLedgerLeavesNoCostSettled:
 
         assert "run_id" in spend_logger.error.call_args.args[0], "with no period, the grain is what names the read"
         assert monitoring.send_count_metric.call_args.kwargs["attributes"]["read"] == "cost_for_request by run_id"
+
+    def test_a_failing_ledger_leaves_every_request_on_the_page_unavailable(self):
+        with registry({LLMCallClass.CHAT: _HealthyLedger(), LLMCallClass.EMBEDDINGS: _BrokenLedger()}):
+            costs = asyncio.run(SERVICE.costs_for_requests(["q-1", "q-2"]))
+
+        assert costs == {"q-1": RequestCost.unavailable(), "q-2": RequestCost.unavailable()}
 
     def test_the_grain_check_still_raises_with_a_ledger_in_outage(self):
         with registry({LLMCallClass.CHAT: _BrokenLedger(), LLMCallClass.EMBEDDINGS: _BrokenLedger()}):

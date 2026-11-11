@@ -44,6 +44,7 @@ from codemie.service.spend.ledger import (
     ProjectHolder,
     ProjectMemberHolder,
     ReportFilter,
+    RequestCost,
     UserTerm,
     bucket_starts,
 )
@@ -655,6 +656,13 @@ class TestPerRequestCostIsNotAnswerableHere:
         assert cost.is_unavailable
         assert not cost.is_pending
         assert cost.figure is None
+
+    def test_a_page_of_requests_is_unavailable_for_every_id(self):
+        led, _repo = ledger(LLMCallClass.CHAT)
+
+        costs = asyncio.run(led.costs_for_requests(["q-1", "q-2"]))
+
+        assert costs == {"q-1": RequestCost.unavailable(), "q-2": RequestCost.unavailable()}
 
 
 class TestMoneyNeverArrivesThroughABinaryFloat:

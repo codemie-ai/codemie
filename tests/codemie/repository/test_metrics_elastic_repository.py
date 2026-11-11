@@ -383,6 +383,27 @@ class TestMetricsElasticRepository:
         assert result == sample_search_result
 
     @pytest.mark.asyncio
+    async def test_execute_search_query_omits_sort_by_default(self, repository, mock_es_client, sample_search_result):
+        query = {"match": {"user_id": "user1"}}
+        mock_es_client.search.return_value = sample_search_result
+
+        await repository.execute_search_query(query, sort=None)
+
+        body = mock_es_client.search.call_args.kwargs["body"]
+        assert body == {"query": query, "size": 20, "from": 0}
+
+    @pytest.mark.asyncio
+    async def test_execute_search_query_includes_sort(self, repository, mock_es_client, sample_search_result):
+        query = {"match": {"user_id": "user1"}}
+        sort = [{"@timestamp": {"order": "desc"}}]
+        mock_es_client.search.return_value = sample_search_result
+
+        await repository.execute_search_query(query, size=10, from_=30, sort=sort)
+
+        body = mock_es_client.search.call_args.kwargs["body"]
+        assert body == {"query": query, "size": 10, "from": 30, "sort": sort}
+
+    @pytest.mark.asyncio
     async def test_execute_search_query_index_not_found_returns_empty(self, repository, mock_es_client):
         """Verify graceful handling of missing index in search."""
         # Arrange

@@ -248,6 +248,42 @@ class TestAnalyticsServiceDelegation:
     @patch("codemie.service.analytics.analytics_service.AssistantHandler")
     @patch("codemie.service.analytics.analytics_service.MetricsElasticRepository")
     @pytest.mark.asyncio
+    async def test_get_assistants_requests_delegates_to_handler(
+        self, mock_repository, mock_assistant_handler_class, mock_user
+    ):
+        mock_handler_instance = MagicMock()
+        mock_assistant_handler_class.return_value = mock_handler_instance
+        expected_result = {"data": {"rows": []}}
+        mock_handler_instance.get_assistants_requests = AsyncMock(return_value=expected_result)
+
+        service = AnalyticsService(mock_user)
+
+        result = await service.get_assistants_requests(
+            time_period="last_7_days",
+            users=["u1"],
+            projects=["p1"],
+            page=1,
+            per_page=25,
+            client_source="platform",
+            assistant_id="a-1",
+        )
+
+        mock_handler_instance.get_assistants_requests.assert_called_once_with(
+            time_period="last_7_days",
+            start_date=None,
+            end_date=None,
+            users=["u1"],
+            projects=["p1"],
+            page=1,
+            per_page=25,
+            client_source="platform",
+            assistant_id="a-1",
+        )
+        assert result == expected_result
+
+    @patch("codemie.service.analytics.analytics_service.AssistantHandler")
+    @patch("codemie.service.analytics.analytics_service.MetricsElasticRepository")
+    @pytest.mark.asyncio
     async def test_get_agents_usage_delegates_to_assistant_handler(
         self, mock_repository, mock_assistant_handler_class, mock_user
     ):

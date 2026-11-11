@@ -75,6 +75,7 @@ from codemie.service.spend.ledger import (
     ProjectHolder,
     ProjectMemberHolder,
     ReportFilter,
+    RequestCost,
     UserTerm,
 )
 from codemie.service.spend.legacy_ledger import LEGACY_MONEY_METRICS, LegacySpendLedger, legacy_metric_names
@@ -943,3 +944,13 @@ class TestTheWholeWindowReadsPassThroughUnadjusted:
         )
 
         assert adapter.dimension_calls == [(PERIOD, SpendDimension.ASSISTANT, ("asst-1",), None, access, report_filter)]
+
+
+class TestAPageOfRequestsHasNoIdLookupHere:
+    def test_every_request_is_unavailable(self):
+        """The cost was computed locally at call time and is already on the record."""
+        ledger, _repo = legacy_ledger([money_row("1.00")])
+
+        costs = asyncio.run(ledger.costs_for_requests(["q-1"]))
+
+        assert costs == {"q-1": RequestCost.unavailable()}

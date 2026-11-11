@@ -154,6 +154,76 @@ async def get_assistants_chats(
     return _create_response(data, TabularResponse)
 
 
+ASSISTANTS_REQUESTS_DESCRIPTION = """\
+One row per assistant request (a `conversation_assistant_usage` metric document), newest first.
+
+**Chat vs request:** a chat is a conversation (`conversation_id`); `assistants-chats` `total_chats` counts \
+them. A request is one assistant turn, i.e. one HTTP request identified by `request_id`; \
+`assistants-chats` `total_messages` counts them. "Runs" is reserved for workflows.
+
+**Field availability:** tokens, cost, `execution_time` (seconds) and `status` are returned per request. \
+Error message and error class are not stored in the metric, so only `status` is available. \
+Requests made with `save_history=False` and requests to virtual assistants emit no usage document and \
+are absent here, exactly as they are from `assistants-chats`. Attributes missing from a document \
+(older documents may lack `request_id`) are returned as `null`.
+
+**Paging:** `page`/`per_page` page through the matching rows newest first. Elasticsearch counts and \
+serves at most the first 10,000 matching rows, so `total_count` stops at 10,000; narrow the date range or \
+add filters to reach older rows.
+
+**Cost:** `money_spent` comes from the LiteLLM spend ledger for requests made on or after the ledger's \
+coverage start, and from the metric document for older requests and on deployments without the ledger. \
+A cost the ledger has not recorded yet is `null` with `spend_unavailable: true`; if the ledger cannot be \
+read, the document's value is returned with `spend_unavailable: true`. `cached_tokens_money_spent` is \
+always the document's value.
+
+**Reconciliation with `assistants-chats`** (totals match only for the same filters and date range):
+- `assistants-chats` groups by `assistant_id` and shows each assistant's current name; filter here by \
+`assistant_id` to list the requests behind one of its rows.
+- `total_cost_usd` there reads the same sources as `money_spent` here, so it equals their sum once every \
+request's cost is recorded; rows with `spend_unavailable: true` account for a gap. Neither includes \
+`cached_tokens_money_spent`.
+- `total_tokens` is `input_tokens + output_tokens` and excludes `cache_read_input_tokens`.
+- `avg_time_seconds` there is an average of per-conversation averages, not the mean of request \
+`execution_time`.
+- `error_rate_percent` and failed counts there are per conversation (any non-success request fails the \
+chat); `status` here is per request.
+- The date filter applies per request `@timestamp`, so one conversation can be split across ranges, \
+while `assistants-chats` counts a chat in every range containing at least one of its requests.
+"""
+
+
+@router.get(
+    "/assistants-requests",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get per-request assistant analytics",
+    description=ASSISTANTS_REQUESTS_DESCRIPTION,
+)
+@handle_analytics_errors("assistants requests analytics")
+async def get_assistants_requests(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
+    assistant_id: str | None = Query(None, description="Exact assistant id"),
+) -> JSONResponse:
+    """Get one analytics row per assistant request."""
+    service = AnalyticsService(user)
+    data = await service.get_assistants_requests(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+        client_source=client_source.value if client_source else None,
+        assistant_id=assistant_id,
+    )
+    return _create_response(data, TabularResponse)
+
+
 @router.get(
     "/workflows",
     status_code=status.HTTP_200_OK,

@@ -56,6 +56,7 @@ class AnalyticsQueryFilters:
     page: int = 0
     per_page: int = 20
     client_source: str | None = None
+    assistant_id: str | None = None
 
 
 #: The most groups one bucket-selector query asks Elasticsearch for. Past it, groups are silently
@@ -191,15 +192,24 @@ class AnalyticsQueryPipeline:
         result_parser: Callable[[dict], list[dict]],
         columns: list[dict],
         filters: AnalyticsQueryFilters | None = None,
+        sort: list[dict[str, Any]] | None = None,
+        row_enricher: RowEnricher | None = None,
     ) -> dict:
-        """Return paginated raw metric documents using the shared secure filters."""
+        """Return paginated raw metric documents using the shared secure filters.
+
+        `row_enricher` runs over the page's rows only; its footer is ignored, since a page of raw
+        documents has no total.
+        """
         filters = filters or AnalyticsQueryFilters()
         page, per_page = filters.page, filters.per_page
         start_time = time.time()
         start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
         query = self._build_query(start_dt, end_dt, filters)
-        result = await self._repository.execute_search_query(query, size=per_page, from_=page * per_page)
+        sort_kwargs = {"sort": sort} if sort is not None else {}
+        result = await self._repository.execute_search_query(query, size=per_page, from_=page * per_page, **sort_kwargs)
         rows = await asyncio.to_thread(result_parser, result)
+        if row_enricher is not None:
+            rows = (await row_enricher(rows, start_dt, end_dt)).rows
         total = result.get("hits", {}).get("total", 0)
         total_count = total.get("value", 0) if isinstance(total, dict) else total
 
@@ -806,6 +816,8 @@ class AnalyticsQueryPipeline:
             query_builder.add_project_filter(filters.projects)
         if filters.client_source:
             query_builder.add_client_source_filter(filters.client_source)
+        if filters.assistant_id:
+            query_builder.add_assistant_filter(filters.assistant_id)
 
         return query_builder.build()
 
@@ -849,6 +861,7 @@ def tabular_filters_applied(filters: AnalyticsQueryFilters, start_dt: datetime, 
         "users": filters.users,
         "projects": filters.projects,
         "client_source": filters.client_source,
+        "assistant_id": filters.assistant_id,
     }
 
 

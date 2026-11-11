@@ -1008,6 +1008,10 @@ class DefaultSpendLedger:
         _ = (run_id, request_id)
         return RequestCost.unavailable()
 
+    async def costs_for_requests(self, request_ids: Sequence[str]) -> dict[str, RequestCost]:
+        """Unavailable for every id, for the reason `cost_for_request` gives."""
+        return dict.fromkeys(request_ids, RequestCost.unavailable())
+
     async def request_count(
         self,
         period: TimeRange,
