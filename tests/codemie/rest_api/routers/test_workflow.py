@@ -2924,3 +2924,67 @@ async def test_validate_workflow_script_step_warning_uses_stored_global_state(
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["warnings"] == [_SCRIPT_STEP_WARNING]
     assert collector.call_args.kwargs["treat_as_global"] is is_global
+
+
+from types import SimpleNamespace  # noqa: E402
+
+from codemie.rest_api.routers.workflow import get_prebuilt_workflows  # noqa: E402
+
+
+def _pre(name: str, description: str):
+    return SimpleNamespace(name=name, description=description, categories=[], created_by=None)
+
+
+class TestGetPrebuiltWorkflowsSearchRelevance:
+    """Prebuilt workflow list covers name+description and orders name-matches first."""
+
+    @patch("codemie.rest_api.routers.workflow.workflow_service")
+    def test_name_matches_come_before_description_only_matches(self, mock_svc):
+        mock_svc.get_prebuilt_workflows.return_value = [
+            _pre(
+                "Green Grid Planner",
+                "Plans smart grids; considers solar sources.",
+            ),
+            _pre(
+                "Solar Panel Planner Workflow",
+                "Automates PV project planning steps.",
+            ),
+            _pre(
+                "Renewable Energy Analyzer",
+                "A workflow that includes solar energy analysis.",
+            ),
+            _pre(
+                "Solar Wind Analytics Workflow",
+                "Analyzes stellar plasma streams.",
+            ),
+        ]
+        result = get_prebuilt_workflows(filters='{"search": "solar"}')
+        assert [t.name for t in result] == [
+            "Solar Panel Planner Workflow",
+            "Solar Wind Analytics Workflow",
+            "Green Grid Planner",
+            "Renewable Energy Analyzer",
+        ]
+
+    @patch("codemie.rest_api.routers.workflow.workflow_service")
+    def test_description_only_match_is_included(self, mock_svc):
+        mock_svc.get_prebuilt_workflows.return_value = [
+            _pre("Green Grid Planner", "Considers solar sources."),
+        ]
+        assert [t.name for t in get_prebuilt_workflows(filters='{"search": "solar"}')] == ["Green Grid Planner"]
+
+    @patch("codemie.rest_api.routers.workflow.workflow_service")
+    def test_empty_filters_returns_everything(self, mock_svc):
+        items = [_pre("A", "a"), _pre("B", "b")]
+        mock_svc.get_prebuilt_workflows.return_value = items
+        assert get_prebuilt_workflows(filters=None) == items
+
+    @patch("codemie.rest_api.routers.workflow.workflow_service")
+    def test_name_key_still_supported(self, mock_svc):
+        # Router accepts either "search" or "name" for backward compat.
+        mock_svc.get_prebuilt_workflows.return_value = [
+            _pre("Solar A", "x"),
+            _pre("Renewable", "solar"),
+        ]
+        result = get_prebuilt_workflows(filters='{"name": "solar"}')
+        assert [t.name for t in result] == ["Solar A", "Renewable"]

@@ -141,7 +141,7 @@ class AssistantRepository:
                 Assistant.update_date.desc().nullslast(),
                 Assistant.id.asc(),
             )
-        return query.order_by(Assistant.update_date.desc().nullslast())
+        return query.order_by(Assistant.update_date.desc().nullslast(), Assistant.id.asc())
 
     def query(
         self,

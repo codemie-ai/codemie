@@ -40,7 +40,7 @@ def test_workflow_config_index_service_filter_by_user(mock_session_class, mock_a
     WorkflowConfigIndexService.run(user=mock_admin_user, filter_by_user=True, page=1, per_page=20)
 
     actual_query = str(mock_session.exec.call_args[0][0])
-    expected_conditions = "WHERE workflows.is_global = false AND workflows.created_by[:created_by_1] = :param_1 AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_2 OFFSET :param_3"
+    expected_conditions = "WHERE workflows.is_global = false AND workflows.created_by[:created_by_1] = :param_1 AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST, workflows.id ASC\n LIMIT :param_2 OFFSET :param_3"
 
     assert actual_query.endswith(expected_conditions)
 
@@ -56,7 +56,7 @@ def test_workflow_config_index_service_all_for_admin(mock_session_class, mock_ad
 
     # For admin, no additional where clauses should be added
     actual_query = str(mock_session.exec.call_args[0][0])
-    expected_conditions = "WHERE workflows.is_global = false AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_1 OFFSET :param_2"
+    expected_conditions = "WHERE workflows.is_global = false AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST, workflows.id ASC\n LIMIT :param_1 OFFSET :param_2"
 
     assert actual_query.endswith(expected_conditions)
 
@@ -91,7 +91,7 @@ def test_workflow_config_index_service_all_for_user(mock_session_class, mock_use
     WorkflowConfigIndexService.run(user=mock_user, filter_by_user=False, page=0, per_page=20)
 
     actual_query = str(mock_session.exec.call_args[0][0])
-    expected_conditions = "WHERE workflows.is_global = false AND (workflows.project IN (__[POSTCOMPILE_project_1]) AND workflows.shared OR workflows.project IN (__[POSTCOMPILE_project_2]) OR (workflows.created_by ->> :created_by_1) = :param_1) AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_2 OFFSET :param_3"
+    expected_conditions = "WHERE workflows.is_global = false AND (workflows.project IN (__[POSTCOMPILE_project_1]) AND workflows.shared OR workflows.project IN (__[POSTCOMPILE_project_2]) OR (workflows.created_by ->> :created_by_1) = :param_1) AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST, workflows.id ASC\n LIMIT :param_2 OFFSET :param_3"
     assert actual_query.endswith(expected_conditions)
 
 
@@ -105,7 +105,7 @@ def test_workflow_config_index_service_marketplace_scope(mock_session_class, moc
     WorkflowConfigIndexService.run(user=mock_user, filter_by_user=False, page=0, per_page=20, scope="marketplace")
 
     actual_query = str(mock_session.exec.call_args[0][0])
-    expected_conditions = "WHERE workflows.mode = :mode_1 AND workflows.is_global = true ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_1 OFFSET :param_2"
+    expected_conditions = "WHERE workflows.mode = :mode_1 AND workflows.is_global = true ORDER BY workflows.update_date DESC NULLS LAST, workflows.id ASC\n LIMIT :param_1 OFFSET :param_2"
     assert actual_query.endswith(expected_conditions)
     assert "is_global = false" not in actual_query
 
@@ -291,7 +291,7 @@ def test_run_without_extra_modifiers_unchanged(mock_session_class, mock_admin_us
     WorkflowConfigIndexService.run(user=mock_admin_user, filter_by_user=False, page=0, per_page=20)
 
     actual_query = str(mock_session.exec.call_args[0][0])
-    expected_conditions = "WHERE workflows.is_global = false AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_1 OFFSET :param_2"
+    expected_conditions = "WHERE workflows.is_global = false AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST, workflows.id ASC\n LIMIT :param_1 OFFSET :param_2"
     assert actual_query.endswith(expected_conditions)
 
 

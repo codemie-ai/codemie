@@ -23,6 +23,7 @@ from sqlalchemy import and_, or_
 from sqlmodel import Session, select, func
 
 from codemie.configs import logger
+from codemie.core.search_ranking import search_ranking
 from codemie.rest_api.models.ai_kata import AIKata, KataLevel, KataStatus
 from codemie.rest_api.models.user_kata_progress import UserKataProgress, KataProgressStatus
 
@@ -518,8 +519,8 @@ class SQLAIKataRepository(AIKataRepository):
 
     def _build_search_condition(self, search_text: str):
         """Build search condition for title and description."""
-        search_pattern = f"%{search_text}%"
-        return or_(AIKata.title.ilike(search_pattern), AIKata.description.ilike(search_pattern))
+        condition, _ = search_ranking(search_text, AIKata.title, AIKata.description)
+        return condition
 
     def _build_level_condition(self, level):
         """Build level filter condition."""
@@ -663,8 +664,12 @@ class SQLAIKataRepository(AIKataRepository):
             if conditions:
                 query = query.where(and_(*conditions))
 
-            # Sort by enrollment_count (popularity) descending, then by update_date
-            query = query.order_by(AIKata.enrollment_count.desc(), AIKata.update_date.desc())
+            search_text = filters.get("search") if filters else None
+            order_clauses = [AIKata.enrollment_count.desc(), AIKata.update_date.desc(), AIKata.id.asc()]
+            if search_text:
+                _, rank = search_ranking(search_text, AIKata.title, AIKata.description)
+                order_clauses.insert(0, rank)
+            query = query.order_by(*order_clauses)
 
             # Get total count
             count_query = select(func.count()).select_from(query.subquery())

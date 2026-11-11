@@ -2022,3 +2022,58 @@ class TestSkipIntegrationValidationAuthorization:
 
         mock_validate.assert_called_once()
         assert result is None
+
+
+from types import SimpleNamespace  # noqa: E402
+
+from codemie.rest_api.routers.assistant.catalog import _apply_template_filters  # noqa: E402
+
+
+def _tmpl(name: str, description: str):
+    return SimpleNamespace(name=name, description=description, categories=[], created_by=None)
+
+
+class TestApplyTemplateFiltersSearchRelevance:
+    """Templates search covers name+description and orders name-matches first."""
+
+    def test_name_matches_come_before_description_only_matches(self):
+        templates = [
+            _tmpl(
+                "Green Grid Consultant",
+                "Answers questions about grids; mentions solar generation.",
+            ),
+            _tmpl(
+                "Solar Panel Advisor",
+                "Provides recommendations about photovoltaic hardware.",
+            ),
+            _tmpl(
+                "Renewable Energy Coach",
+                "A coach for green power topics; also covers solar arrays.",
+            ),
+            _tmpl(
+                "Solar Wind Model Explainer",
+                "Explains fluid dynamics in stellar coronas.",
+            ),
+        ]
+        result = _apply_template_filters(templates, {"search": "solar"})
+        assert [t.name for t in result] == [
+            "Solar Panel Advisor",
+            "Solar Wind Model Explainer",
+            "Green Grid Consultant",
+            "Renewable Energy Coach",
+        ]
+
+    def test_description_only_match_is_included(self):
+        templates = [_tmpl("Green Grid Consultant", "Mentions solar generation.")]
+        assert [t.name for t in _apply_template_filters(templates, {"search": "solar"})] == ["Green Grid Consultant"]
+
+    def test_empty_search_returns_all_untouched(self):
+        templates = [_tmpl("A", "a"), _tmpl("B", "b")]
+        assert _apply_template_filters(templates, {}) == templates
+        assert _apply_template_filters(templates, None) == templates
+
+    def test_name_key_still_supported(self):
+        # Router accepts either "search" or "name"; keep both paths working.
+        templates = [_tmpl("Solar A", "x"), _tmpl("Renewable", "solar")]
+        result = _apply_template_filters(templates, {"name": "solar"})
+        assert [t.name for t in result] == ["Solar A", "Renewable"]

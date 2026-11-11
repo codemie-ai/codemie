@@ -15,8 +15,14 @@
 import pytest
 from unittest.mock import Mock, patch, call
 from codemie.core.exceptions import ValidationException
-from codemie.service.filter.filter_services import IndexInfoFilter
+from codemie.service.filter.filter_services import (
+    AssistantFilter,
+    ID_KEYWORD,
+    IndexInfoFilter,
+    WorkflowFilter,
+)
 from codemie.service.filter.compose_filter_functions import (
+    compose_multi_field_wildcard_filter,
     compose_term_filter,
     compose_combined_date_range_filter,
     compose_status_filter,
@@ -397,3 +403,23 @@ def test_workflow_filter_integration_type_with_deferred_columns():
 
     assert "EXISTS" in query_str
     assert "create_branch" in query_str
+
+
+class TestSearchRelevanceFilterConfig:
+    """Contract lock: the two multi-field wildcard entries the search-relevance
+    behaviour depends on stay wired to compose_multi_field_wildcard_filter
+    over [name, description, id]. Renaming the key or shortening the list
+    silently regresses every affected list endpoint that reuses this helper.
+    """
+
+    def test_assistant_filter_search_uses_multi_field_wildcard(self):
+        entry = AssistantFilter.FILTER_CONFIG["search"]
+        assert entry["filter_compose_func"] is compose_multi_field_wildcard_filter
+        assert entry["field_name"] == ["name.keyword", "description", ID_KEYWORD]
+
+    def test_workflow_filter_name_uses_multi_field_wildcard(self):
+        # Workflow filter is keyed on "name" (not "search"). The frontend must
+        # match this key or the filter is silently dropped.
+        entry = WorkflowFilter.FILTER_CONFIG["name"]
+        assert entry["filter_compose_func"] is compose_multi_field_wildcard_filter
+        assert entry["field_name"] == ["name.keyword", "description", ID_KEYWORD]

@@ -23,6 +23,7 @@ from sqlmodel import select
 
 from codemie.clients.postgres import get_session
 from codemie.core.ability import Ability
+from codemie.core.search_ranking import search_ranking
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.workflow_models.workflow_config import WorkflowConfig
 from codemie.repository.skill_repository import SkillRepository
@@ -97,8 +98,11 @@ class UserPreferencesService:
 
             query = select(Assistant).where(Assistant.id.in_(favorite_ids))
 
+            order_clauses = [Assistant.update_date.desc(), Assistant.id.asc()]
             if search:
-                query = query.where(Assistant.name.ilike(f"%{search}%"))
+                condition, rank = search_ranking(search, Assistant.name, Assistant.description)
+                query = query.where(condition)
+                order_clauses.insert(0, rank)
             if project:
                 query = query.where(Assistant.project.in_(project))
             if categories:
@@ -110,9 +114,7 @@ class UserPreferencesService:
                 query = query.where(Assistant.shared == shared)
 
             total = session.exec(select(func.count()).select_from(query.subquery())).one()
-            rows = list(
-                session.exec(query.order_by(Assistant.update_date.desc()).offset(page * per_page).limit(per_page)).all()
-            )
+            rows = list(session.exec(query.order_by(*order_clauses).offset(page * per_page).limit(per_page)).all())
 
             assistant_ids_on_page = {a.id for a in rows}
             all_reactions = get_assistant_reactions_by_user(user_id)
@@ -147,8 +149,11 @@ class UserPreferencesService:
 
             query = select(Skill).where(Skill.id.in_(favorite_ids))
 
+            order_clauses = [Skill.updated_date.desc(), Skill.id.asc()]
             if search:
-                query = query.where(Skill.name.ilike(f"%{search}%"))
+                condition, rank = search_ranking(search, Skill.name, Skill.description)
+                query = query.where(condition)
+                order_clauses.insert(0, rank)
             if project:
                 query = query.where(Skill.project.in_(project))
             if categories:
@@ -160,9 +165,7 @@ class UserPreferencesService:
                 query = query.where(Skill.visibility == UserPreferencesService._parse_skill_visibility(visibility))
 
             total = session.exec(select(func.count()).select_from(query.subquery())).one()
-            rows = list(
-                session.exec(query.order_by(Skill.updated_date.desc()).offset(page * per_page).limit(per_page)).all()
-            )
+            rows = list(session.exec(query.order_by(*order_clauses).offset(page * per_page).limit(per_page)).all())
 
             skill_ids = [s.id for s in rows]
             assistants_count_map = SkillRepository.get_assistants_count_for_skills(session, skill_ids)
@@ -214,8 +217,11 @@ class UserPreferencesService:
 
             query = select(WorkflowConfig).where(WorkflowConfig.id.in_(favorite_ids))
 
+            order_clauses = [WorkflowConfig.update_date.desc(), WorkflowConfig.id.asc()]
             if search:
-                query = query.where(WorkflowConfig.name.ilike(f"%{search}%"))
+                condition, rank = search_ranking(search, WorkflowConfig.name, WorkflowConfig.description)
+                query = query.where(condition)
+                order_clauses.insert(0, rank)
             if project:
                 query = query.where(WorkflowConfig.project.in_(project))
             if categories:
@@ -227,11 +233,7 @@ class UserPreferencesService:
                 query = query.where(WorkflowConfig.shared == shared)
 
             total = session.exec(select(func.count()).select_from(query.subquery())).one()
-            rows = list(
-                session.exec(
-                    query.order_by(WorkflowConfig.update_date.desc()).offset(page * per_page).limit(per_page)
-                ).all()
-            )
+            rows = list(session.exec(query.order_by(*order_clauses).offset(page * per_page).limit(per_page)).all())
 
             ability = Ability(current_user)
             items = [

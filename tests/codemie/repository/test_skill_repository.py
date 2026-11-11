@@ -1088,3 +1088,114 @@ class TestEdgeCases:
 
         # Assert
         assert result == 0
+
+
+# =========================================================================
+# EPMCDME-13700: skill search relevance (name > description)
+# =========================================================================
+
+from codemie.rest_api.models.skill import SkillSortBy  # noqa: E402
+
+
+class TestSkillSearchRelevance:
+    """Skills search covers name+description and applies name>description
+    priority inside the existing ownership priority buckets."""
+
+    @patch("codemie.repository.skill_repository.Skill.get_engine")
+    @patch("codemie.repository.skill_repository.Session")
+    def test_search_covers_both_name_and_description(
+        self, mock_session_cls, mock_get_engine, user_id, user_applications
+    ):
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        mock_get_engine.return_value = MagicMock()
+        mock_session.exec.side_effect = [
+            MagicMock(one=lambda: 0),
+            MagicMock(all=lambda: []),
+        ]
+
+        SkillRepository.list_accessible_to_user(
+            user_id=user_id,
+            user_applications=user_applications,
+            search_query="solar",
+        )
+
+        compiled = str(mock_session.exec.call_args_list[-1].args[0]).upper()
+        assert "LOWER(SKILLS.NAME) LIKE" in compiled
+        assert "LOWER(SKILLS.DESCRIPTION) LIKE" in compiled
+        assert "CASE WHEN" in compiled
+
+    @patch("codemie.repository.skill_repository.Skill.get_engine")
+    @patch("codemie.repository.skill_repository.Session")
+    def test_relevance_mode_keeps_ownership_priority_outermost(
+        self, mock_session_cls, mock_get_engine, user_id, user_applications
+    ):
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        mock_get_engine.return_value = MagicMock()
+        mock_session.exec.side_effect = [
+            MagicMock(one=lambda: 0),
+            MagicMock(all=lambda: []),
+        ]
+
+        SkillRepository.list_accessible_to_user(
+            user_id=user_id,
+            user_applications=user_applications,
+            search_query="solar",
+            sort_by=SkillSortBy.RELEVANCE,
+        )
+
+        compiled = str(mock_session.exec.call_args_list[-1].args[0])
+        order_by_idx = compiled.upper().index("ORDER BY")
+        order_by = compiled[order_by_idx:]
+        ownership_idx = order_by.index("skills.created_by")
+        name_rank_idx = order_by.index("lower(skills.name) LIKE")
+        assert ownership_idx < name_rank_idx
+        assert "skills.created_date DESC, skills.id ASC" in order_by
+
+    @patch("codemie.repository.skill_repository.Skill.get_engine")
+    @patch("codemie.repository.skill_repository.Session")
+    def test_no_search_leaves_predicate_and_sort_untouched(
+        self, mock_session_cls, mock_get_engine, user_id, user_applications
+    ):
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        mock_get_engine.return_value = MagicMock()
+        mock_session.exec.side_effect = [
+            MagicMock(one=lambda: 0),
+            MagicMock(all=lambda: []),
+        ]
+
+        SkillRepository.list_accessible_to_user(
+            user_id=user_id,
+            user_applications=user_applications,
+        )
+
+        compiled = str(mock_session.exec.call_args_list[-1].args[0]).upper()
+        assert "LOWER(SKILLS.NAME) LIKE" not in compiled
+        assert "LOWER(SKILLS.DESCRIPTION) LIKE" not in compiled
+
+    @patch("codemie.repository.skill_repository.Skill.get_engine")
+    @patch("codemie.repository.skill_repository.Session")
+    def test_relevance_sort_case_escapes_like_wildcards(
+        self, mock_session_cls, mock_get_engine, user_id, user_applications
+    ):
+        """A search containing '%' or '_' must not cause the RELEVANCE-mode
+        name-priority CASE to fire on every row."""
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        mock_get_engine.return_value = MagicMock()
+        mock_session.exec.side_effect = [
+            MagicMock(one=lambda: 0),
+            MagicMock(all=lambda: []),
+        ]
+
+        SkillRepository.list_accessible_to_user(
+            user_id=user_id,
+            user_applications=user_applications,
+            search_query="50%_test",
+            sort_by=SkillSortBy.RELEVANCE,
+        )
+
+        compiled = str(mock_session.exec.call_args_list[-1].args[0])
+        assert "ESCAPE" in compiled.upper() or "50\\%\\_test" in compiled

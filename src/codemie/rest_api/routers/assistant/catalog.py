@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 from codemie.configs import logger
 from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.search_ranking import rank_by_search
 from codemie.rest_api.models.guardrail import GuardrailEntity
 from codemie.rest_api.models.assistant import (
     Assistant,
@@ -64,7 +65,7 @@ def _apply_template_filters(templates, parsed_filters):
     categories_filter = parsed_filters.get("categories")
     created_by_filter = parsed_filters.get("created_by")
     if name_filter:
-        templates = [t for t in templates if name_filter.lower() in t.name.lower()]
+        templates = rank_by_search(templates, name_filter)
     if categories_filter:
         templates = [t for t in templates if any(c in (t.categories or []) for c in categories_filter)]
     if created_by_filter:

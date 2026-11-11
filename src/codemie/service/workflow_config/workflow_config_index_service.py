@@ -267,7 +267,7 @@ class WorkflowConfigIndexService:
                 query = WorkflowFilter.add_sql_filters(query, model_class=WorkflowConfig, raw_filters=filters)
 
             # Apply sorting
-            query = query.order_by(WorkflowConfig.update_date.desc().nullslast())
+            query = query.order_by(WorkflowConfig.update_date.desc().nullslast(), WorkflowConfig.id.asc())
 
             # Apply pagination
             total = session.exec(select(func.count()).select_from(query.subquery())).one()

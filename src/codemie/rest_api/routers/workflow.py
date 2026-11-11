@@ -58,6 +58,7 @@ from codemie.core.exceptions import (
     WorkflowGenerationError,
 )
 from codemie.core.models import BaseResponse, BaseResponseWithData, CreatedByUser, EvaluationResponse
+from codemie.core.search_ranking import rank_by_search
 from codemie.core.workflow_models import (
     CreateWorkflowRequest,
     UpdateWorkflowRequest,
@@ -373,7 +374,7 @@ def get_prebuilt_workflows(filters: Optional[str] = None):
         categories_filter = parsed_filters.get("categories")
         created_by_filter = parsed_filters.get("created_by")
         if name_filter:
-            all_templates = [t for t in all_templates if name_filter.lower() in t.name.lower()]
+            all_templates = rank_by_search(all_templates, name_filter)
         if categories_filter:
             all_templates = [t for t in all_templates if any(c in (t.categories or []) for c in categories_filter)]
         if created_by_filter:

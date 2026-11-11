@@ -773,3 +773,73 @@ class TestAIKataRepositoryAbstractClass:
         for method in abstract_methods:
             assert hasattr(repo, method)
             assert callable(getattr(repo, method))
+
+
+class TestKataSearchRelevanceOrder:
+    """Title-match items sort before description-only matches when a search
+    term is present; existing enrollment/update sort acts as secondary; id
+    ASC anchors pagination when everything above ties."""
+
+    @patch("codemie.rest_api.models.ai_kata.AIKata.get_engine")
+    @patch("codemie.repository.ai_kata_repository.Session")
+    def test_search_adds_title_priority_case_and_id_tiebreaker(self, mock_session_cls, mock_get_engine, repository):
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        mock_get_engine.return_value = MagicMock()
+        mock_session.exec.side_effect = [
+            MagicMock(one=lambda: 0),
+            MagicMock(all=lambda: []),
+        ]
+
+        repository.list_with_filters(
+            page=1,
+            per_page=20,
+            filters={"search": "solar", "status": "published"},
+        )
+
+        paginated_call_args = mock_session.exec.call_args_list[1]
+        compiled = str(paginated_call_args.args[0])
+        assert "CASE WHEN" in compiled and "ai_katas.title" in compiled
+        assert "ai_katas.enrollment_count DESC" in compiled
+        assert "ai_katas.update_date DESC" in compiled
+        assert "ai_katas.id ASC" in compiled
+
+    @patch("codemie.rest_api.models.ai_kata.AIKata.get_engine")
+    @patch("codemie.repository.ai_kata_repository.Session")
+    def test_no_search_keeps_popularity_ordering_without_relevance(self, mock_session_cls, mock_get_engine, repository):
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        mock_get_engine.return_value = MagicMock()
+        mock_session.exec.side_effect = [
+            MagicMock(one=lambda: 0),
+            MagicMock(all=lambda: []),
+        ]
+
+        repository.list_with_filters(page=1, per_page=20, filters={"status": "published"})
+
+        paginated_call_args = mock_session.exec.call_args_list[1]
+        compiled = str(paginated_call_args.args[0])
+        assert "CASE WHEN" not in compiled
+        assert "ai_katas.enrollment_count DESC, ai_katas.update_date DESC, ai_katas.id ASC" in compiled
+
+    @patch("codemie.rest_api.models.ai_kata.AIKata.get_engine")
+    @patch("codemie.repository.ai_kata_repository.Session")
+    def test_search_with_like_metacharacters_is_escaped(self, mock_session_cls, mock_get_engine, repository):
+        """A search containing '%' or '_' must be treated as literal characters;
+        WHERE predicate and sort CASE must agree on which rows are title-matches."""
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        mock_get_engine.return_value = MagicMock()
+        mock_session.exec.side_effect = [
+            MagicMock(one=lambda: 0),
+            MagicMock(all=lambda: []),
+        ]
+
+        repository.list_with_filters(
+            page=1,
+            per_page=20,
+            filters={"search": "50%_test", "status": "published"},
+        )
+
+        compiled = str(mock_session.exec.call_args_list[1].args[0])
+        assert "ESCAPE" in compiled.upper() or "50\\%\\_test" in compiled

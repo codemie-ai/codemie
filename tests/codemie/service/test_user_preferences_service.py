@@ -608,6 +608,97 @@ class TestGetFavoriteWorkflows:
         assert result.data[0].categories == ["ai"]
 
 
+class _FavoritesSearchRelevanceMixin:
+    """Shared assertions for the three favorites methods. Each concrete class
+    binds METHOD_NAME + TABLE_NAME + FAVORITES_KEY."""
+
+    METHOD_NAME: str = ""
+    TABLE_NAME: str = ""
+    DATE_COLUMN: str = "update_date"
+    FAVORITES_KEY: str = ""
+
+    def _call(self):
+        method = getattr(UserPreferencesService, self.METHOD_NAME)
+        return method(
+            user_id="user-123",
+            current_user=_make_user(),
+            search="solar",
+        )
+
+    def _call_no_search(self):
+        method = getattr(UserPreferencesService, self.METHOD_NAME)
+        return method(
+            user_id="user-123",
+            current_user=_make_user(),
+        )
+
+    def _profile_with_favorite(self):
+        kwargs = {self.FAVORITES_KEY: ["fav-1"]}
+        return _make_profile(**kwargs)
+
+    def _prime_session(self, mock_session):
+        mock_session.exec.side_effect = [
+            MagicMock(one=lambda: 0),
+            MagicMock(all=lambda: []),
+        ]
+
+    @patch("codemie.service.user_preferences_service.user_preferences_repository")
+    @patch("codemie.service.user_preferences_service.get_session")
+    def test_search_predicate_covers_name_and_description(self, mock_get_session, mock_repo):
+        mock_session = _make_session_mock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_get_session.return_value.__exit__.return_value = False
+        mock_repo.get_by_user_id.return_value = self._profile_with_favorite()
+        self._prime_session(mock_session)
+
+        self._call()
+
+        compiled = str(mock_session.exec.call_args_list[-1].args[0]).upper()
+        assert f"LOWER({self.TABLE_NAME.upper()}.NAME) LIKE" in compiled
+        assert f"LOWER({self.TABLE_NAME.upper()}.DESCRIPTION) LIKE" in compiled
+        order_by = compiled[compiled.index("ORDER BY") :]
+        assert order_by.startswith("ORDER BY CASE WHEN")
+        assert f"{self.TABLE_NAME}.{self.DATE_COLUMN} DESC, {self.TABLE_NAME}.id ASC".upper() in order_by
+
+    @patch("codemie.service.user_preferences_service.user_preferences_repository")
+    @patch("codemie.service.user_preferences_service.get_session")
+    def test_empty_search_leaves_predicate_untouched(self, mock_get_session, mock_repo):
+        mock_session = _make_session_mock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_get_session.return_value.__exit__.return_value = False
+        mock_repo.get_by_user_id.return_value = self._profile_with_favorite()
+        self._prime_session(mock_session)
+
+        self._call_no_search()
+
+        compiled = str(mock_session.exec.call_args_list[-1].args[0]).upper()
+        assert f"LOWER({self.TABLE_NAME.upper()}.NAME) LIKE" not in compiled
+        assert f"LOWER({self.TABLE_NAME.upper()}.DESCRIPTION) LIKE" not in compiled
+        order_by = compiled[compiled.index("ORDER BY") :]
+        assert order_by.startswith(
+            f"ORDER BY {self.TABLE_NAME}.{self.DATE_COLUMN} DESC, {self.TABLE_NAME}.id ASC".upper()
+        )
+
+
+class TestFavoriteAssistantsSearchRelevance(_FavoritesSearchRelevanceMixin):
+    METHOD_NAME = "get_favorite_assistants"
+    TABLE_NAME = "assistants"
+    FAVORITES_KEY = "assistants"
+
+
+class TestFavoriteSkillsSearchRelevance(_FavoritesSearchRelevanceMixin):
+    METHOD_NAME = "get_favorite_skills"
+    TABLE_NAME = "skills"
+    DATE_COLUMN = "updated_date"
+    FAVORITES_KEY = "skills"
+
+
+class TestFavoriteWorkflowsSearchRelevance(_FavoritesSearchRelevanceMixin):
+    METHOD_NAME = "get_favorite_workflows"
+    TABLE_NAME = "workflows"  # WorkflowConfig.__tablename__ is "workflows"
+    FAVORITES_KEY = "workflows"
+
+
 # ---------------------------------------------------------------------------
 # Singleton
 # ---------------------------------------------------------------------------

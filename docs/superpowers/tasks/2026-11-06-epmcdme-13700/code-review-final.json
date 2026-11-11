@@ -1,0 +1,40 @@
+{
+  "decision": "approve",
+  "rationale": "Balanced profile: edge-case, acceptance and standards all ran with no blocking findings; the acceptance 'partial' on helper placement was dismissed (1) because the original task records the move to core/search_ranking.py as the agreed fix for prior-round CR-001, so the spec decision line is stale and should be updated; AC18 is pending Stage 7. 2 deferred to code-review-deferred.local.md: non-string skills `search` -> HTTP 500 (main also 500'd via func.lower); non-string template `name` -> HTTP 500 (main called .lower() on it too).",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: /assistants scope=visible_to_user/all/created_by_user - name matches before description-only matches", "status": "pass", "notes": "Unchanged on main by agreement; locked by contract test in test_filter_services.py"},
+    {"kind": "story-ac", "item": "AC2: Assistants endpoints with id search - id-only matches after name and description matches", "status": "pass", "notes": "AssistantFilter [name.keyword, description, id] locked by contract test"},
+    {"kind": "story-ac", "item": "AC3: /assistants templates - search checks name and description, name matches first", "status": "pass", "notes": "catalog.py:68 uses rank_by_search; TestApplyTemplateFiltersSearchRelevance"},
+    {"kind": "story-ac", "item": "AC4: /assistants favorites - search checks name and description, name matches first", "status": "pass", "notes": "get_favorite_assistants uses search_ranking with rank first in ORDER BY"},
+    {"kind": "story-ac", "item": "AC5: Skills general list - name+description search, relevance inside existing ownership priority groups", "status": "pass", "notes": "relevance_priority then search_rank in RELEVANCE mode; test covers ownership priority outermost"},
+    {"kind": "story-ac", "item": "AC6: Skills marketplace - same name > description priority", "status": "pass", "notes": "Same list_accessible_to_user path; search_rank in all sort branches"},
+    {"kind": "story-ac", "item": "AC7: Skills favorites - search checks name and description, name matches first", "status": "pass", "notes": "get_favorite_skills uses search_ranking with rank first"},
+    {"kind": "story-ac", "item": "AC8: workflows/my and workflows/all - correct filter key, name > description priority", "status": "pass", "notes": "Already correct on main; WorkflowFilter 'name' key locked by contract test"},
+    {"kind": "story-ac", "item": "AC9: workflows/marketplace - correct filter key, name > description priority", "status": "pass", "notes": "Same WorkflowFilter config; contract test"},
+    {"kind": "story-ac", "item": "AC10: Workflow templates - search checks name and description, name matches first", "status": "pass", "notes": "workflow.py:357 uses rank_by_search; TestGetPrebuiltWorkflowsSearchRelevance"},
+    {"kind": "story-ac", "item": "AC11: Workflow favorites - search checks name and description, name matches first", "status": "pass", "notes": "get_favorite_workflows uses search_ranking with rank first"},
+    {"kind": "story-ac", "item": "AC12: Katas - title matches before description-only matches", "status": "pass", "notes": "ai_kata_repository prepends title/description rank when search set; TestKataSearchRelevanceOrder"},
+    {"kind": "story-ac", "item": "AC13: No id search introduced for Skills, Workflows, workflow templates, favorites or Katas", "status": "pass", "notes": "New ranking calls cover only name/title and description"},
+    {"kind": "story-ac", "item": "AC14: Existing secondary sorting preserved inside each relevance group", "status": "pass", "notes": "Secondary keys kept after rank; rank_by_search uses stable sort"},
+    {"kind": "story-ac", "item": "AC15: Empty or missing search keeps current behavior and sorting", "status": "pass", "notes": "Rank only under `if search`; only change is agreed id ASC tie-breaker"},
+    {"kind": "story-ac", "item": "AC16: Existing filters (project, categories, created_by, shared, is_global, status, ...) keep working", "status": "pass", "notes": "Filter predicates untouched; only search predicate and ORDER BY changed"},
+    {"kind": "story-ac", "item": "AC17: Pagination stable for the same search query", "status": "pass", "notes": "id ASC last key on kata, skills and favorites queries; templates deterministic stable sort"},
+    {"kind": "story-ac", "item": "AC18: No regression in search behavior on Assistants, Skills, Workflows and Katas pages", "status": "pending-stage-7", "notes": "No missing code change; proof is full-suite and live-page evidence"},
+    {"kind": "spec", "item": "compose_multi_field_wildcard_filter and assistant_repository not changed; items 1/2/8/9 locked by a contract test", "status": "pass", "notes": "Neither file in diff; contract tests added"},
+    {"kind": "spec", "item": "id ASC always appended as last sort key on changed SQL lists (katas, skills, favorites), with or without search", "status": "pass", "notes": "Present in kata, skills (all modes) and favorites order clauses"},
+    {"kind": "spec", "item": "Skills keep name-first ordering for every sort mode (RELEVANCE, ASSISTANTS_COUNT, CREATED_DATE)", "status": "pass", "notes": "search_rank spread into all three order_by branches"},
+    {"kind": "spec", "item": "Only ticket-touched code refactored: search_ranking in core/db_utils, rank_by_search in rest_api/routers/utils", "status": "pass", "notes": "Lens: partial (location). Overridden: original task moves both to core/search_ranking.py to fix prior CR-001; spec line stale"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 3 commit subjects in d563dc5..HEAD match the documented EPMCDME-####: Description format (git-workflow.md Commit Message Format)"},
+    {"kind": "code-quality", "status": "pass", "notes": "new src/codemie/core/search_ranking.py carries the Apache 2.0 header, from __future__ import annotations, explicit parameter/return types with X | None and parameterized generics, and is a dedicated module for the new concern per Module Cohesion; edits to the large ai_kata_repository.py, skill_repository.py and workflow.py are import-and-call wiring only, not a new concern appended; new test file has the license header; changed lines are within the 120-char Ruff line-length (pyproject.toml:219); Ruff itself was not run (read-only audit)"},
+    {"kind": "security", "status": "pass", "notes": "no auth, role-helper or secret-handling code touched and no logging added; search filters remain SQLAlchemy-parameterized ilike expressions and now pass user text through escape_like_wildcards (escapes backslash, % and _) with escape='\\\\', tightening the previously unescaped patterns in user_preferences_service.py and ai_kata_repository.py; no lossy normalization of untrusted input before a security decision"}
+  ],
+  "findings": [],
+  "deferred": [
+    {"id": "DF-001", "severity": "major", "file": "src/codemie/repository/skill_repository.py", "line": 299, "title": "Non-string skills search returns HTTP 500", "problem": "A truthy non-string filters.search (int or list) from json.loads reaches escape_like_wildcards and raises AttributeError, surfacing as HTTP 500 instead of 400.", "preexisting": "main passed the same unvalidated value to func.lower(), which also failed as a 500; no type check existed before"},
+    {"id": "DF-002", "severity": "major", "file": "src/codemie/rest_api/routers/assistant/catalog.py", "line": 68, "title": "Non-string template name filter returns HTTP 500", "problem": "A truthy non-string filters.name makes text.lower() in rank_by_search raise AttributeError on assistant templates (catalog.py:68) and workflow templates (workflow.py:357), returning HTTP 500.", "preexisting": "main called name_filter.lower() on the same unvalidated value at the same lines"}
+  ]
+}

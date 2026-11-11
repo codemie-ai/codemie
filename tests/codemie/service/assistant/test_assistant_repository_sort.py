@@ -170,14 +170,14 @@ def test_project_with_marketplace_default_group_false_omits_is_global():
 
 
 def test_other_scope_sorts_by_update_date():
-    """Non-MARKETPLACE, non-PROJECT_WITH_MARKETPLACE scopes sort by update_date only."""
+    """Non-MARKETPLACE, non-PROJECT_WITH_MARKETPLACE scopes sort by update_date, then id as tiebreaker."""
     q = AssistantRepository._apply_sort_to_query(
         select(Assistant), AssistantScope.VISIBLE_TO_USER, AssistantSortBy.USAGE, SortOrder.DESC, True
     )
     sql = _sql(q)
     # Sort params are ignored — ORDER BY must only contain update_date, not the requested sort col
     order_by_part = sql.split("ORDER BY", 1)[-1] if "ORDER BY" in sql else sql
-    assert "UPDATE_DATE" in order_by_part
+    assert "ASSISTANTS.UPDATE_DATE DESC NULLS LAST, ASSISTANTS.ID ASC" in order_by_part
     assert "UNIQUE_USERS_COUNT" not in order_by_part
 
 

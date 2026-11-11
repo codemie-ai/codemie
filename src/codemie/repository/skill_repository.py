@@ -27,6 +27,7 @@ from sqlalchemy import func, or_, and_, delete, literal_column, cast, String, ca
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlmodel import Session, select
 
+from codemie.core.search_ranking import search_ranking
 from codemie.rest_api.models.skill import MarketplaceFilter, Skill, SkillSortBy, SkillVisibility, SkillCategory
 from codemie.rest_api.models.usage.skill_user_interaction import SkillUserInteraction
 
@@ -273,7 +274,7 @@ class SkillRepository:
             project: Filter by project(s) - supports multiple projects
             visibility: Filter by visibility level
             categories: Filter by categories (any match)
-            search_query: Case-insensitive name search
+            search_query: Case-insensitive name or description search
             created_by: Filter by creator user name
 
         Returns:
@@ -295,8 +296,8 @@ class SkillRepository:
             query = query.where(or_(*conditions))
 
         if search_query:
-            # Case-insensitive search on skill name
-            query = query.where(func.lower(Skill.name).contains(func.lower(search_query)))
+            condition, _ = search_ranking(search_query, Skill.name, Skill.description)
+            query = query.where(condition)
 
         if created_by:
             # Filter by creator user name (consistent with AssistantFilter)
@@ -469,7 +470,7 @@ class SkillRepository:
             project: Optional project(s) filter
             visibility: Optional visibility filter
             categories: Optional categories filter (any match)
-            search_query: Optional name search (case-insensitive)
+            search_query: Optional name or description search (case-insensitive)
             created_by: Optional creator user name filter
             page: Page number (0-indexed)
             per_page: Items per page
@@ -514,6 +515,8 @@ class SkillRepository:
             # Get total count before pagination
             count_query = select(func.count()).select_from(filtered_query.subquery())
             total = session.exec(count_query).one()
+
+            search_rank = [search_ranking(search_query, Skill.name, Skill.description)[1]] if search_query else []
 
             # Apply ordering based on sort_by parameter
             if sort_by == SkillSortBy.RELEVANCE:
@@ -574,7 +577,9 @@ class SkillRepository:
                 paginated_query = (
                     filtered_query.order_by(
                         relevance_priority.asc(),  # Primary: relevance priority
-                        Skill.created_date.desc(),  # Secondary: newest first within each priority
+                        *search_rank,  # Name matches before description-only matches
+                        Skill.created_date.desc(),  # Newest first within each priority
+                        Skill.id.asc(),
                     )
                     .offset(page * per_page)
                     .limit(per_page)
@@ -600,7 +605,10 @@ class SkillRepository:
                         assistants_count_subquery, Skill.id == assistants_count_subquery.c.skill_id
                     )
                     .order_by(
-                        func.coalesce(assistants_count_subquery.c.assistants_count, 0).desc(), Skill.created_date.desc()
+                        *search_rank,
+                        func.coalesce(assistants_count_subquery.c.assistants_count, 0).desc(),
+                        Skill.created_date.desc(),
+                        Skill.id.asc(),
                     )
                     .offset(page * per_page)
                     .limit(per_page)
@@ -608,7 +616,9 @@ class SkillRepository:
             else:
                 # Default ordering by created_date (SkillSortBy.CREATED_DATE)
                 paginated_query = (
-                    filtered_query.order_by(Skill.created_date.desc()).offset(page * per_page).limit(per_page)
+                    filtered_query.order_by(*search_rank, Skill.created_date.desc(), Skill.id.asc())
+                    .offset(page * per_page)
+                    .limit(per_page)
                 )
 
             # Fetch paginated skills
