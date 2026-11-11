@@ -18,9 +18,14 @@ import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from codemie.rest_api.models.index import IndexKnowledgeBaseGitFaqRequest, UpdateKnowledgeBaseGitFaqRequest
+from codemie.rest_api.models.index import (
+    IndexInfo,
+    IndexKnowledgeBaseGitFaqRequest,
+    UpdateKnowledgeBaseGitFaqRequest,
+)
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.constants import FullDatasourceTypes
 from tests.codemie.rest_api.routers.test_index import app
 
 
@@ -163,6 +168,17 @@ async def test_update_faq_source_fields_require_full_reindex(mock_filter, auth_h
     assert response.json()["error"]["message"] == "FAQ source fields require a full reindex"
 
 
+def _saved_faq_index() -> IndexInfo:
+    return IndexInfo(
+        project_name="test_project",
+        repo_name="test_faq_index",
+        index_type=FullDatasourceTypes.GIT_FAQ.value,
+        link="https://github.com/o/r",
+        setting_id="old-integration-id",
+    )
+
+
+@patch("codemie.rest_api.models.base.BaseModelWithSQLSupport.update")
 @patch("codemie.rest_api.routers.index.kb_git_faq._validate_git_credentials")
 @patch("codemie.rest_api.routers.index.kb_git_faq._build_git_faq_processor_from_index")
 @patch("codemie.rest_api.routers.index.kb_git_faq.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
@@ -171,13 +187,13 @@ async def test_update_faq_clears_integration_with_empty_string(
     mock_filter,
     mock_build,
     mock_validate,
+    mock_db_update,
     auth_headers,  # noqa: F811
 ):
     """The UI sends setting_id='' when the integration cross is clicked — that must
     clear the stored integration (None), not be ignored like an absent field."""
-    index_mock = MagicMock()
-    index_mock.setting_id = "old-integration-id"
-    mock_filter.return_value = [index_mock]
+    index = _saved_faq_index()
+    mock_filter.return_value = [index]
     mock_build.return_value = MagicMock()
     request = UpdateKnowledgeBaseGitFaqRequest(
         name="test_faq_index",
@@ -192,8 +208,33 @@ async def test_update_faq_clears_integration_with_empty_string(
     )
 
     assert response.status_code == 200
-    _, kwargs = index_mock.update_index.call_args
-    assert kwargs["setting_id"] is None
+    assert index.setting_id is None
+    mock_validate.assert_not_called()
+    assert mock_build.call_args[0][0] is index
+
+
+@patch("codemie.rest_api.models.base.BaseModelWithSQLSupport.update")
+@patch("codemie.rest_api.routers.index.kb_git_faq.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@pytest.mark.asyncio
+async def test_update_faq_null_setting_id_keeps_integration(
+    mock_filter,
+    mock_db_update,
+    auth_headers,  # noqa: F811
+):
+    index = _saved_faq_index()
+    mock_filter.return_value = [index]
+    request = UpdateKnowledgeBaseGitFaqRequest(
+        name="test_faq_index",
+        project_name="test_project",
+        description="updated description",
+    )
+
+    response = app_client.put("/v1/index/knowledge_base/git_faq", json=request.model_dump(), headers=auth_headers)
+
+    assert response.status_code == 200
+    assert index.description == "updated description"
+    assert index.setting_id == "old-integration-id"
+    assert index.link == "https://github.com/o/r"
 
 
 @patch("codemie.rest_api.routers.index.kb_git_faq._validate_git_credentials")

@@ -941,6 +941,8 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
 
         if setting_id:
             self.setting_id = setting_id
+        elif setting_id == "" and self._integration_is_optional():
+            self.setting_id = None
 
         # Handle project_name change if provided
         if project_name and project_name != self.project_name:
@@ -1242,6 +1244,9 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         llm_routing_index = self.index_type.startswith("llm_routing")
         platform_index = self.is_platform_index()
         return not (kb_index or llm_routing_index or platform_index)
+
+    def _integration_is_optional(self) -> bool:
+        return self.is_code_index() or self.index_type == FullDatasourceTypes.GIT_FAQ
 
     def is_google_doc_index(self) -> bool:
         return self.index_type.startswith(FullDatasourceTypes.GOOGLE)

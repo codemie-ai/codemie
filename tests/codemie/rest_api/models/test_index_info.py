@@ -104,6 +104,41 @@ def test_update_index_fields_should_be_updated(index_info, mock_update_path):
         assert not index_info.error
 
 
+def test_update_index_empty_setting_id_clears(index_info, mock_update_path):
+    index_info.setting_id = "old"
+    with patch(mock_update_path, return_value=True):
+        index_info.update_index(user=MagicMock(spec=User), setting_id="")
+
+    assert index_info.setting_id is None
+
+
+def test_update_index_none_setting_id_keeps_value(index_info, mock_update_path):
+    index_info.setting_id = "old"
+    with patch(mock_update_path, return_value=True):
+        index_info.update_index(user=MagicMock(spec=User), setting_id=None)
+
+    assert index_info.setting_id == "old"
+
+
+def test_update_index_empty_setting_id_keeps_integration_for_required_type(
+    index_info: IndexInfo, mock_update_path: str
+) -> None:
+    index_info.index_type = "knowledge_base_jira"
+    index_info.setting_id = "old"
+    with patch(mock_update_path, return_value=True):
+        index_info.update_index(user=MagicMock(spec=User), setting_id="")
+
+    assert index_info.setting_id == "old"
+
+
+def test_update_index_empty_setting_id_when_already_none(index_info, mock_update_path):
+    index_info.setting_id = None
+    with patch(mock_update_path, return_value=True):
+        index_info.update_index(user=MagicMock(spec=User), setting_id="")
+
+    assert index_info.setting_id is None
+
+
 def test_update_index_fields_default_set(index_info, mock_update_path):
     with patch(mock_update_path, return_value=True) as mock_update:
         index_info.update_index(

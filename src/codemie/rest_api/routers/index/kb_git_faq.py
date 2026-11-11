@@ -131,8 +131,8 @@ def _git_faq_update_params(request) -> dict:
     if request.files_filter is not None:
         params["files_filter"] = request.files_filter
     if request.setting_id is not None:
-        # An empty string means "integration cleared in the UI" — store no integration.
-        params["setting_id"] = request.setting_id or None
+        # An empty string means "integration cleared in the UI"; update_index clears it.
+        params["setting_id"] = request.setting_id
     return params
 
 

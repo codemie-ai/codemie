@@ -23,7 +23,7 @@ from typing import Callable, Generator
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.main import app
 from codemie.datasource.exceptions import ConnectionException, InvalidCustomFieldException
-from codemie.rest_api.models.index import IndexKnowledgeBaseJIRARequest
+from codemie.rest_api.models.index import IndexInfo, IndexKnowledgeBaseJIRARequest
 from codemie.core.models import BaseResponse, CreatedByUser
 from codemie.rest_api.routers.index import router
 from codemie.service.datasource.file_datasource_service import _validate_json_file as validate_json_file
@@ -551,6 +551,86 @@ async def test_update_index_omitted_fields_not_passed_to_update_index(
         f"update_index should NOT receive '{index_kwarg}' when '{absent_index_field}' "
         f"is absent from the request payload"
     )
+
+
+def _put_git_update_with_saved_integration(
+    payload: dict,
+    mock_get_git_repo: MagicMock,
+    mock_filter: MagicMock,
+    mock_can: MagicMock,
+    mock_get_creds: MagicMock,
+    auth_headers: dict,
+) -> tuple[IndexInfo, MagicMock]:
+    mock_get_creds.return_value = MagicMock(token="test_token")
+    mock_can.return_value = True
+
+    index = IndexInfo(project_name=DEMO, repo_name=DEMO, index_type="code", id="git-index", setting_id="old")
+    mock_filter.return_value = [index]
+
+    m_git_repo = MagicMock()
+    m_git_repo.name = DEMO
+    m_git_repo.setting_id = "old"
+    mock_get_git_repo.return_value = [m_git_repo]
+
+    with patch("codemie.rest_api.models.base.BaseModelWithSQLSupport.update"):
+        response = app_client.put(
+            f"/v1/application/{DEMO}/index/{DEMO}",
+            json=payload,
+            headers={**auth_headers, "X-Request-ID": "7ecd6b14-6294-429a-b51a-cab32b344984"},
+        )
+
+    assert response.status_code == status.HTTP_201_CREATED
+    return index, m_git_repo
+
+
+@patch('codemie.rest_api.routers.index._common.GitBatchLoader.test_public_access')
+@patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
+@patch('codemie.core.ability.Ability.can')
+@patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
+@pytest.mark.asyncio
+async def test_update_index_empty_setting_id_clears_index_and_repo(
+    mock_get_git_repo: MagicMock,
+    mock_filter: MagicMock,
+    mock_can: MagicMock,
+    mock_get_creds: MagicMock,
+    mock_public_access: MagicMock,
+    auth_headers: dict,
+    mock_app_repo: MagicMock,
+    mock_create_processor: MagicMock,
+    authenticated_user: Callable,
+) -> None:
+    index, m_git_repo = _put_git_update_with_saved_integration(
+        {"name": DEMO, "setting_id": ""}, mock_get_git_repo, mock_filter, mock_can, mock_get_creds, auth_headers
+    )
+
+    assert index.setting_id is None
+    assert not m_git_repo.setting_id
+    mock_public_access.assert_called_once()
+    mock_get_creds.assert_not_called()
+
+
+@patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
+@patch('codemie.core.ability.Ability.can')
+@patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
+@pytest.mark.asyncio
+async def test_update_index_null_setting_id_keeps_integration(
+    mock_get_git_repo: MagicMock,
+    mock_filter: MagicMock,
+    mock_can: MagicMock,
+    mock_get_creds: MagicMock,
+    auth_headers: dict,
+    mock_app_repo: MagicMock,
+    mock_create_processor: MagicMock,
+    authenticated_user: Callable,
+) -> None:
+    index, m_git_repo = _put_git_update_with_saved_integration(
+        {"name": DEMO, "setting_id": None}, mock_get_git_repo, mock_filter, mock_can, mock_get_creds, auth_headers
+    )
+
+    assert index.setting_id == "old"
+    assert m_git_repo.setting_id == "old"
 
 
 def test_valid_json():
