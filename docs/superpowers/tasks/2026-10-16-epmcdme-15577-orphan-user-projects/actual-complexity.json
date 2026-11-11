@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 3,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "The production change is a single Alembic data migration (f7c3a9d1e4b6) that irreversibly deletes user_projects rows matching no application by id or name, case-insensitively. The downgrade only logs. The Alembic migration pattern already exists, but the work needed deliberate safeguards: NULL-safe IN semantics, equality on LOWER() rather than LIKE, keeping members of soft-deleted applications and case-only matches, and re-checking the no-match condition inside the DELETE so a concurrently created application keeps its members. Scored M as a base and bumped to L by the data-migration red flag." },
+    { "dimension": "file_change_estimate", "reason": "The diffstat shows 3 files and 321 insertions, all additive: 1 new migration, 1 new migration test module and 1 extended service test file (an AC6 regression test for delete_project membership cleanup). By count this is S, bumped to M by the data-migration red flag." },
+    { "dimension": "component_scope", "reason": "The only production component is the migration module. The ProjectService change is tests only, with no production code modified." },
+    { "dimension": "requirements_clarity", "reason": "The migration docstring and tests encode explicit, settled rules: exact, case-only and orphan classification, soft-deleted applications kept, and every deletion logged. No open decisions are visible in the diff." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: requires data migration (irreversible deletion of orphan user_projects rows)",
+    "File Change Estimate bumped from S to M: requires data migration"
+  ],
+  "split_recommendation": null
+}

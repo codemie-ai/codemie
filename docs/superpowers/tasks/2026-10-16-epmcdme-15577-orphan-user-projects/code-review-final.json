@@ -1,0 +1,50 @@
+{
+  "decision": "request-changes",
+  "rationale": "One blocking test gap: the migration's SQL tests never pin LOWER() on up.project_name, so a regression that deletes case-only rows irreversibly would pass every test (all four lenses and standards ran, every candidate source-verified). 2 deferred to code-review-deferred.md: delete_project's exact-match member check misses case-only rows (pre-existing service code); orphan budget allocations not soft-deleted (pre-existing, scoped out by spec). 13 dismissed as handled, spec-mandated or below floor (e.g. ids/project_name are non-null VARCHAR, no-default is a handled state).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    { "kind": "spec", "item": "Orphan = project_name matching no applications row by id or name, case-insensitive", "status": "pass", "notes": "any_case_match LOWER(id) UNION LOWER(name) WHERE name IS NOT NULL; migration :45-51" },
+    { "kind": "spec", "item": "Exact-match rows kept", "status": "pass", "notes": "_classify 'exact' only counted" },
+    { "kind": "spec", "item": "Case-only-match rows kept and only counted/logged", "status": "pass", "notes": "case_only_kept counter, summary log" },
+    { "kind": "spec", "item": "Soft-deleted projects are not orphans", "status": "pass", "notes": "no deleted_at filter in SELECT or DELETE" },
+    { "kind": "spec", "item": "Personal projects get no special treatment", "status": "pass", "notes": "no personal-project exclusion" },
+    { "kind": "spec", "item": "Alembic data migration directly after head e5f9a1c3b7d2", "status": "pass", "notes": "down_revision e5f9a1c3b7d2; single-head chain test" },
+    { "kind": "spec", "item": "Follows e5f9a1c3b7d2 pattern: op.get_bind()/sa.text, module logger, summary line", "status": "pass", "notes": "matches sibling migration" },
+    { "kind": "spec", "item": "Logs per-class counts and each deleted row (user_id, project_name, is_default)", "status": "pass", "notes": "per-row and summary logger.info; per-row logged before re-checking DELETE" },
+    { "kind": "spec", "item": "No backup table created", "status": "pass", "notes": "one SELECT, one DELETE" },
+    { "kind": "spec", "item": "Idempotent: second run finds no orphans and changes nothing", "status": "pass", "notes": "DELETE only when orphan_ids non-empty" },
+    { "kind": "spec", "item": "Downgrade only logs that cleanup is not reverted", "status": "pass", "notes": "log-only downgrade" },
+    { "kind": "spec", "item": "Non-goal: no change to code reading user_projects", "status": "pass", "notes": "diff touches migration and tests only" },
+    { "kind": "spec", "item": "Non-goal: no FK from user_projects.project_name to applications", "status": "pass", "notes": "no DDL" },
+    { "kind": "spec", "item": "Non-goal: no UI change, no ops script, no reversible downgrade", "status": "pass", "notes": "none in diff" },
+    { "kind": "spec", "item": "Non-goal: no fix to case-insensitive IDP project creation or re-attached rows", "status": "pass", "notes": "no changes outside migration/tests" },
+    { "kind": "story-ac", "item": "AC1: orphan rows (no id/name match, case-insensitive) are gone after migration", "status": "pass", "notes": "classification + DELETE re-check; test_upgrade_deletes_only_orphans_and_logs_each" },
+    { "kind": "story-ac", "item": "AC2: exact-match, case-only and soft-deleted-project rows unchanged", "status": "pass", "notes": "never enter orphan_ids; DELETE ids asserted" },
+    { "kind": "story-ac", "item": "AC3: logs per-class counts and one line per deleted row", "status": "pass", "notes": "covered by upgrade logging tests" },
+    { "kind": "story-ac", "item": "AC4: second run deletes nothing", "status": "pass", "notes": "test_upgrade_without_orphans_issues_no_delete" },
+    { "kind": "story-ac", "item": "AC5: downgrade changes no data and logs not reverted", "status": "pass", "notes": "test_downgrade_changes_no_data" },
+    { "kind": "story-ac", "item": "AC6: regression test that delete_project leaves no user_projects row", "status": "pass", "notes": "creator removal asserted; 409 for other members covered by test_creator_plus_other_user_raises_409" },
+    { "kind": "story-ac", "item": "AC7: migration unit tests in test_e5f9a1c3b7d2_* style incl. revision chaining", "status": "pass", "notes": "present; SQL assertion strength addressed by CR-001" },
+    { "kind": "story-ac", "item": "AC8: manual local check - orphan removed; GET /v1/user and pickers no longer list it", "status": "pending-stage-7", "notes": "runtime/API/browser evidence owned by Stage 7" }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "pass", "notes": "both commit subjects in range match git-workflow.md 'EPMCDME-####: Description' (ticket prefix, colon, capitalized description)" },
+    { "kind": "code-quality", "status": "pass", "notes": "Apache 2.0 headers present; typed test module; migration typing.Union from script.py.mako under ruff-ignored src/external/*; no lines over 120; module cohesion met" },
+    { "kind": "security", "status": "pass", "notes": "static sa.text SQL with :ids bound as parameter; no auth code touched; no secrets logged; per-row user_id/project_name logging is documented audit behaviour" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/migrations/test_f7c3a9d1e4b6_delete_orphan_user_projects.py",
+      "line": 150,
+      "title": "Migration SQL tests miss case-insensitive key",
+      "problem": "Which rows are deleted is decided entirely in _SELECT_ROWS/_DELETE_ORPHANS, but no test executes them: _ScriptedBind feeds precomputed match flags and a synthetic rowcount (len(ids)). The SQL checks are substrings only: test_select_matches_id_and_name_case_insensitively asserts 'LOWER(' appears anywhere (satisfied by LOWER(id)), and test_delete_rechecks_no_match asserts no LOWER at all. Removing LOWER() from up.project_name in either statement passes every test. No live-PostgreSQL harness exists in the repo.",
+      "impact": "Consumer is every deployment upgrading past e5f9a1c3b7d2 against production user_projects. A regression in the case-insensitive comparison would classify case-only rows (e.g. 'MyTeam' for application 'myteam', the IDP bootstrap case the spec keeps) as orphans and delete them irreversibly, with downgrade a no-op and no backup, while the suite stays green.",
+      "recommendation": "In test_select_matches_id_and_name_case_insensitively assert `LOWER(up.project_name) IN (SELECT LOWER(id)` and `UNION SELECT LOWER(name)` are present in _SELECT_ROWS; in test_delete_rechecks_no_match assert `LOWER(up.project_name) NOT IN (SELECT LOWER(id)` and `UNION SELECT LOWER(name)` are present in _DELETE_ORPHANS, so removing either side of the case-insensitive comparison fails a test. Optionally let _ScriptedBind take a rowcount override so the re-check partial-delete path is exercised."
+    }
+  ]
+}

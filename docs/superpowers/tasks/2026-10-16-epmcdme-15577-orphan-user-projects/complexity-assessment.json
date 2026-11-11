@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "task": "Remove legacy orphan user_projects rows (no matching applications row) via a safe, irreversible alembic data migration, and add an existence guard to /v1/user and related project-list readers so deleted projects are no longer shown or selectable.",
+  "generated": "2026-10-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base M: a new alembic data migration, an existence-guard helper in UserProjectRepository, and router readers (user.py _get_user_response, user_profile_router). Bumped to L because the guard sits on the shared user_projects reader path that also feeds the auth/security context (authentication_service load_user_for_auth / authenticate_persistent_user / local login, idp/local.py) and admin/analytics lists (user_access_service, member_spend_service)." },
+    { "dimension": "requirements_clarity", "reason": "Acceptance criteria state the outcome but leave the main design decisions open: which orphan classes to delete versus report (case-insensitive name matches from IDP bootstrap, rows pointing at soft-deleted applications, personal-project rows that heal themselves, orphans re-attached to a recreated same-name project), how many readers to guard (around 9 found), and whether to add the FK that EPMCDME-14501 deferred. The ticket is AI-generated and phrased as 'determine and carry out the appropriate handling'." },
+    { "dimension": "technical_risk", "reason": "Closest patterns are the e5f9a1c3b7d2 data-repair migration (logging, irreversible downgrade, unit-test style) and _filter_projects_by_visibility (skips missing applications). These cover the mechanics but not how to classify rows safely. Base M, bumped for the irreversible Production data migration that runs at pod startup, and bumped again because user_projects names drive RBAC (has_access, is_admin, User.project_names). Deleting a valid row would remove a user's access." },
+    { "dimension": "file_change_estimate", "reason": "Base M: about 5-7 modified files (routers/user.py, user_profile_router.py, user_project_repository.py, authentication_service.py, idp/local.py, user_access_service.py, plus router/repository tests) and 2 new files (the migration under src/external/alembic/versions and its test under tests/codemie/migrations), across 3+ directories. Bumped to L by the data-migration red flag." },
+    { "dimension": "affected_layers", "reason": "Touches API (routers), Service (auth and user-access services) and DB-Persistence (repository query guard plus an alembic data migration on user_projects). That is 3 layers including persistence with a migration. No schema change and no external system." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: requires data migration (irreversible deletion of Production user_projects rows at startup)",
+    "File Change Estimate bumped from M to L: requires data migration (new migration plus migration test)",
+    "Technical Risk bumped from L to XL: affects authorization (user_projects names drive RBAC and User.project_names)",
+    "Component Scope bumped from M to L: touches core shared utilities (UserProjectRepository readers and the auth security-context builders)"
+  ],
+  "split_recommendation": null
+}
