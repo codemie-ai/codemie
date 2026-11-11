@@ -135,10 +135,15 @@ class Aggregate:
 
 @dataclass(frozen=True, eq=False)
 class ReadShape:
-    """One read: its narrowing beyond the time range, and its aggregates."""
+    """One read: its narrowing beyond the time range, its aggregates, and the columns it groups by.
+
+    Each `group_by` entry names a `PROJECTED_DIMENSIONS` column, so either source can group on it. A grouped
+    read selects its key columns, labelled by name, ahead of its aggregates.
+    """
 
     where: ColumnElement[bool] | None
     aggregates: tuple[Aggregate, ...]
+    group_by: tuple[str, ...] = ()
 
 
 #: A read's shape with the metric store's ids applied (`True`) or with every id set emptied (`False`).
@@ -186,12 +191,14 @@ def time_bucket(width: str, start_time: ColumnElement[datetime] = Row.start_time
 
 def raw_statement(period: TimeRange, shape: ReadShape, width: str | None = None) -> Select:
     """The read over `litellm_spend_logs` itself - the statement the repository has always issued."""
-    columns = [_labelled(_raw_column(aggregate), aggregate.label) for aggregate in shape.aggregates]
+    keys = [getattr(Row, name) for name in shape.group_by]
+    columns = [_labelled(key, name) for name, key in zip(shape.group_by, keys, strict=True)]
+    columns += [_labelled(_raw_column(aggregate), aggregate.label) for aggregate in shape.aggregates]
     bounded = within(period) if shape.where is None else and_(within(period), shape.where)
     if width is None:
-        return select(*columns).where(bounded)
+        return select(*columns).where(bounded).group_by(*keys)
     bucket = time_bucket(width)
-    return select(bucket, *columns).where(bounded).group_by(bucket).order_by(bucket)
+    return select(bucket, *columns).where(bounded).group_by(bucket, *keys).order_by(bucket)
 
 
 def projected_statement(
@@ -278,7 +285,7 @@ def _projected(
     unresolved = shape_of(False)
     resolved = _resolved_image(unresolved, shape_of(True), resolved_ids)
     window = _window(period, hours, unresolved, resolved, resolved_ids)
-    return _grouped(window, _window_columns(window, unresolved, resolved), width)
+    return _grouped(window, _window_columns(window, unresolved, resolved), width, unresolved.group_by)
 
 
 def _resolved_image(unresolved: ReadShape, resolved: ReadShape, resolved_ids: tuple[str, ...]) -> ReadShape | None:
@@ -338,19 +345,18 @@ def _window_columns(window: Subquery, unresolved: ReadShape, resolved: ReadShape
     return columns
 
 
-def _grouped(window: Subquery, columns: list[ColumnElement], width: str | None) -> Select:
-    if width is None:
-        return select(*columns).select_from(window)
-    bucket = time_bucket(width, window.c.start_time)
-    # Raw grouping returns a bucket only where some row satisfies the read; the window's unfiltered net row
-    # count is exactly that number, so a bucket left only by a cancelled pair - or none at all - is dropped.
-    return (
-        select(bucket, *columns)
-        .select_from(window)
-        .group_by(bucket)
-        .having(func.sum(window.c.row_count) > 0)
-        .order_by(bucket)
-    )
+def _grouped(window: Subquery, columns: list[ColumnElement], width: str | None, group_by: tuple[str, ...]) -> Select:
+    keys = [window.c[name] for name in group_by]
+    bucket = None if width is None else time_bucket(width, window.c.start_time)
+    grouping = keys if bucket is None else [bucket, *keys]
+    leading = [_labelled(key, name) for name, key in zip(group_by, keys, strict=True)]
+    statement = select(*([] if bucket is None else [bucket]), *leading, *columns).select_from(window)
+    if not grouping:
+        return statement
+    # Raw grouping returns a group only where some row satisfies the read; the window's unfiltered net row
+    # count is exactly that number, so a group left only by a cancelled pair - or none at all - is dropped.
+    statement = statement.group_by(*grouping).having(func.sum(window.c.row_count) > 0)
+    return statement if bucket is None else statement.order_by(bucket)
 
 
 def _hour_rows(hours: TimeRange, where: ColumnElement[bool] | None) -> Select:
@@ -440,7 +446,7 @@ class _Translation:
         if isinstance(element, (SelectBase, FromClause)):
             self.missing.append(f"subquery {element}")
             return None
-        if _is_value_list(element):
+        if is_value_list(element):
             return self._value_list(element)
         if not isinstance(element, ColumnClause):
             return None
@@ -466,16 +472,19 @@ class _Translation:
         return target
 
 
-def _is_value_list(element: object) -> bool:
+def is_value_list(element: object) -> bool:
     """`<ledger column> IN | NOT IN <list>` - the shape a value list is bound in, one parameter per value."""
     return (
         isinstance(element, BinaryExpression)
         and element.operator in (operators.in_op, operators.not_in_op)
-        and isinstance(element.left, ColumnClause)
-        and element.left.table is _LEDGER
+        and is_ledger_column(element.left)
         and isinstance(element.right, BindParameter)
         and element.right.expanding
     )
+
+
+def is_ledger_column(element: object) -> bool:
+    return isinstance(element, ColumnClause) and element.table is _LEDGER
 
 
 def _layout(shape: ReadShape) -> list[tuple[Measure, str | None]]:

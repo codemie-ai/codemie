@@ -346,14 +346,13 @@ class ProjectHandler:
         no figure.** `unknown` is not a project: a filter naming it matches no ledger row and would
         publish a measured `$0.00` for money nobody can attribute.
 
-        **One scan per candidate project**, a few in flight at a time, where the holder read was one round
-        trip for the whole set: a personal project cannot be named by a holder, and the port has no
-        batched per-project total.
+        **One batched read for every candidate project**, each still answered for its own filter: a
+        personal project cannot be named by a holder, so the holder read cannot stand in for it.
         """
         names = ["" if project == UNATTRIBUTED_PROJECT_KEY else project for project in projects]
-        filters = await project_filters_within(report_filter or ReportFilter(), names)
+        table = await project_filters_within(report_filter or ReportFilter(), names)
         logger.info(f"Projects-spending read the ledger total for {len(projects)} candidate row(s)")
-        return await read_group_spend(period, self._pipeline.access_scope, filters, SpendGroup.TOTAL)
+        return await read_group_spend(period, self._pipeline.access_scope, table.common, table.rows, SpendGroup.TOTAL)
 
     def _build_projects_spending_aggregation(self, query: dict, fetch_size: int, pre_floor: datetime | None) -> dict:
         """Build terms aggregation for projects spending with fetch-and-slice.

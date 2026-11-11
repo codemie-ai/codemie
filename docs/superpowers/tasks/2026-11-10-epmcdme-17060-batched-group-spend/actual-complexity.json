@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-11-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 25,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 36,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "A new port method (aggregate_by_spend_group_per_filter) on the shared SpendLedger contract had to be implemented by every adapter: the cutover composer, the ledger registry, the SpendService facade, the Elasticsearch default ledger, the legacy ledger and the enterprise LiteLLM ledger. It also needed a new grouped repository read (sum_for_spend_groups_per_attribution), two new abstractions (the GroupedRows predicate evaluator and the SpendGroupBatch assigner), a new shared handler module (ledger_group_spend) and rewiring of the user, project and CLI-insights analytics handlers." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the existing consumed_for_holders batch. The SQL path goes beyond it: it evaluates SQLAlchemy predicate trees in Python over grouped rows, with NULL semantics matching WHERE, refusal of NOT and unknown operators, and memoised selective conjunctions. It runs that work on worker threads and has to keep the caller's access boundary on a single fixed-size scan. Wrong assignment would show money silently against the wrong row. Performance is the main driver (one statement per table instead of one per row, with a dedicated pool and statement timeout), so Technical Risk was bumped from L to XL." },
+    { "dimension": "file_change_estimate", "reason": "The diffstat reports 36 files (3136 insertions, 290 deletions): 17 source files, 14 test files and 5 task docs. That is far past the 16+ threshold. The changes span src/codemie/repository, src/codemie/service/spend, src/codemie/service/analytics/handlers, src/codemie/enterprise/litellm, src/codemie/configs and the matching test trees." },
+    { "dimension": "affected_layers", "reason": "Service (analytics handlers, SpendService facade, cutover and registry), DB-Persistence (new grouped spend-logs read rendered over raw rows and the hourly projection), External (Elasticsearch filters-bucket paging in the default ledger, enterprise LiteLLM ledger) and Infrastructure config (spend-ledger pool and statement-timeout settings). No schema migration, so L rather than XL." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: performance and scalability (collapsing per-row ledger reads into one batched scan) is the primary concern",
+    "Component Scope bumped from L to XL: touches the core shared SpendLedger port, which every ledger adapter and the facade must implement"
+  ],
+  "split_recommendation": null
+}

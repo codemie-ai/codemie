@@ -33,7 +33,7 @@ zero is a positive claim that nothing was spent.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime
 
 from codemie.service.spend.coverage import LedgerCoverage, SpendDimension, SpendResult, TimeRange
@@ -230,6 +230,22 @@ class _NoopSpendLedger:
         # a blank rather than as the unavailable state. Neither access nor report_filter is applied -
         # see consumed_for_holder.
         return {group: SpendResult.no_figure(period) for group in SpendGroup}
+
+    async def aggregate_by_spend_group_per_filter(
+        self,
+        period: TimeRange,
+        *,
+        access: AccessScope | None = None,
+        common_filter: ReportFilter | None,
+        report_filters: Collection[ReportFilter],
+    ) -> dict[ReportFilter, dict[SpendGroup, SpendResult]]:
+        # Every filter gets an entry for every group, for the same reason every group does: an absent
+        # key renders as a blank rather than as the unavailable state. Neither access nor common_filter
+        # is applied - see consumed_for_holder.
+        return {
+            report_filter: {group: SpendResult.no_figure(period) for group in SpendGroup}
+            for report_filter in dict.fromkeys(report_filters)
+        }
 
     async def aggregate_by_dimension(
         self,

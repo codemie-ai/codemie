@@ -59,9 +59,10 @@ question - or an emitter gains a `None` cost path not gated on routing.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any
 
 from codemie.configs import logger
 from codemie.service.analytics.metric_names import MetricName
@@ -86,11 +87,17 @@ from codemie.service.spend.ledger import (
     bucket_starts,
     bucket_step,
 )
+from codemie.service.spend.read_failures import record_read_failure
 from codemie.service.spend.routing import LLMCallClass
 from codemie.service.spend.spend_group import SpendGroup
 from codemie.service.spend.traffic_class import TrafficClass
 
 DEFAULT_LEDGER_NAME = "default"
+
+#: How many filters one search of the per-filter card read carries before it is split into several.
+#: Each filter costs its own bucket and one per spend group, so this keeps a search well inside
+#: Elasticsearch's default `search.max_buckets` of 65,536, past which it refuses the search.
+FILTER_BATCH_SIZE = 5_000
 
 MONEY_FIELD = f"attributes.{MetricsAttributes.MONEY_SPENT}"
 _USER_ID_FIELD = f"attributes.{MetricsAttributes.USER_ID}.keyword"
@@ -129,6 +136,8 @@ _UNSETTLED_AGG = "money_unsettled"
 #: What the bucketed read names its date histogram in the body. Named for what a reader debugging a
 #: query body needs to see, exactly as `_sum_money_per_bucket`'s `group` argument is.
 _TIME_BUCKET_AGG = "time_buckets"
+_SPEND_GROUP_AGG = "spend_groups"
+_ROW_AGG = "rows"
 
 #: The project attribute the access boundary is rendered against.
 #:
@@ -272,6 +281,24 @@ def _money_aggs() -> dict:
     }
 
 
+def _named_filters(buckets: Mapping[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """A `filters` aggregation's buckets, each named and holding its own clauses as one conjunction."""
+    return {"filters": {key: {"bool": {"filter": terms}} for key, terms in buckets.items()}}
+
+
+def _money_per_bucket_aggs(group: str, buckets: Mapping[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """One `filters` aggregation named `group`, with the money sum and its coverage counts in every bucket."""
+    return {group: {"filters": _named_filters(buckets), "aggs": _money_aggs()}}
+
+
+def _money_per_bucket_figures(
+    aggregations: Mapping[str, Any], group: str, keys: Iterable[str]
+) -> dict[str, Decimal | None]:
+    """`_money_per_bucket_aggs`' answer read back, one figure for every key it was asked about."""
+    found = aggregations.get(group, {}).get("buckets", {}) or {}
+    return {key: _money_figure(found.get(key, {})) for key in keys}
+
+
 def _money_figure(bucket: dict) -> Decimal | None:
     """One money bucket's sum, or `None` when nothing in it settled a cost.
 
@@ -325,6 +352,24 @@ def _money_result(
     if figure is None:
         return SpendResult.no_figure(period)
     return SpendResult(figure=figure, partial=partial or {})
+
+
+def _spend_group_results(
+    money: Mapping[str, Decimal | None],
+    selectors: Mapping[SpendGroup, list[dict]],
+    unreadable: Iterable[SpendGroup],
+    period: TimeRange,
+) -> dict[SpendGroup, SpendResult]:
+    """One set of summary cards from the money its spend-group buckets answered.
+
+    In the declared order, so the mapping reads as the screen does and an omitted group is visibly
+    omitted rather than reordered.
+    """
+    # Indexed rather than `.get`-with-a-zero, like every read here: the helper answers for exactly the
+    # keys it was given, so a missing one is a defect there.
+    answered = {group: _money_result(money[group.value], period) for group in selectors}
+    answered.update({group: SpendResult.no_figure(period) for group in unreadable})
+    return {group: answered[group] for group in SpendGroup if group in answered}
 
 
 class DefaultSpendLedger:
@@ -659,51 +704,81 @@ class DefaultSpendLedger:
         and narrow the outer query once for every group at once: a boundary is a property of the
         caller and a filter of the question, neither of one card.
         """
-        cli_filters = self._cli_class_filters()
-        embedding_filters = self._embedding_class_filters()
-        carries_cli = LLMCallClass.CHAT in self._call_classes
-        carries_embeddings = LLMCallClass.EMBEDDINGS in self._call_classes
-
-        selectors: dict[SpendGroup, list[dict]] = {
-            # No clause at all: `_query` already bounds every read here by the name set, and that
-            # bound is the guard - see the docstring on why this is not a `match_all`.
-            SpendGroup.TOTAL: [],
-            SpendGroup.PLATFORM: [
-                {"terms": {_METRIC_NAME_FIELD: MetricName.to_list_from_group(MetricName.PLATFORM_METRICS)}}
-            ],
-        }
-        if carries_cli and cli_filters is not None:
-            selectors[SpendGroup.CLI] = cli_filters
-        if carries_embeddings and embedding_filters is not None:
-            selectors[SpendGroup.EMBEDDING] = embedding_filters
-
+        selectors, unreadable = self._spend_group_selectors()
         money = await self._sum_money_per_bucket(
             period,
             {group.value: terms for group, terms in selectors.items()},
-            group="spend_groups",
+            group=_SPEND_GROUP_AGG,
             scoped_by=access,
             filters=self._report_filters(report_filter),
         )
-        # Indexed rather than `.get`-with-a-zero, like every read here: the helper answers for
-        # exactly the keys it was given, so a missing one is a defect there.
-        answered = {group: _money_result(money[group.value], period) for group in selectors}
-        if carries_cli and cli_filters is None:
-            logger.debug(
-                "spend_default_ledger: the CLI proxy metric is outside this adapter's name set, so the "
-                "CLI card cannot be read here; reporting no figure rather than a zero over documents "
-                "this adapter is not allowed to see"
+        return _spend_group_results(money, selectors, unreadable, period)
+
+    async def aggregate_by_spend_group_per_filter(
+        self,
+        period: TimeRange,
+        *,
+        access: AccessScope | None = None,
+        common_filter: ReportFilter | None,
+        report_filters: Collection[ReportFilter],
+    ) -> dict[ReportFilter, Mapping[SpendGroup, SpendResult]]:
+        """Each filter's cards in one search per page of `FILTER_BATCH_SIZE` filters.
+
+        **The batch is `aggregate_by_spend_group` with one more `filters` level around it**, the way
+        `consumed_for_holders` batches holders. The outer query is that read's query for
+        `common_filter`; under it one bucket per filter holds that filter's own `_report_filters`, and
+        inside each the same spend-group buckets. Every filter carries `common_filter`'s terms, so the
+        outer query and a filter's bucket together are exactly that filter's single read, and its cards
+        follow the single read's rules: a group this adapter cannot carry is omitted, one it cannot
+        read is no figure.
+
+        **A page whose search raises costs its own filters and nobody else's.** They are answered
+        `no_figure` for every group, and the failures of one batch are recorded once - the count of
+        filters that failed and the first error. When *every* page fails the read raises that first
+        error instead: nothing was answered, so the caller records the outage as it does for any
+        ledger that is down, and recording it here as well would count it twice.
+        """
+        read = "aggregate_by_spend_group_per_filter"
+        filters = list(dict.fromkeys(report_filters))
+        if not filters:
+            return {}
+        selectors, unreadable = self._spend_group_selectors()
+        spend_group_buckets = {group.value: terms for group, terms in selectors.items()}
+        results: dict[ReportFilter, Mapping[SpendGroup, SpendResult]] = {}
+        errors: list[Exception] = []
+        failed = 0
+        for start in range(0, len(filters), FILTER_BATCH_SIZE):
+            page = filters[start : start + FILTER_BATCH_SIZE]
+            rows = {f"row_{index}": self._report_filters(report_filter) for index, report_filter in enumerate(page)}
+            try:
+                money_by_row = await self._sum_money_per_bucket_per_row(
+                    period,
+                    rows,
+                    spend_group_buckets,
+                    group=_SPEND_GROUP_AGG,
+                    scoped_by=access,
+                    filters=self._report_filters(common_filter),
+                )
+            except Exception as error:
+                errors.append(error)
+                failed += len(page)
+                results.update(
+                    {report_filter: dict.fromkeys(SpendGroup, SpendResult.no_figure(period)) for report_filter in page}
+                )
+                continue
+            for row, report_filter in zip(rows, page, strict=True):
+                results[report_filter] = _spend_group_results(money_by_row[row], selectors, unreadable, period)
+        if errors:
+            if failed == len(filters):
+                raise errors[0]
+            record_read_failure(
+                self.ledger_name,
+                read,
+                f"spend_default_ledger: {failed} of {len(filters)} filters failed {read} over {period}: {errors[0]}",
+                errors[0],
+                count=failed,
             )
-            answered[SpendGroup.CLI] = SpendResult.no_figure(period)
-        if carries_embeddings and embedding_filters is None:
-            logger.debug(
-                "spend_default_ledger: the datasource metric is outside this adapter's name set, so the "
-                "embedding card cannot be read here; reporting no figure rather than a zero over documents "
-                "this adapter is not allowed to see"
-            )
-            answered[SpendGroup.EMBEDDING] = SpendResult.no_figure(period)
-        # Enumerated in the declared order so the mapping reads as the screen does, and so an omitted
-        # group is visibly omitted rather than reordered.
-        return {group: answered[group] for group in SpendGroup if group in answered}
+        return results
 
     async def aggregate_by_traffic_class(
         self,
@@ -1084,6 +1159,46 @@ class DefaultSpendLedger:
             should.append({"terms": {_USER_EMAIL_FIELD: sorted(aliases)}})
         return [{"bool": {"should": should, "minimum_should_match": 1}}]
 
+    def _spend_group_selectors(self) -> tuple[dict[SpendGroup, list[dict]], tuple[SpendGroup, ...]]:
+        """The clauses of each spend group this adapter can read, and the groups it owns but cannot read.
+
+        A group in neither is one its call classes cannot carry, which the summary cards omit - see
+        `aggregate_by_spend_group`.
+        """
+        cli_filters = self._cli_class_filters()
+        embedding_filters = self._embedding_class_filters()
+        carries_cli = LLMCallClass.CHAT in self._call_classes
+        carries_embeddings = LLMCallClass.EMBEDDINGS in self._call_classes
+
+        selectors: dict[SpendGroup, list[dict]] = {
+            # No clause at all: `_query` already bounds every read here by the name set, and that
+            # bound is the guard - see `aggregate_by_spend_group` on why this is not a `match_all`.
+            SpendGroup.TOTAL: [],
+            SpendGroup.PLATFORM: [
+                {"terms": {_METRIC_NAME_FIELD: MetricName.to_list_from_group(MetricName.PLATFORM_METRICS)}}
+            ],
+        }
+        unreadable: list[SpendGroup] = []
+        if carries_cli and cli_filters is not None:
+            selectors[SpendGroup.CLI] = cli_filters
+        elif carries_cli:
+            logger.debug(
+                "spend_default_ledger: the CLI proxy metric is outside this adapter's name set, so the "
+                "CLI card cannot be read here; reporting no figure rather than a zero over documents "
+                "this adapter is not allowed to see"
+            )
+            unreadable.append(SpendGroup.CLI)
+        if carries_embeddings and embedding_filters is not None:
+            selectors[SpendGroup.EMBEDDING] = embedding_filters
+        elif carries_embeddings:
+            logger.debug(
+                "spend_default_ledger: the datasource metric is outside this adapter's name set, so the "
+                "embedding card cannot be read here; reporting no figure rather than a zero over documents "
+                "this adapter is not allowed to see"
+            )
+            unreadable.append(SpendGroup.EMBEDDING)
+        return selectors, tuple(unreadable)
+
     def _cli_class_filters(self) -> list[dict] | None:
         """`TrafficClass.CLI` as query filters, or `None` where this adapter may not read that class.
 
@@ -1255,16 +1370,35 @@ class DefaultSpendLedger:
         body = {
             "size": 0,
             "query": self._query(period, filters or [], scoped_by=scoped_by),
-            "aggs": {
-                group: {
-                    "filters": {"filters": {key: {"bool": {"filter": terms}} for key, terms in buckets.items()}},
-                    "aggs": _money_aggs(),
-                }
-            },
+            "aggs": _money_per_bucket_aggs(group, buckets),
         }
         result = await self._repository.execute_aggregation_query(body)
-        found = result.get("aggregations", {}).get(group, {}).get("buckets", {}) or {}
-        return {key: _money_figure(found.get(key, {})) for key in buckets}
+        return _money_per_bucket_figures(result.get("aggregations", {}), group, buckets)
+
+    async def _sum_money_per_bucket_per_row(
+        self,
+        period: TimeRange,
+        rows: dict[str, list[dict]],
+        buckets: dict[str, list[dict]],
+        *,
+        group: str,
+        scoped_by: AccessScope | None = None,
+        filters: list[dict] | None = None,
+    ) -> dict[str, dict[str, Decimal | None]]:
+        """`_sum_money_per_bucket` once per named row, in one query, each row's clauses narrowing its buckets.
+
+        The rows are one more `filters` level around the very aggregation `_sum_money_per_bucket`
+        builds, so a row's figures are read by that read's rules. `scoped_by` and `filters` narrow
+        every row at once in the outer query, for that read's reason.
+        """
+        body = {
+            "size": 0,
+            "query": self._query(period, filters or [], scoped_by=scoped_by),
+            "aggs": {_ROW_AGG: {"filters": _named_filters(rows), "aggs": _money_per_bucket_aggs(group, buckets)}},
+        }
+        result = await self._repository.execute_aggregation_query(body)
+        found = result.get("aggregations", {}).get(_ROW_AGG, {}).get("buckets", {}) or {}
+        return {row: _money_per_bucket_figures(found.get(row, {}), group, buckets) for row in rows}
 
     async def _sum_money(
         self, period: TimeRange, filters: list[dict], *, scoped_by: AccessScope | None = None

@@ -86,7 +86,7 @@ a test changing with it.
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TypeVar
 
@@ -407,6 +407,54 @@ class CutoverSpendLedger:
             period,
             lambda ledger, half: ledger.aggregate_by_spend_group(half, access=access, report_filter=report_filter),
         )
+
+    async def aggregate_by_spend_group_per_filter(
+        self,
+        period: TimeRange,
+        *,
+        access: AccessScope | None = None,
+        common_filter: ReportFilter | None,
+        report_filters: Collection[ReportFilter],
+    ) -> Mapping[ReportFilter, Mapping[SpendGroup, SpendResult]]:
+        """Each row's cards, combined per (filter, group) - so each is what `aggregate_by_spend_group` gives.
+
+        **Flattened onto `(filter, group)` keys so `_per_key` is the merge**, rather than a second
+        merge written for nested mappings: the union over those keys is exactly the per-group union
+        the single read takes for each filter, a group one half omitted included, so a row cannot read
+        one figure in a batch and another alone.
+
+        **Re-nested over the requested filters rather than over the merged keys**, because a filter no
+        half answered a group for leaves no key behind to re-nest - and an absent filter is the defect
+        the port names, a row rendered blank instead of as the state it is in.
+        """
+
+        async def batch(
+            ledger: SpendLedger, half: TimeRange
+        ) -> Mapping[ReportFilter, Mapping[SpendGroup, SpendResult]]:
+            return await ledger.aggregate_by_spend_group_per_filter(
+                half, access=access, common_filter=common_filter, report_filters=report_filters
+            )
+
+        legs = self._legs(period)
+        if len(legs) == 1:
+            return await batch(*legs[0])
+
+        async def flattened(
+            ledger: SpendLedger, half: TimeRange
+        ) -> Mapping[tuple[ReportFilter, SpendGroup], SpendResult]:
+            answers = await batch(ledger, half)
+            return {
+                (report_filter, group): result
+                for report_filter, groups in answers.items()
+                for group, result in groups.items()
+            }
+
+        by_filter: dict[ReportFilter, dict[SpendGroup, SpendResult]] = {
+            report_filter: {} for report_filter in report_filters
+        }
+        for (report_filter, group), result in (await self._per_key(period, flattened)).items():
+            by_filter[report_filter][group] = result
+        return by_filter
 
     async def aggregate_by_dimension(
         self,

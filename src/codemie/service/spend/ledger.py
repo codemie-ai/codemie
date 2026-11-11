@@ -32,7 +32,7 @@ point of this work; the same comparison on the request path is prohibited.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -817,6 +817,32 @@ class SpendLedger(Protocol):
         it cannot read is absent, with the flag naming the range.
 
         `access` and `report_filter` mean what they mean on `aggregate_by_time_bucket`.
+        """
+        ...
+
+    async def aggregate_by_spend_group_per_filter(
+        self,
+        period: TimeRange,
+        *,
+        access: AccessScope | None = None,
+        common_filter: ReportFilter | None,
+        report_filters: Collection[ReportFilter],
+    ) -> Mapping[ReportFilter, Mapping[SpendGroup, SpendResult]]:
+        """`aggregate_by_spend_group` for each of several filters in one read - the read a per-row table makes.
+
+        **Each answer is the figure `aggregate_by_spend_group` gives for that filter**, group for group:
+        an adapter may batch the scan, never change what a row is told. A table whose rows were read one
+        at a time and one read in a batch would otherwise disagree about the same money.
+
+        **Every requested filter is answered.** A key missing from the mapping is a defect, not a row
+        with nothing to show: it would read downstream as a blank rather than as the unavailable state,
+        which is the fabricated-nothing every other read here refuses. A filter the adapter cannot read
+        is answered `no_figure` per group.
+
+        `common_filter` is the term every filter in `report_filters` already carries - the dashboard's
+        own filter. It is given so an adapter that reads one shared scan can put it in the scan's
+        `WHERE`; an adapter that answers filter by filter may ignore it, since each filter carries it.
+        `access` means what it means on `aggregate_by_time_bucket`.
         """
         ...
 

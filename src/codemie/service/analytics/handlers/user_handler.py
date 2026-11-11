@@ -35,7 +35,11 @@ from codemie.service.analytics.handlers.field_constants import (
     PROJECT_KEYWORD_FIELD,
     USER_NAME_KEYWORD_FIELD,
 )
-from codemie.service.analytics.handlers.ledger_group_spend import read_group_spend, user_report_filters
+from codemie.service.analytics.handlers.ledger_group_spend import (
+    TableFilters,
+    read_group_spend,
+    user_report_filters,
+)
 from codemie.service.analytics.handlers.report_filter import report_filter_for
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
@@ -406,12 +410,12 @@ class UserHandler:
         document in the window has money in the total and no row.
         """
         period = report_period_or_none(start_dt, end_dt, client_source)
-        filters = (
+        table = (
             await user_report_filters([row[identifier_key] for row in rows], projects)
             if period and rows
-            else [None for _ in rows]
+            else TableFilters.naming_nobody(len(rows))
         )
-        rendered = await read_group_spend(period, self._pipeline.access_scope, filters, group)
+        rendered = await read_group_spend(period, self._pipeline.access_scope, table.common, table.rows, group)
         logger.info(f"Users-spending read the {group.value} ledger group for {len(rows)} candidate row(s)")
         enriched = finish(rows, rendered, SPEND_COLUMN)
         if period is None or not enriched.rows:

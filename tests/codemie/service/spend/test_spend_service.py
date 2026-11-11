@@ -59,6 +59,11 @@ WIDTH = "day"
 ALICE_SCOPE = AccessScope(unrestricted=False, user_id="alice", plain_projects=("A",))
 DASHBOARD_FILTER = ReportFilter(users=(UserTerm(user_id="alice", aliases=frozenset({"alice@example.com"})),))
 
+#: A projects-filtered users table: the dashboard's term, and each row's filter carrying it unchanged.
+COMMON_FILTER = ReportFilter(projects=("A",))
+ALICE_ROW = ReportFilter(users=(UserTerm(user_id="alice", aliases=frozenset({"alice@example.com"})),), projects=("A",))
+BOB_ROW = ReportFilter(users=(UserTerm(user_id="bob", aliases=frozenset({"bob@example.com"})),), projects=("A",))
+
 #: Distinguishes "the argument never arrived" from "the argument arrived as `None`". The second is a
 #: read with no caller and no filter and narrows nothing on purpose; the first is a ledger the facade
 #: never threaded the argument to, which a `None` assertion would pass over.
@@ -66,13 +71,14 @@ _UNSET = object()
 
 
 class _StubLedger:
-    def __init__(self, name, result=None, cost=None, count=0, *, buckets=None, groups=None):
+    def __init__(self, name, result=None, cost=None, count=0, *, buckets=None, groups=None, groups_by_filter=None):
         self.ledger_name = name
         self._result = result if result is not None else SpendResult(figure=Decimal("10"))
         self._cost = cost or RequestCost.unavailable()
         self._count = count
         self._buckets = dict(buckets or {})
         self._groups = dict(groups or {})
+        self._groups_by_filter = dict(groups_by_filter or {})
         self.holder_calls = 0
         self.aggregate_calls = 0
         self.bucket_calls = 0
@@ -83,6 +89,7 @@ class _StubLedger:
         self.class_ids_seen: list[tuple] = []
         self.access_seen: list = []
         self.filter_seen: list = []
+        self.report_filters_seen: list = []
 
     async def consumed_for_holder(self, holder, period, access=None):
         self.holder_calls += 1
@@ -106,6 +113,17 @@ class _StubLedger:
         self.access_seen.append(access)
         self.filter_seen.append(report_filter)
         return dict(self._groups)
+
+    async def aggregate_by_spend_group_per_filter(self, period, *, access=_UNSET, common_filter=_UNSET, report_filters):
+        self.group_calls += 1
+        self.access_seen.append(access)
+        self.filter_seen.append(common_filter)
+        self.report_filters_seen.append(list(report_filters))
+        return {
+            report_filter: dict(self._groups_by_filter[report_filter])
+            for report_filter in report_filters
+            if report_filter in self._groups_by_filter
+        }
 
     async def aggregate(self, period, scope=None, resolved_ids=()):
         self.aggregate_calls += 1
@@ -395,7 +413,10 @@ class TestTheWholeWindowReadsCannotBeAskedWithoutABoundary:
     arriving silently and rendering perfectly.
     """
 
-    @pytest.mark.parametrize("method_name", ["aggregate_by_time_bucket", "aggregate_by_spend_group"])
+    @pytest.mark.parametrize(
+        "method_name",
+        ["aggregate_by_time_bucket", "aggregate_by_spend_group", "aggregate_by_spend_group_per_filter"],
+    )
     def test_the_boundary_is_keyword_only_and_has_no_default(self, method_name):
         parameter = inspect.signature(getattr(SpendService, method_name)).parameters["access"]
 
@@ -407,8 +428,11 @@ class TestTheWholeWindowReadsCannotBeAskedWithoutABoundary:
         [
             lambda: SERVICE.aggregate_by_time_bucket(SHORT_PERIOD, WIDTH),
             lambda: SERVICE.aggregate_by_spend_group(SHORT_PERIOD),
+            lambda: SERVICE.aggregate_by_spend_group_per_filter(
+                SHORT_PERIOD, common_filter=COMMON_FILTER, report_filters=[ALICE_ROW]
+            ),
         ],
-        ids=["aggregate_by_time_bucket", "aggregate_by_spend_group"],
+        ids=["aggregate_by_time_bucket", "aggregate_by_spend_group", "aggregate_by_spend_group_per_filter"],
     )
     def test_omitting_it_raises_rather_than_answering(self, call):
         led = _StubLedger("a")
@@ -581,6 +605,124 @@ class TestTheSpendGroupReadIsKeyedOnTheClosedEnum:
         assert result[SpendGroup.TOTAL].figure == Decimal("10"), "20 would be the double count this guards"
 
 
+class TestThePerFilterSpendGroupReadIsOneReadPerLedger:
+    """A per-row table's groups in one read per ledger, each row's figure combined as if read alone.
+
+    Every filter the table asked about is keyed with every group, for the closed-enum reason
+    `aggregate_by_spend_group` gives: a missing row or card renders as a blank where the state is
+    *nobody could answer*. And a ledger staying silent about a filter is the omission an adapter is
+    allowed for a group, so it contributes nothing rather than dragging the row to unavailable.
+    """
+
+    def _read(self, mapping, report_filters):
+        with registry(mapping):
+            return asyncio.run(
+                SERVICE.aggregate_by_spend_group_per_filter(
+                    PERIOD, access=None, common_filter=COMMON_FILTER, report_filters=report_filters
+                )
+            )
+
+    def test_one_ledger_serving_both_call_classes_is_asked_once_for_the_deduplicated_filters(self):
+        only = _StubLedger(
+            "a",
+            groups_by_filter={
+                ALICE_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("10"))},
+                BOB_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("4"))},
+            },
+        )
+
+        result = self._read({LLMCallClass.CHAT: only, LLMCallClass.EMBEDDINGS: only}, [ALICE_ROW, BOB_ROW, ALICE_ROW])
+
+        assert only.group_calls == 1
+        assert only.report_filters_seen == [[ALICE_ROW, BOB_ROW]]
+        assert result[ALICE_ROW][SpendGroup.TOTAL].figure == Decimal("10"), "20 would be the double count"
+        assert result[BOB_ROW][SpendGroup.TOTAL].figure == Decimal("4")
+
+    def test_every_requested_filter_is_keyed_with_every_group(self):
+        led = _StubLedger("a", groups_by_filter={ALICE_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("9"))}})
+
+        result = self._read({LLMCallClass.CHAT: led, LLMCallClass.EMBEDDINGS: led}, [ALICE_ROW, BOB_ROW])
+
+        assert list(result) == [ALICE_ROW, BOB_ROW]
+        assert set(result[ALICE_ROW]) == set(SpendGroup) and set(result[BOB_ROW]) == set(SpendGroup)
+
+    def test_two_ledgers_answers_are_summed_per_filter_and_group(self):
+        chat = _StubLedger(
+            "spend_logs",
+            groups_by_filter={
+                ALICE_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("7"))},
+                BOB_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("1"))},
+            },
+        )
+        embeddings = _StubLedger(
+            "default",
+            groups_by_filter={
+                ALICE_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("3"))},
+                BOB_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("2"))},
+            },
+        )
+
+        result = self._read({LLMCallClass.CHAT: chat, LLMCallClass.EMBEDDINGS: embeddings}, [ALICE_ROW, BOB_ROW])
+
+        assert chat.group_calls == 1 and embeddings.group_calls == 1
+        assert result[ALICE_ROW][SpendGroup.TOTAL].figure == Decimal("10")
+        assert result[BOB_ROW][SpendGroup.TOTAL].figure == Decimal("3")
+
+    def test_a_group_one_ledger_omitted_is_combined_from_the_ledger_that_answered_it(self):
+        chat = _StubLedger(
+            "spend_logs",
+            groups_by_filter={
+                ALICE_ROW: {
+                    SpendGroup.TOTAL: SpendResult(figure=Decimal("7")),
+                    SpendGroup.CLI: SpendResult(figure=Decimal("2")),
+                }
+            },
+        )
+        embeddings = _StubLedger(
+            "default", groups_by_filter={ALICE_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("3"))}}
+        )
+
+        result = self._read({LLMCallClass.CHAT: chat, LLMCallClass.EMBEDDINGS: embeddings}, [ALICE_ROW])
+
+        assert result[ALICE_ROW][SpendGroup.CLI].figure == Decimal("2")
+        assert result[ALICE_ROW][SpendGroup.CLI].is_exact, "an omission is not an absence and raises no flag"
+
+    def test_a_filter_one_ledger_did_not_answer_is_combined_from_the_ledger_that_did(self):
+        chat = _StubLedger(
+            "spend_logs",
+            groups_by_filter={
+                ALICE_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("7"))},
+                BOB_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("5"))},
+            },
+        )
+        embeddings = _StubLedger(
+            "default", groups_by_filter={ALICE_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("3"))}}
+        )
+
+        result = self._read({LLMCallClass.CHAT: chat, LLMCallClass.EMBEDDINGS: embeddings}, [ALICE_ROW, BOB_ROW])
+
+        assert result[BOB_ROW][SpendGroup.TOTAL].figure == Decimal("5")
+        assert result[BOB_ROW][SpendGroup.TOTAL].is_exact
+
+    def test_a_group_no_ledger_answered_is_unavailable_rather_than_zero(self):
+        led = _StubLedger("a", groups_by_filter={ALICE_ROW: {SpendGroup.TOTAL: SpendResult(figure=Decimal("9"))}})
+
+        result = self._read({LLMCallClass.CHAT: led, LLMCallClass.EMBEDDINGS: led}, [ALICE_ROW, BOB_ROW])
+
+        assert result[ALICE_ROW][SpendGroup.CLI].figure is None
+        assert result[ALICE_ROW][SpendGroup.CLI].unavailable == PERIOD
+        assert result[BOB_ROW][SpendGroup.TOTAL].figure is None
+        assert result[BOB_ROW][SpendGroup.TOTAL].unavailable == PERIOD
+
+    def test_no_filters_answers_nothing_and_asks_no_ledger(self):
+        led = _StubLedger("a")
+
+        result = self._read({LLMCallClass.CHAT: led, LLMCallClass.EMBEDDINGS: led}, [])
+
+        assert result == {}
+        assert led.group_calls == 0
+
+
 class TestTheBoundaryAndTheFilterReachEveryDistinctLedger:
     """A boundary honoured by one adapter is not a boundary, and the same is true of the filter.
 
@@ -612,6 +754,18 @@ class TestTheBoundaryAndTheFilterReachEveryDistinctLedger:
 
         assert chat.access_seen == [ALICE_SCOPE] and embeddings.access_seen == [ALICE_SCOPE]
         assert chat.filter_seen == [DASHBOARD_FILTER] and embeddings.filter_seen == [DASHBOARD_FILTER]
+
+    def test_a_per_filter_spend_group_read_hands_them_to_every_ledger_unchanged(self):
+        chat, embeddings = self._both()
+        with registry({LLMCallClass.CHAT: chat, LLMCallClass.EMBEDDINGS: embeddings}):
+            asyncio.run(
+                SERVICE.aggregate_by_spend_group_per_filter(
+                    PERIOD, access=ALICE_SCOPE, common_filter=COMMON_FILTER, report_filters=[ALICE_ROW]
+                )
+            )
+
+        assert chat.access_seen == [ALICE_SCOPE] and embeddings.access_seen == [ALICE_SCOPE]
+        assert chat.filter_seen == [COMMON_FILTER] and embeddings.filter_seen == [COMMON_FILTER]
 
     def test_no_caller_is_written_out_as_none_rather_than_omitted(self):
         """The absence is expressible - a scheduled job has no caller - but only deliberately."""
@@ -678,6 +832,12 @@ class _HealthyLedger:
     async def aggregate_by_spend_group(self, period, *, access=None, report_filter=None):
         return {group: SpendResult(figure=HEALTHY_FIGURE) for group in SpendGroup}
 
+    async def aggregate_by_spend_group_per_filter(self, period, *, access=None, common_filter=None, report_filters):
+        return {
+            report_filter: {group: SpendResult(figure=HEALTHY_FIGURE) for group in SpendGroup}
+            for report_filter in report_filters
+        }
+
     async def aggregate_by_dimension(
         self, period, dimension, values, ids_by_value=None, access=None, report_filter=None
     ):
@@ -733,6 +893,12 @@ DEGRADING_READS = {
     ),
     "aggregate_by_traffic_class": (lambda: SERVICE.aggregate_by_traffic_class(PERIOD), PERIOD),
     "aggregate_by_spend_group": (lambda: SERVICE.aggregate_by_spend_group(PERIOD, access=None), PERIOD),
+    "aggregate_by_spend_group_per_filter": (
+        lambda: SERVICE.aggregate_by_spend_group_per_filter(
+            PERIOD, access=None, common_filter=COMMON_FILTER, report_filters=[ALICE_ROW, BOB_ROW]
+        ),
+        PERIOD,
+    ),
     "aggregate_by_dimension": (
         lambda: SERVICE.aggregate_by_dimension(PERIOD, SpendDimension.ASSISTANT, ["a-1", "a-2"], access=None),
         PERIOD,
@@ -746,8 +912,10 @@ DEGRADING_READS = {
 
 
 def _results_of(answer):
-    """The `SpendResult`s a read produced - one, or one per key - so one assertion fits every shape."""
-    return list(answer.values()) if isinstance(answer, dict) else [answer]
+    """The `SpendResult`s a read produced - one, or one per key at any depth - so one assertion fits every shape."""
+    if isinstance(answer, dict):
+        return [result for nested in answer.values() for result in _results_of(nested)]
+    return [answer]
 
 
 def _run(read, ledgers):
@@ -800,7 +968,7 @@ class TestAFailedLedgerReadIsBothLoggedAndCounted:
 
     def test_the_log_names_the_ledger_the_read_and_the_period_and_carries_the_traceback(self):
         with registry({LLMCallClass.CHAT: _BrokenLedger("spend_logs"), LLMCallClass.EMBEDDINGS: _HealthyLedger()}):
-            with patch("codemie.service.spend.spend_service.logger") as spend_logger:
+            with patch("codemie.service.spend.read_failures.logger") as spend_logger:
                 asyncio.run(SERVICE.aggregate(PERIOD))
 
         spend_logger.error.assert_called_once()
@@ -808,7 +976,7 @@ class TestAFailedLedgerReadIsBothLoggedAndCounted:
         assert "spend_logs" in message, "an outage nobody can attribute to a ledger is not actionable"
         assert "aggregate" in message
         assert str(PERIOD) in message
-        assert spend_logger.error.call_args.kwargs["exc_info"] is True
+        assert isinstance(spend_logger.error.call_args.kwargs["exc_info"], RuntimeError)
 
     def test_a_ledger_outage_is_an_error_where_a_lost_id_set_is_a_warning(self):
         """The two losses differ in kind: the residue label still names the money a lost id set costs."""
@@ -820,7 +988,7 @@ class TestAFailedLedgerReadIsBothLoggedAndCounted:
 
     def test_one_line_per_failed_read_rather_than_one_per_request(self):
         with registry({LLMCallClass.CHAT: _BrokenLedger("a"), LLMCallClass.EMBEDDINGS: _BrokenLedger("b")}):
-            with patch("codemie.service.spend.spend_service.logger") as spend_logger:
+            with patch("codemie.service.spend.read_failures.logger") as spend_logger:
                 asyncio.run(SERVICE.aggregate(PERIOD))
 
         assert spend_logger.error.call_count == 2
@@ -828,12 +996,13 @@ class TestAFailedLedgerReadIsBothLoggedAndCounted:
 
     def test_each_failed_read_counts_the_failure_metric_naming_the_ledger_and_the_read(self):
         with registry({LLMCallClass.CHAT: _BrokenLedger("spend_logs"), LLMCallClass.EMBEDDINGS: _HealthyLedger()}):
-            with patch("codemie.service.spend.spend_service.BaseMonitoringService") as monitoring:
+            with patch("codemie.service.spend.read_failures.BaseMonitoringService") as monitoring:
                 asyncio.run(SERVICE.aggregate(PERIOD))
 
         monitoring.send_count_metric.assert_called_once_with(
             name=SPEND_LEDGER_READ_FAILURES_METRIC,
             attributes={"ledger": "spend_logs", "read": "aggregate"},
+            count=1,
         )
 
     def test_every_count_is_handed_its_own_attribute_dict(self):
@@ -843,7 +1012,7 @@ class TestAFailedLedgerReadIsBothLoggedAndCounted:
         module-level literal would accumulate them for the life of the process.
         """
         with registry({LLMCallClass.CHAT: _BrokenLedger("a"), LLMCallClass.EMBEDDINGS: _BrokenLedger("b")}):
-            with patch("codemie.service.spend.spend_service.BaseMonitoringService") as monitoring:
+            with patch("codemie.service.spend.read_failures.BaseMonitoringService") as monitoring:
                 asyncio.run(SERVICE.aggregate(PERIOD))
 
         first, second = (call.kwargs["attributes"] for call in monitoring.send_count_metric.call_args_list)
@@ -880,10 +1049,11 @@ class TestEveryLedgerReadIsTimed:
             raise asyncio.CancelledError
 
         with patch("codemie.service.spend.spend_service.BaseMonitoringService") as monitoring:
-            with pytest.raises(asyncio.CancelledError):
-                asyncio.run(SERVICE._ask(_HealthyLedger(), "aggregate", PERIOD, _cancelled_read(), None))
+            with patch("codemie.service.spend.read_failures.BaseMonitoringService") as failures:
+                with pytest.raises(asyncio.CancelledError):
+                    asyncio.run(SERVICE._ask(_HealthyLedger(), "aggregate", PERIOD, _cancelled_read(), None))
 
-        monitoring.send_count_metric.assert_not_called()
+        failures.send_count_metric.assert_not_called()
         assert monitoring.record_duration_metric.call_args.kwargs["attributes"] == {
             "ledger": "healthy",
             "read": "aggregate",
@@ -941,8 +1111,8 @@ class TestAnUnreadableLedgerLeavesNoCostSettled:
 
     def test_the_failure_is_logged_and_counted_under_the_grain_that_was_asked_about(self):
         with registry({LLMCallClass.CHAT: _HealthyLedger(), LLMCallClass.EMBEDDINGS: _BrokenLedger()}):
-            with patch("codemie.service.spend.spend_service.logger") as spend_logger:
-                with patch("codemie.service.spend.spend_service.BaseMonitoringService") as monitoring:
+            with patch("codemie.service.spend.read_failures.logger") as spend_logger:
+                with patch("codemie.service.spend.read_failures.BaseMonitoringService") as monitoring:
                     asyncio.run(SERVICE.cost_for_request(run_id="r-1"))
 
         assert "run_id" in spend_logger.error.call_args.args[0], "with no period, the grain is what names the read"
@@ -963,8 +1133,8 @@ class TestAFailedCountComesOutShortRatherThanRaising:
 
     def test_every_ledger_failing_counts_nothing_and_still_answers(self):
         with registry({LLMCallClass.CHAT: _BrokenLedger(), LLMCallClass.EMBEDDINGS: _BrokenLedger()}):
-            with patch("codemie.service.spend.spend_service.logger") as spend_logger:
-                with patch("codemie.service.spend.spend_service.BaseMonitoringService") as monitoring:
+            with patch("codemie.service.spend.read_failures.logger") as spend_logger:
+                with patch("codemie.service.spend.read_failures.BaseMonitoringService") as monitoring:
                     assert asyncio.run(SERVICE.request_count(PERIOD)) == 0
 
         assert spend_logger.error.call_count == 2

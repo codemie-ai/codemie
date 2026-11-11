@@ -26,8 +26,10 @@ from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.cli.classification_engine import CLIClassificationEngine
 from codemie.service.analytics.handlers.cli.insights_handler import CLIInsightsHandler
 from codemie.service.analytics.handlers.cli_handler import CLIHandler
+from codemie.service.analytics.handlers.ledger_group_spend import TableFilters
 from codemie.service.analytics.time_parser import TimeParser
 from codemie.service.spend.coverage import TimeRange
+from codemie.service.spend.ledger import ReportFilter, UserTerm
 from codemie.service.spend.rendering import RenderedSpend, combine_rendered_spend
 from codemie.service.spend.spend_group import SpendGroup
 
@@ -2376,11 +2378,20 @@ class TestCliSpendIsReadFromTheLedgerPerRow:
     def handler(self, mock_user, mock_repository):
         return CLIInsightsHandler(mock_user, mock_repository)
 
+    ALPHA = ReportFilter(projects=("alpha",))
+    ADA = UserTerm(user_id="u-ada", aliases=frozenset({"ada"}))
+    BOB = UserTerm(user_id="u-bob", aliases=frozenset({"bob"}))
+
     @pytest.mark.asyncio
-    async def test_user_spend_is_one_cli_group_read_per_user_under_the_callers_boundary(self, handler):
+    async def test_user_spend_is_one_cli_group_read_for_every_user_inside_the_dashboards_filter(self, handler):
         module = "codemie.service.analytics.handlers.cli.insights_handler"
+        rows = [
+            ReportFilter(users=(self.ADA,), projects=("alpha",)),
+            ReportFilter(users=(self.BOB,), projects=("alpha",)),
+        ]
+        table = TableFilters(common=self.ALPHA, rows=rows)
         with (
-            patch(f"{module}.user_report_filters", new=AsyncMock(return_value=["f-ada", "f-bob"])) as filters,
+            patch(f"{module}.user_report_filters", new=AsyncMock(return_value=table)) as filters,
             patch(f"{module}.read_group_spend", new=AsyncMock(return_value=[_exact(1.0), _exact(2.0)])) as read,
         ):
             spends = await handler._cli_spend_by_user(["u-ada", "u-bob"], self.START, self.END, ["alpha"])
@@ -2388,14 +2399,18 @@ class TestCliSpendIsReadFromTheLedgerPerRow:
         assert [spend.figure for spend in spends] == [1.0, 2.0]
         filters.assert_awaited_once_with(["u-ada", "u-bob"], ["alpha"])
         read.assert_awaited_once_with(
-            TimeRange(self.START, self.END), handler._pipeline.access_scope, ["f-ada", "f-bob"], SpendGroup.CLI
+            TimeRange(self.START, self.END), handler._pipeline.access_scope, self.ALPHA, rows, SpendGroup.CLI
         )
 
     @pytest.mark.asyncio
-    async def test_project_spend_is_one_cli_group_read_per_project_under_the_callers_boundary(self, handler):
+    async def test_project_spend_is_one_cli_group_read_for_every_project_inside_the_dashboards_filter(self, handler):
         module = "codemie.service.analytics.handlers.cli.insights_handler"
+        common = ReportFilter(users=(self.ADA,))
+        rows = [ReportFilter(users=(self.ADA,), projects=("alpha",))]
         with (
-            patch(f"{module}.project_report_filters", new=AsyncMock(return_value=["f-alpha"])) as filters,
+            patch(
+                f"{module}.project_report_filters", new=AsyncMock(return_value=TableFilters(common, rows))
+            ) as filters,
             patch(f"{module}.read_group_spend", new=AsyncMock(return_value=[_exact(3.0)])) as read,
         ):
             spends = await handler._cli_spend_by_project(["alpha"], self.START, self.END, ["ada"])
@@ -2403,14 +2418,15 @@ class TestCliSpendIsReadFromTheLedgerPerRow:
         assert [spend.figure for spend in spends] == [3.0]
         filters.assert_awaited_once_with(["alpha"], ["ada"])
         read.assert_awaited_once_with(
-            TimeRange(self.START, self.END), handler._pipeline.access_scope, ["f-alpha"], SpendGroup.CLI
+            TimeRange(self.START, self.END), handler._pipeline.access_scope, common, rows, SpendGroup.CLI
         )
 
     @pytest.mark.asyncio
     async def test_a_window_the_port_cannot_accept_is_passed_on_as_no_period(self, handler):
         module = "codemie.service.analytics.handlers.cli.insights_handler"
+        table = TableFilters(common=ReportFilter(), rows=[ReportFilter(users=(self.ADA,))])
         with (
-            patch(f"{module}.user_report_filters", new=AsyncMock(return_value=["f-ada"])),
+            patch(f"{module}.user_report_filters", new=AsyncMock(return_value=table)),
             patch(f"{module}.read_group_spend", new=AsyncMock(return_value=[_absent()])) as read,
         ):
             await handler._cli_spend_by_user(["u-ada"], self.END, self.START, None)

@@ -28,6 +28,7 @@ from codemie.service.analytics.handlers.ledger_group_spend import (
     dashboard_group_spend,
     project_filters_within,
     project_report_filters,
+    TableFilters,
     read_group_spend,
     user_report_filters,
 )
@@ -63,30 +64,32 @@ class TestUserReportFilters:
     @pytest.mark.asyncio
     async def test_each_identifier_gets_a_filter_naming_only_that_person_in_order(self):
         with patch(f"{_MODULE}.report_filter_for", new=_fake_report_filter_for()):
-            filters = await user_report_filters(["ada", "bob", "ada"], ["alpha"])
+            table = await user_report_filters(["ada", "bob", "ada"], ["alpha"])
 
-        assert filters == [
-            ReportFilter(users=(_term("ada"),), projects=("alpha",), personal_project_owners=()),
-            ReportFilter(users=(_term("bob"),), projects=("alpha",), personal_project_owners=()),
-            ReportFilter(users=(_term("ada"),), projects=("alpha",), personal_project_owners=()),
-        ]
+        assert table == TableFilters(
+            common=ReportFilter(projects=("alpha",), personal_project_owners=()),
+            rows=[
+                ReportFilter(users=(_term("ada"),), projects=("alpha",), personal_project_owners=()),
+                ReportFilter(users=(_term("bob"),), projects=("alpha",), personal_project_owners=()),
+                ReportFilter(users=(_term("ada"),), projects=("alpha",), personal_project_owners=()),
+            ],
+        )
 
     @pytest.mark.asyncio
     async def test_an_empty_identifier_gets_no_filter_because_a_filter_naming_nobody_means_everyone(self):
         with patch(f"{_MODULE}.report_filter_for", new=_fake_report_filter_for()):
-            filters = await user_report_filters(["ada", ""], None)
+            table = await user_report_filters(["ada", ""], None)
 
-        assert filters[0] is not None
-        assert filters[1] is None
+        assert table.rows == [ReportFilter(users=(_term("ada"),)), None]
 
     @pytest.mark.asyncio
     async def test_nobody_named_resolves_nothing(self):
         build = _fake_report_filter_for()
 
         with patch(f"{_MODULE}.report_filter_for", new=build):
-            filters = await user_report_filters(["", ""], ["alpha"])
+            table = await user_report_filters(["", ""], ["alpha"])
 
-        assert filters == [None, None]
+        assert table == TableFilters(common=ReportFilter(), rows=[None, None])
         build.assert_not_awaited()
 
 
@@ -108,18 +111,21 @@ class TestProjectReportFilters:
             patch(f"{_MODULE}.get_async_session", _fake_session),
             self._owners(found),
         ):
-            filters = await project_report_filters(["team", "ada@example.com", "orphan@example.com", ""], ["bob"])
+            table = await project_report_filters(["team", "ada@example.com", "orphan@example.com", ""], ["bob"])
 
         users = (_term("bob"),)
-        assert filters == [
-            # Not a personal project: matched by its name alone.
-            ReportFilter(users=users, projects=("team",), personal_project_owners=()),
-            # A personal project: its calls carry no project, so the port matches it through its owner.
-            ReportFilter(users=users, projects=("ada@example.com",), personal_project_owners=("u-ada",)),
-            # A personal project with no recorded owner: nobody can say, which the port labels.
-            ReportFilter(users=users, projects=("orphan@example.com",), personal_project_owners=None),
-            None,
-        ]
+        assert table == TableFilters(
+            common=ReportFilter(users=users),
+            rows=[
+                # Not a personal project: matched by its name alone.
+                ReportFilter(users=users, projects=("team",), personal_project_owners=()),
+                # A personal project: its calls carry no project, so the port matches it through its owner.
+                ReportFilter(users=users, projects=("ada@example.com",), personal_project_owners=("u-ada",)),
+                # A personal project with no recorded owner: nobody can say, which the port labels.
+                ReportFilter(users=users, projects=("orphan@example.com",), personal_project_owners=None),
+                None,
+            ],
+        )
 
     @pytest.mark.asyncio
     async def test_a_failed_owner_lookup_leaves_every_project_labelled_rather_than_failing_the_table(self):
@@ -134,10 +140,9 @@ class TestProjectReportFilters:
             patch(f"{_MODULE}.get_async_session", _fake_session),
             failing,
         ):
-            filters = await project_report_filters(["team"], None)
+            table = await project_report_filters(["team"], None)
 
-        assert filters[0] is not None
-        assert filters[0].personal_project_owners is None
+        assert table.rows == [ReportFilter(projects=("team",), personal_project_owners=None)]
 
 
 class TestProjectFiltersWithin:
@@ -154,12 +159,15 @@ class TestProjectFiltersWithin:
                 new=AsyncMock(return_value={"ada@example.com": {"u-ada"}}),
             ),
         ):
-            filters = await project_filters_within(base, ["team", "ada@example.com"])
+            table = await project_filters_within(base, ["team", "ada@example.com"])
 
-        assert filters == [
-            ReportFilter(users=(_term("bob"),), projects=("team",), personal_project_owners=()),
-            ReportFilter(users=(_term("bob"),), projects=("ada@example.com",), personal_project_owners=("u-ada",)),
-        ]
+        assert table == TableFilters(
+            common=ReportFilter(users=(_term("bob"),)),
+            rows=[
+                ReportFilter(users=(_term("bob"),), projects=("team",), personal_project_owners=()),
+                ReportFilter(users=(_term("bob"),), projects=("ada@example.com",), personal_project_owners=("u-ada",)),
+            ],
+        )
 
     @pytest.mark.asyncio
     async def test_an_empty_name_gets_no_filter_and_nothing_is_looked_up(self):
@@ -168,62 +176,126 @@ class TestProjectFiltersWithin:
         with patch.object(
             ledger_group_spend.application_repository, "aget_personal_project_owners_by_name", new=lookup
         ):
-            filters = await project_filters_within(ReportFilter(), ["", ""])
+            table = await project_filters_within(ReportFilter(), ["", ""])
 
-        assert filters == [None, None]
+        assert table == TableFilters(common=ReportFilter(), rows=[None, None])
         lookup.assert_not_awaited()
+
+
+ALPHA = ReportFilter(projects=("alpha",))
+ADA_IN_ALPHA = ReportFilter(users=(_term("ada"),), projects=("alpha",))
+BOB_IN_ALPHA = ReportFilter(users=(_term("bob"),), projects=("alpha",))
 
 
 class TestReadGroupSpend:
     @staticmethod
     def _port(per_filter: dict[ReportFilter, dict[SpendGroup, SpendResult]]) -> AsyncMock:
-        async def _call(period, *, access, report_filter):
-            return {group: SpendResult.no_figure(period) for group in SpendGroup} | per_filter[report_filter]
+        async def _call(period, *, access, common_filter, report_filters):
+            return {
+                report_filter: {group: SpendResult.no_figure(period) for group in SpendGroup}
+                | per_filter.get(report_filter, {})
+                for report_filter in report_filters
+            }
 
         return AsyncMock(side_effect=_call)
 
+    @staticmethod
+    def _patched(port: AsyncMock):
+        return patch(f"{_MODULE}.spend_service.aggregate_by_spend_group_per_filter", new=port)
+
     @pytest.mark.asyncio
-    async def test_each_filter_gets_its_own_figure_for_the_requested_group_in_order(self):
-        ada = ReportFilter(users=(_term("ada"),))
-        bob = ReportFilter(users=(_term("bob"),))
+    async def test_one_read_answers_every_row_with_its_own_figure_in_row_order(self):
         port = self._port(
             {
-                ada: {
+                ADA_IN_ALPHA: {
                     SpendGroup.CLI: SpendResult(figure=Decimal("1.5")),
                     SpendGroup.PLATFORM: SpendResult(figure=Decimal("9")),
                 },
-                bob: {SpendGroup.CLI: SpendResult(figure=Decimal("2.5"))},
+                BOB_IN_ALPHA: {SpendGroup.CLI: SpendResult(figure=Decimal("2.5"))},
             }
         )
 
-        with patch(f"{_MODULE}.spend_service.aggregate_by_spend_group", new=port):
-            figures = await read_group_spend(PERIOD, ACCESS, [bob, ada], SpendGroup.CLI)
+        with self._patched(port):
+            figures = await read_group_spend(PERIOD, ACCESS, ALPHA, [BOB_IN_ALPHA, ADA_IN_ALPHA], SpendGroup.CLI)
 
         assert [figure.figure for figure in figures] == [2.5, 1.5]
-        assert all(call.kwargs["access"] == ACCESS for call in port.await_args_list)
+        port.assert_awaited_once_with(
+            PERIOD, access=ACCESS, common_filter=ALPHA, report_filters=[BOB_IN_ALPHA, ADA_IN_ALPHA]
+        )
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_filter_or_window_is_no_figure_and_the_port_is_not_asked(self):
+    async def test_a_repeated_filter_is_asked_once_and_every_row_shows_its_figure(self):
+        port = self._port({ADA_IN_ALPHA: {SpendGroup.CLI: SpendResult(figure=Decimal("1.5"))}})
+
+        with self._patched(port):
+            figures = await read_group_spend(PERIOD, ACCESS, ALPHA, [ADA_IN_ALPHA, ADA_IN_ALPHA], SpendGroup.CLI)
+
+        assert [figure.figure for figure in figures] == [1.5, 1.5]
+        assert port.await_args.kwargs["report_filters"] == [ADA_IN_ALPHA]
+
+    @pytest.mark.asyncio
+    async def test_a_row_naming_nobody_is_no_figure_and_is_left_out_of_the_read(self):
+        port = self._port({ADA_IN_ALPHA: {SpendGroup.CLI: SpendResult(figure=Decimal("1.5"))}})
+
+        with self._patched(port):
+            figures = await read_group_spend(PERIOD, ACCESS, ALPHA, [None, ADA_IN_ALPHA], SpendGroup.CLI)
+
+        assert [(figure.figure, figure.unavailable) for figure in figures] == [(None, True), (1.5, False)]
+        assert port.await_args.kwargs["report_filters"] == [ADA_IN_ALPHA]
+
+    @pytest.mark.asyncio
+    async def test_rows_naming_nobody_ask_the_port_nothing(self):
         port = self._port({})
 
-        with patch(f"{_MODULE}.spend_service.aggregate_by_spend_group", new=port):
-            no_filter = await read_group_spend(PERIOD, ACCESS, [None], SpendGroup.CLI)
-            no_period = await read_group_spend(None, ACCESS, [ReportFilter(users=(_term("ada"),))], SpendGroup.CLI)
+        with self._patched(port):
+            figures = await read_group_spend(PERIOD, ACCESS, ALPHA, [None, None], SpendGroup.CLI)
 
         port.assert_not_awaited()
-        for figure in (*no_filter, *no_period):
-            assert figure.figure is None
-            assert figure.unavailable is True
+        assert [(figure.figure, figure.unavailable) for figure in figures] == [(None, True), (None, True)]
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_window_asks_the_port_nothing(self):
+        port = self._port({})
+
+        with self._patched(port):
+            figures = await read_group_spend(None, ACCESS, ALPHA, [ADA_IN_ALPHA], SpendGroup.CLI)
+
+        port.assert_not_awaited()
+        assert [(figure.figure, figure.unavailable) for figure in figures] == [(None, True)]
 
     @pytest.mark.asyncio
     async def test_a_port_with_no_answer_for_a_group_is_no_figure_never_zero(self):
         ada = ReportFilter(users=(_term("ada"),))
 
-        with patch(f"{_MODULE}.spend_service.aggregate_by_spend_group", new=self._port({ada: {}})):
-            figures = await read_group_spend(PERIOD, ACCESS, [ada], SpendGroup.CLI)
+        with self._patched(self._port({ada: {}})):
+            figures = await read_group_spend(PERIOD, ACCESS, ReportFilter(), [ada], SpendGroup.CLI)
 
-        assert figures[0].figure is None
-        assert figures[0].unavailable is True
+        assert [(figure.figure, figure.unavailable) for figure in figures] == [(None, True)]
+
+    @pytest.mark.parametrize(
+        ("common", "stray"),
+        [
+            pytest.param(ALPHA, ReportFilter(users=(_term("ada"),), projects=("beta",)), id="other-projects"),
+            pytest.param(
+                ALPHA,
+                ReportFilter(users=(_term("ada"),), projects=("alpha",), personal_project_owners=None),
+                id="other-owners",
+            ),
+            pytest.param(
+                ReportFilter(users=(_term("bob"),)),
+                ReportFilter(users=(_term("ada"),), projects=("team",)),
+                id="other-users",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_filter_not_carrying_the_common_term_raises_before_any_read(self, common, stray):
+        port = self._port({})
+
+        with self._patched(port), pytest.raises(ValueError):
+            await read_group_spend(PERIOD, ACCESS, common, [stray], SpendGroup.CLI)
+
+        port.assert_not_awaited()
 
 
 class TestDashboardGroupSpend:

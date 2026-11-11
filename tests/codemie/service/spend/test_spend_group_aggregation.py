@@ -35,6 +35,7 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from codemie.enterprise.litellm.spend_ledger import SpendLogsLedger
+from codemie.repository.spend_group_batch import SpendGroupBatch
 from codemie.repository.spend_logs_repository import SpendLogsRepository, report_filter_predicate
 from codemie.service.spend.coverage import LedgerCoverage, SpendDimension, SpendResult, TimeRange
 from codemie.service.spend.identity_bridge import identity_bridge_portion
@@ -53,24 +54,29 @@ def sql(clause) -> str:
     return str(clause.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).replace("\n", " ")
 
 
+class _SqlSession:
+    """Records the SQL of every statement a read issues, with no database behind it."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def execute(self, statement):
+        self.statements.append(sql(statement))
+        return self
+
+    def one(self):
+        return [0] * len(SpendGroup)
+
+    def all(self):
+        return []
+
+
 async def rendered(access=None, report_filter=None) -> str:
-    """The SQL the group read issues, with no database behind it."""
-    captured: dict = {}
-
-    class _SqlSession:
-        async def execute(self, statement):
-            captured["sql"] = sql(statement)
-            captured["reads"] = captured.get("reads", 0) + 1
-
-            class _R:
-                def one(self_inner):
-                    return [0] * len(SpendGroup)
-
-            return _R()
-
-    await SpendLogsRepository().sum_for_spend_groups(_SqlSession(), PERIOD, access, report_filter)
-    assert captured["reads"] == 1, "the four cards must foot against each other, so they share one scan"
-    return captured["sql"]
+    """The SQL the group read issues."""
+    session = _SqlSession()
+    await SpendLogsRepository().sum_for_spend_groups(session, PERIOD, access, report_filter)
+    assert len(session.statements) == 1, "the four cards must foot against each other, so they share one scan"
+    return session.statements[0]
 
 
 def group_labels(rendered_sql: str) -> list[str]:
@@ -239,9 +245,96 @@ class TestWhatTheDashboardAskedFor:
         assert " AND " in rendered_sql
 
 
+COMMON = ReportFilter(projects=("B",))
+
+
+def _rows_sharing(common: ReportFilter, count: int) -> list[ReportFilter]:
+    """`count` user rows of one table, each carrying its own person and the table's common term."""
+    return [
+        ReportFilter(
+            users=(UserTerm(f"row-user-{index}", frozenset({f"row-alias-{index}"})),), projects=common.projects
+        )
+        for index in range(count)
+    ]
+
+
+async def rendered_batch(report_filters, access=None, common_filter=None) -> list[str]:
+    """The SQL the grouped read issues for one batch, through the projection's path."""
+    session = _SqlSession()
+    group_key = SpendGroupBatch.of(report_filters).group_key
+    await SpendLogsRepository(projection=True).sum_for_spend_groups_per_attribution(
+        session, PERIOD, group_key, access=access, common_filter=common_filter
+    )
+    return session.statements
+
+
+class TestTheBatchedReadIsOneStatementWhateverTheRowCount:
+    @pytest.mark.asyncio
+    async def test_one_statement_answers_every_filter(self) -> None:
+        statements = await rendered_batch(_rows_sharing(COMMON, 50), ALICE_SCOPE, COMMON)
+
+        assert len(statements) == 1
+
+    @pytest.mark.asyncio
+    async def test_it_reads_the_window_rows_grouped_by_the_key_with_the_group_aggregates(self) -> None:
+        """The same source the per-filter projected read takes, hourly rows plus raw edge hours, with a
+        group whose rows net to zero dropped rather than returned as a zero row."""
+        (statement,) = await rendered_batch(_rows_sharing(COMMON, 2), ALICE_SCOPE, COMMON)
+        grouping = " ".join(statement.split(" GROUP BY ")[1].split())
+
+        assert "AS window_rows" in statement
+        assert grouping.startswith(
+            "window_rows.attr_source, window_rows.attr_form, window_rows.attr_user_id, "
+            "window_rows.attr_principal, window_rows.attr_project HAVING sum(window_rows.row_count) > 0"
+        )
+        assert re.findall(r"AS (group_\d+)", statement) == [f"group_{index}" for index in range(len(SpendGroup))]
+        assert statement.count("FILTER (WHERE") == len(SpendGroup) - 1
+
+    @pytest.mark.asyncio
+    async def test_its_where_is_the_boundary_and_the_common_term_alone(self) -> None:
+        (statement,) = await rendered_batch(_rows_sharing(COMMON, 2), ALICE_SCOPE, COMMON)
+
+        assert "attr_user_id = 'alice'" in statement, "the boundary's person"
+        assert "attr_project = ANY (ARRAY['A'])" in statement, "the boundary's projects"
+        assert "attr_project = ANY (ARRAY['B'])" in statement, "the common term"
+        assert "row-" not in statement, "no row's own term"
+
+    @pytest.mark.asyncio
+    async def test_ten_thousand_filters_issue_the_statement_one_filter_does(self) -> None:
+        (one,) = await rendered_batch(_rows_sharing(COMMON, 1), ALICE_SCOPE, COMMON)
+        (many,) = await rendered_batch(_rows_sharing(COMMON, 10_000), ALICE_SCOPE, COMMON)
+
+        assert many == one
+
+    @pytest.mark.asyncio
+    async def test_ten_thousand_project_rows_issue_the_statement_one_does_and_name_none_of_them(self) -> None:
+        (one,) = await rendered_batch(_project_rows_sharing(USERS_COMMON, 1), ALICE_SCOPE, USERS_COMMON)
+        (many,) = await rendered_batch(_project_rows_sharing(USERS_COMMON, 10_000), ALICE_SCOPE, USERS_COMMON)
+
+        assert many == one
+        assert "row-" not in many, "no row's project or owner"
+
+
+USERS_COMMON = ReportFilter(users=(UserTerm("carol", frozenset({"carol@example.com"})),))
+
+
+def _project_rows_sharing(common: ReportFilter, count: int) -> list[ReportFilter]:
+    """`count` project rows of one table, each carrying its own project and owner and the table's users term."""
+    return [
+        ReportFilter(
+            users=common.users, projects=(f"row-project-{index}",), personal_project_owners=(f"row-owner-{index}",)
+        )
+        for index in range(count)
+    ]
+
+
 class _StubRepository:
-    def __init__(self, totals=None) -> None:
+    """`attributions` are the grouped read's rows, each as the attribution columns it carries; every row
+    sums to `totals`, so a filter matching exactly one row is answered what the single read answers."""
+
+    def __init__(self, totals=None, attributions=()) -> None:
         self._totals = totals or dict.fromkeys(SpendGroup, Decimal("0"))
+        self._attributions = attributions
         self.reads = 0
         self.range_seen = None
         self.access_seen = "unset"
@@ -254,6 +347,14 @@ class _StubRepository:
         self.filter_seen = report_filter
         return dict(self._totals)
 
+    async def sum_for_spend_groups_per_attribution(self, session, period, group_key, access=None, common_filter=None):
+        self.reads += 1
+        self.range_seen = period
+        self.access_seen = access
+        self.filter_seen = common_filter
+        figures = tuple(self._totals[group] for group in SpendGroup)
+        return [tuple(attribution.get(column) for column in group_key) + figures for attribution in self._attributions]
+
 
 class _StubSession:
     async def __aenter__(self):
@@ -263,8 +364,8 @@ class _StubSession:
         return False
 
 
-def ledger(totals=None, coverage: LedgerCoverage | None = None):
-    repository = _StubRepository(totals=totals)
+def ledger(totals=None, coverage: LedgerCoverage | None = None, attributions=()):
+    repository = _StubRepository(totals=totals, attributions=attributions)
     covered = coverage or LedgerCoverage(coverage_floor=datetime(2026, 1, 1, tzinfo=timezone.utc), ready=True)
     return SpendLogsLedger(covered, session_factory=_StubSession, repository=repository), repository
 
@@ -387,3 +488,113 @@ class TestTheBoundaryAndTheFilterReachTheRepository:
         await led.aggregate_by_spend_group(PERIOD, access=None)
 
         assert (repository.access_seen, repository.filter_seen) == (None, None)
+
+
+UNBRIDGED_PERSON = ReportFilter(users=(UserTerm("u1", None),))
+UNLOOKED_UP_OWNERS = ReportFilter(projects=("P",), personal_project_owners=None)
+RESOLVED_PERSON = ReportFilter(users=(UserTerm("u2", frozenset({"u2@example.com"})),))
+
+#: One grouped row per filter above, each matched by that filter alone.
+PER_FILTER_ATTRIBUTIONS = (
+    {"attr_user_id": "u1"},
+    {"attr_form": "project_scoped", "attr_project": "P"},
+    {"attr_user_id": "u2"},
+)
+
+CARD_TOTALS = {
+    SpendGroup.TOTAL: Decimal("10"),
+    SpendGroup.PLATFORM: Decimal("7"),
+    SpendGroup.CLI: Decimal("3"),
+    SpendGroup.EMBEDDING: Decimal("2"),
+}
+
+
+class TestEveryFilterOfABatchGetsTheCardsItsOwnReadGives:
+    @pytest.mark.parametrize(
+        "asked",
+        [
+            pytest.param(UNBRIDGED_PERSON, id="unbridged-person"),
+            pytest.param(UNLOOKED_UP_OWNERS, id="unlooked-up-personal-project-owners"),
+            pytest.param(RESOLVED_PERSON, id="resolved-person"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "coverage",
+        [
+            pytest.param(
+                LedgerCoverage(coverage_floor=datetime(2026, 1, 1, tzinfo=timezone.utc), ready=True), id="covered"
+            ),
+            pytest.param(
+                LedgerCoverage(coverage_floor=datetime(2026, 8, 15, tzinfo=timezone.utc), ready=True),
+                id="crossing-the-floor",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_its_figures_and_flags_equal_the_single_read(self, asked, coverage) -> None:
+        """A table read one row at a time and one read in a batch must not disagree about one row's
+        money, nor about whether that money is short or flagged."""
+        led, _ = ledger(totals=CARD_TOTALS, coverage=coverage, attributions=PER_FILTER_ATTRIBUTIONS)
+
+        batched = await led.aggregate_by_spend_group_per_filter(
+            PERIOD,
+            access=ALICE_SCOPE,
+            common_filter=None,
+            report_filters=[UNBRIDGED_PERSON, UNLOOKED_UP_OWNERS, RESOLVED_PERSON],
+        )
+
+        assert batched[asked] == await led.aggregate_by_spend_group(PERIOD, access=ALICE_SCOPE, report_filter=asked)
+
+    @pytest.mark.asyncio
+    async def test_the_boundary_the_common_term_and_the_admitted_range_reach_the_one_read(self) -> None:
+        crossing = LedgerCoverage(coverage_floor=datetime(2026, 8, 15, tzinfo=timezone.utc), ready=True)
+        led, repository = ledger(coverage=crossing)
+
+        await led.aggregate_by_spend_group_per_filter(
+            PERIOD, access=ALICE_SCOPE, common_filter=COMMON, report_filters=_rows_sharing(COMMON, 3)
+        )
+
+        assert (repository.access_seen, repository.filter_seen) == (ALICE_SCOPE, COMMON)
+        assert repository.range_seen == TimeRange(crossing.coverage_floor, PERIOD.end)
+
+
+class TestTheBatchedCardsAreOneRead:
+    @pytest.mark.asyncio
+    async def test_fifty_filters_make_one_repository_read(self) -> None:
+        led, repository = ledger()
+
+        result = await led.aggregate_by_spend_group_per_filter(
+            PERIOD, access=None, common_filter=COMMON, report_filters=_rows_sharing(COMMON, 50)
+        )
+
+        assert len(result) == 50
+        assert repository.reads == 1
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_range_yields_what_the_single_read_does_without_a_read(self) -> None:
+        unready = LedgerCoverage(coverage_floor=datetime(2026, 1, 1, tzinfo=timezone.utc), ready=False)
+        led, repository = ledger(coverage=unready)
+        asked = [UNBRIDGED_PERSON, RESOLVED_PERSON]
+
+        result = await led.aggregate_by_spend_group_per_filter(
+            PERIOD, access=None, common_filter=None, report_filters=asked
+        )
+        batched_reads = repository.reads
+        single = {
+            report_filter: await led.aggregate_by_spend_group(PERIOD, access=None, report_filter=report_filter)
+            for report_filter in asked
+        }
+
+        assert result == single
+        assert batched_reads == 0, "a range no figure exists for is not queried"
+
+    @pytest.mark.asyncio
+    async def test_no_filters_ask_nothing_and_read_nothing(self) -> None:
+        led, repository = ledger()
+
+        result = await led.aggregate_by_spend_group_per_filter(
+            PERIOD, access=None, common_filter=None, report_filters=[]
+        )
+
+        assert result == {}
+        assert repository.reads == 0

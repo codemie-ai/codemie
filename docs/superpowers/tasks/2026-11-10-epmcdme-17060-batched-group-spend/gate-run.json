@@ -1,0 +1,138 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17060_batched-group-spend",
+  "head": "9c9eface81dbdc3eb5a65bacf45f05ff099762a7",
+  "runner": "custom",
+  "started_at": "2026-11-10T14:40:05Z",
+  "completed_at": "2026-11-10T14:42:35Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3265,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "3443 files left unchanged; ruff check: All checks passed. No working-tree changes from format/fix. Also covers the pre-commit hook's ruff check (staged ruff helper had no staged .py files)."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 19745,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1923,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 3121 files, 0 missing license headers. Also covers the pre-commit hook's license step."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Skip if: Docker is unavailable -> `docker info` fails on this machine (only Podman is running). Environment block, not verified. Enable by starting Docker Desktop, or run the same gitleaks image via podman. No local secret scan of the branch ran."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 29802,
+      "command": "poetry run pytest tests/codemie/service/spend tests/codemie/repository/test_grouped_rows.py tests/codemie/repository/test_spend_logs_access_boundary.py tests/codemie/repository/test_spend_logs_holder_access_boundary.py tests/codemie/repository/test_spend_logs_model.py tests/codemie/repository/test_spend_logs_repository.py tests/codemie/repository/test_spend_logs_repository_projection.py tests/codemie/repository/test_spend_projection.py tests/codemie/service/analytics/handlers --deselect \"tests/codemie/service/spend/test_budget_period.py::TestTheStartIsClampedToWhenTheBudgetBegan::test_a_naive_value_is_read_as_utc\"",
+      "exit_code": 0,
+      "notes": "Scoped per caller instead of guide's `make test` (full suite not run). 2484 passed. First run without --deselect exited 1: 2484 passed, 1 error = test_budget_period.py::TestTheStartIsClampedToWhenTheBudgetBegan::test_a_naive_value_is_read_as_utc (AttributeError: module 'time' has no attribute 'tzset'), Windows-only environment failure; test and budget_period code untouched by this branch (git diff empty). Caller classified it as pre-existing, non-blocking."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "Skip if: change does not touch src/codemie/repository/cli_analytics/postgres/ -> true for this diff."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: the user did not request coverage -> not requested."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 264,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip on exit 0: \"[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.\" Enable by setting SONAR_TOKEN (env or .env.local). The pre-push hook's sonar step is opt-in (CODEMIE_PREPUSH_ENABLED) and is covered by this gate. Sonar runs in the GitLab common pipeline; still owed there."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Skip if: environment prerequisites missing -> its gitleaks step needs Docker (unavailable). Its other steps (ruff, license, tests) ran individually above."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if: not opening a merge request -> this subagent does not open MRs. Owed before MR: the compliance bot requires its terminal summary in a '## Test harness' MR section; needs the local stack."
+    },
+    {
+      "id": "secrets-hook",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1768,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 125,
+      "notes": "Scan never ran: \"Error: invalid option type \\\"\\\\Users\\\\KostiantynPshenychny\\\\Documents\\\\epm-cdme\\\\repos\\\\codemie\\\\.git\\\"\" then \"codemie-gitleaks: scan failed to run (exit 125) - this is NOT a secret finding.\" Podman rejects the Windows drive-letter path in the -v mount. Neither guide Pass nor Fail criterion was met; the index is empty (nothing staged), so this staged-only pre-commit scan has nothing to cover here anyway. Recorded as unverified rather than FAIL; caller may rule otherwise."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 4419,
+      "command": "bash scripts/git-hooks/commit_msg.sh <message of each commit in origin/main..HEAD>",
+      "exit_code": 0,
+      "notes": "All 11 branch commits start with 'EPMCDME-17060:'."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 2933,
+      "command": "python scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "Enforced by CI job check-alembic-heads and always-on in the pre-push hook; not listed as a gate in the guide. alembic: 205 version files OK; alembic_cli_analytics: 6 OK. CI re-runs against a freshly fetched main."
+    },
+    {
+      "id": "wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "extends .wait-ci-init-template (codemie-gitlab-templates pre-ci-guard)",
+      "exit_code": null,
+      "notes": "Waits for external ci-pipeline and compliance-report contexts on GitLab; there is no local equivalent. The external common pipeline (build, tests, Sonar) and compliance check are only settled in CI."
+    }
+  ],
+  "failures": {}
+}

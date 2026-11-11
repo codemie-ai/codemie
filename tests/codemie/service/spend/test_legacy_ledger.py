@@ -861,6 +861,7 @@ class _RecordingReadAdapter:
     def __init__(self) -> None:
         self.bucket_calls: list[tuple] = []
         self.group_calls: list[tuple] = []
+        self.group_batch_calls: list[tuple] = []
         self.dimension_calls: list[tuple] = []
 
     async def aggregate_by_time_bucket(self, period, width, resolved_ids=None, access=None, report_filter=None):
@@ -869,6 +870,10 @@ class _RecordingReadAdapter:
 
     async def aggregate_by_spend_group(self, period, *, access=None, report_filter=None):
         self.group_calls.append((period, {"access": access, "report_filter": report_filter}))
+        return {}
+
+    async def aggregate_by_spend_group_per_filter(self, period, *, access=None, common_filter, report_filters):
+        self.group_batch_calls.append((period, access, common_filter, report_filters))
         return {}
 
     async def aggregate_by_dimension(
@@ -910,6 +915,20 @@ class TestTheWholeWindowReadsPassThroughUnadjusted:
         )
 
         assert adapter.group_calls == [(PERIOD, {"access": access, "report_filter": report_filter})]
+
+    def test_the_per_filter_group_read_forwards_every_argument_unchanged(self):
+        adapter = _RecordingReadAdapter()
+        access, report_filter = self._caller()
+        common_filter = ReportFilter(projects=(PROJECT,))
+        report_filters = [report_filter, common_filter]
+
+        asyncio.run(
+            LegacySpendLedger(adapter).aggregate_by_spend_group_per_filter(
+                PERIOD, access=access, common_filter=common_filter, report_filters=report_filters
+            )
+        )
+
+        assert adapter.group_batch_calls == [(PERIOD, access, common_filter, report_filters)]
 
     def test_the_dimension_read_forwards_every_argument_unchanged(self):
         """The assistant, workflow and model tables' pre-floor money: a filter dropped here shows a

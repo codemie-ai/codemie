@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Replace the per-row ledger loop in read_group_spend with a batched SpendLedger port read (about 100 report filters per SQL statement) implemented in SpendLogsLedger and CutoverSpendLedger, keeping per-row figures and flags identical for the projects-spending, by-users and CLI Insights tables (EPMCDME-17060).",
+  "generated": "2026-11-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the analytics read_group_spend helper, the SpendService facade, the SpendLedger Protocol, SpendLogsLedger (enterprise/litellm), SpendLogsRepository statement building, and CutoverSpendLedger. It also needs either a new optional-port-method fallback (no precedent exists) or stubs in Default/Legacy/Noop adapters. Base L (4+ components across handler/service/port/repository), bumped to XL because the shared SpendLedger port contract changes and six-way conformance tests enforce it." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is consumed_for_holders / sum_for_holders (chunked SUM ... FILTER per key, chunk 100, boundary and filter in WHERE, cutover _per_key merge, batch-equals-single tests in test_batched_holder_reads.py). That pattern covers the AccessScope boundary and the edge-case test template, so neither auto-bump applies. Still, no read batches over ReportFilter: per-row users AND projects predicates with alias ORs, personal-project owner pots, a WHERE disjunction of all rows' filters, and per-row group predicates. Failure granularity also moves from one row to a whole batch, and statement-build CPU is known to be high for 100-way FILTER projected statements. Base M, bumped to L because performance is the primary concern." },
+    { "dimension": "file_change_estimate", "reason": "Source: ledger_group_spend.py, spend_service.py, ledger.py, enterprise/litellm/spend_ledger.py, spend_logs_repository.py, cutover.py, and possibly default_ledger.py, legacy_ledger.py and ledger_registry.py. Tests: test_ledger_group_spend, test_project_handler, test_user_handler, test_spend_service, test_cutover, test_legacy_ledger and test_access_boundary need stubs, fakes or signatures updated, plus a new batch-vs-per-row equality test. That is about 11-15 modified and 1-2 new files across service/analytics, service/spend, enterprise/litellm, repository and tests." },
+    { "dimension": "requirements_clarity", "reason": "The goal and acceptance bar are explicit: identical per-row figures and the same unavailable/partial/omitted flags. Open design questions remain: optional port method with facade fallback vs. all adapters implementing it, and whether one failed batch may degrade up to 100 rows." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: changes the core shared SpendLedger port contract that all six adapters and the conformance tests depend on",
+    "Technical Risk bumped from M to L: performance is the primary concern (30-600 s endpoints, thousands of statements per request)"
+  ],
+  "split_recommendation": null
+}

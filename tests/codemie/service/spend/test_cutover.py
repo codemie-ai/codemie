@@ -92,6 +92,9 @@ _UNSET = object()
 
 ALICE_SCOPE = AccessScope(unrestricted=False, user_id="alice", plain_projects=("A",))
 DASHBOARD_FILTER = ReportFilter(users=(UserTerm(user_id="alice", aliases=frozenset({"alice@example.com"})),))
+#: Two table rows' own filters, each the dashboard's narrowed by one project, as a per-row table asks.
+PROJECT_A_ROW = ReportFilter(users=DASHBOARD_FILTER.users, projects=("A",))
+PROJECT_B_ROW = ReportFilter(users=DASHBOARD_FILTER.users, projects=("B",))
 
 
 def _money(amount: str) -> SpendResult:
@@ -118,6 +121,7 @@ class _RecordingLedger:
         result: SpendResult | None = None,
         *,
         by_key: dict | None = None,
+        by_filter: dict | None = None,
         buckets: dict | None = None,
         count: int = 0,
         cost: RequestCost | None = None,
@@ -125,6 +129,7 @@ class _RecordingLedger:
         self.ledger_name = name
         self._result = result if result is not None else _money("0")
         self._by_key = dict(by_key or {})
+        self._by_filter = dict(by_filter or {})
         self._buckets = dict(buckets or {})
         self._count = count
         self._cost = cost or RequestCost.unavailable()
@@ -134,6 +139,8 @@ class _RecordingLedger:
         #: arrived from one that arrived as `None`, which is a real value meaning *no caller*.
         self.access_seen: list = []
         self.filter_seen: list = []
+        #: What the batched spend-group read answered, so a test can tell the inner answer from a copy.
+        self.batches: list = []
 
     @property
     def period(self) -> TimeRange:
@@ -169,7 +176,15 @@ class _RecordingLedger:
         self.periods.append(period)
         self.access_seen.append(access)
         self.filter_seen.append(report_filter)
-        return dict(self._by_key)
+        return dict(self._by_filter.get(report_filter, self._by_key))
+
+    async def aggregate_by_spend_group_per_filter(self, period, *, access=_UNSET, common_filter=_UNSET, report_filters):
+        self.periods.append(period)
+        self.access_seen.append(access)
+        self.filter_seen.append(common_filter)
+        batch = {report_filter: dict(self._by_filter.get(report_filter, {})) for report_filter in report_filters}
+        self.batches.append(batch)
+        return batch
 
     async def aggregate_by_dimension(
         self, period, dimension, values, ids_by_value=None, access=_UNSET, report_filter=_UNSET
@@ -512,6 +527,75 @@ class TestMappingReadsCombinePerKeyOverTheUnion:
         assert current.period == TimeRange(FLOOR, PERIOD.end)
 
 
+class TestABatchedSpendGroupReadAnswersEachRowAsTheSingleReadWould:
+    """A per-row table read in one batch must show every row the cards it shows when read alone.
+
+    The crossing batch is the case that can drift: each half answers per filter, and a merge that
+    combined per filter rather than per (filter, group), or over the intersection of groups, would
+    leave a row's cards short of what `aggregate_by_spend_group` prints for the same filter - and a
+    table one row of which is wrong still adds up.
+    """
+
+    #: The ledger half answers a group the legacy half omitted for project B's row.
+    LEGACY_ROWS = {
+        PROJECT_A_ROW: {SpendGroup.TOTAL: _money("2"), SpendGroup.PLATFORM: _money("2")},
+        PROJECT_B_ROW: {SpendGroup.TOTAL: _money("4")},
+    }
+    CURRENT_ROWS = {
+        PROJECT_A_ROW: {SpendGroup.TOTAL: _money("3"), SpendGroup.PLATFORM: _money("1")},
+        PROJECT_B_ROW: {SpendGroup.TOTAL: _money("6"), SpendGroup.EMBEDDING: _money("7")},
+    }
+
+    def _pair(self):
+        legacy = _RecordingLedger("legacy", by_filter=self.LEGACY_ROWS)
+        current = _RecordingLedger("current", by_filter=self.CURRENT_ROWS)
+        return legacy, current, CutoverSpendLedger(legacy, current, FLOOR)
+
+    def _batch(self, cutover: CutoverSpendLedger, period: TimeRange, *report_filters: ReportFilter):
+        return asyncio.run(
+            cutover.aggregate_by_spend_group_per_filter(
+                period, common_filter=DASHBOARD_FILTER, report_filters=report_filters
+            )
+        )
+
+    @pytest.mark.parametrize("report_filter", [PROJECT_A_ROW, PROJECT_B_ROW], ids=["project-a", "project-b"])
+    def test_a_crossing_batch_gives_each_filter_its_crossing_spend_group_cards(self, report_filter):
+        *_, cutover = self._pair()
+        single = asyncio.run(cutover.aggregate_by_spend_group(PERIOD, report_filter=report_filter))
+
+        batch = self._batch(cutover, PERIOD, PROJECT_A_ROW, PROJECT_B_ROW)
+
+        assert batch[report_filter] == single
+
+    def test_a_group_only_the_ledger_half_answered_keeps_its_figure_beside_the_summed_total(self):
+        *_, cutover = self._pair()
+
+        batch = self._batch(cutover, PERIOD, PROJECT_A_ROW, PROJECT_B_ROW)
+
+        assert batch[PROJECT_B_ROW][SpendGroup.TOTAL].figure == Decimal("10")
+        assert batch[PROJECT_B_ROW][SpendGroup.EMBEDDING].figure == Decimal("7"), "a post-rollout-only group is kept"
+        assert set(batch[PROJECT_B_ROW]) == {SpendGroup.TOTAL, SpendGroup.EMBEDDING}
+
+    def test_a_filter_neither_half_answered_a_group_for_is_still_answered(self):
+        """A missing filter key is the port's named defect: the row would render blank, not as its state."""
+        project_c_row = ReportFilter(users=DASHBOARD_FILTER.users, projects=("C",))
+        *_, cutover = self._pair()
+
+        batch = self._batch(cutover, PERIOD, PROJECT_A_ROW, project_c_row)
+
+        assert set(batch) == {PROJECT_A_ROW, project_c_row}
+        assert batch[project_c_row] == {}
+
+    @pytest.mark.parametrize("period", [WHOLLY_BELOW, WHOLLY_ABOVE], ids=["below", "above"])
+    def test_a_period_on_one_side_returns_that_ledgers_answer_untouched(self, period):
+        legacy, current, cutover = self._pair()
+
+        batch = self._batch(cutover, period, PROJECT_A_ROW)
+
+        (answered,) = legacy.batches + current.batches
+        assert batch is answered, "one delegation, returned as it is rather than re-merged"
+
+
 class TestOneGridForABucketedRead:
     """A bucket straddling `F` must draw **one** bar, and the failure it guards is a drawing bug.
 
@@ -661,6 +745,18 @@ class TestTheBoundaryAndTheFilterReachBothHalves:
         assert legacy.access_seen == [], "the legacy engine must not be consulted above the floor"
         assert current.access_seen == [ALICE_SCOPE]
         assert current.filter_seen == [DASHBOARD_FILTER]
+
+    def test_a_batched_spend_group_read_hands_the_boundary_and_the_common_filter_to_both_halves(self):
+        legacy, current, cutover = self._crossing_pair()
+
+        asyncio.run(
+            cutover.aggregate_by_spend_group_per_filter(
+                PERIOD, access=ALICE_SCOPE, common_filter=DASHBOARD_FILTER, report_filters=[PROJECT_A_ROW]
+            )
+        )
+
+        assert legacy.access_seen == [ALICE_SCOPE] and current.access_seen == [ALICE_SCOPE]
+        assert legacy.filter_seen == [DASHBOARD_FILTER] and current.filter_seen == [DASHBOARD_FILTER]
 
     def test_a_holder_batch_hands_both_to_both_halves(self):
         """The users- and projects-spending tables read their rows' money through this batch, so a half

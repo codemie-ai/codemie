@@ -632,6 +632,11 @@ def _spend_group_aggregates() -> tuple[Aggregate, ...]:
     )
 
 
+def by_spend_group(figures: Sequence[object]) -> dict[SpendGroup, Decimal]:
+    """The `_spend_group_aggregates` columns of one row, keyed on the group each selects."""
+    return {group: Decimal(figures[index]) for index, group in enumerate(SpendGroup)}
+
+
 #: Money and the ledger rows behind it, in that order - the residue and defect-metric reads' two columns.
 _SPEND_AND_ROWS = (Aggregate(), Aggregate(Measure.ROWS))
 
@@ -905,10 +910,35 @@ class SpendLogsRepository:
         its own from `traffic_class_predicate`: a card and the chart under it must not come to mean
         different things by "CLI". The total's column carries no `FILTER` at all - selecting every row
         is the absence of a predicate, not a predicate that matches everything.
+
+        `sum_for_spend_groups_per_attribution` answers many filters at once and must give each the
+        figures this read gives it; `TestTheBatchedSpendGroupReadEqualsTheSingleRead` keeps the two equal.
         """
         shape = ReadShape(_narrowing(access, report_filter), _spend_group_aggregates())
         row = (await self._read(session, period, _id_free(shape))).one()
-        return {group: Decimal(row[index]) for index, group in enumerate(SpendGroup)}
+        return by_spend_group(row)
+
+    async def sum_for_spend_groups_per_attribution(
+        self,
+        session: AsyncSession,
+        period: TimeRange,
+        group_key: tuple[str, ...],
+        access: AccessScope | None = None,
+        common_filter: ReportFilter | None = None,
+    ) -> list[Sequence[object]]:
+        """`sum_for_spend_groups` per distinct value of `group_key`, in **one** scan of a fixed size.
+
+        A per-row table asks the same question once per row, each row naming its own person or project.
+        Written into the statement, those terms make it grow with the table; here the `WHERE` holds the
+        boundary and `common_filter` - the term every row's filter shares - alone, and `SpendGroupBatch`
+        assigns the grouped rows to each row's filter in Python. Each row leads with its `group_key`
+        values, then the `_spend_group_aggregates` columns, so the group split keeps its one definition.
+
+        `TestTheBatchedSpendGroupReadEqualsTheSingleRead` keeps each filter's figures equal to
+        `sum_for_spend_groups` for that filter.
+        """
+        shape = ReadShape(_narrowing(access, common_filter), _spend_group_aggregates(), group_by=group_key)
+        return (await self._read(session, period, _id_free(shape))).all()
 
     async def unclassified_residue(
         self,

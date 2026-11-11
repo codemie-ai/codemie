@@ -19,9 +19,11 @@ currently mixed, so the double-count guard never fires in the field.
 """
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -29,7 +31,9 @@ from codemie.service.analytics.metric_names import MetricName
 from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.spend import default_ledger as default_ledger_module
 from codemie.service.spend.coverage import SpendDimension
-from codemie.service.spend.default_ledger import MONEY_FIELD, DefaultSpendLedger
+from codemie.service.monitoring.metrics_constants import SPEND_LEDGER_READ_FAILURES_METRIC
+from codemie.service.spend.coverage import SpendResult
+from codemie.service.spend.default_ledger import _USER_ID_FIELD, FILTER_BATCH_SIZE, MONEY_FIELD, DefaultSpendLedger
 from codemie.service.spend.ledger import (
     AccessScope,
     ComposedScope,
@@ -50,6 +54,8 @@ from codemie.service.spend.traffic_class import TrafficClass
 from tests.codemie.service.spend.periods import PERIOD
 
 USER = "aaaaaaaa-1111-1111-1111-111111111111"
+OTHER_USER = "bbbbbbbb-2222-2222-2222-222222222222"
+FAILING_USER = "cccccccc-3333-3333-3333-333333333333"
 
 
 class _StubMetrics:
@@ -321,16 +327,21 @@ class _RowSetMetrics:
     async def execute_aggregation_query(self, body: dict) -> dict:
         self.bodies.append(body)
         selected = [row for row in self.rows if self._matches(row, body["query"]["bool"]["filter"])]
-        grouped = next((name for name, agg in body["aggs"].items() if "filters" in agg), None)
+        return {"aggregations": self._answer(selected, body["aggs"])}
+
+    @classmethod
+    def _answer(cls, rows: list[dict], aggs: dict) -> dict:
+        """A `filters` aggregation as named buckets, each answering its own sub-aggregations in turn."""
+        grouped = next((name for name, agg in aggs.items() if "filters" in agg), None)
         if grouped is None:
-            return {"aggregations": self._coverage(selected)}
+            return cls._coverage(rows)
         return {
-            "aggregations": {
-                grouped: {
-                    "buckets": {
-                        key: self._coverage([r for r in selected if self._matches(r, spec["bool"]["filter"])])
-                        for key, spec in body["aggs"][grouped]["filters"]["filters"].items()
-                    }
+            grouped: {
+                "buckets": {
+                    key: cls._answer(
+                        [r for r in rows if cls._matches(r, spec["bool"]["filter"])], aggs[grouped]["aggs"]
+                    )
+                    for key, spec in aggs[grouped]["filters"]["filters"].items()
                 }
             }
         }
@@ -1236,6 +1247,269 @@ class TestTheSummaryCards:
         assert boundary in outer, "one clause in the shared filter, never one per card"
         assert {"terms": {"attributes.user_id.keyword": [USER]}} in outer
         assert {"terms": {"attributes.project.keyword": ["proj-b"]}} in outer
+
+
+def user_filter(user: str) -> ReportFilter:
+    return ReportFilter(users=(UserTerm(user_id=user, aliases=frozenset()),))
+
+
+class _OutageForUser:
+    """A `_RowSetMetrics` whose store raises on any search naming one user and answers every other as usual."""
+
+    def __init__(self, repo: _RowSetMetrics, user: str, error: Exception) -> None:
+        self._repo = repo
+        self._user = user
+        self.error = error
+
+    async def execute_aggregation_query(self, body: dict) -> dict:
+        if self._user in json.dumps(body, default=str):
+            raise self.error
+        return await self._repo.execute_aggregation_query(body)
+
+
+PROJECT_FIELD = "attributes.project.keyword"
+
+
+def person(user: str) -> UserTerm:
+    return UserTerm(user_id=user, aliases=frozenset())
+
+
+def clause_set(clauses: list[dict]) -> set[str]:
+    return {json.dumps(clause, sort_keys=True, default=str) for clause in clauses}
+
+
+def row_buckets(body: dict) -> dict[str, dict]:
+    return body["aggs"]["rows"]["filters"]["filters"]
+
+
+class TestTheSummaryCardsPerFilter:
+    """The batched card read on this store answers each filter exactly as its single read does."""
+
+    ROWS = [
+        money_row("conversation_assistant_usage", "1.5", **{_USER_ID_FIELD: USER}),
+        money_row("conversation_assistant_usage", "2", **{_USER_ID_FIELD: OTHER_USER}),
+        money_row("conversation_assistant_usage", "4", **{_USER_ID_FIELD: FAILING_USER}),
+    ]
+
+    #: Two people over two projects, with CLI and embedding money, and one document of `OTHER_USER`'s in
+    #: `proj-b` whose cost never settled - so a row can be whole, a subtotal, or no figure at all.
+    MIXED_ROWS = [
+        money_row("conversation_assistant_usage", "1.5", **{_USER_ID_FIELD: USER, PROJECT_FIELD: "proj-a"}),
+        money_row("conversation_assistant_usage", "0.25", **{_USER_ID_FIELD: USER, PROJECT_FIELD: "proj-b"}),
+        money_row(CLI_METRIC, "3", **{_USER_ID_FIELD: USER, PROJECT_FIELD: "proj-a", CLI_FLAG_FIELD: True}),
+        money_row("conversation_assistant_usage", "2", **{_USER_ID_FIELD: OTHER_USER, PROJECT_FIELD: "proj-a"}),
+        money_row(DATASOURCE_METRIC, "0.5", **{_USER_ID_FIELD: OTHER_USER, PROJECT_FIELD: "proj-a"}),
+        {
+            "metric_name.keyword": "conversation_assistant_usage",
+            "@timestamp": MID_PERIOD,
+            _USER_ID_FIELD: OTHER_USER,
+            PROJECT_FIELD: "proj-b",
+        },
+    ]
+
+    SCENARIOS = {
+        "user rows sharing a projects term": (
+            ReportFilter(projects=("proj-a",)),
+            [
+                ReportFilter(users=(person(USER),), projects=("proj-a",)),
+                ReportFilter(users=(person(OTHER_USER),), projects=("proj-a",)),
+            ],
+            None,
+        ),
+        "project rows sharing a users term": (
+            ReportFilter(users=(person(OTHER_USER),)),
+            [
+                ReportFilter(users=(person(OTHER_USER),), projects=("proj-a",)),
+                ReportFilter(users=(person(OTHER_USER),), projects=("proj-b",)),
+            ],
+            None,
+        ),
+        "an empty common filter": (None, [user_filter(USER), user_filter(OTHER_USER), ReportFilter()], None),
+        "restricted access": (
+            None,
+            [user_filter(USER), user_filter(OTHER_USER), ReportFilter()],
+            AccessScope(unrestricted=False, user_id=USER, plain_projects=("proj-a",)),
+        ),
+        "unrestricted access": (
+            None,
+            [user_filter(USER), user_filter(OTHER_USER), ReportFilter()],
+            AccessScope(unrestricted=True),
+        ),
+    }
+
+    LEDGERS = {
+        "every group readable": lambda repo: legacy_ledger(repo, LLMCallClass.CHAT, LLMCallClass.EMBEDDINGS),
+        "a CLI card it cannot read and no embedding card": lambda repo: DefaultSpendLedger(
+            [LLMCallClass.CHAT], repository=repo
+        ),
+    }
+
+    @staticmethod
+    def _read_per_filter(led: DefaultSpendLedger, filters: list[ReportFilter], common_filter=None, **kwargs):
+        return asyncio.run(
+            led.aggregate_by_spend_group_per_filter(
+                PERIOD, common_filter=common_filter, report_filters=filters, **kwargs
+            )
+        )
+
+    @staticmethod
+    def _single_reads(led: DefaultSpendLedger, filters: list[ReportFilter], access) -> dict:
+        return {
+            report_filter: asyncio.run(led.aggregate_by_spend_group(PERIOD, access=access, report_filter=report_filter))
+            for report_filter in filters
+        }
+
+    @pytest.mark.parametrize("ledger_shape", list(LEDGERS))
+    @pytest.mark.parametrize("scenario", list(SCENARIOS))
+    def test_each_filter_is_answered_exactly_as_its_single_read_answers_it(self, scenario, ledger_shape):
+        common_filter, filters, access = self.SCENARIOS[scenario]
+        led = self.LEDGERS[ledger_shape](_RowSetMetrics(self.MIXED_ROWS))
+        single_reads = self._single_reads(led, filters, access)
+
+        result = self._read_per_filter(led, filters, common_filter, access=access)
+
+        assert result == single_reads
+
+    def test_a_row_answers_whole_subtotal_and_no_figure_as_its_documents_settled(self):
+        common_filter, filters, access = self.SCENARIOS["project rows sharing a users term"]
+        led = legacy_ledger(_RowSetMetrics(self.MIXED_ROWS), LLMCallClass.CHAT, LLMCallClass.EMBEDDINGS)
+
+        result = self._read_per_filter(led, [*filters, user_filter(OTHER_USER)], common_filter, access=access)
+
+        assert result[filters[0]][SpendGroup.TOTAL].figure == Decimal("2.5")
+        assert result[filters[1]][SpendGroup.TOTAL] == SpendResult.no_figure(PERIOD)
+        assert result[user_filter(OTHER_USER)][SpendGroup.TOTAL].figure == Decimal("2.5")
+
+    @pytest.mark.parametrize("scenario", list(SCENARIOS))
+    def test_the_outer_query_and_a_row_bucket_select_exactly_what_the_single_read_selects(self, scenario):
+        common_filter, filters, access = self.SCENARIOS[scenario]
+        repo = _RowSetMetrics(self.MIXED_ROWS)
+        led = legacy_ledger(repo, LLMCallClass.CHAT)
+        self._single_reads(led, filters, access)
+        single_queries = dict(zip(filters, (body["query"]["bool"]["filter"] for body in repo.bodies), strict=True))
+
+        self._read_per_filter(led, filters, common_filter, access=access)
+
+        batch = repo.bodies[-1]
+        outer = batch["query"]["bool"]["filter"]
+        buckets = dict(zip(filters, (b["bool"]["filter"] for b in row_buckets(batch).values()), strict=True))
+        assert {f: clause_set(outer) | clause_set(clauses) for f, clauses in buckets.items()} == {
+            f: clause_set(query) for f, query in single_queries.items()
+        }
+        assert buckets == {
+            f: f.elasticsearch_filters(user_id_field=_USER_ID_FIELD, project_field=PROJECT_FIELD) for f in filters
+        }
+
+    @pytest.mark.parametrize("scenario", list(SCENARIOS))
+    def test_the_outer_query_is_the_single_read_of_the_common_filter(self, scenario):
+        common_filter, filters, access = self.SCENARIOS[scenario]
+        repo = _RowSetMetrics([])
+        led = legacy_ledger(repo, LLMCallClass.CHAT)
+        asyncio.run(led.aggregate_by_spend_group(PERIOD, access=access, report_filter=common_filter))
+
+        self._read_per_filter(led, filters, common_filter, access=access)
+
+        common_read, batch = repo.bodies
+        assert batch["query"] == common_read["query"]
+
+    def test_each_row_bucket_holds_the_spend_group_buckets_of_the_single_read(self):
+        repo = _RowSetMetrics([])
+        led = legacy_ledger(repo, LLMCallClass.CHAT, LLMCallClass.EMBEDDINGS)
+        asyncio.run(led.aggregate_by_spend_group(PERIOD))
+
+        self._read_per_filter(led, [user_filter(USER), user_filter(OTHER_USER)])
+
+        single_read, batch = repo.bodies
+        assert batch["aggs"]["rows"]["aggs"] == single_read["aggs"]
+
+    def test_a_page_of_filters_is_one_search_with_positional_bucket_names(self):
+        repo = _RowSetMetrics([])
+        led = legacy_ledger(repo, LLMCallClass.CHAT)
+        filters = [user_filter(f"user-{index}") for index in range(FILTER_BATCH_SIZE)]
+
+        result = self._read_per_filter(led, filters)
+
+        assert len(repo.bodies) == 1
+        assert list(row_buckets(repo.bodies[0])) == [f"row_{index}" for index in range(FILTER_BATCH_SIZE)]
+        assert result[filters[-1]][SpendGroup.TOTAL].figure == Decimal("0")
+
+    def test_one_filter_past_a_page_is_a_second_search_holding_only_that_filter(self):
+        repo = _RowSetMetrics([])
+        led = legacy_ledger(repo, LLMCallClass.CHAT)
+        filters = [user_filter(f"user-{index}") for index in range(FILTER_BATCH_SIZE + 1)]
+
+        result = self._read_per_filter(led, filters)
+
+        assert [len(row_buckets(body)) for body in repo.bodies] == [FILTER_BATCH_SIZE, 1]
+        assert len(result) == FILTER_BATCH_SIZE + 1
+
+    def test_a_page_stays_within_the_default_bucket_limit(self):
+        """Each row costs its own bucket and one per spend group; Elasticsearch refuses a search past 65,536."""
+        assert FILTER_BATCH_SIZE * (1 + len(SpendGroup)) < 65_536
+
+    def test_duplicate_filters_are_read_once(self):
+        repo = _RowSetMetrics(self.ROWS)
+        led = legacy_ledger(repo, LLMCallClass.CHAT)
+
+        result = self._read_per_filter(led, [user_filter(USER), user_filter(USER), user_filter(OTHER_USER)])
+
+        assert list(result) == [user_filter(USER), user_filter(OTHER_USER)]
+        assert list(row_buckets(repo.bodies[0])) == ["row_0", "row_1"]
+
+    def test_no_filters_make_no_search(self):
+        repo = _RowSetMetrics(self.ROWS)
+        led = legacy_ledger(repo, LLMCallClass.CHAT)
+
+        result = self._read_per_filter(led, [])
+
+        assert result == {}
+        assert repo.bodies == []
+
+    def test_a_card_it_cannot_read_is_logged_once_per_batch_rather_than_per_row(self):
+        led = DefaultSpendLedger([LLMCallClass.CHAT], repository=_RowSetMetrics(self.ROWS))
+
+        with patch.object(default_ledger_module, "logger") as ledger_logger:
+            self._read_per_filter(led, [user_filter(USER), user_filter(OTHER_USER), user_filter(FAILING_USER)])
+
+        ledger_logger.debug.assert_called_once()
+
+    def test_a_failing_page_costs_its_own_rows_and_nobody_elses(self):
+        outage = _OutageForUser(_RowSetMetrics(self.ROWS), FAILING_USER, RuntimeError("elasticsearch is down"))
+        led = legacy_ledger(outage, LLMCallClass.CHAT)
+        failing_in_project = ReportFilter(users=(person(FAILING_USER),), projects=("proj-a",))
+        filters = [user_filter(USER), user_filter(OTHER_USER), user_filter(FAILING_USER), failing_in_project]
+
+        with patch.object(default_ledger_module, "FILTER_BATCH_SIZE", 2):
+            with patch("codemie.service.spend.read_failures.BaseMonitoringService") as monitoring:
+                with patch("codemie.service.spend.read_failures.logger") as failure_logger:
+                    result = self._read_per_filter(led, filters)
+
+        assert list(result) == filters
+        assert result[user_filter(USER)][SpendGroup.TOTAL].figure == Decimal("1.5")
+        assert result[user_filter(OTHER_USER)][SpendGroup.TOTAL].figure == Decimal("2")
+        assert result[user_filter(FAILING_USER)] == {group: SpendResult.no_figure(PERIOD) for group in SpendGroup}
+        assert result[failing_in_project] == {group: SpendResult.no_figure(PERIOD) for group in SpendGroup}
+        monitoring.send_count_metric.assert_called_once_with(
+            name=SPEND_LEDGER_READ_FAILURES_METRIC,
+            attributes={"ledger": led.ledger_name, "read": "aggregate_by_spend_group_per_filter"},
+            count=2,
+        )
+        failure_logger.error.assert_called_once()
+        assert failure_logger.error.call_args.kwargs["exc_info"] is outage.error
+
+    def test_every_page_failing_is_an_outage_the_caller_counts_and_not_a_figure(self):
+        error = RuntimeError("elasticsearch is down")
+        outage = _OutageForUser(_RowSetMetrics(self.ROWS), FAILING_USER, error)
+        led = legacy_ledger(outage, LLMCallClass.CHAT)
+        filters = [user_filter(FAILING_USER), ReportFilter(users=(person(FAILING_USER),), projects=("proj-a",))]
+
+        with patch.object(default_ledger_module, "FILTER_BATCH_SIZE", 1):
+            with patch("codemie.service.spend.read_failures.BaseMonitoringService") as monitoring:
+                with pytest.raises(RuntimeError) as raised:
+                    self._read_per_filter(led, filters)
+
+        assert raised.value is error
+        monitoring.send_count_metric.assert_not_called()
 
 
 class TestThePerModelTable:

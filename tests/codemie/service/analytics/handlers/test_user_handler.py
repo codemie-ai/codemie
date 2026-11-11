@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -1450,30 +1451,54 @@ def _fake_report_filter_for(records: dict):
     return _build
 
 
+@dataclass(frozen=True)
+class _GroupPort:
+    """The two reads behind a per-user group table: every row in one batch, and the footer's whole scope."""
+
+    rows: AsyncMock
+    scope: AsyncMock
+
+
 def _group_port(
     by_user_id: dict[str, dict[SpendGroup, SpendResult]],
     dashboard: dict[SpendGroup, SpendResult] | None = None,
-    seen: list[ReportFilter] | None = None,
-) -> AsyncMock:
-    """An `aggregate_by_spend_group` stub: one user's groups for a one-person filter, the scope's otherwise.
+) -> _GroupPort:
+    """Stubs for `aggregate_by_spend_group_per_filter` (each user's groups) and `aggregate_by_spend_group` (the scope's).
 
     The caller's own boundary is asserted on every read, because a per-person figure read without it is
     the whole platform's spend on that person beside rows already narrowed to what the caller may see.
     A group nobody answered is `no_figure`, never a zero.
     """
 
-    async def _call(period, *, access, report_filter):
-        assert access == _EXPECTED_SCOPE, "every read must be narrowed by the caller's own boundary"
-        if seen is not None:
-            seen.append(report_filter)
-        answers = by_user_id.get(report_filter.users[0].user_id, {}) if len(report_filter.users) == 1 else dashboard
+    def _groups(period, answers):
         return {group: SpendResult.no_figure(period) for group in SpendGroup} | (answers or {})
 
-    return AsyncMock(side_effect=_call)
+    async def _rows(period, *, access, common_filter, report_filters):
+        assert access == _EXPECTED_SCOPE, "every read must be narrowed by the caller's own boundary"
+        return {
+            report_filter: _groups(period, by_user_id.get(report_filter.users[0].user_id))
+            for report_filter in report_filters
+        }
+
+    async def _scope(period, *, access, report_filter):
+        assert access == _EXPECTED_SCOPE, "every read must be narrowed by the caller's own boundary"
+        return _groups(period, dashboard)
+
+    return _GroupPort(rows=AsyncMock(side_effect=_rows), scope=AsyncMock(side_effect=_scope))
+
+
+def _filters_asked(port: _GroupPort) -> dict[str, object]:
+    """What one table asked: the batch's common and per-row filters, and the footer's whole-scope filter."""
+    batch = port.rows.await_args.kwargs
+    return {
+        "common": batch["common_filter"],
+        "rows": batch["report_filters"],
+        "footer": port.scope.await_args.kwargs["report_filter"],
+    }
 
 
 @contextlib.contextmanager
-def _patched_group_port(port: AsyncMock):
+def _patched_group_port(port: _GroupPort):
     with (
         patch(
             "codemie.service.analytics.handlers.user_handler.report_filter_for", new=_fake_report_filter_for(RECORDS)
@@ -1482,7 +1507,11 @@ def _patched_group_port(port: AsyncMock):
             "codemie.service.analytics.handlers.ledger_group_spend.report_filter_for",
             new=_fake_report_filter_for(RECORDS),
         ),
-        patch("codemie.service.analytics.handlers.user_handler.spend_service.aggregate_by_spend_group", new=port),
+        patch(
+            "codemie.service.analytics.handlers.ledger_group_spend.spend_service.aggregate_by_spend_group_per_filter",
+            new=port.rows,
+        ),
+        patch("codemie.service.analytics.handlers.user_handler.spend_service.aggregate_by_spend_group", new=port.scope),
     ):
         yield
 
@@ -1617,15 +1646,16 @@ class TestPlatformSpendingByUsersFromLedger:
     @pytest.mark.asyncio
     async def test_each_read_is_that_person_inside_the_dashboards_projects_filter(self, handler, mock_repository):
         _answer_buckets(mock_repository, [self._bucket("ada")])
-        seen: list[ReportFilter] = []
+        port = _group_port({"u-ada": {SpendGroup.PLATFORM: _exact("1.25")}})
 
-        with _patched_group_port(_group_port({"u-ada": {SpendGroup.PLATFORM: _exact("1.25")}}, seen=seen)):
+        with _patched_group_port(port):
             await handler.get_users_platform_spending(projects=["alpha"])
 
-        assert seen == [
-            ReportFilter(users=(UserTerm(user_id="u-ada", aliases=frozenset({"ada"})),), projects=("alpha",)),
-            ReportFilter(users=(), projects=("alpha",)),
-        ]
+        assert _filters_asked(port) == {
+            "common": ReportFilter(projects=("alpha",)),
+            "rows": [ReportFilter(users=(UserTerm(user_id="u-ada", aliases=frozenset({"ada"})),), projects=("alpha",))],
+            "footer": ReportFilter(projects=("alpha",)),
+        }
 
     @pytest.mark.asyncio
     async def test_a_client_source_report_asks_the_port_nothing_and_publishes_no_figure(self, handler, mock_repository):
@@ -1635,7 +1665,8 @@ class TestPlatformSpendingByUsersFromLedger:
         with _patched_group_port(port):
             result = await handler.get_users_platform_spending(client_source="vscode")
 
-        port.assert_not_awaited()
+        port.rows.assert_not_awaited()
+        port.scope.assert_not_awaited()
         assert result["data"]["rows"][0]["total_cost_usd"] is None
         assert result["data"]["rows"][0]["spend_unavailable"] is True
 
@@ -1753,12 +1784,13 @@ class TestCliSpendingByUsersFromLedger:
     @pytest.mark.asyncio
     async def test_each_read_is_that_person_inside_the_dashboards_projects_filter(self, handler, mock_repository):
         _answer_buckets(mock_repository, [self._bucket("ada")])
-        seen: list[ReportFilter] = []
+        port = _group_port({"u-ada": {SpendGroup.CLI: _exact("1.0")}})
 
-        with _patched_group_port(_group_port({"u-ada": {SpendGroup.CLI: _exact("1.0")}}, seen=seen)):
+        with _patched_group_port(port):
             await handler.get_users_cli_spending(projects=["alpha"])
 
-        assert seen == [
-            ReportFilter(users=(UserTerm(user_id="u-ada", aliases=frozenset({"ada"})),), projects=("alpha",)),
-            ReportFilter(users=(), projects=("alpha",)),
-        ]
+        assert _filters_asked(port) == {
+            "common": ReportFilter(projects=("alpha",)),
+            "rows": [ReportFilter(users=(UserTerm(user_id="u-ada", aliases=frozenset({"ada"})),), projects=("alpha",))],
+            "footer": ReportFilter(projects=("alpha",)),
+        }

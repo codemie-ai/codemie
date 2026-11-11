@@ -163,18 +163,18 @@ class CLIInsightsHandler(CLIBaseHandler):
         metric document never received. The caller's boundary and the dashboard's projects filter
         narrow every figure, because the rows beside it were narrowed by them.
         """
-        filters = await user_report_filters(user_ids, projects)
+        table = await user_report_filters(user_ids, projects)
         return await read_group_spend(
-            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, filters, SpendGroup.CLI
+            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, table.common, table.rows, SpendGroup.CLI
         )
 
     async def _cli_spend_by_project(
         self, project_names: list[str], start_dt: datetime, end_dt: datetime, users: list[str] | None
     ) -> list[RenderedSpend]:
         """Each project's CLI spend from the spend port's CLI group, in the order of `project_names`."""
-        filters = await project_report_filters(project_names, users)
+        table = await project_report_filters(project_names, users)
         return await read_group_spend(
-            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, filters, SpendGroup.CLI
+            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, table.common, table.rows, SpendGroup.CLI
         )
 
     async def get_cli_insights_weekday_pattern(

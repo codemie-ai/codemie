@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 
@@ -58,6 +58,7 @@ from codemie.service.spend.ledger import (
     bucket_starts,
 )
 from codemie.service.spend.ledger_registry import ledger_coverage, ledgers_by_call_class
+from codemie.service.spend.read_failures import record_read_failure
 from codemie.service.spend.spend_group import SpendGroup
 from codemie.service.spend.traffic_class import UNION_CLASSES, TrafficClass
 
@@ -76,6 +77,21 @@ def _distinct_ledgers() -> list[SpendLedger]:
         if not any(ledger is already for already in seen):
             seen.append(ledger)
     return seen
+
+
+def _combined_groups(
+    per_ledger: Sequence[Mapping[SpendGroup, SpendResult]], period: TimeRange
+) -> dict[SpendGroup, SpendResult]:
+    """Every spend group, combined across the ledgers that answered it.
+
+    Keyed on the closed enum rather than on what came back: a group one ledger omitted is combined
+    from the others, and a group none answered is the unavailable state `combine_results` produces
+    from no answers - never an absent card.
+    """
+    return {
+        group: combine_results([answers[group] for answers in per_ledger if group in answers], period)
+        for group in SpendGroup
+    }
 
 
 class SpendService:
@@ -334,9 +350,53 @@ class SpendService:
             )
             for ledger in _distinct_ledgers()
         ]
+        return _combined_groups(per_ledger, period)
+
+    async def aggregate_by_spend_group_per_filter(
+        self,
+        period: TimeRange,
+        *,
+        access: AccessScope | None,
+        common_filter: ReportFilter | None,
+        report_filters: Collection[ReportFilter],
+    ) -> dict[ReportFilter, dict[SpendGroup, SpendResult]]:
+        """`aggregate_by_spend_group` for every row of a per-row table, in one read per ledger.
+
+        **Each filter's figure is combined exactly as `aggregate_by_spend_group` combines one**, so a
+        row reads the same money whether its table was read row by row or in one batch. A filter a
+        ledger left out of its answer is that ledger contributing nothing to the row, the same rule as
+        a group it omits; every requested filter is still keyed, with every group.
+
+        **`access` is keyword-only and has no default**, for the reason `aggregate_by_spend_group`
+        gives. `common_filter` is the dashboard's own term every filter already carries, handed on so
+        a ledger reading one shared scan can narrow it.
+
+        A ledger that fails costs every filter its `no_figure`, never the table.
+        """
+        requested = list(dict.fromkeys(report_filters))
+        if not requested:
+            return {}
+
+        per_ledger = [
+            await self._ask(
+                ledger,
+                "aggregate_by_spend_group_per_filter",
+                period,
+                ledger.aggregate_by_spend_group_per_filter(
+                    period, access=access, common_filter=common_filter, report_filters=requested
+                ),
+                lambda: {
+                    report_filter: {group: SpendResult.no_figure(period) for group in SpendGroup}
+                    for report_filter in requested
+                },
+            )
+            for ledger in _distinct_ledgers()
+        ]
         return {
-            group: combine_results([answers[group] for answers in per_ledger if group in answers], period)
-            for group in SpendGroup
+            report_filter: _combined_groups(
+                [answers[report_filter] for answers in per_ledger if report_filter in answers], period
+            )
+            for report_filter in requested
         }
 
     async def aggregate_by_dimension(
@@ -588,16 +648,8 @@ class SpendService:
             outcome = "cancelled"
             raise
         except Exception as error:
-            logger.error(
-                f"spend_service: ledger {ledger.ledger_name} failed {read}{over}: {error}",
-                exc_info=True,
-            )
-            # A fresh dict per call: `send_count_metric` mutates what it is handed, adding the
-            # calling user and the environment, so a shared literal would accumulate them.
-            BaseMonitoringService.send_count_metric(
-                name=SPEND_LEDGER_READ_FAILURES_METRIC,
-                attributes={"ledger": ledger.ledger_name, "read": read},
-            )
+            message = f"spend_service: ledger {ledger.ledger_name} failed {read}{over}: {error}"
+            record_read_failure(ledger.ledger_name, read, message, error)
             return fallback() if callable(fallback) else fallback
         finally:
             elapsed = time.monotonic() - started

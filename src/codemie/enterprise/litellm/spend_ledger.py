@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Collection, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -36,6 +36,7 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codemie.configs import config, logger
+from codemie.repository.spend_group_batch import SpendGroupBatch
 from codemie.repository.spend_logs_repository import SpendLogsRepository, spend_logs_repository
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
 from codemie.service.monitoring.metrics_constants import SPEND_LEDGER_CONNECTION_WAIT_METRIC
@@ -113,6 +114,11 @@ def _money_portion(spend: Decimal, rows: int, *, sub_range: TimeRange | None = N
     if not rows or spend == 0:
         return None
     return Portion(spend=spend, rows=rows, sub_range=sub_range)
+
+
+def _no_spend_group_figure(period: TimeRange) -> dict[SpendGroup, SpendResult]:
+    """Every summary group withheld - the answer for a range below the coverage floor."""
+    return {group: SpendResult.no_figure(period) for group in SpendGroup}
 
 
 class SpendLogsLedger:
@@ -407,11 +413,55 @@ class SpendLogsLedger:
         """
         admitted = self._coverage.admitted(period)
         if admitted is None:
-            return {group: SpendResult.no_figure(period) for group in SpendGroup}
+            return _no_spend_group_figure(period)
 
         async with self._session_factory() as session:
             totals = await self._repository.sum_for_spend_groups(session, admitted, access, report_filter)
 
+        return self._spend_group_cards(period, totals, report_filter)
+
+    async def aggregate_by_spend_group_per_filter(
+        self,
+        period: TimeRange,
+        *,
+        access: AccessScope | None = None,
+        common_filter: ReportFilter | None,
+        report_filters: Collection[ReportFilter],
+    ) -> dict[ReportFilter, dict[SpendGroup, SpendResult]]:
+        """`aggregate_by_spend_group` for every filter of a per-row table, from **one** grouped scan.
+
+        The scan's `WHERE` carries the boundary and `common_filter` alone, so it is the same statement
+        for one row and for ten thousand; `SpendGroupBatch` assigns its rows to each filter in Python,
+        on a worker thread because a large table's assignment would otherwise stall the event loop.
+        The floors and each filter's own label are then applied exactly as the single read applies
+        them. `TestTheBatchedSpendGroupReadEqualsTheSingleRead` keeps every filter's figures equal to
+        that read's.
+
+        A failed scan raises rather than falling back to one read per row: the fallback is the load
+        this read exists to remove.
+        """
+        admitted = self._coverage.admitted(period)
+        if admitted is None:
+            return {report_filter: _no_spend_group_figure(period) for report_filter in report_filters}
+        if not report_filters:
+            return {}
+
+        batch = await asyncio.to_thread(SpendGroupBatch.of, report_filters)
+        async with self._session_factory() as session:
+            rows = await self._repository.sum_for_spend_groups_per_attribution(
+                session, admitted, batch.group_key, access=access, common_filter=common_filter
+            )
+        figures = await asyncio.to_thread(batch.figures, rows)
+
+        return {
+            report_filter: self._spend_group_cards(period, totals, report_filter)
+            for report_filter, totals in figures.items()
+        }
+
+    def _spend_group_cards(
+        self, period: TimeRange, totals: dict[SpendGroup, Decimal], report_filter: ReportFilter | None
+    ) -> dict[SpendGroup, SpendResult]:
+        """One filter's four cards over the range: its figures with the range's flag and its own label."""
         unavailable = self._coverage.unavailable_flag(period)
         label = _report_filter_label(report_filter)
         return {

@@ -100,7 +100,7 @@ commit, and a test asserts the containment so it cannot be added on one side onl
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 
 from codemie.configs import logger
@@ -401,6 +401,19 @@ class LegacySpendLedger:
         side need not foot as a partition even though the ledger side does.
         """
         return await self._es.aggregate_by_spend_group(period, access=access, report_filter=report_filter)
+
+    async def aggregate_by_spend_group_per_filter(
+        self,
+        period: TimeRange,
+        *,
+        access: AccessScope | None = None,
+        common_filter: ReportFilter | None,
+        report_filters: Collection[ReportFilter],
+    ) -> Mapping[ReportFilter, Mapping[SpendGroup, SpendResult]]:
+        """Each filter's summary cards below the floor - the adapter's own answer, filter by filter."""
+        return await self._es.aggregate_by_spend_group_per_filter(
+            period, access=access, common_filter=common_filter, report_filters=report_filters
+        )
 
     async def aggregate_composed(
         self,

@@ -217,6 +217,17 @@ class TestTheNoopAnswersTheWholeWindowReadsWithoutFabricatingAZero:
         assert all(answer.figure is None for answer in answers.values())
 
     @pytest.mark.asyncio
+    async def test_every_spend_group_is_answered_unavailable_for_every_filter(self) -> None:
+        other_filter = ReportFilter(projects=("B",))
+
+        answers = await _NoopSpendLedger().aggregate_by_spend_group_per_filter(
+            PERIOD, access=self.ALICE, common_filter=self.FILTER, report_filters=[self.FILTER, other_filter]
+        )
+
+        unavailable = {group: SpendResult.no_figure(PERIOD) for group in SpendGroup}
+        assert answers == {self.FILTER: unavailable, other_filter: unavailable}
+
+    @pytest.mark.asyncio
     async def test_the_holder_batch_takes_the_boundary_and_the_filter_and_still_says_unavailable(self) -> None:
         """The users- and projects-spending tables hand the batch both; neither may turn it into a zero."""
         holder = PersonTotalHolder(user_id="alice", aliases=frozenset())

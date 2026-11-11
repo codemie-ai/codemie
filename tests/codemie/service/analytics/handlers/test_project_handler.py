@@ -491,7 +491,10 @@ def _patched_projects_port(port: AsyncMock, personal_owners: dict[str, set] | As
         )
     )
     stack.enter_context(
-        patch("codemie.service.analytics.handlers.ledger_group_spend.spend_service.aggregate_by_spend_group", new=port)
+        patch(
+            "codemie.service.analytics.handlers.ledger_group_spend.spend_service.aggregate_by_spend_group_per_filter",
+            new=port,
+        )
     )
     stack.enter_context(
         patch(
@@ -531,7 +534,7 @@ def _candidate_rows(handler: ProjectHandler, *buckets: dict) -> list[dict]:
 
 
 def _answers(**by_project: SpendResult | None):
-    """An aggregate_by_spend_group stub answering per project name, over the whole requested window."""
+    """An aggregate_by_spend_group_per_filter stub answering per project name, over the whole requested window."""
     return _answers_over(PERIOD, **by_project)
 
 
@@ -544,9 +547,10 @@ def _answers_over(
 ):
     """`_answers`, pinned to the window the ledger read is supposed to cover.
 
-    Each row is one read, for a filter naming only that project inside the dashboard's own filter, so the
-    filter is asserted whole: the row's project, no owners (these projects are shared), and the
-    dashboard's users term. `access` is taken as a **required keyword**, so a handler that stopped
+    One read answers every row, each for a filter naming only that project inside the dashboard's own
+    filter, so every filter is asserted whole: the row's project, no owners (these projects are shared),
+    and the dashboard's users term - which is also the common filter the read narrows its one scan by.
+    `access` is taken as a **required keyword**, so a handler that stopped
     threading its boundary fails here rather than being answered with every member's spend: the total
     is a project's *whole* spend, and the rows it foots are already narrowed to what the caller may see.
 
@@ -555,9 +559,15 @@ def _answers_over(
     would both cover the money above the floor and the row would foot at nearly double.
     """
 
-    async def _call(period, *, access, report_filter):
+    async def _call(period, *, access, common_filter, report_filters):
         assert period == expected_period, "the ledger read must cover only the at-or-above-floor leg"
         assert access == _EXPECTED_SCOPE, "the figure must be narrowed by the caller's own boundary"
+        assert common_filter == replace(
+            expected_filter, projects=(), personal_project_owners=()
+        ), "the read must be narrowed by the dashboard's own users term"
+        return {report_filter: _project_answer(period, report_filter) for report_filter in report_filters}
+
+    def _project_answer(period, report_filter):
         (project,) = report_filter.projects
         assert report_filter == replace(
             expected_filter, projects=(project,), personal_project_owners=()
@@ -736,7 +746,10 @@ class TestProjectsSpendingFromLedger:
             SpendGroup.CLI: SpendResult(figure=Decimal("2")),
             SpendGroup.PLATFORM: SpendResult(figure=Decimal("7")),
         }
-        port = AsyncMock(return_value={group: SpendResult.no_figure(PERIOD) for group in SpendGroup} | everything)
+        atlas = ReportFilter(projects=("atlas",))
+        port = AsyncMock(
+            return_value={atlas: {group: SpendResult.no_figure(PERIOD) for group in SpendGroup} | everything}
+        )
 
         with _patched_projects_port(port):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
@@ -760,18 +773,18 @@ class TestProjectsSpendingFromLedger:
     async def test_a_personal_project_is_read_through_its_owner(self, handler):
         """Its calls reach the ledger with no project at all, so the filter carries the owner that names them."""
         rows = [{"project_name": "ada@example.com", "total_cost_usd": None}]
-        seen: list[ReportFilter] = []
-
-        async def port(period, *, access, report_filter):
-            seen.append(report_filter)
-            return {group: SpendResult.no_figure(period) for group in SpendGroup} | {
-                SpendGroup.TOTAL: SpendResult(figure=Decimal("8"))
+        personal = ReportFilter(projects=("ada@example.com",), personal_project_owners=("u-ada",))
+        port = AsyncMock(
+            return_value={
+                personal: {group: SpendResult.no_figure(PERIOD) for group in SpendGroup}
+                | {SpendGroup.TOTAL: SpendResult(figure=Decimal("8"))}
             }
+        )
 
-        with _patched_projects_port(AsyncMock(side_effect=port), {"ada@example.com": {"u-ada"}}):
+        with _patched_projects_port(port, {"ada@example.com": {"u-ada"}}):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
-        assert seen == [ReportFilter(projects=("ada@example.com",), personal_project_owners=("u-ada",))]
+        assert port.await_args.kwargs["report_filters"] == [personal]
         assert enriched.rows[0]["total_cost_usd"] == 8.0
 
     @pytest.mark.asyncio
@@ -831,7 +844,7 @@ class TestProjectsSpendingFromLedger:
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
         assert [row["project_name"] for row in enriched.rows] == ["costly", "busy"]
-        assert port.await_count == 2, "one scan per candidate project"
+        assert port.await_count == 1, "one read for every candidate project"
 
     @pytest.mark.asyncio
     async def test_absent_figure_sorts_last_and_is_never_sorted_as_zero(self, handler):

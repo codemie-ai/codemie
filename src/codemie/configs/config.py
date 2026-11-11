@@ -823,7 +823,8 @@ class Config(BaseSettings):
     # How long a ledger read waits for a dedicated-pool connection; ignored on the shared pool.
     SPEND_LEDGER_POOL_TIMEOUT_SECONDS: float = Field(default=30.0, gt=0)
     # Server-side cap on one ledger statement, dedicated pool only; 0 means none. Never applied to
-    # the shared pool, where it would cut every application query along with the ledger's.
+    # the shared pool, where it would cut every application query along with the ledger's. Size it for
+    # one statement per table: a per-row spend table reads all its rows in one, and a timeout blanks them all.
     SPEND_LEDGER_STATEMENT_TIMEOUT_MS: int = Field(default=0, ge=0)
     # A ledger read at or above this duration is logged as a WARNING; every read is also timed.
     SPEND_LEDGER_SLOW_READ_SECONDS: float = Field(default=5.0, gt=0)

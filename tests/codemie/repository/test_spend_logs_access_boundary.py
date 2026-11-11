@@ -32,15 +32,20 @@ a test that does not run.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from codemie.repository.grouped_rows import GroupedRows
+from codemie.repository.spend_group_batch import SpendGroupBatch
 from codemie.repository.spend_logs_model import LiteLLMSpendLog as Row
-from codemie.repository.spend_logs_repository import SpendLogsRepository
+from codemie.repository.spend_logs_repository import SpendLogsRepository, report_filter_predicate
 from codemie.service.spend.coverage import SpendDimension, TimeRange
 from codemie.service.spend.ledger import AccessScope, DimensionScope, ReportFilter, UserTerm
 from codemie.service.spend.spend_group import SpendGroup
@@ -539,3 +544,283 @@ class TestTheClassSplitResidueIsNarrowedToo:
         about_bob = ReportFilter(users=(UserTerm(BOB, frozenset()),))
 
         assert self._residue(unclassified_session, AccessScope.everything(), (), about_bob) == (Decimal("50.00"), 500)
+
+
+ALICE_ALIASES = frozenset({"alice@example.com", "alice"})
+BOB_ALIASES = frozenset({"bob@example.com"})
+ATTRIBUTION_KEY = ("request_id", "attr_user_id", "attr_source", "attr_form", "attr_principal", "attr_project")
+
+
+def _parsed_principal_row(request_id: str, principal: str) -> Row:
+    """A fallback-parsed call: charged to the person's own customer, known only by `users.username` or email."""
+    row = _row(request_id, "unused", "unused", "0.50")
+    row.attr_source = "parsed"
+    row.attr_form = "principal"
+    row.attr_user_id = None
+    row.attr_project = None
+    row.attr_principal = principal
+    return row
+
+
+@contextmanager
+def _seeded(rows: list[Row]) -> Iterator[_SyncSessionAsAsync]:
+    """An in-memory ledger holding exactly `rows`."""
+    engine = create_engine("sqlite://")
+    Row.metadata.create_all(engine, tables=[Row.__table__])
+    with Session(engine) as sync_session:
+        sync_session.add_all(rows)
+        sync_session.commit()
+        yield _SyncSessionAsAsync(sync_session)
+
+
+def _attributed() -> list[Row]:
+    """Every shape a report filter's predicate tells apart: explicit, parsed, personal and shared-project rows."""
+    return [
+        _row("alice-run", ALICE, "A", "0.01"),
+        _row("alice-in-b", ALICE, "B", "0.02"),
+        _row("bob-run", BOB, "A", "0.10"),
+        _row("carol-run", "carol-3333", "B", "7.00"),
+        _personal_row("dave-run", DAVE, "13.48"),
+        _personal_row("bob-personal", BOB, "1.00"),
+        _parsed_principal_row("alice-by-email", "alice@example.com"),
+        _parsed_principal_row("alice-by-username", "alice"),
+        _parsed_principal_row("bob-by-email", "bob@example.com"),
+        _parsed_principal_row("stranger", "stranger@example.com"),
+    ]
+
+
+@pytest.fixture
+def attributed_rows() -> Iterator[tuple[_SyncSessionAsAsync, list[Row]]]:
+    rows = _attributed()
+    with _seeded(rows) as session:
+        yield session, rows
+
+
+class TestTheEvaluatorSelectsWhatTheFilterSelects:
+    """AC-12: evaluating a filter's predicate over grouped rows picks the rows SQL picks for the same predicate.
+
+    Each ledger row is its own group, keyed by its request id and the five attribution columns, so the
+    set of matching groups is directly the set of request ids the `WHERE` returns.
+    """
+
+    @pytest.mark.parametrize(
+        ("report_filter", "expected"),
+        [
+            pytest.param(
+                ReportFilter(users=(UserTerm(ALICE, ALICE_ALIASES),)),
+                {"alice-run", "alice-in-b", "alice-by-email", "alice-by-username"},
+                id="one-user",
+            ),
+            pytest.param(
+                ReportFilter(users=(UserTerm(ALICE, ALICE_ALIASES), UserTerm(BOB, BOB_ALIASES))),
+                {
+                    "alice-run",
+                    "alice-in-b",
+                    "alice-by-email",
+                    "alice-by-username",
+                    "bob-run",
+                    "bob-personal",
+                    "bob-by-email",
+                },
+                id="several-users",
+            ),
+            pytest.param(
+                ReportFilter(users=(UserTerm(ALICE, None),)), {"alice-run", "alice-in-b"}, id="aliases-unresolved"
+            ),
+            pytest.param(
+                ReportFilter(users=(UserTerm(ALICE, frozenset()),)), {"alice-run", "alice-in-b"}, id="no-aliases"
+            ),
+            pytest.param(ReportFilter(projects=("A",)), {"alice-run", "bob-run"}, id="project-without-personal-owners"),
+            pytest.param(
+                ReportFilter(projects=("A", "B")),
+                {"alice-run", "alice-in-b", "bob-run", "carol-run"},
+                id="several-projects",
+            ),
+            pytest.param(
+                ReportFilter(projects=("dave@example.com",), personal_project_owners=(DAVE,)),
+                {"dave-run"},
+                id="one-personal-owner",
+            ),
+            pytest.param(
+                ReportFilter(
+                    projects=("A", "dave@example.com", "bob@example.com"), personal_project_owners=(DAVE, BOB)
+                ),
+                {"alice-run", "bob-run", "dave-run", "bob-personal"},
+                id="several-personal-owners",
+            ),
+            pytest.param(
+                ReportFilter(projects=("A",), personal_project_owners=None),
+                {"alice-run", "bob-run"},
+                id="owners-unknown",
+            ),
+            pytest.param(
+                ReportFilter(users=(UserTerm(ALICE, ALICE_ALIASES),), projects=("A",), personal_project_owners=()),
+                {"alice-run"},
+                id="user-and-project",
+            ),
+            pytest.param(
+                ReportFilter(
+                    users=(UserTerm(BOB, BOB_ALIASES),),
+                    projects=("A", "bob@example.com"),
+                    personal_project_owners=(BOB,),
+                ),
+                {"bob-run", "bob-personal"},
+                id="user-and-personal-project",
+            ),
+            pytest.param(
+                ReportFilter(users=(UserTerm(ALICE, None),), projects=("B",), personal_project_owners=None),
+                {"alice-in-b"},
+                id="user-and-project-both-unresolved",
+            ),
+        ],
+    )
+    def test_agrees_with_the_where_clause(self, attributed_rows, report_filter: ReportFilter, expected) -> None:
+        session, rows = attributed_rows
+        predicate = report_filter_predicate(report_filter)
+        grouped = GroupedRows([tuple(getattr(row, name) for name in ATTRIBUTION_KEY) for row in rows], ATTRIBUTION_KEY)
+
+        selected_by_sql = set(asyncio.run(session.execute(select(Row.request_id).where(predicate))).scalars())
+        selected_by_evaluator = {rows[index].request_id for index in grouped.matching(predicate)}
+
+        assert selected_by_sql == expected
+        assert selected_by_evaluator == expected
+
+
+@pytest.fixture
+def spend_group_rows() -> Iterator[_SyncSessionAsAsync]:
+    """The attributed rows plus two CLI calls in project A, so a filter's platform and CLI figures differ."""
+    cli_calls = [
+        _row("alice-cli", ALICE, "A", "0.40", category="cli"),
+        _row("bob-cli", BOB, "A", "0.30", category="cli"),
+    ]
+    with _seeded([*_attributed(), *cli_calls]) as session:
+        yield session
+
+
+#: Explicit id, alias fallback, aliases unresolved, and an alias ("alice") bob's term shares with alice's.
+USER_TERMS = (
+    UserTerm(ALICE, frozenset()),
+    UserTerm(ALICE, ALICE_ALIASES),
+    UserTerm(BOB, None),
+    UserTerm(BOB, BOB_ALIASES | {"alice"}),
+)
+
+#: A shared project, a personal-project pot, and owners nobody could look up.
+PROJECT_TERMS = (
+    {"projects": ("A",)},
+    {"projects": ("dave@example.com",), "personal_project_owners": (DAVE,)},
+    {"projects": ("B",), "personal_project_owners": None},
+)
+
+NO_COMMON_TERM = ReportFilter()
+SHARED_PROJECTS = ReportFilter(projects=("A", "bob@example.com"), personal_project_owners=(BOB,))
+SHARED_USERS = ReportFilter(users=(UserTerm(ALICE, ALICE_ALIASES),))
+
+
+def _user_rows(common: ReportFilter) -> tuple[ReportFilter, ...]:
+    return tuple(replace(common, users=(term,)) for term in USER_TERMS)
+
+
+def _project_rows(common: ReportFilter) -> tuple[ReportFilter, ...]:
+    return tuple(replace(common, **term) for term in PROJECT_TERMS)
+
+
+class TestTheBatchedSpendGroupReadEqualsTheSingleRead:
+    """AC-1: one grouped read, assigned per filter in Python, gives each filter its own single-read figures.
+
+    Every filter carries the batch's common term unchanged, as the per-row tables build them, so the
+    grouped read's `WHERE` admits every row any filter of the batch can match.
+    """
+
+    @pytest.mark.parametrize(
+        ("access", "common_filter", "report_filters", "totals"),
+        [
+            pytest.param(
+                AccessScope.everything(),
+                NO_COMMON_TERM,
+                _user_rows(NO_COMMON_TERM),
+                ("0.43", "1.43", "1.40", "2.40"),
+                id="user-rows-unrestricted",
+            ),
+            pytest.param(
+                AccessScope.everything(),
+                SHARED_PROJECTS,
+                _user_rows(SHARED_PROJECTS),
+                ("0.41", "0.41", "1.40", "1.40"),
+                id="user-rows-sharing-a-projects-term-unrestricted",
+            ),
+            pytest.param(
+                ALICE_SCOPE,
+                NO_COMMON_TERM,
+                _user_rows(NO_COMMON_TERM),
+                ("0.41", "0.41", "0", "0"),
+                id="user-rows-restricted",
+            ),
+            pytest.param(
+                ALICE_SCOPE,
+                SHARED_PROJECTS,
+                _user_rows(SHARED_PROJECTS),
+                ("0.41", "0.41", "0", "0"),
+                id="user-rows-sharing-a-projects-term-restricted",
+            ),
+            pytest.param(
+                AccessScope.everything(),
+                NO_COMMON_TERM,
+                _project_rows(NO_COMMON_TERM),
+                ("0.81", "13.48", "7.02"),
+                id="project-rows-unrestricted",
+            ),
+            pytest.param(
+                AccessScope.everything(),
+                SHARED_USERS,
+                _project_rows(SHARED_USERS),
+                ("0.41", "0", "0.02"),
+                id="project-rows-sharing-a-users-term-unrestricted",
+            ),
+            pytest.param(
+                ALICE_SCOPE,
+                NO_COMMON_TERM,
+                _project_rows(NO_COMMON_TERM),
+                ("0.41", "0", "0"),
+                id="project-rows-restricted",
+            ),
+            pytest.param(
+                ALICE_SCOPE,
+                SHARED_USERS,
+                _project_rows(SHARED_USERS),
+                ("0.41", "0", "0"),
+                id="project-rows-sharing-a-users-term-restricted",
+            ),
+        ],
+    )
+    def test_every_filter_gets_the_figures_its_own_read_gives(
+        self, spend_group_rows, access, common_filter, report_filters, totals
+    ) -> None:
+        repository = SpendLogsRepository()
+        batch = SpendGroupBatch.of(report_filters)
+
+        rows = asyncio.run(
+            repository.sum_for_spend_groups_per_attribution(
+                spend_group_rows, PERIOD, batch.group_key, access=access, common_filter=common_filter
+            )
+        )
+        figures = batch.figures(rows)
+
+        singles = {
+            report_filter: asyncio.run(repository.sum_for_spend_groups(spend_group_rows, PERIOD, access, report_filter))
+            for report_filter in report_filters
+        }
+        assert figures == singles
+        assert tuple(figures[report_filter][SpendGroup.TOTAL] for report_filter in report_filters) == tuple(
+            map(Decimal, totals)
+        )
+
+    def test_a_filter_no_grouped_row_matches_gets_zero_on_every_group(self, spend_group_rows) -> None:
+        nobody = ReportFilter(users=(UserTerm("nobody", frozenset()),))
+        batch = SpendGroupBatch.of([nobody])
+
+        rows = asyncio.run(
+            SpendLogsRepository().sum_for_spend_groups_per_attribution(spend_group_rows, PERIOD, batch.group_key)
+        )
+
+        assert batch.figures(rows) == {nobody: dict.fromkeys(SpendGroup, Decimal("0"))}

@@ -1,0 +1,478 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved after the check round verified CR-001..CR-007 resolved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Fix all 7 findings (CR-001..CR-007); decided under the user's standing delegation of reversible calls"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved after the check round verified CR-001..CR-007 resolved"
+    }
+  ],
+  "reviewed_head": "9c9eface81dbdc3eb5a65bacf45f05ff099762a7",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All 7 prior blocking findings resolved, checked against the current source at HEAD c964c9e2 plus the uncommitted fix-up (diff signature matches): SpendGroupBatch and the evaluator now live in their own modules with no circular import and no stale imports; AND seeds on its most selective =/IN operand and a new test pins the visit count; both docstrings name SPEND_LEDGER_STATEMENT_TIMEOUT_MS with SPEND_LEDGER_POOL_SIZE > 0; the helper annotations are parameterized; the AC-13 project-row test and the AC-1 single-read comparison were added. business_review and standards_review are carried forward from the final round unchanged; tests were not run (Stage 7 owns execution).",
+  "confidence": "high",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 7,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/spend_logs_repository.py",
+      "line": 638,
+      "title": "SpendGroupBatch appended to oversized repository module",
+      "problem": "code-quality.md Module Cohesion: SpendGroupBatch, a named pure class that assigns grouped rows to filters, plus _by_spend_group, is added to spend_logs_repository.py (now 1465 lines) instead of its own module; batch assignment is not the repository's query responsibility.",
+      "impact": "Violates a documented blocking code-quality standard and the task's explicit good-practice requirement; mixes pure assignment logic into a module already far past the guide's ~500-line threshold.",
+      "recommendation": "Move SpendGroupBatch (and _by_spend_group if shared) into a small module next to the repository, or into the same new module as GroupedRows (see CR-002), and import it into spend_logs_repository.py.",
+      "status": "resolved",
+      "check_notes": "SpendGroupBatch moved to repository/spend_group_batch.py; spend_logs_repository no longer defines or imports it; no import cycle",
+      "fix": {
+        "change": "SpendGroupBatch moved to new src/codemie/repository/spend_group_batch.py; _by_spend_group made public as by_spend_group; spend_ledger.py and two test files import from the new module",
+        "test": "tests/codemie/repository/test_spend_logs_access_boundary.py, tests/codemie/service/spend/test_spend_group_aggregation.py"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/spend_projection.py",
+      "line": 502,
+      "title": "Predicate evaluator appended to statement-building module",
+      "problem": "code-quality.md Module Cohesion: a self-contained Python-side predicate evaluator (UnmatchablePredicate, grouping_columns, _AND/_OR/_MEMBER constants, GroupedRows, _index_by_column, _ungrouped, _structural_key) is appended to the statement-building module, which grows from 510 to 644 lines, while its tests already live in their own test_grouped_rows.py.",
+      "impact": "Violates a documented blocking code-quality standard and the task's explicit good-practice requirement; the guide records this pattern being moved out later.",
+      "recommendation": "Move UnmatchablePredicate, grouping_columns, the _AND/_OR/_MEMBER constants, GroupedRows, _index_by_column, _ungrouped and _structural_key into their own module next to spend_projection.py (for example src/codemie/repository/grouped_rows.py) and import GroupedRows and grouping_columns from there in spend_projection.py and spend_logs_repository.py; _is_ledger_column/_is_equality can stay shared or move with it.",
+      "status": "resolved",
+      "check_notes": "evaluator, UnmatchablePredicate, grouping_columns moved to repository/grouped_rows.py; spend_projection keeps only is_value_list/is_ledger_column; no stale imports",
+      "fix": {
+        "change": "Predicate evaluator (UnmatchablePredicate, grouping_columns, GroupedRows, term helpers, _is_equality) moved to new src/codemie/repository/grouped_rows.py; spend_projection exposes is_value_list/is_ledger_column",
+        "test": "tests/codemie/repository/test_grouped_rows.py"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/repository/spend_projection.py",
+      "line": 547,
+      "title": "AND evaluates every child, not selective-first",
+      "problem": "The spec requires an AND to evaluate its most selective ==/IN child first as an index lookup and test the remaining children only on those candidate groups. GroupedRows._compute evaluates every AND child in full ([self._evaluate(child) for child in node.clauses]); _intersection only sorts the finished sets by size afterwards.",
+      "impact": "A spec requirement is only partially met. The cost bound holds today only because the common term is memoised and already applied in the SQL WHERE; any filter with a broad non-common conjunct pays a full index lookup per row, so the per-batch cost guarantee is not structural.",
+      "recommendation": "In the \"and\" case, evaluate the most selective ==/IN child first as an index lookup, then test the remaining children only on those candidate rows instead of evaluating each child in full; keep the per-batch memoisation, and extend TestCostFollowsTheMatches with an AND whose second child is broad so the selective-first path is pinned.",
+      "status": "resolved",
+      "check_notes": "GroupedRows._conjunction seeds on the most selective =/IN (or memoised) operand and tests the rest per candidate row; new test pins visits == 2*GROUPS",
+      "fix": {
+        "change": "GroupedRows AND looks up its most selective =/IN (or memoised) operand, sized without touching rows, then tests remaining operands only on its candidate rows; columns still validated up front",
+        "test": "tests/codemie/repository/test_grouped_rows.py::TestCostFollowsTheMatches::test_an_and_tests_its_broad_operand_only_on_what_its_selective_operand_matched"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/ledger_group_spend.py",
+      "line": 165,
+      "title": "read_group_spend docstring omits required timeout cause",
+      "problem": "The spec requires both the read_group_spend docstring and the module docstring to name a SPEND_LEDGER_STATEMENT_TIMEOUT_MS timeout (dedicated pool only, SPEND_LEDGER_POOL_SIZE>0) as one cause of a blanked batch. Only the module docstring names it, as 'on the dedicated pool' without the POOL_SIZE>0 condition; the read_group_spend docstring does not mention it.",
+      "impact": "A spec requirement is partially met: a maintainer reading the function contract is not told that one statement timeout blanks the whole table, nor when that timeout applies.",
+      "recommendation": "Name the SPEND_LEDGER_STATEMENT_TIMEOUT_MS timeout (dedicated pool only, SPEND_LEDGER_POOL_SIZE>0) as one cause of a blanked batch in the read_group_spend docstring, and add the SPEND_LEDGER_POOL_SIZE>0 condition to the module docstring's existing mention, in one short clause each.",
+      "status": "resolved",
+      "check_notes": "read_group_spend and module docstrings both name SPEND_LEDGER_STATEMENT_TIMEOUT_MS, dedicated pool only (SPEND_LEDGER_POOL_SIZE > 0)",
+      "fix": {
+        "change": "read_group_spend docstring names a SPEND_LEDGER_STATEMENT_TIMEOUT_MS timeout (dedicated pool only, SPEND_LEDGER_POOL_SIZE > 0) as a cause of a blanked batch; module docstring gains the POOL_SIZE > 0 condition",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/spend/default_ledger.py",
+      "line": 283,
+      "title": "Bare dict annotations on new ES helpers",
+      "problem": "code-quality.md Types And Imports requires parameterized generics instead of bare list/dict; the new helpers _named_filters(buckets: Mapping[str, list[dict]]) -> dict, _money_per_bucket_aggs(...) -> dict and _money_per_bucket_figures(aggregations: dict, ...) use bare dict.",
+      "impact": "Violates a documented code-quality standard for new code; Ruff does not enforce it, so no automated gate catches it.",
+      "recommendation": "Parameterize the annotations, for example dict[str, object] / list[dict[str, object]], or introduce one shared ES query-dict alias and use it in _named_filters, _money_per_bucket_aggs and _money_per_bucket_figures.",
+      "status": "resolved",
+      "check_notes": "_named_filters, _money_per_bucket_aggs, _money_per_bucket_figures now use dict[str, Any] / Mapping[str, Any]",
+      "fix": {
+        "change": "_named_filters, _money_per_bucket_aggs and _money_per_bucket_figures annotated with dict[str, Any] / Mapping[str, Any] instead of bare dict",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/service/spend/test_spend_group_aggregation.py",
+      "line": 302,
+      "title": "AC-13 statement test lacks project-row batch",
+      "problem": "AC-13 requires the statement for 1 and 10,000 filters to be identical and to contain no row's keys, aliases, projects or owners. test_ten_thousand_filters_issue_the_statement_one_filter_does builds only user rows sharing the common projects term (_rows_sharing); no project-row batch, where each row carries its own projects and personal_project_owners, is compiled.",
+      "impact": "The acceptance criterion is only partially covered: a regression that leaks per-row project names or owners into the grouped statement (which would grow the SQL with the table and break the one-statement design for projects-spending and CLI per-project tables) would pass the suite.",
+      "recommendation": "Add a project-table case to TestTheBatchedReadIsOneStatementWhateverTheRowCount: build 1 and 10,000 rows that each carry their own projects and personal_project_owners under a users-term common filter, render both through rendered_batch, assert the statements are identical and that no row's project names or owners appear in the SQL.",
+      "status": "resolved",
+      "check_notes": "project-row test compiles 1 and 10,000 rows under a users-term common filter with literal binds; asserts identical SQL and no row project/owner",
+      "fix": {
+        "change": "Added project-row batch case: 1 and 10,000 rows with own projects and owners under a users-term common filter compile to the identical statement naming no row",
+        "test": "tests/codemie/service/spend/test_spend_group_aggregation.py::TestTheBatchedReadIsOneStatementWhateverTheRowCount::test_ten_thousand_project_rows_issue_the_statement_one_does_and_name_none_of_them"
+      }
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/service/spend/test_spend_group_aggregation.py",
+      "line": 552,
+      "title": "AC-1 non-admitted case compared to a literal",
+      "problem": "AC-1 requires the batched read to equal per-filter aggregate_by_spend_group for a non-admitted period. test_a_rejected_range_yields_no_figure_for_every_filter_without_a_read asserts against a literal no_figure dict instead of the single read for each filter.",
+      "impact": "The acceptance criterion is only partially covered: if the single read's non-admitted answer ever differs from a bare no_figure (for example a label or flag), the batched and single reads diverge and this test still passes, breaking the task's 'figures and flags identical' requirement unnoticed.",
+      "recommendation": "Compare the batched result for the non-admitted range with aggregate_by_spend_group called per filter on the same ledger (as AC-1 requires), keeping the assertion that no read was made.",
+      "status": "resolved",
+      "check_notes": "non-admitted case now asserts the batched result equals aggregate_by_spend_group per filter and that the batch made no read",
+      "fix": {
+        "change": "Non-admitted range test compares the batched result with aggregate_by_spend_group per filter, keeping the no-read assertion",
+        "test": "tests/codemie/service/spend/test_spend_group_aggregation.py::TestTheBatchedCardsAreOneRead::test_a_rejected_range_yields_what_the_single_read_does_without_a_read"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Each read_group_spend call answers all its rows with one SpendLogs statement",
+      "status": "pass",
+      "notes": "one facade call; one sum_for_spend_groups_per_attribution read"
+    },
+    {
+      "kind": "spec",
+      "item": "Four call sites pass the common filter and keep their own signatures",
+      "status": "pass",
+      "notes": "insights, project and user handlers pass table.common"
+    },
+    {
+      "kind": "spec",
+      "item": "New port method aggregate_by_spend_group_per_filter on SpendLedger, SpendService and all six adapters",
+      "status": "pass",
+      "notes": "Protocol, facade, SpendLogs, Cutover, Default, Legacy, Noop"
+    },
+    {
+      "kind": "spec",
+      "item": "Every requested filter is answered; an absent key is a defect",
+      "status": "pass",
+      "notes": "facade keys every requested filter with every group"
+    },
+    {
+      "kind": "spec",
+      "item": "SpendService access keyword-only with no default; port and adapters keep = None",
+      "status": "pass",
+      "notes": "matches the stated signatures"
+    },
+    {
+      "kind": "spec",
+      "item": "read_group_spend signature (period, access, common_filter, report_filters, group)",
+      "status": "pass",
+      "notes": "signature matches"
+    },
+    {
+      "kind": "spec",
+      "item": "User tables pass projects term with owners; project tables pass users term",
+      "status": "pass",
+      "notes": "user_report_filters / project_filters_within build common filters accordingly"
+    },
+    {
+      "kind": "spec",
+      "item": "None filter or None period renders render_spend(None) with no read",
+      "status": "pass",
+      "notes": "early return in read_group_spend"
+    },
+    {
+      "kind": "spec",
+      "item": "A filter not carrying common_filter's terms raises before any read",
+      "status": "pass",
+      "notes": "_carries_common_term check raises ValueError"
+    },
+    {
+      "kind": "spec",
+      "item": "read_group_spend dedups, calls facade once, maps back in row order, drops READ_CONCURRENCY",
+      "status": "pass",
+      "notes": "dict.fromkeys dedup; semaphore removed"
+    },
+    {
+      "kind": "spec",
+      "item": "Facade asks each distinct ledger once via _ask with lazy all-no_figure fallback; combine_results",
+      "status": "pass",
+      "notes": "per_ledger over _distinct_ledgers; _combined_groups"
+    },
+    {
+      "kind": "spec",
+      "item": "SpendLogsLedger keeps coverage gating; one grouped statement through _read; ReadShape grouping",
+      "status": "pass",
+      "notes": "admitted gate kept; group_by consumed by raw and projected renderers"
+    },
+    {
+      "kind": "spec",
+      "item": "Group key collected in one pass; column outside PROJECTED_DIMENSIONS raises",
+      "status": "pass",
+      "notes": "grouping_columns raises UnmatchablePredicate"
+    },
+    {
+      "kind": "spec",
+      "item": "Aggregates are the existing _spend_group_aggregates FILTER columns",
+      "status": "pass",
+      "notes": "ReadShape built with _spend_group_aggregates()"
+    },
+    {
+      "kind": "spec",
+      "item": "WHERE holds only period, access predicate and common filter; no row's terms",
+      "status": "pass",
+      "notes": "where=_narrowing(access, common_filter)"
+    },
+    {
+      "kind": "spec",
+      "item": "Grouped projected statement reads the same window_rows; netted group contributes zero",
+      "status": "pass",
+      "notes": "HAVING sum(row_count) > 0 on grouped reads"
+    },
+    {
+      "kind": "spec",
+      "item": "Assignment evaluates each filter's own predicate; group counts in every match; exact Numeric",
+      "status": "pass",
+      "notes": "SpendGroupBatch.figures sums Decimal per filter"
+    },
+    {
+      "kind": "spec",
+      "item": "Evaluator handles ==, IN, AND, OR, Grouping, true(), false(); anything else raises",
+      "status": "pass",
+      "notes": "_structural_key / _lookup raise"
+    },
+    {
+      "kind": "spec",
+      "item": "Set-wise evaluator; AND evaluates most selective child first; memoised per batch",
+      "status": "partial",
+      "notes": "_compute evaluates every AND child in full before _intersection sorts by size (CR-003)"
+    },
+    {
+      "kind": "spec",
+      "item": "Predicate building and assignment run in asyncio.to_thread, off the session",
+      "status": "pass",
+      "notes": "both steps offloaded"
+    },
+    {
+      "kind": "spec",
+      "item": "A NULL column matches no comparison; NOT is unsupported",
+      "status": "pass",
+      "notes": "None values skipped in index; not_/!=/IS rejected"
+    },
+    {
+      "kind": "spec",
+      "item": "unavailable flag and partial label computed per filter",
+      "status": "pass",
+      "notes": "_spend_group_cards called per filter"
+    },
+    {
+      "kind": "spec",
+      "item": "Cutover: single leg delegates; crossing window flattens, merges via _per_key, re-nests",
+      "status": "pass",
+      "notes": "no second merge helper"
+    },
+    {
+      "kind": "spec",
+      "item": "Default: one ES search per page; filters agg per row with spend-group buckets and _money_aggs",
+      "status": "pass",
+      "notes": "_sum_money_per_bucket_per_row wraps rows filters agg"
+    },
+    {
+      "kind": "spec",
+      "item": "Default figures via _money_figure/_money_result; shared selector helper",
+      "status": "pass",
+      "notes": "_spend_group_selectors / _spend_group_results shared"
+    },
+    {
+      "kind": "spec",
+      "item": "Default pages sized to ES bucket limit; failed page gives its rows no_figure",
+      "status": "pass",
+      "notes": "FILTER_BATCH_SIZE=5000"
+    },
+    {
+      "kind": "spec",
+      "item": "Default records failures once per batch via shared recording; raises when every page fails",
+      "status": "pass",
+      "notes": "record_read_failure count=failed; raise errors[0]"
+    },
+    {
+      "kind": "spec",
+      "item": "Legacy delegates to inner Default; Noop returns no_figure per filter",
+      "status": "pass",
+      "notes": "both implemented"
+    },
+    {
+      "kind": "spec",
+      "item": "A failed batched statement gives every row no_figure; the table still renders",
+      "status": "pass",
+      "notes": "_ask fallback covers all requested filters"
+    },
+    {
+      "kind": "spec",
+      "item": "Both docstrings name SPEND_LEDGER_STATEMENT_TIMEOUT_MS (SPEND_LEDGER_POOL_SIZE>0) as a cause",
+      "status": "partial",
+      "notes": "only module docstring names it, without the POOL_SIZE>0 condition (CR-004)"
+    },
+    {
+      "kind": "spec",
+      "item": "SPEND_LEDGER_STATEMENT_TIMEOUT_MS comment says sized for one statement per table",
+      "status": "pass",
+      "notes": "config comment updated"
+    },
+    {
+      "kind": "spec",
+      "item": "_ask records one duration sample and at most one slow warning per ledger per batch",
+      "status": "pass",
+      "notes": "one _ask per distinct ledger"
+    },
+    {
+      "kind": "spec",
+      "item": "Docstrings of sum_for_spend_groups and the batched read name the AC-1 test",
+      "status": "pass",
+      "notes": "name TestTheBatchedSpendGroupReadEqualsTheSingleRead"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-1 batched read equals per-filter single read, incl. non-admitted and unavailable periods",
+      "status": "partial",
+      "notes": "non-admitted case compares to a literal no_figure dict, not the single read (CR-007)"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-2 one statement for N filters; grouped projected statement shape; netted group zero",
+      "status": "pass",
+      "notes": "covered in aggregation and projection tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-4 evaluator raises on unsupported node and column outside group key",
+      "status": "pass",
+      "notes": "test_grouped_rows.py"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-5 one facade call, row order, repeats, None rows/period, stray filter raises",
+      "status": "pass",
+      "notes": "TestReadGroupSpend"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-6 a failing batch gives every row no_figure and the table is returned",
+      "status": "pass",
+      "notes": "DEGRADING_READS extended"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-7 facade asks each ledger once and combines per filter and group",
+      "status": "pass",
+      "notes": "TestThePerFilterSpendGroupReadIsOneReadPerLedger"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-8 cutover crossing equals per-filter read; single leg delegates untouched",
+      "status": "pass",
+      "notes": "test_cutover.py"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-9 Default paging, bucket clauses, outer query, failure isolation; Legacy; Noop",
+      "status": "pass",
+      "notes": "default, legacy and registry tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-10 six-way keyword-only signature test; facade no-default test; fakes updated",
+      "status": "pass",
+      "notes": "test_access_boundary.py, test_spend_service.py"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-11 handler tests stub new method, four call sites pass common filter, figures unchanged",
+      "status": "pass",
+      "notes": "cli, project and user handler tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-12 evaluator selects the same rows as SQL on SQLite for every predicate shape",
+      "status": "pass",
+      "notes": "TestTheEvaluatorSelectsWhatTheFilterSelects"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-13 statement for 1 and 10,000 filters identical, no row keys, aliases, projects or owners",
+      "status": "partial",
+      "notes": "only user rows tested; no project-row batch (CR-006)"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-14 group visits stay within matched groups plus a per-batch constant",
+      "status": "pass",
+      "notes": "TestCostFollowsTheMatches"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals: no change to single reads, dashboard spend, cards, footer, figures, endpoints",
+      "status": "pass",
+      "notes": "single reads only refactored onto shared helpers"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 10 subjects in b916c904..HEAD match 'EPMCDME-####: Description'"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "unmet: Module Cohesion (evaluator in spend_projection.py, SpendGroupBatch in spend_logs_repository.py); bare dict annotations in new default_ledger.py helpers. Ruff gate not run"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no endpoint/auth changes; AccessScope threaded through every layer; grouped SQL columns limited to PROJECTED_DIMENSIONS; ES bodies structured; logs carry no secrets"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "7 blocking findings: 4 partial spec items from acceptance (AND evaluation not selective-first, read_group_spend docstring missing the timeout cause, AC-1 non-admitted test compares to a literal, AC-13 has no project-row batch) and 3 code-quality violations (evaluator and SpendGroupBatch appended to oversized modules, bare dict annotations). All 4 lenses and standards ran; 22 lens claims dismissed after checking code (serial ledger awaits and all-group failure fallback match existing facade patterns, the unnarrowed user-table scan is the spec's chosen design, Text columns rule out coercion drift); 0 deferred.",
+    "confidence": "high",
+    "risk_flags": []
+  }
+}

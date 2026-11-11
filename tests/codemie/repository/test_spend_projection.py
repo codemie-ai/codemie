@@ -61,6 +61,7 @@ def at(hour: int, minute: int = 0) -> datetime:
     return datetime(2026, 8, 1, hour, minute, tzinfo=timezone.utc)
 
 
+GROUP_BY = ("attr_user_id", "attr_project")
 ALIGNED = TimeRange(at(10), at(13))
 UNALIGNED = TimeRange(at(10, 30), at(14, 15))
 
@@ -404,6 +405,19 @@ class TestProjectedStatementOutput:
         assert "HAVING sum(window_rows.row_count) > 0" in rendered
         assert rendered.endswith("ORDER BY bucket")
 
+    @pytest.mark.parametrize("width", [None, "day"])
+    def test_a_grouped_projected_read_groups_window_rows_and_drops_netted_groups(self, width):
+        """A key group left only by a cancelled pair holds no row, and the raw read would not return it."""
+        shape = ReadShape(where=None, aggregates=(Aggregate(label="total"),), group_by=GROUP_BY)
+
+        statement = projected_statement(UNALIGNED, fixed(shape), (), width)
+        rendered = sql(statement)
+
+        assert list(statement.selected_columns.keys()) == [*(["bucket"] if width else []), *GROUP_BY, "total"]
+        assert "window_rows.attr_user_id, window_rows.attr_project" in rendered.split("GROUP BY")[1]
+        assert "HAVING sum(window_rows.row_count) > 0" in rendered
+        assert rendered.endswith("ORDER BY bucket" if width else "> 0")
+
     def test_labels_and_column_order_follow_the_shape(self):
         """A caller reads either statement's rows the same way, so both must name the same columns."""
         projected = projected_statement(UNALIGNED, id_bearing_read(IDS), IDS, "day")
@@ -482,6 +496,32 @@ class TestRawStatement:
         assert "GROUP BY date_bin(" in bucketed
         assert bucketed.endswith("ORDER BY bucket")
         assert "GROUP BY" not in whole
+
+    @pytest.mark.parametrize("width", [None, "day"])
+    def test_a_grouped_raw_read_groups_by_the_named_columns(self, width):
+        """One statement answers every key: the key columns lead the aggregates and join the grouping."""
+        shape = ReadShape(where=None, aggregates=(Aggregate(label="total"),), group_by=GROUP_BY)
+        keys = "litellm_spend_logs.attr_user_id, litellm_spend_logs.attr_project"
+
+        statement = raw_statement(UNALIGNED, shape, width)
+        rendered = sql(statement)
+
+        assert list(statement.selected_columns.keys()) == [*(["bucket"] if width else []), *GROUP_BY, "total"]
+        if width is None:
+            assert rendered.endswith(f"GROUP BY {keys}")
+        else:
+            assert rendered.endswith(f"{keys} ORDER BY bucket")
+            assert "GROUP BY date_bin(" in rendered
+
+    def test_a_read_without_group_keys_is_not_grouped(self):
+        """No key names the one-row period read the repository has always issued."""
+        shape = ReadShape(where=None, aggregates=(Aggregate(label="total"),), group_by=())
+
+        assert " ".join(sql(raw_statement(ALIGNED, shape)).split()) == (
+            "SELECT coalesce(sum(litellm_spend_logs.spend), 0) AS total FROM litellm_spend_logs "
+            "WHERE litellm_spend_logs.start_time >= '2026-08-01 10:00:00+00:00' "
+            "AND litellm_spend_logs.start_time < '2026-08-01 13:00:00+00:00'"
+        )
 
     def test_a_selector_less_aggregate_is_bare(self):
         """`None` means every admitted row - never an always-true filter that could later be narrowed unseen."""

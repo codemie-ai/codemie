@@ -643,3 +643,12 @@ class TestEveryImplementationOfThePortAcceptsTheBoundaryAndTheFilterOnAWholeWind
 
         for name in ("access", "report_filter"):
             assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+
+    @pytest.mark.parametrize("implementation", _IMPLEMENTATIONS)
+    def test_the_batched_spend_group_read_takes_its_arguments_by_keyword_only(self, implementation) -> None:
+        """The same reason, sharper: `common_filter` and each of `report_filters` are both filters, and a
+        transposed pair would narrow every row by the dashboard's filter alone."""
+        parameters = inspect.signature(implementation.aggregate_by_spend_group_per_filter).parameters
+
+        for name in ("access", "common_filter", "report_filters"):
+            assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
