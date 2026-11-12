@@ -95,7 +95,7 @@ def test_alembic_upgrades_one_revision_at_a_time_ending_at_the_head_on_that_conn
 
     targets = [call.args[1] for call in upgrade.call_args_list]
     assert len(targets) > 3 and len(set(targets)) == len(targets)
-    assert targets[0] == "a1c1a0000001" and targets[-1] == "a1c1a0000011"  # the first and the head
+    assert targets[0] == "a1c1a0000001" and targets[-1] == "a1c1a0000017"  # the first and the head
     assert targets.index("a1c1a0000010") < targets.index("a1c1a0000011")  # main's publication contract first
     cfg = upgrade.call_args.args[0]
     assert cfg.attributes == {"connection": connection, "schema": "codemie_analytics"}
@@ -406,7 +406,7 @@ def test_the_activity_facts_are_one_revision_after_the_publication_contract_with
         module = _load_revision(path.name)
         revisions[module.revision] = module.down_revision
     heads = set(revisions) - {down for down in revisions.values() if down}
-    assert heads == {"a1c1a0000011"}
+    assert heads == {"a1c1a0000017"}
 
 
 def test_the_activity_columns_are_nullable_without_default_under_a_bounded_lock_wait() -> None:
@@ -506,3 +506,122 @@ def test_list_indexes_are_partial_over_the_facts_and_the_shared_scope() -> None:
 
 def test_the_indexes_downgrade_drops_the_indexes_in_reverse() -> None:
     assert [f"DROP INDEX IF EXISTS {name}" for name in reversed(_ALL_INDEXES)] == FACTS.INDEXES_DOWNGRADE
+
+
+SORT_KEYS = _load_revision("a1c1a0000012_cli_analytics_session_sort_keys.py")
+_SORT_COLUMNS = {
+    "cache_read_total": "bigint",
+    "api_call_total": "bigint",
+    "classifier_names": "text[]",
+    "models_used": "text[]",
+    "kind_masks": "int[]",
+    "cost_key": "numeric",
+    "rates_version": "text",
+}
+_SORT_INDEX_NAMES = ["session_dims_fw_win", "session_dims_rates_version"]
+
+
+def test_the_sort_keys_are_one_revision_after_the_activity_facts_with_one_head() -> None:
+    assert SORT_KEYS.revision == "a1c1a0000012"
+    assert SORT_KEYS.down_revision == "a1c1a0000011"
+
+    versions = Path(migrations.ALEMBIC_DIR) / "versions"
+    revisions = {}
+    for path in versions.glob("a1c1a*.py"):
+        module = _load_revision(path.name)
+        revisions[module.revision] = module.down_revision
+    heads = set(revisions) - {down for down in revisions.values() if down}
+    assert heads == {"a1c1a0000017"}
+
+
+def test_the_column_step_adds_nullable_columns_without_default_and_a_disabled_control_row() -> None:
+    statements = [_normalized(s) for s in SORT_KEYS.column_statements()]
+    adds = [s for s in statements if "ALTER TABLE session_dims ADD COLUMN" in s]
+
+    assert len(adds) == len(_SORT_COLUMNS)
+    for column, sql_type in _SORT_COLUMNS.items():
+        # only a missing column is altered: ALTER ... IF NOT EXISTS locks the table even when the column exists
+        assert any(
+            "IF NOT EXISTS (SELECT 1 FROM pg_attribute" in s and f"ADD COLUMN {column} {sql_type};" in s for s in adds
+        )
+    assert not any("NOT NULL" in s or "DEFAULT" in s for s in adds)
+    joined = " ".join(statements)
+    assert "session_sort_keys_control (enabled boolean NOT NULL DEFAULT false, operator_disabled boolean" in joined
+    assert "INSERT INTO session_sort_keys_control (enabled) SELECT false WHERE NOT EXISTS" in joined
+    assert statements[0] == "SET LOCAL lock_timeout = '5s'"
+    assert sum(s.startswith("SET LOCAL lock_timeout") for s in statements) == 1  # the index step restores the runner's
+
+
+def test_the_sort_keys_upgrade_commits_the_columns_before_the_index_build_and_the_downgrade_drops_in_reverse() -> None:
+    events: list[str] = []
+    bind = MagicMock()
+    bind.commit.side_effect = lambda: events.append("COMMIT")
+    with (
+        patch.object(SORT_KEYS.op, "execute", side_effect=events.append),
+        patch.object(SORT_KEYS.op, "get_bind", return_value=bind),
+    ):
+        SORT_KEYS.upgrade()
+        events.append("--")
+        SORT_KEYS.downgrade()
+
+    # the columns and the control table, a commit of them, then the index: a lock timeout of the build cannot take them back
+    assert events == [
+        *SORT_KEYS.column_statements(),
+        "COMMIT",
+        *SORT_KEYS.index_statements(),
+        "--",
+        *SORT_KEYS.DOWNGRADE,
+    ]
+    assert SORT_KEYS.DOWNGRADE[0] == "DROP INDEX IF EXISTS session_dims_rates_version"
+    assert SORT_KEYS.DOWNGRADE[1] == "DROP INDEX IF EXISTS session_dims_fw_win"
+    assert SORT_KEYS.DOWNGRADE[2] == "DROP TABLE IF EXISTS session_sort_keys_control"
+    assert SORT_KEYS.DOWNGRADE[3].startswith("ALTER TABLE session_dims DROP COLUMN IF EXISTS")
+    for column in _SORT_COLUMNS:
+        assert f"DROP COLUMN IF EXISTS {column}" in SORT_KEYS.DOWNGRADE[3]
+
+
+def test_the_sort_index_predicate_is_a_byte_for_byte_copy_of_the_activity_facts_one() -> None:
+    assert SORT_KEYS.SHARED_PREDICATE == FACTS.SHARED_PREDICATE
+    partial = dict(SORT_KEYS.INDEXES)["session_dims_fw_win"]
+    assert f" WHERE has_activity AND {FACTS.SHARED_PREDICATE}" in partial
+
+
+def test_the_sort_index_step_bounds_the_lock_wait_once_builds_idempotently_and_restores_it() -> None:
+    statements = [_normalized(s) for s in SORT_KEYS.index_statements()]
+
+    assert statements[0] == "SET LOCAL lock_timeout = '5s'"
+    assert statements[1:-1] == [
+        s
+        for name, create in SORT_KEYS.INDEXES
+        for s in (_normalized(SORT_KEYS.drop_if_invalid(name)), _normalized(create))
+    ]
+    assert statements[-1] == f"SET LOCAL lock_timeout = '{migrations.LOCK_TIMEOUT}'"
+    assert sum(s.startswith("SET LOCAL lock_timeout") for s in statements) == 2  # the bound and the restore
+    creates = [s for s in statements if s.startswith("CREATE INDEX IF NOT EXISTS")]
+    assert [c.split()[5] for c in creates] == _SORT_INDEX_NAMES
+    joined = " ".join(statements)
+    assert "CONCURRENTLY" not in joined and "fillfactor" not in joined.lower()
+
+
+@pytest.mark.parametrize("index", _SORT_INDEX_NAMES)
+def test_an_invalid_sort_index_is_dropped_before_the_idempotent_create(index: str) -> None:
+    drop = _normalized(SORT_KEYS.drop_if_invalid(index))
+
+    assert f"c.relname = '{index}'" in drop and "NOT i.indisvalid" in drop and f"DROP INDEX {index};" in drop
+    statements = [_normalized(s) for s in SORT_KEYS.index_statements()]
+    create = next(i for i, s in enumerate(statements) if s.startswith(f"CREATE INDEX IF NOT EXISTS {index} "))
+    assert statements.index(drop) == create - 1
+
+
+def test_the_framework_window_and_the_stamp_indexes_are_built_the_unused_key_indexes_are_not() -> None:
+    create = {name: _normalized(sql) for name, sql in SORT_KEYS.INDEXES}
+
+    # the window index carries what the framework and the stored ctx statements read from a session of the window
+    assert list(create) == ["session_dims_fw_win", "session_dims_rates_version"]
+    assert (
+        "(started_at) INCLUDE (session_id, classifier_names, rates_version, cache_read_total, api_call_total, "
+        "cost_key, models_used, kind_masks)" in create["session_dims_fw_win"]
+    )
+    # the unstamped sessions (set S) are read from the stamp alone: IS NULL, and a version other than the current one
+    assert create["session_dims_rates_version"].endswith("ON session_dims (rates_version)")
+    assert not hasattr(SORT_KEYS, "CREATE_CTX_KEY") and not hasattr(SORT_KEYS, "CREATE_COST_KEY")

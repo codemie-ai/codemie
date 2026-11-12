@@ -30,7 +30,9 @@ from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
 from tests.codemie.repository.cli_analytics.support.bounded import bounded_to_itself
+from tests.codemie.repository.cli_analytics.support.grouped_money import fake_cost_money, price_groups
 from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
+from tests.codemie.repository.cli_analytics.support.users_reads import install_users_reads
 
 CATALOG = "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.get_all_llm_model_info"
 MODEL = "claude-haiku"
@@ -82,14 +84,22 @@ def handler_over(sessions):
         by_dev.setdefault(s["dev"], []).append(sid)
 
     repo = MagicMock()
+    repo.materialize_sel = AsyncMock(return_value=None)
+    repo.get_cost_models = AsyncMock(return_value=[])
+    money_rows = [
+        {**row(sid, s), "funding_route": s.get("route"), "personal_billed": s["paid"] == "personal"}
+        for sid, s in sessions.items()
+    ]
+    devs = {sid: s["dev"] for sid, s in sessions.items()}
+    repo.get_cost_money = fake_cost_money(money_rows, devs)
     repo.get_session_model_costs = model_costs
     repo.get_session_funding_costs = funding_costs
     repo.get_cost_kpis = AsyncMock(return_value=[{"total_sessions": len(sessions), "spend_sessions": len(spend)}])
-    repo.get_cost_by_user = AsyncMock(
-        return_value=[{"developer_name": d, "session_ids": ids} for d, ids in by_dev.items()]
-    )
-    repo.get_users = AsyncMock(
-        return_value=[{"developer_name": d, "session_ids": ids, "session_count": len(ids)} for d, ids in by_dev.items()]
+    repo.get_cost_by_user = AsyncMock(return_value=[{"developer_name": d} for d in by_dev])
+    install_users_reads(
+        repo,
+        [{"developer_name": d, "session_count": len(ids)} for d, ids in by_dev.items()],
+        money=lambda: price_groups(money_rows, devs),
     )
     repo.get_session_cost_facts = AsyncMock(
         return_value=[
@@ -112,15 +122,12 @@ def handler_over(sessions):
         "get_model_breakdown",
         "get_lines_totals",
         "get_lines_daily",
-        "get_lines_by_user",
         "get_lines_by_session",
         "get_turns_by_session",
         "get_file_facts_by_session",  # no session changed a file: every priced session is dead
         "get_tool_success_by_session",
         "get_session_durations",
         "get_class_lists",
-        "get_users_daily_activity",
-        "get_users_last_active",
         "get_skill_names_by_session",
     ):
         setattr(repo, name, AsyncMock(return_value=[]))
@@ -140,7 +147,7 @@ async def test_cost_excludes_personal_paid_spend_and_divides_by_the_spend_sessio
     users = {r["developer_name"]: r["cost_usd"] for r in data["cost_by_user"]}
     assert users == {"alice": pytest.approx(CORPORATE_COST), "bob": 0.0}
     assert [(r["model_name"], r["cost_usd"]) for r in data["cost_by_model"]] == [(MODEL, pytest.approx(CORPORATE_COST))]
-    assert calls == [True]
+    assert calls == []  # the money is grouped in one statement, not priced from session rows
 
 
 @pytest.mark.asyncio
@@ -179,7 +186,7 @@ async def test_users_cost_is_corporate_only_and_every_user_stays_listed():
     assert rows["alice"]["cost_usd"] == pytest.approx(CORPORATE_COST)
     assert rows["bob"]["cost_usd"] == 0.0
     assert (rows["alice"]["session_count"], rows["bob"]["session_count"]) == (1, 2)
-    assert calls == [True]
+    assert calls == []  # the users' money is grouped in one statement, not priced from session rows
 
 
 @pytest.mark.asyncio

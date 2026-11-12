@@ -22,7 +22,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-from codemie.repository.cli_analytics.postgres import maintenance, session_activity
+from codemie.repository.cli_analytics.ports import ModelRates
+from codemie.repository.cli_analytics.postgres import maintenance, session_activity, session_sort_keys
+from codemie.repository.cli_analytics.postgres.rates_version import rates_version
 from codemie.repository.cli_analytics.postgres.maintenance import (
     LEDGER_TABLE,
     RAW_TABLES,
@@ -153,10 +155,14 @@ _REAL_DERIVE_SESSION_ACTIVITY = PartitionMaintainer._derive_session_activity  # 
 
 
 @pytest.fixture(autouse=True)
-def _no_activity_backfill():
+def _no_activity_backfill():  # also the sort-key step, which needs rates and a database
     """The other tests' connection fakes do not model the backfill's statements, so the step is replaced there; the
     tests of the step itself (the end of this file) call `_REAL_DERIVE_SESSION_ACTIVITY` with the backfill patched."""
-    with patch.object(PartitionMaintainer, "_derive_session_activity", AsyncMock()):
+    with (
+        patch.object(PartitionMaintainer, "_derive_session_activity", AsyncMock()),
+        patch.object(PartitionMaintainer, "_backfill_session_sort_keys", AsyncMock()),
+        patch.object(PartitionMaintainer, "_backfill_model_groups", AsyncMock()),
+    ):
         yield
 
 
@@ -166,6 +172,8 @@ def _steps(**failures):
         "_drop_expired",
         "_purge_expired_rows",
         "_derive_session_activity",
+        "_backfill_session_sort_keys",
+        "_backfill_model_groups",
         "_count_default_rows",
     )
     return {name: AsyncMock(side_effect=failures.get(name)) for name in names}
@@ -252,7 +260,10 @@ class ExpiredPartitionsConnection(FailingConnection):
         {"parent": "log_events", "child": "log_events_w2026_25"},
     ]
 
-    async def fetch(self, sql, *args):
+    async def fetch(self, sql, *args, timeout=None):
+        if sql.startswith("SELECT DISTINCT session_id"):  # the sessions of a partition, one batch, then none
+            self.statements.append(sql)
+            return [{"session_id": "s1"}, {"session_id": "s2"}] if args[0] == "" else []
         return self.EXISTING
 
 
@@ -272,6 +283,67 @@ async def test_an_expired_partition_that_cannot_be_dropped_does_not_keep_the_lat
 
     assert report.dropped == ["ingest_dedup_d20260908", "log_events_w2026_25"]
     assert report.failed == ["cost_daily_m202508"]
+
+
+@pytest.mark.asyncio
+async def test_an_expired_partition_of_a_sort_key_source_unstamps_its_sessions_in_batches_before_it_is_dropped():
+    conn = ExpiredPartitionsConnection("no statement fails")
+    report = maintenance.MaintenanceReport()
+
+    await PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY)._drop_expired(conn, TODAY, report)  # type: ignore[arg-type]
+
+    statements = conn.statements
+    drop = statements.index('DROP TABLE IF EXISTS "cost_daily_m202508"')
+    walk = next(i for i, sql in enumerate(statements) if sql.startswith("SELECT DISTINCT session_id"))
+    batch = next(
+        i
+        for i, sql in enumerate(statements)
+        if sql.startswith("UPDATE session_dims SET rates_version = NULL WHERE session_id = ANY")
+    )
+    inside = next(i for i, sql in enumerate(statements) if 'SELECT session_id FROM "cost_daily_m202508"' in sql)
+    # the stored keys read these rows: the sessions lose their stamp, first in committed batches (a walk of the
+    # partition by session_id, not one statement over all of it), then the DROP's own transaction catches the rest
+    assert walk < batch < inside < drop
+    assert 'FROM "cost_daily_m202508"' in statements[walk] and "ORDER BY session_id LIMIT" in statements[walk]
+    assert "rates_version IS NOT NULL" in statements[inside]
+    # a table the keys are not derived from drops without it
+    others = [sql for sql in statements if sql.startswith("UPDATE session_dims")]
+    assert len(others) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_purge_unstamps_the_sessions_of_the_rows_it_deletes_and_counts_only_the_deleted_rows():
+    conn = FailingConnection("no statement fails")
+
+    await PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY).run(conn)  # type: ignore[arg-type]
+
+    statements = conn.statements
+    for source, delete in (
+        ("session_skills", "DELETE FROM session_skills"),
+        ("cost_daily_default", 'DELETE FROM "cost_daily_default"'),
+        ("invocations_hourly_default", 'DELETE FROM "invocations_hourly_default"'),
+    ):
+        unstamp = next(i for i, sql in enumerate(statements) if sql.startswith("UPDATE session_dims") and source in sql)
+        removal = next(i for i, sql in enumerate(statements) if sql.startswith(delete))
+        assert unstamp < removal, source  # also in one transaction: the group runs inside `conn.transaction()`
+    assert not any(
+        sql.startswith("UPDATE session_dims") and ("ingest_dedup" in sql or "log_events" in sql) for sql in statements
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_unstamped_sessions_are_not_counted_as_purged_rows():
+    class _Counting(FailingConnection):
+        async def execute(self, sql, *args, timeout=None):
+            await super().execute(sql, *args, timeout=timeout)
+            return "UPDATE 7" if sql.startswith("UPDATE session_dims") else "DELETE 3"
+
+    conn = _Counting("no statement fails")
+
+    report = await PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY).run(conn)  # type: ignore[arg-type]
+
+    deletes = sum(1 for sql in conn.statements if sql.startswith("DELETE FROM"))
+    assert deletes and report.purged_rows == deletes * 3  # an UPDATE of 7 sessions adds nothing
 
 
 @pytest.mark.parametrize("error", [SERVER_TIMEOUT, TimeoutError()], ids=["server-side", "client-side"])
@@ -427,3 +499,209 @@ async def test_the_activity_step_runs_after_the_retention_steps():
 
     # retention first: a slow backfill must not delay dropping partitions or purging sessions
     assert order.index("_derive_session_activity") > order.index("_purge_expired_rows")
+
+
+def _rates_for(names):  # the rates callable the step is given
+    return {n: ModelRates(model=n, input=1e-6) for n in names}
+
+
+_REAL_SORT_KEYS_STEP = PartitionMaintainer._backfill_session_sort_keys
+
+
+def _result(derived=0, repriced=0):
+    return session_sort_keys.SortKeysResult(derived, repriced, 1, 0.1, 100)
+
+
+@pytest.mark.asyncio
+async def test_the_sort_keys_step_backfills_then_re_prices_with_the_rates_it_was_given_and_reports_the_counts():
+    maintainer = PartitionMaintainer(MagicMock(), POLICY)
+    maintainer.set_rates(lambda: "v-now", _rates_for)
+    backfill, reprice = AsyncMock(return_value=_result(derived=7)), AsyncMock(return_value=_result(repriced=3))
+    auto_enable = AsyncMock(return_value=False)
+    report = maintenance.MaintenanceReport()
+
+    with (
+        patch.object(session_sort_keys, "backfill_session_sort_keys", backfill),
+        patch.object(session_sort_keys, "reprice_cost_keys", reprice),
+        patch.object(session_sort_keys, "auto_enable_session_sort_keys", auto_enable),
+    ):
+        await _REAL_SORT_KEYS_STEP(maintainer, MagicMock(), report)
+
+    # the stamp is the current catalog version, the one the readers compare with; the rates callable is handed on
+    for call in (backfill, reprice):
+        args = call.await_args.args
+        assert args[1:4] == (_rates_for, "v-now", maintenance._SORT_KEYS_BATCH)
+        assert call.await_args.kwargs["budget_s"] <= maintenance._SORT_KEYS_BUDGET_S
+    assert (report.sort_keys_derived, report.sort_keys_repriced) == (7, 3)
+    # last, the readers are switched on once every session carries the current stamp
+    assert auto_enable.await_args.args[1] == "v-now"
+
+
+@pytest.mark.asyncio
+async def test_the_sort_keys_step_splits_one_budget_between_backfill_and_re_price():
+    maintainer = PartitionMaintainer(MagicMock(), POLICY)
+    maintainer.set_rates(lambda: "v-now", _rates_for)
+    backfill = AsyncMock(return_value=_result())
+    reprice = AsyncMock(return_value=_result())
+
+    with (
+        patch.object(session_sort_keys, "backfill_session_sort_keys", backfill),
+        patch.object(session_sort_keys, "reprice_cost_keys", reprice),
+        patch.object(session_sort_keys, "auto_enable_session_sort_keys", AsyncMock(return_value=False)),
+    ):
+        await _REAL_SORT_KEYS_STEP(maintainer, MagicMock(), maintenance.MaintenanceReport())
+
+    # the backfill may not take it all; the re-price gets what the real time left of the one budget (here nearly all)
+    assert backfill.await_args.kwargs["budget_s"] == maintenance._SORT_KEYS_BUDGET_S / 2
+    assert 0 < reprice.await_args.kwargs["budget_s"] <= maintenance._SORT_KEYS_BUDGET_S
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("version", "rates"),
+    [(None, _rates_for), (lambda: "v-now", None), (lambda: rates_version({}), _rates_for)],
+    ids=["no-version", "no-rates", "empty-catalog"],
+)
+async def test_the_sort_keys_step_does_nothing_without_rates(version, rates):
+    maintainer = PartitionMaintainer(MagicMock(), POLICY)
+    maintainer.set_rates(version, rates)
+    backfill = AsyncMock()
+
+    with (
+        patch.object(session_sort_keys, "backfill_session_sort_keys", backfill),
+        patch.object(session_sort_keys, "reprice_cost_keys", backfill),
+    ):
+        await _REAL_SORT_KEYS_STEP(maintainer, MagicMock(), maintenance.MaintenanceReport())
+
+    backfill.assert_not_awaited()  # an empty catalog would stamp every session with a zero price
+
+
+@pytest.mark.asyncio
+async def test_a_failing_sort_keys_step_is_reported_and_the_other_steps_run():
+    steps = _steps()
+    del steps["_backfill_session_sort_keys"]
+    maintainer = PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY)
+    maintainer.set_rates(lambda: "v-now", _rates_for)
+    failing = AsyncMock(side_effect=asyncpg.exceptions.QueryCanceledError("statement timeout"))
+
+    with (
+        patch.multiple(PartitionMaintainer, **steps),
+        patch.object(PartitionMaintainer, "_backfill_session_sort_keys", _REAL_SORT_KEYS_STEP),
+        patch.object(session_sort_keys, "backfill_session_sort_keys", failing),
+        patch.object(maintenance, "logger"),
+    ):
+        report = await maintainer.run(RecordingConnection())  # type: ignore[arg-type]
+
+    assert report.failed == ["_backfill_session_sort_keys"]
+    steps["_count_default_rows"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_sort_keys_step_runs_after_the_retention_steps_and_the_activity_step():
+    order: list[str] = []
+    steps = _steps()
+    for name, step in steps.items():
+        step.side_effect = lambda *a, _n=name, **k: order.append(_n)
+
+    with patch.multiple(PartitionMaintainer, **steps):
+        await PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY).run(RecordingConnection())  # type: ignore[arg-type]
+
+    assert order.index("_backfill_session_sort_keys") > order.index("_derive_session_activity")
+
+
+_REAL_GROUPS_STEP = PartitionMaintainer._backfill_model_groups
+
+
+def _groups_result(derived=0):
+    return session_sort_keys.ModelGroupsResult(derived, 1, 0.1, 100)
+
+
+@pytest.mark.asyncio
+async def test_the_model_groups_step_derives_one_batch_with_the_rates_it_was_given_then_tries_the_auto_enable():
+    maintainer = PartitionMaintainer(MagicMock(), POLICY)
+    maintainer.set_rates(lambda: "v-now", _rates_for)
+    backfill, auto_enable = AsyncMock(return_value=_groups_result(derived=4)), AsyncMock(return_value=False)
+    report = maintenance.MaintenanceReport()
+
+    with (
+        patch.object(session_sort_keys, "backfill_model_groups", backfill),
+        patch.object(session_sort_keys, "auto_enable_model_groups", auto_enable),
+    ):
+        await _REAL_GROUPS_STEP(maintainer, MagicMock(), report)
+
+    args, kwargs = backfill.await_args.args, backfill.await_args.kwargs
+    assert args[1:4] == (_rates_for, "v-now", maintenance._MODEL_GROUPS_BATCH)
+    assert kwargs["max_batches"] == 1 and kwargs["pause_s"] == maintenance._SORT_KEYS_PAUSE_S
+    assert report.model_groups_derived == 4
+    auto_enable.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("version", "rates"),
+    [(None, _rates_for), (lambda: "v-now", None), (lambda: rates_version({}), _rates_for)],
+    ids=["no-version", "no-rates", "empty-catalog"],
+)
+async def test_the_model_groups_step_does_nothing_without_rates(version, rates):
+    maintainer = PartitionMaintainer(MagicMock(), POLICY)
+    maintainer.set_rates(version, rates)
+    backfill = AsyncMock()
+
+    with patch.object(session_sort_keys, "backfill_model_groups", backfill):
+        await _REAL_GROUPS_STEP(maintainer, MagicMock(), maintenance.MaintenanceReport())
+
+    backfill.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_model_groups_step_runs_after_the_sort_keys_step_and_a_failure_is_isolated():
+    order: list[str] = []
+    steps = _steps()
+    for name, step in steps.items():
+        step.side_effect = lambda *a, _n=name, **k: order.append(_n)
+    with patch.multiple(PartitionMaintainer, **steps):
+        await PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY).run(RecordingConnection())  # type: ignore[arg-type]
+    assert order.index("_backfill_model_groups") > order.index("_backfill_session_sort_keys")
+
+    steps = _steps(_backfill_model_groups=asyncpg.exceptions.QueryCanceledError("statement timeout"))
+    with patch.multiple(PartitionMaintainer, **steps), patch.object(maintenance, "logger"):
+        report = await PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY).run(RecordingConnection())  # type: ignore[arg-type]
+    assert report.failed == ["_backfill_model_groups"]
+    steps["_count_default_rows"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_busy_parent_leaves_an_expired_partition_and_its_sessions_stamps_untouched():
+    # The unstamping is committed before the DROP: without the lock probe a DROP that loses its lock wait would leave
+    # the partition in place with its sessions unstamped, again on every run.
+    from contextlib import asynccontextmanager
+
+    class BusyParent:
+        def __init__(self):
+            self.executed = []
+
+        async def execute(self, sql, *args, timeout=None):
+            self.executed.append(sql)
+            if sql.startswith("LOCK TABLE"):
+                raise asyncpg.LockNotAvailableError("canceling statement due to lock timeout")
+
+        def transaction(self):
+            @asynccontextmanager
+            async def tx():
+                yield
+
+            return tx()
+
+    conn = BusyParent()
+    maintainer = PartitionMaintainer(MagicMock(), MagicMock())  # the policy is not read: the partitions are given
+    report = maintenance.MaintenanceReport()
+    with (
+        patch.object(maintainer, "_existing", AsyncMock(return_value=[("cost_daily", "cost_daily_p")])),
+        patch.object(maintenance, "expired_partitions", return_value=[("cost_daily", "cost_daily_p")]),
+        patch.object(maintainer, "_unstamp_sessions_of", AsyncMock()) as unstamp,
+    ):
+        await maintainer._drop_expired(conn, date(2026, 11, 12), report)
+
+    unstamp.assert_not_awaited()
+    assert not any(sql.startswith(("DROP", "UPDATE")) for sql in conn.executed)
+    assert report.dropped == [] and report.failed == []

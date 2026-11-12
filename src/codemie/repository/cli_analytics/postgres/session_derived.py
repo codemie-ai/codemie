@@ -133,20 +133,40 @@ def _framework(classify: Callable[[list[str]], str], session_id: str, skill_name
         return None
 
 
+_READ_NAMES = f"""
+SELECT sd.session_id, {CLASSIFIER_NAMES_SQL} AS skill_names
+FROM session_dims sd
+WHERE sd.session_id = ANY($1::text[])"""
+
+
+async def read_classifier_names(
+    conn: asyncpg.Connection, session_ids: Sequence[str], timeout: float
+) -> dict[str, list[str]]:
+    """The classifier names of the sessions' rows, for the sessions that have a row and at least one name."""
+    if not session_ids:
+        return {}
+    rows = await conn.fetch(_READ_NAMES, list(session_ids), timeout=timeout)
+    return {r["session_id"]: list(r["skill_names"]) for r in rows if r["skill_names"]}
+
+
 async def update_session_derived(
     conn: asyncpg.Connection, session_ids: list[str], classify: Callable[[list[str]], str] | None, timeout: float
-) -> None:
+) -> dict[str, list[str]]:
     """Recompute feature_id (always) and delivery_framework (with a classifier) of the sessions' rows.
 
     `timeout` is the client-side limit of each statement: the caller's, so that a slow one ends as
-    every other statement of its transaction does.
+    every other statement of its transaction does. Returns the classifier names it read (only sessions that have
+    some), which the stored sort keys reuse instead of reading them again.
     """
     if not session_ids:
-        return
+        return {}
     ids: list[str] = []
     features: list[str | None] = []
     frameworks: list[str | None] = []
+    names: dict[str, list[str]] = {}
     for row in await conn.fetch(_READ, session_ids, timeout=timeout):
+        if row["skill_names"]:
+            names[row["session_id"]] = list(row["skill_names"])
         feature = feature_id(row["branch_dominant"])
         framework = None if classify is None else _framework(classify, row["session_id"], row["skill_names"])
         if feature is None and framework is None:
@@ -155,8 +175,9 @@ async def update_session_derived(
         features.append(feature)
         frameworks.append(framework)
     if not ids:
-        return
+        return names
     if classify is None:
         await conn.execute(_WRITE_FEATURE_ID, ids, features, timeout=timeout)
     else:
         await conn.execute(_WRITE_DERIVED, ids, features, frameworks, timeout=timeout)
+    return names

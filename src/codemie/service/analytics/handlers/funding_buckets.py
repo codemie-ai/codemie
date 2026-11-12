@@ -21,10 +21,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from codemie.repository.cli_analytics.ports import CostGroup
+from codemie.repository.cli_analytics.scope import FUNDING_ROUTES
 from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, unpriced_display_names
 from codemie.service.analytics.handlers.session_money import token_counts
-
-FUNDING_ROUTES = ("api_based", "subscription", "unknown")
 
 
 def _s(value: Any) -> str:
@@ -79,6 +79,28 @@ def buckets(priced: list[dict], session_ids: Any = None, model: str | None = Non
     return {
         "funding": {route: _bucket([r for r in rows if r["funding_route"] == route]) for route in FUNDING_ROUTES},
         "personal_billed": _bucket([r for r in rows if r["personal_billed"]]),
+    }
+
+
+def _group_bucket(group: CostGroup | None) -> dict:
+    if group is None:
+        return {"cost_usd": 0.0, "session_count": 0, "cost_incomplete": False, "unpriced_models": []}
+    return {
+        "cost_usd": float(group.cost_usd),
+        "session_count": group.session_count,
+        "cost_incomplete": group.cost_incomplete,
+        "unpriced_models": unpriced_display_names(group.unpriced_models),  # a route reads as its plain name, once
+    }
+
+
+def buckets_from_groups(route_rows: list[CostGroup], personal_rows: list[CostGroup]) -> dict[str, Any]:
+    """The `buckets()` shape from SQL-grouped rows: `route_rows` carry `funding_route`, `personal_rows` carry
+    `personal_billed` (true and false rows; the true one is the bucket). A missing row is an empty bucket."""
+    by_route = {g.keys.get("funding_route"): g for g in route_rows}
+    personal = next((g for g in personal_rows if g.keys.get("personal_billed") is True), None)
+    return {
+        "funding": {route: _group_bucket(by_route.get(route)) for route in FUNDING_ROUTES},
+        "personal_billed": _group_bucket(personal),
     }
 
 

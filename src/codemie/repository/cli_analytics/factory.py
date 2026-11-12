@@ -52,7 +52,7 @@ def _build_storage() -> CliAnalyticsStorage:
     settings = AnalyticsPgSettings.from_config(config)
     engine = AnalyticsPgEngine(settings)  # one dedicated pool for ingest, reads and jobs
     return CliAnalyticsStorage(
-        reader=PostgresCliAnalyticsReader(engine),
+        reader=PostgresCliAnalyticsReader(engine, s_cap=settings.sort_keys_s_cap),
         ingestor=PostgresTelemetryIngestor(engine),
         runtime=PostgresAnalyticsRuntime(engine, settings),
         raw_retention_days=settings.raw_retention_days,

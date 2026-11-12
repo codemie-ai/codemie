@@ -23,7 +23,7 @@ aliases each method documents in the adapter.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +39,90 @@ SESSION_PAGE_SORTS = ("start_time", "cost_usd", "ctx_per_call")
 
 
 @dataclass(frozen=True)
+class CostGroup:
+    """One row of a grouped cost result: the key columns its grouping uses and the money summed under them. Money is
+    `float` already (the reader converts every value), so a zero reads back as 0.0."""
+
+    keys: Mapping[str, str | bool | None]
+    cost_usd: float
+    cache_read_cost_usd: float
+    session_count: int
+    unpriced_models: tuple[str, ...]
+    cost_incomplete: bool
+
+
+# The groupings a dashboard request asks for, by the name each carries in the `grouping` column.
+G_TOTAL = "total"
+G_USER = "user"
+G_MODEL = "model"
+G_ROUTE = "route"
+G_PERSONAL = "personal"
+G_USER_ROUTE = "user_route"
+G_USER_PERSONAL = "user_personal"
+G_MODEL_ROUTE = "model_route"
+G_MODEL_PERSONAL = "model_personal"
+
+
+@dataclass(frozen=True)
+class GroupedMoney:
+    """The rows of each requested grouping, keyed by the `G_*` names; a grouping with no row has an empty list."""
+
+    groups: Mapping[str, list[CostGroup]]
+
+
+@dataclass(frozen=True)
+class UsersMoneyPage:
+    """One page of the Users ranking: the page's developers in rank order, the count of all developers of the window
+    (before LIMIT/OFFSET) and the money of the window. `money` holds the window groupings (`G_TOTAL`, `G_ROUTE`,
+    `G_PERSONAL`) for every developer and the per-user ones (`G_USER`, `G_USER_ROUTE`, `G_USER_PERSONAL`) for the
+    page's developers only; a developer with no priced row has no row in them."""
+
+    developers: list[str]
+    total_count: int
+    money: GroupedMoney
+
+
+@dataclass(frozen=True)
+class RollupUsers:
+    """The Users page's data for a whole window from the per-user start-day rollup: `money_page` ranks and prices every
+    developer (`developers` is the whole ranking, no page cut), the lists are the rows the live statements return for
+    every developer (`get_users`, `get_developer_session_facts`, `get_lines_by_user`, `get_users_last_active`)."""
+
+    money_page: UsersMoneyPage
+    user_rows: list[dict]
+    developer_facts: list[dict]
+    lines_rows: list[dict]
+    last_active_rows: list[dict]
+
+
+@dataclass(frozen=True)
+class RollupCost:
+    """/cost's data for a whole window from the per-user start-day rollup: `money` holds the spend total, per developer
+    (the sessions with a `cost_daily` row) and per model groupings (`G_TOTAL`, `G_USER`, `G_MODEL`), `developers` the
+    developers `get_cost_by_user` lists, and the rest the totals `get_cost_kpis` gives."""
+
+    money: GroupedMoney
+    developers: list[str]
+    total_sessions: int
+    spend_sessions: int
+    total_tokens: int
+
+
+@dataclass(frozen=True)
+class RollupOverview:
+    """/overview's data for a whole window from the per-user start-day rollup, in the shapes the live statements return
+    (each a list of rows with a `part` column): `money_rows` (`get_overview_money`: the spend and the dead sessions; no
+    estimate buckets), `fact_rows` (`get_overview_facts`), `model_rows` (`get_overview_models`, in its order, no class
+    lists), `kpi_rows` (`get_dashboard_kpis`) and `line_rows` (`get_overview_lines`, no class lists)."""
+
+    money_rows: list[dict]
+    fact_rows: list[dict]
+    model_rows: list[dict]
+    kpi_rows: list[dict]
+    line_rows: list[dict]
+
+
+@dataclass(frozen=True)
 class ModelRates:
     """Per-token catalog rates of one raw model name, resolved by the service layer (the repository never
     imports it). A rate is None when the model has no catalog entry or the catalog lacks that kind.
@@ -50,6 +134,12 @@ class ModelRates:
     cache_read: float | None = None
     cache_write: float | None = None
     cache_write_1h: float | None = None
+
+
+# The rates of the raw model names given, keyed by name, each resolved exactly as a request resolves the raw names of
+# its window (the service layer's `model_rates_for`: raw, unwrapped, normalised and alias names), so a stored cost key
+# and today's statement price every raw name alike.
+RatesFor = Callable[[Iterable[str]], Mapping[str, ModelRates]]
 
 
 @dataclass(frozen=True)
@@ -89,6 +179,13 @@ class CliAnalyticsRuntime(Protocol):
     def set_classifier(self, classify: Callable[[list[str]], str] | None) -> None:
         """Hand in the delivery-framework classifier (skill names -> label) the adapter's background work
         uses. It belongs to the service layer, so an adapter never imports it. Called before `start`."""
+        ...
+
+    def set_rates(self, current_version: Callable[[], str] | None, rates: RatesFor | None = None) -> None:
+        """Hand in the callable that answers the current catalog rates version (see `RatesVersionProvider`), which
+        stamps and checks the stored session cost keys, and the `RatesFor` callable the refresher and the maintenance
+        price the stored keys with. Both are built from the service layer's catalog; the version changes whenever
+        anything the rate resolution reads changes. Called before `start`."""
         ...
 
     async def aclose(self) -> None: ...
@@ -199,6 +296,15 @@ def accepted_project(gate: IngestGate | None) -> str | None:
     return name if isinstance(name, str) and name else None
 
 
+class StatementTimeout(TimeoutError):
+    """A statement outran the client-side command timeout. A TimeoutError still (other endpoints treat it as before);
+    a connect or pool-wait timeout is a plain TimeoutError, so a dashboard can tell a slow query from a dead store."""
+
+
+class RequestBudgetExceeded(StatementTimeout):
+    """A dashboard request outran its whole budget (the wait for a slot and every statement), not one statement."""
+
+
 class CliAnalyticsStorageConfigError(Exception):
     """The configured storage refuses its configuration; only fixing the configuration helps.
 
@@ -300,7 +406,13 @@ class CliTelemetryIngestor(Protocol):
 class CliAnalyticsReader(Protocol):
     """The fact queries behind the CLI Analytics endpoints."""
 
+    def set_rates(self, current_version: Callable[[], str] | None) -> None:
+        """Hand in the callable that answers the current catalog rates version; see `CliAnalyticsRuntime`."""
+        ...
+
     async def get_cost_kpis(self, f: LocalAnalyticsFilter) -> Rows: ...
+
+    async def get_dashboard_kpis(self, f: LocalAnalyticsFilter) -> Rows: ...
 
     async def get_model_breakdown(self, f: LocalAnalyticsFilter) -> Rows: ...
 
@@ -308,6 +420,18 @@ class CliAnalyticsReader(Protocol):
 
     def bounded(self) -> AbstractAsyncContextManager[CliAnalyticsReader]:
         """A reader whose statements run on the one pool connection one request holds, released at block end."""
+        ...
+
+    async def materialize_sel(self, f: LocalAnalyticsFilter, cohort: str | None = None) -> None:
+        """On a bounded reader: evaluate the window's `sel` once into a temp table of the held connection, which the
+        later statements of the request for the same selection read. Dropped when the bounded block ends. `cohort`
+        keeps only the sessions that started in the window (`started`) or before it (`before`); the user rollup reads
+        them apart."""
+        ...
+
+    async def materialize_files(self, f: LocalAnalyticsFilter) -> None:
+        """On a bounded reader, after `materialize_sel`: the changed-file counts of the selected sessions once into a
+        temp table of the held connection, dropped with `sel`'s."""
         ...
 
     def widened(self) -> AbstractAsyncContextManager[CliAnalyticsReader]:
@@ -321,9 +445,62 @@ class CliAnalyticsReader(Protocol):
 
     async def get_class_lists(self, f: LocalAnalyticsFilter, by: str = "all") -> Rows: ...
 
-    async def get_cost_by_user(self, f: LocalAnalyticsFilter) -> Rows: ...
+    async def get_cost_money(
+        self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates], buckets: bool = True
+    ) -> GroupedMoney:
+        """The /cost money grouped in SQL from one pricing pass: the `G_*` groupings of the window. Without `buckets`
+        only the spend groupings (total, per user, per model) are built; the route and personal-billed ones are
+        absent (their lists stay empty)."""
+        ...
 
-    async def get_users(self, f: LocalAnalyticsFilter) -> Rows: ...
+    async def get_cost_by_user(self, f: LocalAnalyticsFilter, with_classes: bool = True) -> Rows:
+        """The developers with a `cost_daily` row (`developer_name`), with their class lists unless `with_classes` is
+        false."""
+        ...
+
+    async def get_users_money_page(
+        self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates], limit: int | None, offset: int
+    ) -> UsersMoneyPage:
+        """The developers of the window ranked by spend (`round(cost, 9)` descending, then name in code-point order),
+        the page `[offset, offset + limit)` of them (all when `limit` is None) and the money of the window."""
+        ...
+
+    async def rollup_users(
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+    ) -> RollupUsers | None:
+        """The Users page's data for the window of `f` from the per-user start-day rollup, or None when it may not
+        answer (another scope or filters, a window it is not made for, a day it lacks or built under other rates, a
+        job that has not run lately): the caller then reads the live statements. Same values as they give."""
+        ...
+
+    async def rollup_overview(
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+    ) -> RollupOverview | None:
+        """/overview's cards and charts for the window of `f` from the per-user start-day rollup, or None when it may
+        not answer (see `rollup_users`): the caller then reads the live statements. Same values as they give; it holds
+        no class lists and no estimate buckets."""
+        ...
+
+    async def rollup_cost(
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+    ) -> RollupCost | None:
+        """/cost's totals, per-developer money and per-model money for the window of `f` from the per-user start-day
+        rollup, or None when it may not answer (see `rollup_users`): the caller then reads the live statements. Same
+        values as they give; it holds no class lists and no estimate buckets."""
+        ...
+
+    async def get_developer_session_facts(self, f: LocalAnalyticsFilter) -> Rows:
+        """Per developer (`developer`): `turns`, `tool_calls`, `tool_successes` (sums, NULL as 0), the average
+        `avg_session_duration_ms` over `duration_sessions` sessions with a known duration (NULL skipped, 0 kept)."""
+        ...
+
+    async def get_avg_session_duration_ms(self, f: LocalAnalyticsFilter) -> int | None:
+        """The mean duration of the window's sessions with a known duration, truncated to ms (None if none)."""
+        ...
+
+    async def get_users(self, f: LocalAnalyticsFilter) -> Rows:
+        """Per developer: `developer_name`, `session_count`, the token sums, `top_model` and the class lists."""
+        ...
 
     async def get_users_daily_activity(self, f: LocalAnalyticsFilter) -> Rows: ...
 
@@ -356,6 +533,48 @@ class CliAnalyticsReader(Protocol):
     async def get_skill_names_by_session(self, session_ids: list[str], *, scope: Any) -> Rows: ...
 
     async def get_session_durations(self, f: LocalAnalyticsFilter) -> Rows: ...
+
+    async def get_overview_facts(self, f: LocalAnalyticsFilter) -> Rows: ...
+
+    async def get_overview_models(self, f: LocalAnalyticsFilter) -> Rows: ...
+
+    async def get_overview_lines(self, f: LocalAnalyticsFilter) -> Rows: ...
+
+    async def get_overview_money(
+        self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates] = (), *, exact: bool = False
+    ) -> Rows: ...
+
+    async def get_repository_ranking(
+        self,
+        f: LocalAnalyticsFilter,
+        include_branches: bool = False,
+        search: str | None = None,
+        rates: Sequence[ModelRates] = (),
+        page: int = 0,
+        per_page: int | None = None,
+    ) -> Rows: ...
+
+    async def get_repository_buckets(
+        self,
+        f: LocalAnalyticsFilter,
+        search: str | None = None,
+        rates: Sequence[ModelRates] = (),
+        repositories: Sequence[str] = (),
+        unattributed: bool = False,
+    ) -> Rows: ...
+
+    async def get_repository_facts(
+        self,
+        f: LocalAnalyticsFilter,
+        include_branches: bool = False,
+        search: str | None = None,
+        repositories: Sequence[str] = (),
+        unattributed: bool = False,
+    ) -> Rows: ...
+
+    async def get_efficiency_facts(self, f: LocalAnalyticsFilter) -> Rows: ...
+
+    async def get_efficiency_money(self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates] = ()) -> Rows: ...
 
     async def get_active_ms_by_session(self, f: LocalAnalyticsFilter) -> Rows: ...
 

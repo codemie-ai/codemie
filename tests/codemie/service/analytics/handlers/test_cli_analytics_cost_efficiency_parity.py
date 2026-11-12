@@ -27,6 +27,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.codemie.repository.cli_analytics.support.bounded import bounded_to_itself
+from tests.codemie.repository.cli_analytics.support.grouped_money import fake_cost_money, spend_only
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.scope import ViewerScope
@@ -106,7 +108,15 @@ def _handler() -> LocalAnalyticsHandler:
     repo.get_session_funding_costs = AsyncMock(return_value=[])  # the funding buckets of main (EPMCDME-16849)
     for name, rows in _READS.items():
         setattr(repo, name, AsyncMock(return_value=rows))
-    return LocalAnalyticsHandler(repo)
+    repo.get_cost_models = AsyncMock(return_value=[])
+    sessions = {sid: u["developer_name"] for u in _READS["get_cost_by_user"] for sid in u["session_ids"]}
+    priced = fake_cost_money(_MODEL_ROWS, sessions)
+
+    async def spend_money(f, rates, buckets=True):  # the baseline had no estimate-bucket rows: only the spend groupings
+        return spend_only(await priced(f, rates))
+
+    repo.get_cost_money = spend_money
+    return LocalAnalyticsHandler(bounded_to_itself(repo))
 
 
 def _catalog():

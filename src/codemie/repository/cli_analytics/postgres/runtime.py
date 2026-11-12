@@ -29,9 +29,10 @@ import threading
 import time
 from collections.abc import Callable
 
-from codemie.repository.cli_analytics.ports import ScheduledJob
+from codemie.repository.cli_analytics.ports import RatesFor, ScheduledJob
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.maintenance import PartitionMaintainer, RetentionPolicy
+from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
 from codemie.repository.cli_analytics.postgres.migrations import run_migrations
 from codemie.repository.cli_analytics.postgres.rollups import RollupRefresher
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
@@ -88,27 +89,40 @@ class PostgresAnalyticsRuntime:
         self._engine = engine
         self._settings = settings
         self._migrate = migrate
+        self._rates: RatesFor | None = None
+        self._rates_version: Callable[[], str] | None = None
         self._refresher = self._build_refresher(classify=None)
         self._maintainer = PartitionMaintainer(engine, RetentionPolicy.from_settings(settings))
         self._schema_ready = False
         self._partitions_ready = False  # every DEFAULT partition exists, so ingest has a target
         self._schema_lock = asyncio.Lock()
         self._last_stale_warning: float | None = None
+        self._last_user_rollup_scan = float("-inf")  # monotonic time of the last scan of every start day
 
     def _build_refresher(self, classify: Callable[[list[str]], str] | None) -> RollupRefresher:
         # A refresh may run longer than its interval when it has catching up to do, but
         # never much longer, so the leader lock is handed back regularly.
-        return RollupRefresher(
+        refresher = RollupRefresher(
             self._engine,
             batch_size=self._settings.rollup_batch_size,
             max_run_seconds=max(60.0, 4 * self._settings.rollup_refresh_seconds),
             raw_retention_days=self._settings.raw_retention_days,
             classify=classify,
         )
+        refresher.set_rates(self._rates_version, self._rates)
+        return refresher
 
     def set_classifier(self, classify: Callable[[list[str]], str] | None) -> None:
         """Hand the refresher the delivery-framework classifier; called before the jobs start."""
         self._refresher = self._build_refresher(classify)
+
+    def set_rates(self, current_version: Callable[[], str] | None, rates: RatesFor | None = None) -> None:
+        """Keep the current-rates-version callable and the `RatesFor` callable, and hand both to the maintenance and
+        the refresher, which price and stamp the stored session sort keys with them; called before the jobs start."""
+        self._rates_version = current_version
+        self._rates = rates
+        self._maintainer.set_rates(current_version, rates)
+        self._refresher.set_rates(current_version, rates)
 
     async def start(self) -> None:
         """Bring the schema up to date and create the partitions ingest needs; never raises."""
@@ -123,7 +137,63 @@ class PostgresAnalyticsRuntime:
             ScheduledJob(
                 "cli_analytics_maintenance", self._settings.maintenance_interval_minutes * 60, self.run_maintenance
             ),
+            *self._user_rollup_jobs(),
         ]
+
+    def _user_rollup_jobs(self) -> list[ScheduledJob]:
+        if not self._settings.user_rollup_enabled:
+            return []
+        interval = self._settings.user_rollup_interval_s
+        return [
+            ScheduledJob("cli_analytics_user_rollup", interval, self.refresh_user_rollup),
+            ScheduledJob("cli_analytics_user_rollup_check", interval, self.check_user_rollup),
+        ]
+
+    async def check_user_rollup(self) -> None:
+        """Confirm the recent days of the rollup are current, apart from the job that builds them: a rebuild of one big
+        day takes minutes, and the readers trust a day only while it was confirmed lately. A short set of statements on
+        one pooled connection."""
+        version = self._rates_version() if self._rates_version is not None else None
+        if not self._schema_ready or not version:
+            return
+        from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports the reader
+
+        async with self._engine.acquire() as conn:
+            await user_rollup.confirm_recent(conn, version=version)
+
+    async def refresh_user_rollup(self) -> None:
+        """Keep the per-user start-day rollup current (see `user_rollup`). It runs on the one connection that holds
+        its lock, so it takes nothing more from the pool, and it never fails the scheduler: the readers fall back to
+        the live statements for any day it has not built."""
+        version = self._rates_version() if self._rates_version is not None else None
+        if not (self._schema_ready and self._partitions_ready) or not version or self._rates is None:
+            return
+        from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports the reader
+
+        rates = self._rates
+
+        def rate_of(model: str):
+            return rates([model])[model]
+
+        reader = PostgresCliAnalyticsReader(self._engine)
+        reader.set_rates(self._rates_version)
+        now = time.monotonic()
+        full_scan = now - self._last_user_rollup_scan >= user_rollup.FULL_SCAN_SECONDS
+        async with self._engine.advisory_lock("user-rollup") as conn:
+            if conn is None:
+                return
+            await user_rollup.refresh(
+                reader,
+                conn,
+                days=self._settings.user_rollup_days,
+                run_seconds=self._settings.user_rollup_run_s,
+                min_rebuild_s=self._settings.user_rollup_min_rebuild_s,
+                rate_of=rate_of,
+                version=version,
+                full_scan=full_scan,
+            )
+            if full_scan:
+                self._last_user_rollup_scan = now
 
     async def refresh_rollups(self) -> None:
         if not (self._schema_ready and self._partitions_ready):

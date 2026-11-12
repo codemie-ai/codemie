@@ -34,6 +34,7 @@ from codemie.rest_api.models.cli_analytics import (
     LocalAnalyticsUsersResponse,
 )
 from codemie.rest_api.routers.cli_analytics import _metadata, _respond
+from tests.codemie.repository.cli_analytics.support.grouped_money import spend_only
 from tests.codemie.service.analytics.handlers.test_cli_analytics_spend_scope import (
     CORPORATE_COST,
     PERSONAL_COST,
@@ -89,6 +90,12 @@ async def _call(name, sessions, *, no_bucket_rows=False):
     handler, _ = handler_over(sessions)
     if no_bucket_rows:
         handler._repo.get_session_funding_costs = AsyncMock(return_value=[])
+        priced = handler._repo.get_cost_money
+
+        async def spend_money(f, rates, buckets=True):
+            return spend_only(await priced(f, rates))
+
+        handler._repo.get_cost_money = spend_money
     call, model, _ = ENDPOINTS[name]
     with catalog():
         result = await call(handler, make_filter())
@@ -245,3 +252,81 @@ async def test_the_serialized_response_keeps_the_bucket_and_metadata_fields(name
         _assert_buckets(row)
     if not sessions:
         assert body["data"]["personal_billed"] == _bucket(0.0, 0)
+
+
+# (g) the SQL-grouped rows convert to the same buckets as the priced rows
+
+
+def _priced(session, route, personal, cost, missing=False, model="m"):
+    return {
+        "session_id": session,
+        "model": model,
+        "normalized_model_name": model,
+        "funding_route": route,
+        "personal_billed": personal,
+        "cost_usd": cost,
+        "missing": missing,
+    }
+
+
+def _groups_from(priced):
+    """The `CostGroup` rows the SQL would return for the same priced rows: one per route and one per billing class."""
+    from codemie.repository.cli_analytics.ports import CostGroup
+
+    def group(keys, rows):
+        unpriced = tuple(sorted({r["model"] for r in rows if r["missing"]}))
+        return CostGroup(
+            keys=keys,
+            cost_usd=float(sum(r["cost_usd"] for r in rows)),
+            cache_read_cost_usd=0.0,
+            session_count=len({r["session_id"] for r in rows}),
+            unpriced_models=unpriced,
+            cost_incomplete=bool(unpriced),
+        )
+
+    routes = [
+        group({"funding_route": route}, rows)
+        for route in ROUTES
+        if (rows := [r for r in priced if r["funding_route"] == route])
+    ]
+    personal = [
+        group({"personal_billed": flag}, rows)
+        for flag in (True, False)
+        if (rows := [r for r in priced if r["personal_billed"] is flag])
+    ]
+    return routes, personal
+
+
+BUCKET_FIXTURES = {
+    "mixed": [
+        _priced("a", "api_based", False, 1.5),
+        _priced("b", "subscription", True, 2.0),
+        _priced("c", "api_based", True, 0.25, missing=True, model="mystery-model"),
+    ],
+    "one route only": [_priced("a", "unknown", False, 3.0)],
+    "no personal": [_priced("a", "api_based", False, 1.0), _priced("b", "subscription", False, 2.0)],
+    "nothing": [],
+}
+
+
+@pytest.mark.parametrize("name", BUCKET_FIXTURES)
+def test_buckets_from_groups_equals_buckets_on_fixture(name):
+    from codemie.service.analytics.handlers.funding_buckets import buckets, buckets_from_groups
+
+    priced = BUCKET_FIXTURES[name]
+    routes, personal = _groups_from(priced)
+
+    assert buckets_from_groups(routes, personal) == buckets(priced)
+
+
+def test_zero_cost_int_serialises_as_float():
+    from codemie.repository.cli_analytics.ports import CostGroup
+    from codemie.service.analytics.handlers.funding_buckets import buckets_from_groups
+
+    zero = CostGroup({"funding_route": "api_based"}, 0, 0, 1, (), False)
+
+    result = buckets_from_groups([zero], [])
+
+    assert result["funding"]["api_based"]["cost_usd"] == 0.0
+    assert isinstance(result["funding"]["api_based"]["cost_usd"], float)
+    assert isinstance(result["personal_billed"]["cost_usd"], float)

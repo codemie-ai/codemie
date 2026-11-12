@@ -1,0 +1,174 @@
+{
+  "decision": "request-changes",
+  "rationale": "Four lenses and standards ran; diff is oversized so only the Makefile selection and the refresher empty-catalog path were reachability-checked, the rest keep lens grading (low confidence). Blocking: AC8 index use unmet, AC9/AC10 measurements missing, live-PG writer tests not selected by make target, refresher stamps under empty catalog, enable --since NULL-activity gap. 0 deferred; about 20 lower-value or doc-only candidates dismissed (stale docstring, CLI arg validation, bench tooling, doc inconsistencies).",
+  "confidence": "low",
+  "risk_flags": [
+    "migration",
+    "data-contract"
+  ],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC1: stored path equals today's statements",
+      "status": "pass",
+      "notes": "parity tests and bench parity"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: every stored column equals today's statements (live test)",
+      "status": "pass",
+      "notes": "live tests present but not selected by make target"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: cost_key equals round(price_session_models, 9)",
+      "status": "pass",
+      "notes": "reuses cost CTE"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: framework page, total and flags equal live",
+      "status": "pass",
+      "notes": "parity tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: fresh/mixed/S-only equal today's; fallback with logged reason",
+      "status": "pass",
+      "notes": "stored_mode tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: refresher writes stored columns; unchanged recompute writes nothing",
+      "status": "pass",
+      "notes": "gate and idempotence tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: migration tests extended",
+      "status": "pass",
+      "notes": "test_migrations.py"
+    },
+    {
+      "kind": "spec",
+      "item": "AC8: EXPLAIN shows stored statements use new indexes",
+      "status": "fail",
+      "notes": "strict xfail; stored statements still Seq Scan session_dims; PG14 undocumented"
+    },
+    {
+      "kind": "spec",
+      "item": "AC9: backfill/re-price; re-price time and S-merge duration recorded",
+      "status": "partial",
+      "notes": "behaviour covered; timings not recorded"
+    },
+    {
+      "kind": "spec",
+      "item": "AC10: benchmarks with verdicts per target",
+      "status": "partial",
+      "notes": "825 ms missed; S-merge load, ingest baseline, framework groups missing"
+    },
+    {
+      "kind": "spec",
+      "item": "AC11: at most 2 pool connections per request",
+      "status": "pass",
+      "notes": "test and K=4/7 bench"
+    },
+    {
+      "kind": "spec",
+      "item": "AC12: storage guide documents the feature",
+      "status": "pass",
+      "notes": "cli-analytics-storage.md"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: stored delivery_framework not used",
+      "status": "pass",
+      "notes": "classifier_names used"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: response model, router, default sort unchanged",
+      "status": "pass",
+      "notes": "start_time path unchanged"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 11 subjects in the range use the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new modules carry the Apache header and hold separate concerns; ruff, license-check and tests were not run by this audit"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "f-string SQL composed only from module constants; scan was grep-based, not a full read"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "Makefile",
+      "line": 47,
+      "title": "Live-PG writer tests never selected by make target",
+      "problem": "test_session_sort_keys.py and test_session_sort_keys_backfill.py skip without TEST_LOCAL_PG_URL, and test-cli-analytics-live runs only '-k live'; neither the file names nor test names contain 'live'. Plain pytest skips them too.",
+      "impact": "Regressions in the SQL writing cache_read_total, classifier_names, cost_key and the rates_version stamp ship green, and readers trust those stamps. The target's skipped-test guard never sees these modules.",
+      "recommendation": "Rename the files to test_live_session_sort_keys*.py or widen the Makefile -k expression to include them."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "title": "Stored statements do not use the new sort indexes (AC8)",
+      "problem": "Real stored ctx/cost/framework statements join session_dims from sel and sort the merged key, so they Seq Scan session_dims; the strict-xfail EXPLAIN test and bench-results.md record this. Only hand-written probe queries use the indexes; no EXPLAIN exists for the cost or framework statements; PG14 status is undocumented. The a1c1a0000012 docstring still claims an in-order index walk.",
+      "impact": "Required criterion AC8 is unmet; four indexes (about 78-123 MB, HOT ratio 0.0, build lock, write amplification) are paid for without serving the readers. Reachability not independently re-verified.",
+      "recommendation": "Restructure the stored statements so the indexes serve them and assert it with EXPLAIN per sel arm, or obtain explicit approval for the limitation and drop or justify the indexes; document PG14 and correct the migration docstring."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/rollups.py",
+      "line": 2339,
+      "title": "Refresher stamps zero costs under empty catalog",
+      "problem": "_write_sort_keys checks only that rates and rates_version are set, not that the version differs from EMPTY_RATES_VERSION; maintenance.py:343 and sort_keys_cli.py:106 both refuse to derive in that case.",
+      "impact": "With an empty or not-yet-loaded catalog sessions are stamped with zero cost under the empty version, which readers on that version trust; a full reprice follows once the catalog loads.",
+      "recommendation": "Compute the version first and return early when it equals EMPTY_RATES_VERSION, as maintenance does."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/session_sort_keys.py",
+      "line": 2597,
+      "title": "enable --since skips stamps with NULL activity columns",
+      "problem": "_ACTIVE_SINCE requires last_event_at or last_activity_day to be at or after the cutoff; a stamped session with both NULL, written while the switch was off, matches neither. FOR UPDATE SKIP LOCKED rows are also never revisited and not reported. Reachability unconfirmed.",
+      "impact": "Stale stamps survive enable and stored readers serve outdated ctx/cost/framework values for those sessions.",
+      "recommendation": "Treat both-NULL rows as active (or null their stamps), and report or retry skipped locked rows in the returned count and audit line."
+    },
+    {
+      "id": "CR-005",
+      "kind": "evidence",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "AC9/AC10 measurements missing from bench results",
+      "problem": "bench-results.md records no re-price duration or S-merge duration (S never non-empty in the bench), no ingest acquire-wait p99/503 baseline, no framework group count. The 825 ms target is missed for ctx/cost/framework and left as a limitation for approval. The bench and guide also contradict each other (claims of stored beating fallback at every window, index size delta, 5 s versus 10 s versus 30 s timeout).",
+      "impact": "Required acceptance criteria AC9 and AC10 are partial; the roll-out path where S is non-empty is unmeasured.",
+      "recommendation": "Measure re-price time and S-merge under load with a non-empty S, add the ingest baseline and framework group count, reconcile the contradictory figures, and record the explicit approval of the missed targets."
+    }
+  ],
+  "deferred": [],
+  "reviewed_head": null
+}

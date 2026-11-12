@@ -29,14 +29,40 @@ threshold at which this should move into a materialized fact table.
 from __future__ import annotations
 
 import asyncio
+import copy
+import functools
 import logging
 import math
+import weakref
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timezone, tzinfo
 from collections.abc import Callable, Hashable
 from typing import Any
 
+from codemie.configs.config import config
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import CliAnalyticsReader, ModelRates
+from codemie.repository.cli_analytics.ports import (
+    G_MODEL,
+    G_MODEL_PERSONAL,
+    G_MODEL_ROUTE,
+    G_PERSONAL,
+    G_ROUTE,
+    G_TOTAL,
+    G_USER,
+    G_USER_PERSONAL,
+    G_USER_ROUTE,
+    CliAnalyticsReader,
+    CostGroup,
+    GroupedMoney,
+    ModelRates,
+    RequestBudgetExceeded,
+    RollupCost,
+    RollupOverview,
+    RollupUsers,
+    UsersMoneyPage,
+)
+from codemie.repository.cli_analytics.postgres.settings import dashboard_concurrency_limit
 from codemie.repository.cli_analytics.vocabulary import BLANK_CHARS, humanize_harness_name, strip_pasted_content
 from codemie.service.analytics.cli_analytics_project_gate import (
     NOTE_FOLDER_NOT_LINKED,
@@ -46,13 +72,24 @@ from codemie.service.analytics.cli_analytics_project_gate import (
     ORIGIN_DEFAULT,
 )
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
+from codemie.service.analytics.dashboard_cache import (
+    dashboard_key,
+    get_ranking_cache,
+    mark_rollup_used,
+    rollup_key,
+    rollup_max_age_s,
+)
 from codemie.service.analytics.handlers.coding_agent_pricing import (
     CatalogPricer,
     model_rates_for,
     normalize_model,
     unpriced_display_names,
 )
-from codemie.service.analytics.handlers.funding_buckets import buckets, models_without_spend, price_bucket_rows
+from codemie.service.analytics.handlers.funding_buckets import (
+    buckets,
+    buckets_from_groups,
+    price_bucket_rows,
+)
 from codemie.service.analytics.handlers.session_money import (
     dispatch_money,
     has_priced_model,
@@ -216,6 +253,14 @@ def _ctx_per_call(cache_read_tokens: Any, api_call_count: Any) -> float:
     return (_i(cache_read_tokens) / calls) if calls else 0.0
 
 
+def _by_group_key(groups: list[CostGroup], key: str) -> dict[str, list[CostGroup]]:
+    """The rows of a two-key grouping, collected under the value of its first key."""
+    by_key: dict[str, list[CostGroup]] = {}
+    for group in groups:
+        by_key.setdefault(_s(group.keys.get(key)), []).append(group)
+    return by_key
+
+
 def _first(rows: list[dict]) -> dict:
     return rows[0] if rows else {}
 
@@ -304,95 +349,7 @@ def _finalize_repository_bucket(bucket: dict, include_branches: bool) -> dict:
     return bucket
 
 
-_BRANCH_ROW_FIELDS = (
-    "branch",
-    "session_count",
-    "turns",
-    "cost_usd",
-    "files_changed",
-    "lines_added",
-    "lines_removed",
-    "net_lines",
-    "tool_calls",
-    "tool_calls_success",
-    "tool_success_rate",
-    "subscription_types",
-    "project_origins",
-)
-_REPO_SUM_FIELDS = (
-    "session_count",
-    "turns",
-    "cost_usd",
-    "files_changed",
-    "lines_added",
-    "lines_removed",
-    "tool_calls",
-    "tool_calls_success",
-)
-
-
-_NULLABLE_SUM_FIELDS = frozenset({"lines_added", "lines_removed"})
-
-
-def _roll_up(
-    rows: list[dict],
-    key_of: Callable[[dict], Hashable],
-    new_group: Callable[[dict], dict],
-    children: str,
-    child_of: Callable[[dict], dict],
-) -> list[dict]:
-    """Rolls rows up into one group per `key_of`, each row nested under `children` as `child_of` shapes it. Sums the
-    raw counts first and calls _pct once per group, so a row's percentage is never averaged into the group's
-    (EPMCDME-15585) -- a zero-call row contributes 0/0 to the sums, not a 0% vote weighted by session count. The one
-    rollup of both levels (branches into repositories, repositories into projects): a summed field goes here."""
-    groups: dict[Hashable, dict] = {}
-    for row in rows:
-        key = key_of(row)
-        group = groups.get(key)
-        if group is None:
-            group = groups[key] = {
-                **new_group(row),
-                **{field: None if field in _NULLABLE_SUM_FIELDS else 0 for field in _REPO_SUM_FIELDS},
-                "cost_usd": 0.0,
-                children: [],
-                "subscription_types": [],
-                "project_origins": [],
-                "_sids": set(),
-            }
-        group["_sids"] |= row["_sids"]
-        for field in _REPO_SUM_FIELDS:
-            if field in _NULLABLE_SUM_FIELDS:
-                group[field] = _nsum(group[field], row[field])
-            else:
-                group[field] += row[field]
-        for field in ("subscription_types", "project_origins"):
-            group[field] = sorted({*group[field], *row[field]})
-        group[children].append(child_of(row))
-
-    out = list(groups.values())
-    for group in out:
-        group["net_lines"] = _nnet(group["lines_added"], group["lines_removed"])
-        group["tool_success_rate"] = _pct(group["tool_calls_success"], group["tool_calls"])
-    return out
-
-
-def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
-    """Rolls finalized per-branch rows up into (project, repository) groups (see `_roll_up`)."""
-    out = _roll_up(
-        branch_rows,
-        key_of=lambda row: (row["project_name"], row["repository"]),
-        new_group=lambda row: {"repository": row["repository"], "project_name": row["project_name"]},
-        children="branches",
-        child_of=lambda row: {field: row[field] for field in _BRANCH_ROW_FIELDS},
-    )
-    for repo in out:
-        repo["branches"].sort(key=lambda b: b["branch"] or "")
-    out.sort(key=lambda r: (r["repository"] or "", r["project_name"] or ""))
-    out.sort(key=lambda r: (r["session_count"], _float_sort_key(r["cost_usd"])), reverse=True)
-    return out
-
-
-def _build_repository_rows(
+def _build_session_repository_rows(
     cost_facts: list[dict],
     session_money: dict[str, float],
     turns_by_session: dict[str, int],
@@ -438,6 +395,313 @@ def _build_repository_rows(
     rows.sort(key=lambda r: (r["repository"] or "", r["project_name"] or ""))
     rows.sort(key=lambda r: (r["session_count"], _float_sort_key(r["cost_usd"])), reverse=True)
     return rows
+
+
+def _repository_bucket(group: dict, include_branches: bool) -> dict:
+    """One response bucket from a `get_repository_groups` group row: its counts and its spend, as the reader summed
+    them."""
+    added, removed = _ni(group.get("lines_added")), _ni(group.get("lines_removed"))
+    tool_calls, tool_ok = _i(group.get("tool_calls")), _i(group.get("tool_calls_success"))
+    return {
+        "repository": _s(group.get("repository")) or None,
+        "branch": (_s(group.get("branch")) or None) if include_branches else None,
+        "project_name": _s(group.get("project_name")) or None,
+        "session_count": _i(group.get("n")),
+        "turns": _i(group.get("turns")),
+        "cost_usd": _f(group.get("cost_usd")),
+        "files_changed": _i(group.get("files_changed")),
+        "lines_added": added,
+        "lines_removed": removed,
+        "tool_calls": tool_calls,
+        "tool_calls_success": tool_ok,
+        "tool_success_rate": _pct(tool_ok, tool_calls),
+        "subscription_types": sorted({_s(v) or "unknown" for v in group.get("subscription_types") or []}),
+        "project_origins": sorted({_s(v) or "none" for v in group.get("project_origins") or []}),
+        "net_lines": _nnet(added, removed),
+    }
+
+
+_BRANCH_ROW_FIELDS = (
+    "branch",
+    "session_count",
+    "turns",
+    "cost_usd",
+    "files_changed",
+    "lines_added",
+    "lines_removed",
+    "net_lines",
+    "tool_calls",
+    "tool_calls_success",
+    "tool_success_rate",
+    "subscription_types",
+    "project_origins",
+)
+_REPO_SUM_FIELDS = (
+    "session_count",
+    "turns",
+    "cost_usd",
+    "files_changed",
+    "lines_added",
+    "lines_removed",
+    "tool_calls",
+    "tool_calls_success",
+)
+
+
+_NULLABLE_SUM_FIELDS = frozenset({"lines_added", "lines_removed"})
+
+
+def _new_rollup_group(row: dict, new_group: Callable[[dict], dict], children: str) -> dict:
+    return {
+        **new_group(row),
+        **{field: None if field in _NULLABLE_SUM_FIELDS else 0 for field in _REPO_SUM_FIELDS},
+        "cost_usd": 0.0,
+        children: [],
+        "subscription_types": [],
+        "project_origins": [],
+    }
+
+
+def _add_to_rollup_group(group: dict, row: dict) -> None:
+    """Adds a row's counts and class lists to its group; the session ids only when the row carries them (the
+    session-based rows do, the reader's groups do not)."""
+    if "_sids" in row:
+        group.setdefault("_sids", set()).update(row["_sids"])
+    for field in _REPO_SUM_FIELDS:
+        if field in _NULLABLE_SUM_FIELDS:
+            group[field] = _nsum(group[field], row[field])
+        else:
+            group[field] += row[field]
+    for field in ("subscription_types", "project_origins"):
+        group[field] = sorted({*group[field], *row[field]})
+
+
+def _roll_up(
+    rows: list[dict],
+    key_of: Callable[[dict], Hashable],
+    new_group: Callable[[dict], dict],
+    children: str,
+    child_of: Callable[[dict], dict],
+) -> list[dict]:
+    """Rolls rows up into one group per `key_of`, each row nested under `children` as `child_of` shapes it. Sums the
+    raw counts first and calls _pct once per group, so a row's percentage is never averaged into the group's
+    (EPMCDME-15585) -- a zero-call row contributes 0/0 to the sums, not a 0% vote weighted by session count. The one
+    rollup of both levels (branches into repositories, repositories into projects): a summed field goes here."""
+    groups: dict[Hashable, dict] = {}
+    for row in rows:
+        key = key_of(row)
+        group = groups.get(key)
+        if group is None:
+            group = groups[key] = _new_rollup_group(row, new_group, children)
+        _add_to_rollup_group(group, row)
+        group[children].append(child_of(row))
+
+    out = list(groups.values())
+    for group in out:
+        group["net_lines"] = _nnet(group["lines_added"], group["lines_removed"])
+        group["tool_success_rate"] = _pct(group["tool_calls_success"], group["tool_calls"])
+    return out
+
+
+def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
+    """Rolls finalized per-branch rows up into (project, repository) groups (see `_roll_up`)."""
+    out = _roll_up(
+        branch_rows,
+        key_of=lambda row: (row["project_name"], row["repository"]),
+        new_group=lambda row: {"repository": row["repository"], "project_name": row["project_name"]},
+        children="branches",
+        child_of=lambda row: {field: row[field] for field in _BRANCH_ROW_FIELDS},
+    )
+    for repo in out:
+        repo["branches"].sort(key=lambda b: b["branch"] or "")
+    out.sort(key=lambda r: (r["repository"] or "", r["project_name"] or ""))
+    out.sort(key=lambda r: (r["session_count"], _float_sort_key(r["cost_usd"])), reverse=True)
+    return out
+
+
+def _build_repository_rows(groups: list[dict], include_branches: bool) -> list[dict]:
+    """Response rows of the reader's groups: (project, repository, branch) groups with branches, else repository only
+    (already ranked and paged by the reader). include_branches=True rolls the branch groups up into (project,
+    repository) groups, each carrying its own backend-computed tool_success_rate and its branches nested underneath,
+    so the UI never recomputes or re-averages the percentage (EPMCDME-15585)."""
+    rows = [_repository_bucket(group, include_branches) for group in groups]
+    return _group_branches_into_repositories(rows) if include_branches else rows
+
+
+def _parts(rows: list[dict]) -> dict[str, list[dict]]:
+    """The rows of a dashboard statement by their `part`."""
+    parts: dict[str, list[dict]] = {}
+    for row in rows:
+        parts.setdefault(_s(row.get("part")), []).append(row)
+    return parts
+
+
+def _cost_kpis(total: CostGroup | None, kpi_rows: list[dict], all_classes: list[dict]) -> dict[str, Any]:
+    kpi = _first(kpi_rows)
+    total_cost = total.cost_usd if total is not None else 0.0
+    spend_sessions = _i(kpi.get("spend_sessions"))
+    total_tokens = (
+        _i(kpi.get("total_input_tokens"))
+        + _i(kpi.get("total_output_tokens"))
+        + _i(kpi.get("total_cache_read_tokens"))
+        + _i(kpi.get("total_cache_creation_tokens"))
+    )
+    return {
+        "total_sessions": _i(kpi.get("total_sessions")),
+        "total_cost_usd": total_cost,
+        "total_tokens": total_tokens,
+        "avg_cost_per_session": (total_cost / spend_sessions) if spend_sessions else 0.0,
+        **_lists(_first(all_classes)),
+    }
+
+
+def _cost_by_user(groups: dict[str, list[CostGroup]], by_user: list[dict], include_buckets: bool) -> list[dict]:
+    user_cost = {g.keys["user"]: g.cost_usd for g in groups.get(G_USER, [])}
+    user_routes = _by_group_key(groups.get(G_USER_ROUTE, []), "user")
+    user_personal = _by_group_key(groups.get(G_USER_PERSONAL, []), "user")
+    rows = [
+        {
+            "developer_name": _s(r.get("developer_name")),
+            "user_email": _s(r.get("developer_name")),
+            "cost_usd": user_cost.get(_s(r.get("developer_name")), 0.0),
+            **_lists(r),
+            **(
+                buckets_from_groups(
+                    user_routes.get(_s(r.get("developer_name")), []),
+                    user_personal.get(_s(r.get("developer_name")), []),
+                )
+                if include_buckets
+                else {}
+            ),
+        }
+        for r in by_user
+    ]
+    rows.sort(key=lambda r: r["developer_name"])
+    rows.sort(key=lambda r: _float_sort_key(r["cost_usd"]), reverse=True)
+    return rows
+
+
+def _cost_by_model(
+    groups: dict[str, list[CostGroup]], model_classes: list[dict], include_buckets: bool
+) -> tuple[list[dict], list[dict]]:
+    """The models with spend, and (with the buckets) those that only have estimate rows."""
+    by_model_classes = _by_key(model_classes)
+    model_routes = _by_group_key(groups.get(G_MODEL_ROUTE, []), "model")
+    model_personal = _by_group_key(groups.get(G_MODEL_PERSONAL, []), "model")
+
+    def model_row(name: str, cost: float) -> dict[str, Any]:
+        return {
+            "model_name": name,
+            "cost_usd": cost,
+            **_lists(by_model_classes.get(name)),
+            **(
+                buckets_from_groups(model_routes.get(name, []), model_personal.get(name, [])) if include_buckets else {}
+            ),
+        }
+
+    spend_models = {g.keys["model"]: g.cost_usd for g in groups.get(G_MODEL, [])}
+    cost_by_model = sorted(
+        (model_row(name, cost) for name, cost in spend_models.items()),
+        key=lambda r: (-_float_sort_key(r["cost_usd"]), r["model_name"]),
+    )
+    without_spend = (
+        [model_row(name, 0.0) for name in sorted((set(model_routes) | set(model_personal)) - set(spend_models))]
+        if include_buckets
+        else []
+    )
+    return cost_by_model, without_spend
+
+
+def _cost_response(
+    money: GroupedMoney,
+    by_user: list[dict],
+    kpi_rows: list[dict],
+    all_classes: list[dict],
+    model_classes: list[dict],
+    include_buckets: bool,
+) -> tuple[dict[str, Any], CatalogPricer]:
+    """The Cost page's data from the rows of its statements (or of the rollup)."""
+    groups = money.groups
+    pricer = CatalogPricer()
+    total = next(iter(groups.get(G_TOTAL, [])), None)
+    if total is not None:
+        pricer._unpriced.update(total.unpriced_models)  # the spend scope only; estimate buckets never feed it
+    cost_by_model, models_without_spend = _cost_by_model(groups, model_classes, include_buckets)
+    data = {
+        "kpis": _cost_kpis(total, kpi_rows, all_classes),
+        "cost_by_user": _cost_by_user(groups, by_user, include_buckets),
+        "cost_by_model": cost_by_model,
+        "models_without_spend": models_without_spend,
+        **(buckets_from_groups(groups.get(G_ROUTE, []), groups.get(G_PERSONAL, [])) if include_buckets else {}),
+    }
+    return data, pricer
+
+
+async def _users_ranking(repo: Any, f: LocalAnalyticsFilter) -> UsersMoneyPage:
+    """The money of every user, the same for every page of a window: a fresh one is reused (and shared with
+    /user-charts); the page is cut from the whole ranking by the caller, as the chart needs the whole ranking anyway."""
+    ranking_cache = get_ranking_cache()
+    ranking_key = dashboard_key("users-ranking", f) if ranking_cache.enabled else None
+    everyone = ranking_cache.get(ranking_key) if ranking_key else None
+    if everyone is None:
+        rates = [model_rates_for(model) for model in await repo.get_cost_models(f)]
+        everyone = await repo.get_users_money_page(f, rates, None, 0)
+        if ranking_key:
+            ranking_cache.put(ranking_key, everyone)
+    return everyone
+
+
+async def _users_detail(
+    repo: Any,
+    f: LocalAnalyticsFilter,
+    ranked: UsersMoneyPage,
+    limit: int | None,
+    charts_only: bool,
+    include_daily_activity: bool,
+) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict]]:
+    """The fact rows of the ranked page's developers: user rows, session facts, lines, last active, daily activity."""
+    user_rows = developer_facts = lines_rows = last_active_rows = daily_rows = []
+    if not ranked.developers:  # an empty page must not read as "no developer restriction"
+        return user_rows, developer_facts, lines_rows, last_active_rows, daily_rows
+    scoped = copy.copy(f)
+    if limit is not None:  # /user-charts takes every developer: no restriction to send
+        scoped.developers = list(ranked.developers)
+    if not charts_only:
+        user_rows = await repo.get_users(scoped)
+        developer_facts = await repo.get_developer_session_facts(scoped)
+        lines_rows = await repo.get_lines_by_user(scoped)
+        last_active_rows = await repo.get_users_last_active(scoped)
+        if include_daily_activity:
+            daily_rows = await repo.get_users_daily_activity(scoped)
+    return user_rows, developer_facts, lines_rows, last_active_rows, daily_rows
+
+
+def _dashboard_buckets(route_rows: list[dict], billed_rows: list[dict]) -> dict[str, Any]:
+    def group(row: dict, key: str) -> CostGroup:
+        return CostGroup(
+            keys={key: row.get(key)},
+            cost_usd=_f(row.get("cost_usd")),
+            cache_read_cost_usd=_f(row.get("cache_read_cost_usd")),
+            session_count=_i(row.get("session_count")),
+            unpriced_models=tuple(row.get("unpriced_models") or []),
+            cost_incomplete=bool(row.get("cost_incomplete")),
+        )
+
+    return buckets_from_groups(
+        [group(row, "funding_route") for row in route_rows],
+        [group(row, "personal_billed") for row in billed_rows],
+    )
+
+
+def _money(rows: list[dict]) -> tuple[dict, dict[str, Any], CatalogPricer]:
+    """The request's spend row (cost, cache-read cost, unpriced models), its funding and personal-billed estimate
+    buckets and the pricer that carries the spend's unpriced models, from the money rows of a dashboard statement
+    (`key` is the grouping)."""
+    by_grouping = {name: [r for r in rows if _s(r.get("key")) == name] for name in ("spend", "route", "billed")}
+    spend = _first(by_grouping["spend"])
+    pricer = CatalogPricer()
+    pricer.record_unpriced(unpriced_display_names(spend.get("unpriced_models") or []))
+    return spend, _dashboard_buckets(by_grouping["route"], by_grouping["billed"]), pricer
 
 
 def _group_repositories_into_projects(repo_rows: list[dict], project_order: list[str | None]) -> list[dict]:
@@ -509,6 +773,76 @@ def _dispatch_label_and_kind(
     return None
 
 
+# One FIFO semaphore per event loop (created on first use, so none binds to the wrong loop), sized from the config.
+_dashboard_gates: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+@asynccontextmanager
+async def dashboard_slot():
+    """One of this pod's slots for a dashboard request, so ingestion keeps pooled connections.
+    Requests over the limit queue in arrival order (a light one can wait behind the heavy ones; a gate of its own
+    would give up the pool-minus-four connections ingestion counts on). Enter it inside the request's
+    `asyncio.timeout` (`dashboard_request` does): the wait then counts against the budget, and a timeout or cancel
+    while waiting or running gives the slot back."""
+    limit = dashboard_concurrency_limit(
+        config.CLI_ANALYTICS_DASHBOARD_MAX_CONCURRENT, config.CLI_ANALYTICS_PG_POOL_SIZE
+    )
+    loop = asyncio.get_running_loop()
+    held = _dashboard_gates.get(loop)
+    if held is None or held[0] != limit:
+        held = _dashboard_gates[loop] = (limit, asyncio.Semaphore(limit))
+    gate = held[1]
+    async with gate:
+        yield
+
+
+# Stored in the ranking cache for a window the rollup could not answer, so its next requests go straight to the live
+# statements for the cache's TTL.
+_ROLLUP_REFUSED: Any = object()
+
+# The moment (loop time) the request in this context runs out of budget, while a `one_request_budget` method runs.
+_request_deadline: ContextVar[float | None] = ContextVar("cli_analytics_request_deadline", default=None)
+
+
+def one_request_budget(method):
+    """One budget for everything the handler method does: a request that reads the rollup and then, when that cannot
+    answer, the live statements enters `dashboard_request` twice, and each entry must not start a budget of its own
+    (twice 540 s is past the proxy's read timeout, with a slot and a connection held for a client that has gone)."""
+
+    @functools.wraps(method)
+    async def within_one_budget(*args, **kwargs):
+        deadline = asyncio.get_running_loop().time() + config.CLI_ANALYTICS_DASHBOARD_REQUEST_BUDGET_S
+        token = _request_deadline.set(deadline)
+        try:
+            return await method(*args, **kwargs)
+        finally:
+            _request_deadline.reset(token)
+
+    return within_one_budget
+
+
+@asynccontextmanager
+async def dashboard_request():
+    """The request budget, then a slot of the pod (the wait for it counts against the budget). The budget running out
+    is a `RequestBudgetExceeded`, so the route can tell it from a pool or connect timeout of a store that is down.
+    Inside a `one_request_budget` method every entry shares that method's budget."""
+    deadline = _request_deadline.get()
+    budget = (
+        asyncio.timeout_at(deadline)
+        if deadline is not None
+        else asyncio.timeout(config.CLI_ANALYTICS_DASHBOARD_REQUEST_BUDGET_S)
+    )
+    try:
+        async with budget, dashboard_slot():
+            yield
+    except TimeoutError as exc:
+        if budget.expired():
+            raise RequestBudgetExceeded("the dashboard request outran its budget") from exc
+        raise
+
+
 class LocalAnalyticsHandler:
     def __init__(self, repo: CliAnalyticsReader) -> None:
         self._repo = repo
@@ -537,61 +871,61 @@ class LocalAnalyticsHandler:
 
     # ── Overview ─────────────────────────────────────────────────────────────
 
-    async def get_overview(self, f: LocalAnalyticsFilter) -> tuple[dict[str, Any], CatalogPricer, str | None]:
-        (
-            kpi_rows,
-            model_rows,
-            lines_totals,
-            lines_daily,
-            turns_rows,
-            file_rows,
-            success_rows,
-            duration_rows,
-            session_model_rows,
-            all_classes,
-            model_classes,
-            day_classes,
-        ) = await asyncio.gather(
-            self._repo.get_cost_kpis(f),
-            self._repo.get_model_breakdown(f),
-            self._repo.get_lines_totals(f),
-            self._repo.get_lines_daily(f),
-            self._repo.get_turns_by_session(f),
-            self._repo.get_file_facts_by_session(f),
-            self._repo.get_tool_success_by_session(f),
-            self._repo.get_session_durations(f),
-            self._repo.get_session_model_costs(f, spend_only=True),
-            self._repo.get_class_lists(f, "all"),
-            self._repo.get_class_lists(f, "model"),
-            self._repo.get_class_lists(f, "day"),
-        )
-        estimate = buckets(price_bucket_rows(await self._repo.get_session_funding_costs(f)))
+    @one_request_budget
+    async def get_overview(
+        self, f: LocalAnalyticsFilter, *, include_class_lists: bool = True, include_buckets: bool = True
+    ) -> tuple[dict[str, Any], CatalogPricer, str | None]:
+        """The Overview tab. `include_class_lists` and `include_buckets` (the tab reads neither; a caller that does not
+        read them passes false): without the class lists the subscription and origin lists stay empty, without the
+        buckets the funding-route and personal-billed estimates stay zero. With both off the per-user start-day rollup
+        answers when it can (`_rollup_overview`), with the same values; otherwise, and on a refusal, the live statements
+        run on one connection, one after another, and the response is built after the block."""
+        rollup = None if include_class_lists or include_buckets else await self._rollup_overview(f)
+        if rollup is not None:
+            money_rows, fact_rows, model_rows = rollup.money_rows, rollup.fact_rows, rollup.model_rows
+            kpi_rows, line_rows, all_classes = rollup.kpi_rows, rollup.line_rows, []
+        else:
+            async with dashboard_request(), self._repo.bounded() as repo:
+                await repo.materialize_sel(f)
+                await repo.materialize_files(f)
+                rates = [model_rates_for(model) for model in await repo.get_cost_models(f)]
+                money_rows = await repo.get_overview_money(f, rates)
+                fact_rows = await repo.get_overview_facts(f)
+                model_rows = await repo.get_overview_models(f)
+                kpi_rows = await repo.get_dashboard_kpis(f)
+                line_rows = await repo.get_overview_lines(f)
+                all_classes = await repo.get_class_lists(f, "all") if include_class_lists else []
+        parts = _parts(money_rows)
+        spend, estimate, pricer = _money(parts.get("money", []))
+        if not include_buckets:
+            estimate = {}
 
-        money = price_session_models(session_model_rows)
         kpi = _first(kpi_rows)
         total_sessions = _i(kpi.get("total_sessions"))
-        total_cost = money.total
+        total_cost = _f(spend.get("cost_usd"))
         input_tokens = _i(kpi.get("total_input_tokens"))
         output_tokens = _i(kpi.get("total_output_tokens"))
         cache_read_tokens = _i(kpi.get("total_cache_read_tokens"))
         cache_creation_tokens = _i(kpi.get("total_cache_creation_tokens"))
         total_api_calls = _i(kpi.get("total_api_calls"))
 
-        # Every roll-up below is already scoped to `sel` in its own reader query: the same
-        # costless-inclusive universe `total_sessions` above now counts.
-        total_turns = sum(_i(r.get("turns")) for r in turns_rows)
-        files_by_session = {_s(r.get("session_id")): r for r in file_rows}
-        total_files_changed = sum(_i(r.get("files_changed")) for r in files_by_session.values())
-        tool_calls = sum(_i(r.get("tool_calls")) for r in success_rows)
-        tool_success = sum(_i(r.get("tool_calls_success")) for r in success_rows)
-        duration_ms = sum(_i(r.get("duration_ms")) for r in duration_rows)
+        # The facts are already summed over `sel` in the reader: the same costless-inclusive universe
+        # `total_sessions` above counts.
+        facts = _first(fact_rows)
+        total_turns = _i(facts.get("turns"))
+        total_files_changed = _i(facts.get("files_changed"))
+        tool_calls = _i(facts.get("tool_calls"))
+        tool_success = _i(facts.get("tool_calls_success"))
+        duration_ms = _i(facts.get("duration_ms"))
 
-        lines = _first(lines_totals)
+        line_parts = _parts(line_rows)
+        lines = _first(line_parts.get("total", []))
         net_lines = _nnet(_ni(lines.get("lines_added")), _ni(lines.get("lines_removed")))
+        days = sorted(line_parts.get("day", []), key=lambda r: _s(r.get("key")))
 
-        dead_sessions, _wasted = self._dead_sessions(money.by_session, files_by_session)
+        dead_sessions = _i(_first(parts.get("dead", [])).get("n"))
 
-        cache_read_cost_usd = money.cache_read
+        cache_read_cost_usd = _f(spend.get("cache_read_cost_usd"))
         total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens
 
         kpis = {
@@ -615,131 +949,267 @@ class LocalAnalyticsHandler:
             **_lists(_first(all_classes)),
         }
 
-        by_day, by_model = _by_key(day_classes), _by_key(model_classes)
+        # Without the class lists every list is empty, also those the day and model statements return with their rows.
         daily_buckets = [
-            {"day": _iso(r.get("day")), "net_lines": _ni(r.get("net_lines")), **_lists(by_day.get(_iso(r.get("day"))))}
-            for r in lines_daily
+            {
+                "day": _s(r.get("key")),
+                "net_lines": _ni(r.get("net_lines")),
+                **_lists(r if include_class_lists else None),
+            }
+            for r in days
         ]
         model_breakdown = [
             {
-                "model_name": _s(r.get("model_name")),
-                "session_count": _i(r.get("session_count")),
-                **_lists(by_model.get(_s(r.get("model_name")))),
+                "model_name": _s(r.get("key")),
+                "session_count": _i(r.get("n")),
+                **_lists(r if include_class_lists else None),
             }
             for r in model_rows
         ]
 
-        data_as_of = max((_iso(r.get("day")) for r in lines_daily if r.get("nonzero")), default=None)
+        data_as_of = max((_s(r.get("key")) for r in days if r.get("nonzero")), default=None)
         return (
             {"kpis": kpis, "daily_buckets": daily_buckets, "model_breakdown": model_breakdown, **estimate},
-            money.pricer,
+            pricer,
             data_as_of,
         )
 
-    @staticmethod
-    def _dead_sessions(
-        session_money: dict[str, float], files_by_session: dict[str, dict[str, Any]]
-    ) -> tuple[int, float]:
-        """A session that cost money but touched no file. Returns (count, wasted_usd)."""
-        ids = LocalAnalyticsHandler._dead_ids(session_money, files_by_session)
-        return len(ids), sum(session_money[sid] for sid in ids)
-
-    @staticmethod
-    def _dead_ids(session_money: dict[str, float], files_by_session: dict[str, dict[str, Any]]) -> list[str]:
-        return [
-            sid
-            for sid, cost in session_money.items()
-            if cost > 0 and _i(files_by_session.get(sid, {}).get("files_changed")) == 0
-        ]
-
     # ── Cost ─────────────────────────────────────────────────────────────────
 
-    async def get_cost(self, f: LocalAnalyticsFilter) -> tuple[dict[str, Any], CatalogPricer]:
-        kpi_rows, by_user, session_model_rows, all_classes, model_classes = await asyncio.gather(
-            self._repo.get_cost_kpis(f),
-            self._repo.get_cost_by_user(f),
-            self._repo.get_session_model_costs(f, spend_only=True),
-            self._repo.get_class_lists(f, "all"),
-            self._repo.get_class_lists(f, "model"),
-        )
-        by_model = _by_key(model_classes)
-        money = price_session_models(session_model_rows)
-        priced = price_bucket_rows(await self._repo.get_session_funding_costs(f))
-        kpi = _first(kpi_rows)
-        total_sessions = _i(kpi.get("total_sessions"))
-        total_cost = money.total
-        spend_sessions = _i(kpi.get("spend_sessions"))
-        total_tokens = (
-            _i(kpi.get("total_input_tokens"))
-            + _i(kpi.get("total_output_tokens"))
-            + _i(kpi.get("total_cache_read_tokens"))
-            + _i(kpi.get("total_cache_creation_tokens"))
-        )
-        cost_by_user = [
-            {
-                "developer_name": _s(r.get("developer_name")),
-                "user_email": _s(r.get("developer_name")),
-                "cost_usd": money.of_sessions([_s(sid) for sid in (r.get("session_ids") or [])]),
-                **_lists(r),
-                **buckets(priced, [_s(sid) for sid in (r.get("session_ids") or [])]),
-            }
-            for r in by_user
-        ]
-        cost_by_user.sort(key=lambda r: r["developer_name"])
-        cost_by_user.sort(key=lambda r: _float_sort_key(r["cost_usd"]), reverse=True)
-        cost_by_model = sorted(
-            (
-                {"model_name": name, "cost_usd": cost, **_lists(by_model.get(name)), **buckets(priced, model=name)}
-                for name, cost in money.by_model.items()
-            ),
-            key=lambda r: (-_float_sort_key(r["cost_usd"]), r["model_name"]),
-        )
-        data = {
-            "kpis": {
-                "total_sessions": total_sessions,
-                "total_cost_usd": total_cost,
-                "total_tokens": total_tokens,
-                "avg_cost_per_session": (total_cost / spend_sessions) if spend_sessions else 0.0,
-                **_lists(_first(all_classes)),
-            },
-            "cost_by_user": cost_by_user,
-            "cost_by_model": cost_by_model,
-            "models_without_spend": models_without_spend(priced, money.by_model),
-            **buckets(priced),
-        }
-        return data, money.pricer
+    @one_request_budget
+    async def get_cost(
+        self, f: LocalAnalyticsFilter, *, include_class_lists: bool = True, include_buckets: bool = True
+    ) -> tuple[dict[str, Any], CatalogPricer]:
+        """The Cost page from one held connection: rates, one grouped money statement, then the facts, run in order
+        under the request budget. The rows are built after the block, once the connection is back in the pool.
+
+        `include_class_lists` and `include_buckets` (the Cost tab reads neither; the route turns them off unless
+        asked): without the class lists the subscription and origin lists of the totals, users and models stay empty
+        and their statements do not run; without the buckets the funding-route and personal-billed buckets stay
+        empty (zero), the six groupings behind them are not built and `models_without_spend` is empty."""
+        rollup = None if include_class_lists or include_buckets else await self._rollup_cost(f)
+        if rollup is not None:
+            money, by_user, all_classes, model_classes = (
+                rollup.money,
+                [{"developer_name": name} for name in rollup.developers],
+                [],
+                [],
+            )
+            kpi_rows = [
+                {
+                    "total_sessions": rollup.total_sessions,
+                    "spend_sessions": rollup.spend_sessions,
+                    "total_input_tokens": rollup.total_tokens,  # the four token totals are only ever summed
+                }
+            ]
+        else:
+            async with dashboard_request(), self._repo.bounded() as repo:
+                await repo.materialize_sel(f)  # `sel` once for every statement of the request
+                rates = [model_rates_for(model) for model in await repo.get_cost_models(f)]
+                money = await repo.get_cost_money(f, rates, buckets=include_buckets)
+                kpi_rows = await repo.get_cost_kpis(f)
+                all_classes = await repo.get_class_lists(f, "all") if include_class_lists else []
+                model_classes = await repo.get_class_lists(f, "model") if include_class_lists else []
+                by_user = await repo.get_cost_by_user(f, with_classes=include_class_lists)
+        return _cost_response(money, by_user, kpi_rows, all_classes, model_classes, include_buckets)
+
+    async def _rollup_overview(self, f: LocalAnalyticsFilter) -> RollupOverview | None:
+        """/overview's cards and charts from the per-user start-day rollup, or None when it cannot answer (see
+        `PostgresCliAnalyticsReader.rollup_overview`): the live statements then run. Cached and refused as `/cost`."""
+        read = getattr(self._repo, "rollup_overview", None)
+        if read is None or not config.CLI_ANALYTICS_USER_ROLLUP_ENABLED:
+            return None
+        cache = get_ranking_cache()
+        key = rollup_key(f, "overview-rollup") if cache.enabled else None
+        if key is not None and (cached := cache.get(key)) is not None:
+            if cached is _ROLLUP_REFUSED:
+                return None
+            mark_rollup_used()
+            return cached
+        async with dashboard_request():
+            served = await read(f, model_rates_for, rollup_max_age_s())
+        if served is not None:
+            mark_rollup_used()  # only a request the rollup answers keeps the warm-up job going
+        if key is not None:
+            # A refusal is kept too: the next request of the window would repeat the same reads to be refused again.
+            cache.put(key, served if served is not None else _ROLLUP_REFUSED)
+        return served
+
+    async def _rollup_cost(self, f: LocalAnalyticsFilter) -> RollupCost | None:
+        """/cost's totals and money from the per-user start-day rollup, or None when it cannot answer (see
+        `PostgresCliAnalyticsReader.rollup_cost`): the live statements then run. A fresh answer is reused for the
+        cache's TTL, as for the Users page."""
+        read = getattr(self._repo, "rollup_cost", None)
+        if read is None or not config.CLI_ANALYTICS_USER_ROLLUP_ENABLED:
+            return None
+        cache = get_ranking_cache()
+        key = rollup_key(f, "cost-rollup") if cache.enabled else None
+        if key is not None and (cached := cache.get(key)) is not None:
+            if cached is _ROLLUP_REFUSED:
+                return None
+            mark_rollup_used()
+            return cached
+        async with dashboard_request():
+            served = await read(f, model_rates_for, rollup_max_age_s())
+        if served is not None:
+            mark_rollup_used()  # only a request the rollup answers keeps the warm-up job going
+        if key is not None:
+            # A refusal is kept too: the next request of the window would repeat the same reads to be refused again.
+            cache.put(key, served if served is not None else _ROLLUP_REFUSED)
+        return served
 
     # ── Users ────────────────────────────────────────────────────────────────
 
+    @one_request_budget
     async def get_users(
-        self, f: LocalAnalyticsFilter, page: int | None, per_page: int | None
+        self,
+        f: LocalAnalyticsFilter,
+        page: int | None,
+        per_page: int | None,
+        *,
+        charts_only: bool = False,
+        include_chart: bool = False,
+        include_daily_activity: bool = True,
+        include_avg_duration: bool = True,
     ) -> tuple[dict[str, Any], CatalogPricer]:
-        (
-            user_rows,
-            daily_rows,
-            last_active_rows,
-            lines_rows,
-            turns_rows,
-            file_rows,
-            success_rows,
-            duration_rows,
-            session_model_rows,
-        ) = await asyncio.gather(
-            self._repo.get_users(f),
-            self._repo.get_users_daily_activity(f),
-            self._repo.get_users_last_active(f),
-            self._repo.get_lines_by_user(f),
-            self._repo.get_turns_by_session(f),
-            self._repo.get_file_facts_by_session(f),
-            self._repo.get_tool_success_by_session(f),
-            self._repo.get_session_durations(f),
-            self._repo.get_session_model_costs(f, spend_only=True),
-        )
+        """The Users page (`/user-charts`: every user) from one held connection: rates, the ranked money page, then
+        the facts of the page's developers, run in order under the request budget. The rows are built after it.
 
-        money = price_session_models(session_model_rows)
-        priced = price_bucket_rows(await self._repo.get_session_funding_costs(f))
-        turns_by_session = {_s(r.get("session_id")): _i(r.get("turns")) for r in turns_rows}
-        success_by_session = {_s(r.get("session_id")): r for r in success_rows}
+        `charts_only` (`/user-charts`, whose consumer reads only each user's name and money): every read after the
+        money page is skipped, so the session and token counts, the class lists, the turns, tool, lines, last-active
+        and daily-activity fields keep their model defaults (0, empty or None) and `avg_session_duration_ms` is None.
+
+        `include_chart` (`/users?include_chart=true`, a page request): the money statement runs for every user, the
+        page is cut from its ranking here, and `chart` lists every user's name and cost in rank order, so the
+        cost-share chart needs no `/user-charts` request. The page's rows are the ones the page statement gives.
+
+        `include_daily_activity` and `include_avg_duration` (both read the whole window and nothing in the Users tab
+        shows them; the route turns them off unless asked): without them `daily_activity` stays empty and
+        `avg_session_duration_ms` is None."""
+        limit, offset = (per_page, page * per_page) if page is not None and per_page is not None else (None, 0)
+        with_chart = include_chart and limit is not None
+        rollup = await self._rollup_users(f, charts_only, include_daily_activity, include_avg_duration)
+        if rollup is not None:
+            everyone = rollup.money_page
+            ranked = everyone
+            if limit is not None:
+                page_names = everyone.developers[offset : offset + limit]
+                ranked = UsersMoneyPage(page_names, everyone.total_count, everyone.money)
+            wanted = set(ranked.developers)
+            user_rows, developer_facts, lines_rows, last_active_rows = (
+                ([], [], [], [])
+                if charts_only
+                else (
+                    [r for r in rollup.user_rows if r["developer_name"] in wanted],
+                    [r for r in rollup.developer_facts if r["developer"] in wanted],
+                    [r for r in rollup.lines_rows if r["developer_name"] in wanted],
+                    [r for r in rollup.last_active_rows if r["developer_name"] in wanted],
+                )
+            )
+            avg_duration, daily_rows = None, []
+        else:
+            (
+                everyone,
+                ranked,
+                avg_duration,
+                user_rows,
+                developer_facts,
+                lines_rows,
+                last_active_rows,
+                daily_rows,
+            ) = await self._users_live(f, limit, offset, charts_only, include_daily_activity, include_avg_duration)
+        # The rows of every user (8,000 and their daily activity) are built off the event loop: ingest runs on it.
+        data, pricer = await asyncio.to_thread(
+            self._users_response,
+            ranked,
+            avg_duration,
+            user_rows,
+            developer_facts,
+            lines_rows,
+            last_active_rows,
+            daily_rows,
+        )
+        if with_chart:
+            user_cost = {g.keys["user"]: g.cost_usd for g in everyone.money.groups.get(G_USER, [])}
+            data["chart"] = [
+                {"developer_name": name, "cost_usd": user_cost.get(name, 0.0)} for name in everyone.developers
+            ]
+        return data, pricer
+
+    async def _rollup_users(
+        self, f: LocalAnalyticsFilter, charts_only: bool, include_daily_activity: bool, include_avg_duration: bool
+    ) -> RollupUsers | None:
+        """The Users page's data from the per-user start-day rollup, or None when it cannot answer (see
+        `PostgresCliAnalyticsReader.rollup_users`) or when the request asks for a read over the whole window that the
+        rollup does not hold (daily activity, the average duration): the live statements then run."""
+        if not charts_only and (include_daily_activity or include_avg_duration):
+            return None
+        read = getattr(self._repo, "rollup_users", None)
+        if read is None or not config.CLI_ANALYTICS_USER_ROLLUP_ENABLED:
+            return None
+        # Every page of a window and /user-charts read the same data: a fresh answer is reused for the cache's TTL, and
+        # the warm-up job keeps the answer of the usual windows fresh while the rollup is in use.
+        cache = get_ranking_cache()
+        key = rollup_key(f) if cache.enabled else None
+        if key is not None and (cached := cache.get(key)) is not None:
+            if cached is _ROLLUP_REFUSED:
+                return None
+            mark_rollup_used()
+            return cached
+        async with dashboard_request():
+            served = await read(f, model_rates_for, rollup_max_age_s())
+        if served is not None:
+            mark_rollup_used()  # only a request the rollup answers keeps the warm-up job going
+        if key is not None:
+            # A refusal is kept too: the next request of the window would repeat the same reads to be refused again.
+            cache.put(key, served if served is not None else _ROLLUP_REFUSED)
+        return served
+
+    async def _users_live(
+        self,
+        f: LocalAnalyticsFilter,
+        limit: int | None,
+        offset: int,
+        charts_only: bool,
+        include_daily_activity: bool,
+        include_avg_duration: bool,
+    ) -> tuple[UsersMoneyPage, UsersMoneyPage, int | None, list[dict], list[dict], list[dict], list[dict], list[dict]]:
+        """The live statements of the Users page, on one held connection, in order, under the request budget."""
+        async with dashboard_request(), self._repo.bounded() as repo:
+            await repo.materialize_sel(f)  # `sel` once for every statement of the request
+            everyone = await _users_ranking(repo, f)
+            ranked = everyone
+            if limit is not None:
+                ranked = UsersMoneyPage(
+                    everyone.developers[offset : offset + limit], everyone.total_count, everyone.money
+                )
+            avg_duration = (
+                await repo.get_avg_session_duration_ms(f) if include_avg_duration and not charts_only else None
+            )
+            detail = await _users_detail(repo, f, ranked, limit, charts_only, include_daily_activity)
+        return (everyone, ranked, avg_duration, *detail)
+
+    @staticmethod
+    def _users_response(
+        ranked: UsersMoneyPage,
+        avg_duration: int | None,
+        user_rows: list[dict],
+        developer_facts: list[dict],
+        lines_rows: list[dict],
+        last_active_rows: list[dict],
+        daily_rows: list[dict],
+    ) -> tuple[dict[str, Any], CatalogPricer]:
+        """The Users response from what the held connection read (pure Python: no database access)."""
+        groups = ranked.money.groups
+        pricer = CatalogPricer()
+        total = next(iter(groups.get(G_TOTAL, [])), None)
+        if total is not None:
+            pricer._unpriced.update(total.unpriced_models)  # the spend scope only; estimate buckets never feed it
+        user_cost = {g.keys["user"]: g.cost_usd for g in groups.get(G_USER, [])}
+        user_routes = _by_group_key(groups.get(G_USER_ROUTE, []), "user")
+        user_personal = _by_group_key(groups.get(G_USER_PERSONAL, []), "user")
+        facts_by_user = {_s(r.get("developer")): r for r in developer_facts}
+        users_by_name = {_s(r.get("developer_name")): r for r in user_rows}
         last_active = {_s(r.get("developer_name")): r.get("last_active") for r in last_active_rows}
         net_lines_by_user = {_s(r.get("developer_name")): _ni(r.get("net_lines")) for r in lines_rows}
 
@@ -750,12 +1220,10 @@ class LocalAnalyticsHandler:
             )
 
         rows: list[dict] = []
-        for row in user_rows:
-            name = _s(row.get("developer_name"))
-            session_ids = [_s(s) for s in (row.get("session_ids") or [])]
-            turns = sum(turns_by_session.get(sid, 0) for sid in session_ids)
-            tool_calls = sum(_i(success_by_session.get(sid, {}).get("tool_calls")) for sid in session_ids)
-            tool_ok = sum(_i(success_by_session.get(sid, {}).get("tool_calls_success")) for sid in session_ids)
+        for name in ranked.developers:  # the page, in rank order
+            row = users_by_name.get(name, {})
+            facts = facts_by_user.get(name, {})
+            tool_calls = _i(facts.get("tool_calls"))
             rows.append(
                 {
                     "developer_name": name,
@@ -765,44 +1233,26 @@ class LocalAnalyticsHandler:
                     "output_tokens": _i(row.get("output_tokens")),
                     "cache_read_tokens": _i(row.get("cache_read_tokens")),
                     "cache_creation_tokens": _i(row.get("cache_creation_tokens")),
-                    "cost_usd": money.of_sessions(session_ids),
-                    "turns": turns,
+                    "cost_usd": user_cost.get(name, 0.0),
+                    "turns": _i(facts.get("turns")),
                     "tool_calls": tool_calls,
-                    "tool_success_rate": _pct(tool_ok, tool_calls),
+                    "tool_success_rate": _pct(_i(facts.get("tool_successes")), tool_calls),
                     "top_model": _s(row.get("top_model")) or None,
                     "net_lines": net_lines_by_user.get(name),
                     "last_active": _iso(last_active[name]) if last_active.get(name) else None,
                     "user_id": None,  # filled in by the router via UserIdentityResolver
                     "daily_activity": daily_by_user.get(name, []),
                     **_lists(row),
-                    **buckets(priced, session_ids),
+                    **buckets_from_groups(user_routes.get(name, []), user_personal.get(name, [])),
                 }
             )
-
-        # Average duration over every session get_users returned: the same costless-inclusive
-        # universe as the overview, not the priced-only one D1 used to restrict to.
-        listed_sessions = {_s(s) for row in user_rows for s in (row.get("session_ids") or [])}
-        # A session whose activity end is unknown (NULL, legacy data) is not a 0 ms session: skip it, keep real zeros.
-        durations = [
-            _i(r["duration_ms"])
-            for r in duration_rows
-            if _s(r.get("session_id")) in listed_sessions and r.get("duration_ms") is not None
-        ]
-        avg_duration = int(sum(durations) / len(durations)) if durations else None
-
-        rows.sort(key=lambda r: r["developer_name"])
-        rows.sort(key=lambda r: _float_sort_key(r["cost_usd"]), reverse=True)
-        total_count = len(rows)
-        if page is not None and per_page is not None:
-            offset = page * per_page
-            rows = rows[offset : offset + per_page]
 
         return {
             "rows": rows,
             "avg_session_duration_ms": avg_duration,
-            "total_count": total_count,
-            **buckets(priced),
-        }, money.pricer
+            "total_count": ranked.total_count,
+            **buckets_from_groups(groups.get(G_ROUTE, []), groups.get(G_PERSONAL, [])),
+        }, pricer
 
     # ── Repositories ─────────────────────────────────────────────────────────
 
@@ -838,7 +1288,7 @@ class LocalAnalyticsHandler:
         success_by_session = {_s(r.get("session_id")): r for r in success_rows}
         lines_by_session = {_s(r.get("session_id")): r for r in lines_rows}
 
-        rows = _build_repository_rows(
+        rows = _build_session_repository_rows(
             cost_facts,
             money.by_session,
             turns_by_session,
@@ -857,23 +1307,69 @@ class LocalAnalyticsHandler:
         include_branches: bool,
         search: str | None = None,
     ) -> tuple[dict[str, Any], CatalogPricer]:
-        rows, returned, pricer = await self._repository_rows(f, include_branches, search)
-        priced = price_bucket_rows(await self._repo.get_session_funding_costs(f))
+        # The first statement ranks, pages and prices the groups of the sessions the search keeps (the whole selection,
+        # before the page is cut); the totals, the unpriced models and the estimates are those of that selection. The
+        # second reads the counts of the groups on the page only.
+        async with dashboard_request(), self._repo.bounded() as repo:
+            rates = [model_rates_for(model) for model in await repo.get_cost_models(f)]
+            rows = await repo.get_repository_ranking(f, include_branches, search, rates, page, per_page)
+            parts = _parts(rows)
+            ranked = sorted(parts.get("group", []), key=lambda r: _i(r.get("key")))  # the reader's rank
+            # The counts of the groups, for the groups of the page only (every group with branches).
+            named = [_s(r.get("repository")) for r in ranked if _s(r.get("repository"))]
+            fact_rows = (
+                await repo.get_repository_facts(
+                    f, include_branches, search, named, unattributed=len(named) < len(ranked)
+                )
+                if ranked
+                else []
+            )
+            # Without branches the estimates of the page are priced from the page's sessions alone.
+            bucket_rows = (
+                await repo.get_repository_buckets(f, search, rates, named, unattributed=len(named) < len(ranked))
+                if ranked and not include_branches
+                else parts.get("bucket", [])
+            )
+        _spend, estimate, pricer = _money(parts.get("total", []))
+
+        def group_key(row: dict) -> tuple:
+            names = (row.get("project_name"), row.get("repository"), row.get("branch"))
+            return tuple(_s(n) for n in names) if include_branches else (_s(row.get("repository")),)
+
+        facts = {group_key(r): r for r in fact_rows}
+        groups = [
+            {
+                **facts.get(group_key(g), {}),
+                **{k: g.get(k) for k in ("key", "n", "project_name", "repository", "branch", "cost_usd")},
+            }
+            for g in ranked
+        ]
+        page_rows = _build_repository_rows(groups, include_branches)
 
         if include_branches:
-            page_rows = rows
-            pagination = {
-                "page": 0,
-                "per_page": len(rows),
-                "total_count": len(rows),
-                "has_more": False,
-            }
+            total_count = len(page_rows)
+            pagination = {"page": 0, "per_page": total_count, "total_count": total_count, "has_more": False}
         else:
-            page_rows, pagination = _page(rows, page, per_page)
+            total_count = _i(_first(parts.get("count", [])).get("n"))
+            pagination = {
+                "page": page,
+                "per_page": per_page,
+                "total_count": total_count,
+                "has_more": (page + 1) * per_page < total_count,
+            }
 
+        def row_key(project: Any, repository: Any) -> tuple:
+            return (_s(project), _s(repository)) if include_branches else (_s(repository),)
+
+        bucket_rows_by_key: dict[tuple, dict[str, list[dict]]] = {}
+        for bucket in bucket_rows:
+            kind = "route" if _s(bucket.get("key")) == "b_route" else "billed"
+            key = row_key(bucket.get("project_name"), bucket.get("repository"))
+            bucket_rows_by_key.setdefault(key, {"route": [], "billed": []})[kind].append(bucket)
         for row in page_rows:
-            row.update(buckets(priced, row.pop("_sids")))
-        return {"rows": page_rows, "pagination": pagination, **buckets(priced, returned)}, pricer
+            mine = bucket_rows_by_key.get(row_key(row["project_name"], row["repository"]), {})
+            row.update(_dashboard_buckets(mine.get("route", []), mine.get("billed", [])))
+        return {"rows": page_rows, "pagination": pagination, **estimate}, pricer
 
     async def get_projects(
         self, f: LocalAnalyticsFilter, page: int, per_page: int, search: str | None = None
@@ -1321,14 +1817,16 @@ class LocalAnalyticsHandler:
     # ── Tools ────────────────────────────────────────────────────────────────
 
     async def get_tools(self, f: LocalAnalyticsFilter) -> dict:
-        tool_rows, model_rows, invocation_rows, tool_classes, model_classes, invocation_classes = await asyncio.gather(
-            self._repo.get_tool_usage(f),
-            self._repo.get_model_breakdown(f),
-            self._repo.get_invocations(f),
-            self._repo.get_class_lists(f, "tool"),
-            self._repo.get_class_lists(f, "model"),
-            self._repo.get_class_lists(f, "invocation"),
-        )
+        # One held connection and `sel` built once, as the other dashboards: six statements at once took six of the
+        # pool's eight connections and each evaluated the window's selection again.
+        async with dashboard_request(), self._repo.bounded() as repo:
+            await repo.materialize_sel(f)
+            tool_rows = await repo.get_tool_usage(f)
+            model_rows = await repo.get_model_breakdown(f)
+            invocation_rows = await repo.get_invocations(f)
+            tool_classes = await repo.get_class_lists(f, "tool")
+            model_classes = await repo.get_class_lists(f, "model")
+            invocation_classes = await repo.get_class_lists(f, "invocation")
         by_tool, by_model = _by_key(tool_classes), _by_key(model_classes)
         by_invocation = {(_s(r.get("kind")), _s(r.get("key"))): r for r in invocation_classes}
         tool_usage = []
@@ -1383,115 +1881,71 @@ class LocalAnalyticsHandler:
     # ── Efficiency ───────────────────────────────────────────────────────────
 
     async def get_efficiency(self, f: LocalAnalyticsFilter) -> tuple[dict[str, Any], CatalogPricer]:
-        (
-            kpi_rows,
-            session_model_rows,
-            cost_facts,
-            turns_rows,
-            file_rows,
-            lines_totals,
-            lines_rows,
-            session_classes,
-        ) = await asyncio.gather(
-            self._repo.get_cost_kpis(f),
-            self._repo.get_session_model_costs(f, spend_only=True),
-            self._repo.get_session_cost_facts(f, include_costless=True),
-            self._repo.get_turns_by_session(f),
-            self._repo.get_file_facts_by_session(f),
-            self._repo.get_lines_totals(f),
-            self._repo.get_lines_by_session(f),
-            self._repo.get_class_lists(f, "session"),
-        )
-        classes = _by_key(session_classes)
+        async with dashboard_request(), self._repo.bounded() as repo:
+            await repo.materialize_sel(f)
+            await repo.materialize_files(f)
+            rates = [model_rates_for(model) for model in await repo.get_cost_models(f)]
+            fact_rows = await repo.get_efficiency_facts(f)
+            money_rows = await repo.get_efficiency_money(f, rates)
+            kpi_rows = await repo.get_dashboard_kpis(f)
+        parts = {**_parts(fact_rows), **_parts(money_rows)}
+        everything, code = (_first(parts.get(part, [])) for part in ("all", "code"))
+        spend, estimate, pricer = _money(parts.get("money", []))
 
-        money = price_session_models(session_model_rows)
         kpi = _first(kpi_rows)
-        total_cost = money.total
+        total_cost = _f(spend.get("cost_usd"))
         cache_read_tokens = _i(kpi.get("total_cache_read_tokens"))
         total_api_calls = _i(kpi.get("total_api_calls"))
+        cache_read_cost_usd = _f(spend.get("cache_read_cost_usd"))
 
-        turns_by_session = {_s(r.get("session_id")): _i(r.get("turns")) for r in turns_rows}
-        files_by_session = {_s(r.get("session_id")): r for r in file_rows}
-
-        cache_read_cost_usd = money.cache_read
-
-        worst_ratio: float | None = None
-        worst_prompt: str | None = None
-        worst_trace: str | None = None
-        depth_counts = dict.fromkeys(_DEPTH_BUCKETS, 0)
-        depth_sessions: dict[str, list[str]] = {b: [] for b in _DEPTH_BUCKETS}
-        for row in cost_facts:
-            sid = _s(row.get("session_id"))
-            turns = turns_by_session.get(sid, 0)
-            ratio = _ctx_per_call(row.get("cache_read_tokens"), row.get("api_call_count"))
-            # Among sessions with API calls, highest ratio wins; a tie goes to the lowest session id.
-            if _i(row.get("api_call_count")) > 0 and (
-                worst_ratio is None or ratio > worst_ratio or (ratio == worst_ratio and sid < worst_trace)
-            ):
-                worst_ratio = ratio
-                worst_prompt = (
-                    _served_prompt(
-                        row.get("session_title"), row.get("prompt"), row.get("repository"), row.get("branch")
-                    )
-                    or None
+        worst = _first(parts.get("worst", []))
+        worst_prompt = None
+        if worst:
+            worst_prompt = (
+                _served_prompt(
+                    worst.get("session_title"), worst.get("prompt"), worst.get("repository"), worst.get("branch")
                 )
-                worst_trace = sid
-            bucket = depth_bucket(turns)
-            depth_counts[bucket] += 1
-            depth_sessions[bucket].append(sid)
+                or None
+            )
+            if worst_prompt:
+                worst_prompt = worst_prompt[:_PROMPT_PREVIEW_LEN]
+        depth = {_s(r.get("key")): r for r in parts.get("depth", [])}
 
-        if worst_prompt:
-            worst_prompt = worst_prompt[:_PROMPT_PREVIEW_LEN]
-
-        dead_ids = self._dead_ids(money.by_session, files_by_session)
-        dead_count, wasted = len(dead_ids), sum(money.by_session[sid] for sid in dead_ids)
-
-        selected_session_ids = {_s(r.get("session_id")) for r in cost_facts}
-        selected_files = [r for sid, r in files_by_session.items() if sid in selected_session_ids]
-        # Sessions that contributed to code_changes: a changed file, or a non-zero line delta.
-        code_ids = {
-            sid for sid, r in files_by_session.items() if sid in selected_session_ids and _i(r.get("files_changed"))
-        }
-        code_ids |= {
-            _s(r.get("session_id")) for r in lines_rows if _i(r.get("lines_added")) or _i(r.get("lines_removed"))
-        }
-        files_changed = sum(_i(r.get("files_changed")) for r in selected_files)
-        files_written = sum(_i(r.get("files_written")) for r in selected_files)
-        files_edited = sum(_i(r.get("files_edited")) for r in selected_files)
-        lines = _first(lines_totals)
+        # A session that cost money and changed no file is dead; the reader counts them and lists their classes.
+        dead = _first(parts.get("dead", []))
+        dead_count, wasted = _i(dead.get("n")), _f(dead.get("cost_usd"))
 
         data = {
             "kpis": {
                 "avg_context_per_call": _ctx_per_call(cache_read_tokens, total_api_calls),
-                "worst_session_ctx_per_call": worst_ratio,
+                "worst_session_ctx_per_call": _f(worst.get("ratio")) if worst else None,
                 "worst_session_prompt": worst_prompt,
-                "worst_session_trace_id": worst_trace,
+                "worst_session_trace_id": _s(worst.get("session_id")) if worst else None,
                 "cache_read_cost_usd": cache_read_cost_usd,
                 "bloat_pct": _pct(cache_read_cost_usd, total_cost),
                 "total_cost_usd": total_cost,
-                **_union_lists(classes, selected_session_ids),
+                **_lists(everything),
             },
             "dead_sessions": {
                 "count": dead_count,
                 "pct_of_sessions": _pct(dead_count, _i(kpi.get("spend_sessions"))),
                 "wasted_cost_usd": wasted,
                 "avg_cost_per_dead": (wasted / dead_count) if dead_count else None,
-                **_union_lists(classes, dead_ids),
+                **_lists(dead),
             },
             "session_depth": [
-                {"bucket": b, "count": depth_counts[b], **_union_lists(classes, depth_sessions[b])}
-                for b in _DEPTH_BUCKETS
+                {"bucket": b, "count": _i(depth.get(b, {}).get("n")), **_lists(depth.get(b))} for b in _DEPTH_BUCKETS
             ],
             "code_changes": {
-                "files_changed": files_changed,
-                "files_written": files_written,
-                "files_edited": files_edited,
-                "net_lines": _nnet(_ni(lines.get("lines_added")), _ni(lines.get("lines_removed"))),
-                **_union_lists(classes, code_ids),
+                "files_changed": _i(code.get("files_changed")),
+                "files_written": _i(code.get("files_written")),
+                "files_edited": _i(code.get("files_edited")),
+                "net_lines": _nnet(_ni(code.get("lines_added")), _ni(code.get("lines_removed"))),
+                **_lists(code),
             },
-            **buckets(price_bucket_rows(await self._repo.get_session_funding_costs(f))),
+            **estimate,
         }
-        return data, money.pricer
+        return data, pricer
 
 
 def now_iso() -> str:

@@ -17,9 +17,12 @@
 from contextlib import asynccontextmanager
 from typing import Any
 
+from tests.codemie.repository.cli_analytics.support.aggregating import aggregating
+
 
 def bounded_to_itself(repo: Any) -> Any:
-    """Make `repo.bounded()` an async context manager yielding `repo` itself (no pool to acquire from)."""
+    """Make `repo.bounded()` an async context manager yielding `repo` itself (no pool to acquire from), and give it
+    the aggregate statements derived from its per-session ones."""
 
     @asynccontextmanager
     async def bounded():
@@ -29,6 +32,11 @@ def bounded_to_itself(repo: Any) -> Any:
     async def widened():
         yield repo
 
+    async def materialize_sel(f):
+        return None
+
     repo.bounded = bounded
     repo.widened = widened
-    return repo
+    repo.materialize_sel = materialize_sel
+    repo.materialize_files = materialize_sel
+    return aggregating(repo)

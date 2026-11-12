@@ -39,6 +39,7 @@ from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROU
 from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
 from codemie.repository.cli_analytics.postgres.rollups import RECOMPUTE, RollupRefresher
 from codemie.repository.cli_analytics.postgres.session_activity import DERIVE_SQL
+from codemie.repository.cli_analytics.postgres.session_sort_keys import _UNSTAMP
 from codemie.repository.cli_analytics.vocabulary import (
     ACTIVITY_HOOK_TYPES,
     BUILTIN_COMMAND_NAMES,
@@ -107,7 +108,7 @@ async def test_refresh_works_the_queue_down_in_batches():
     total = await RollupRefresher(Engine(conn), batch_size=100).refresh()  # type: ignore[arg-type]
 
     assert total == 250
-    assert conn.transactions == 3
+    assert conn.transactions == 6  # per batch: the transaction and the savepoint of the user rollup's day mark
 
 
 @pytest.mark.asyncio
@@ -135,13 +136,78 @@ async def test_a_batch_recomputes_every_family_then_releases_its_keys_in_one_tra
 
     assert await RollupRefresher(Engine(conn), batch_size=100).refresh_batch(conn) == 5  # type: ignore[arg-type]
 
-    assert conn.transactions == 1
+    assert conn.transactions == 2  # the batch's, and the savepoint of the user rollup's day mark
     assert conn.executed[0].startswith("SET LOCAL statement_timeout")
     assert conn.executed[-3:] == [rollups._LOCK_CLAIMED_KEYS, rollups._RELEASE_KEYS, rollups._RESTAMP_KEYS]
     assert "r.version = k.version" in rollups._RELEASE_KEYS  # only keys not marked again meanwhile
-    # the stored activity facts of the batch's sessions are derived after the last family, before the keys are released
-    assert conn.executed[-4] == DERIVE_SQL
-    assert conn.executed[-4 - len(RECOMPUTE) : -4] == RECOMPUTE
+    # the stored activity facts of the batch's sessions are derived after the last family, then the stamps of the
+    # rewritten sessions are dropped (no rates were injected), before the keys are released
+    # ... after the start days of the batch's sessions are counted for the user rollup, the last write before them
+    assert conn.executed[-4] == rollups._TOUCH_USER_ROLLUP_DAYS
+    assert conn.executed_args[-4][0] == [f"s{n}" for n in range(5)]
+    assert conn.executed[-5] == _UNSTAMP
+    assert conn.executed[-6] == DERIVE_SQL
+    assert conn.executed[-6 - len(RECOMPUTE) : -6] == RECOMPUTE
+
+
+@pytest.mark.asyncio
+async def test_stored_sort_keys_are_written_after_the_activity_facts_when_rates_are_injected():
+    from codemie.repository.cli_analytics.ports import ModelRates
+    from codemie.repository.cli_analytics.postgres.session_sort_keys import MODEL_NAMES_SQL, SORT_KEYS_SQL
+
+    conn = QueueConnection(queued=5, batch_size=100)
+    refresher = RollupRefresher(Engine(conn), batch_size=100)  # type: ignore[arg-type]
+    asked: list[list[str]] = []
+    refresher.set_rates(lambda: "v-now", lambda names: asked.append(list(names)) or {"m": ModelRates(model="m")})
+
+    assert await refresher.refresh_batch(conn) == 5  # type: ignore[arg-type]
+
+    assert conn.executed[-5] == SORT_KEYS_SQL
+    assert conn.executed[-6] == DERIVE_SQL
+    # the rates are asked for the raw names of the batch's token groups (none here); the stamp is the current version
+    assert MODEL_NAMES_SQL in conn.timeouts and asked == [[]]
+    assert conn.executed_args[-5][3] == "v-now"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_sort_key_derivation_neither_fails_the_batch_nor_leaves_a_trusted_stamp():
+    conn = QueueConnection(queued=3, batch_size=100)
+    refresher = RollupRefresher(Engine(conn), batch_size=100)  # type: ignore[arg-type]
+
+    def broken_rates(names):
+        raise RuntimeError("catalog unreachable")
+
+    refresher.set_rates(lambda: "v-now", broken_rates)
+
+    with patch.object(rollups.logger, "warning") as warning:
+        assert await refresher.refresh_batch(conn) == 3  # type: ignore[arg-type]
+
+    # the rollup keys are still released in the same batch ...
+    assert conn.executed[-3:] == [rollups._LOCK_CLAIMED_KEYS, rollups._RELEASE_KEYS, rollups._RESTAMP_KEYS]
+    # ... the derivation ran in a savepoint of its own (as the user rollup's day mark does), and the sessions it could
+    # not rewrite lost their stamp
+    assert conn.transactions == 3
+    unstamp = [(sql, args) for sql, args in zip(conn.executed, conn.executed_args) if "rates_version = NULL" in sql]
+    assert len(unstamp) == 1 and unstamp[0][1][0] == ["s0", "s1", "s2"]
+    message = warning.call_args.args[0]
+    assert "were not written" in message and "catalog unreachable" in message
+
+
+@pytest.mark.asyncio
+async def test_a_refresher_built_without_rates_unstamps_the_sessions_it_rewrites():
+    # the backfill command's refresher never calls set_rates: the day rows it rewrites must not keep a trusted stamp
+    conn = QueueConnection(queued=3, batch_size=100)
+    refresher = RollupRefresher(Engine(conn), batch_size=100)  # type: ignore[arg-type]
+
+    assert await refresher.refresh_batch(conn) == 3  # type: ignore[arg-type]
+
+    unstamp = [(sql, args) for sql, args in zip(conn.executed, conn.executed_args) if "rates_version = NULL" in sql]
+    assert len(unstamp) == 1 and unstamp[0][1][0] == ["s0", "s1", "s2"]
+    assert conn.executed[-3:] == [rollups._LOCK_CLAIMED_KEYS, rollups._RELEASE_KEYS, rollups._RESTAMP_KEYS]
+
+
+def test_the_sort_key_gate_is_the_union_of_the_bits_that_change_its_sources():
+    assert rollups._SORT_KEY_BITS == rollups._LOG | rollups._USAGE | rollups._SPANS | rollups._SESSION
 
 
 def test_request_grouping_reads_as_far_as_usage_rows_mark_the_neighbour_day() -> None:
@@ -692,6 +758,8 @@ async def test_recompute_updates_derived_columns_after_session_statements() -> N
     assert conn.executed[position - len(RECOMPUTE) : position] == RECOMPUTE  # after the SESSION statements
     assert conn.executed[position:] == [
         DERIVE_SQL,  # every session of the keys, whatever the kind (but not the empty id)
+        _UNSTAMP,  # no rates were injected: the rewritten sessions lose their stored sort keys' stamp
+        rollups._TOUCH_USER_ROLLUP_DAYS,  # the start days of the keys' sessions, for the user rollup
         rollups._LOCK_CLAIMED_KEYS,
         rollups._RELEASE_KEYS,
         rollups._RESTAMP_KEYS,
@@ -1663,6 +1731,32 @@ def test_session_title_is_trimmed_cut_to_200_characters_and_empty_is_null() -> N
 def test_a_blank_session_title_never_becomes_the_latest_value() -> None:
     assert "e.key IN ('session_title', 'platform')" in rollups._LATEST_VALUES
     assert "btrim(e.value #>> '{}', E' \\t\\r\\n\\u00a0') = ''" in rollups._LATEST_VALUES
+
+
+@pytest.mark.asyncio
+async def test_a_failing_day_mark_does_not_fail_the_batch_and_its_sessions_are_marked_with_the_next():
+    class Refusing(QueueConnection):
+        refuse = True
+
+        async def execute(self, sql, *args, timeout=None):
+            if sql == rollups._TOUCH_USER_ROLLUP_DAYS and self.refuse:
+                raise RuntimeError("lock not available")
+            return await super().execute(sql, *args, timeout=timeout)
+
+    conn = Refusing(queued=2, batch_size=100)
+    refresher = RollupRefresher(Engine(conn), batch_size=100)  # type: ignore[arg-type]
+
+    with patch.object(rollups.logger, "warning") as warning:
+        assert await refresher.refresh_batch(conn) == 2  # type: ignore[arg-type]
+
+    assert conn.executed[-3:] == [rollups._LOCK_CLAIMED_KEYS, rollups._RELEASE_KEYS, rollups._RESTAMP_KEYS]
+    assert "user rollup days not marked" in warning.call_args.args[0]
+
+    conn.refuse, conn.queued = False, 1  # the next batch holds s0 again; s1 is carried over from the failed mark
+    assert await refresher.refresh_batch(conn) == 1  # type: ignore[arg-type]
+    marks = [args for sql, args in zip(conn.executed, conn.executed_args) if sql == rollups._TOUCH_USER_ROLLUP_DAYS]
+    assert marks == [(["s0", "s1"],)]
+    assert refresher._untouched == set()
 
 
 def _dims_statement() -> str:

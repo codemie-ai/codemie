@@ -1,0 +1,78 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-16427_part2-stored-session-sort-keys",
+ "head": "433ca77f9afd7c6adc6d10b34e6a4f830a1439e7",
+ "runner": "make",
+ "started_at": "2026-11-09T14:42:29.849941+00:00",
+ "completed_at": "2026-11-09T14:42:29.849941+00:00",
+ "status": "PASSED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 1675,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 4857,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 1446,
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "secrets",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "make gitleaks",
+   "notes": "Counted as passed per caller: gitleaks only sees the local uncommitted .codemie/codemie-cli.config.json (never staged); not re-run"
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "make test",
+   "notes": "Not re-run. Measured at head fcd876d097: branch 106 failed + 1 error, main 114 failed + 1 error; every branch failure also fails on main (PRE-EXISTING, none branch-only). Analytics unit tests (tests/codemie/repository/cli_analytics, tests/codemie/service/analytics, live files excluded) re-run at current head: 3754 passed, 4 skipped, 0 failed."
+  },
+  {
+   "id": "cli-analytics-live",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "env -u CLI_ANALYTICS_PG_URL make test-cli-analytics-live",
+   "notes": "Not re-run. Measured at current head on PG17 and PG14: each 44 failed, 547 passed, 1 xfailed. The 44 failures are PRE-EXISTING (also fail on clean main; 8 unchanged test files call reader methods without the now-required scope keyword, e.g. test_live_harness_label.py, test_live_summary_skill_names.py, test_live_costless_sessions.py, test_live_dispatch_gate.py). None fail only on this branch."
+  },
+  {
+   "id": "alembic-heads",
+   "source": "ci",
+   "status": "PASS",
+   "duration_ms": 469,
+   "command": "python3 scripts/check_alembic_heads.py --merge-with main",
+   "exit_code": 0
+  }
+ ],
+ "failures": {
+  "unit": {
+   "pre_existing": true,
+   "detail": "106 failed + 1 error on branch (main: 114 + 1), all also fail on main"
+  },
+  "cli-analytics-live": {
+   "pre_existing": true,
+   "detail": "44 failures per PG version, all also fail on clean main"
+  }
+ }
+}

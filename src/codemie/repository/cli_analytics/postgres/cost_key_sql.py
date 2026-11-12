@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from codemie.repository.cli_analytics.ports import ModelRates
+from codemie.repository.cli_analytics.postgres.kind_masks import KIND_BITS, KIND_TOKENS, RATE_COLUMNS
 from codemie.repository.cli_analytics.scope import sql_personal_billed
 
 
@@ -67,6 +68,18 @@ def _spend(alias: str) -> str:
 _SEL_SESSIONS = ("c.session_id IN (SELECT session_id FROM sel)", "u.session_id IN (SELECT session_id FROM sel)")
 
 
+def _sessions_of(live: bool) -> tuple[str, str]:
+    """The session conditions of the two token sources: `sel`, or with `live` only the CTE `live` (the sessions of a
+    stored read whose values are computed by today's statement). `live` selects from `sel`, so it is the same scope;
+    adding `sel` would make the planner hash the whole window and read every token row to find a handful."""
+    if not live:
+        return _SEL_SESSIONS
+    return (
+        "c.session_id IN (SELECT session_id FROM live)",
+        "u.session_id IN (SELECT session_id FROM live)",
+    )
+
+
 def _token_rows(session_where: str, usage_where: str) -> str:
     """Token rows of the selected sessions: `cost_daily` plus the subagent totals-only rows of `session_usage`
     (attrs.token_source = 'subagent_usage'), which are priced at query time. The writer guarantees a totals row
@@ -91,13 +104,14 @@ def _token_rows(session_where: str, usage_where: str) -> str:
     )
 
 
-def model_token_groups(spend_only: bool = False, normalized: bool = True) -> str:
+def model_token_groups(spend_only: bool = False, normalized: bool = True, live: bool = False) -> str:
     """THE token grouping: one row per (session, raw model) of the selected sessions, summed from `cost_daily` and
     the subagent totals-only rows of `session_usage` (see _token_rows), scoped by `sel`. Columns: session_id,
     model_name, normalized_model_name and the six token sums (the 5m / 1h sums stay NULL when no row has a split).
     `get_session_model_costs`, the cost key and the kind flags all read it, so they cannot disagree.
     `spend_only` leaves out Personal-paid sessions (see _spend). `normalized=False` leaves out the normalised name,
-    which the cost key and the flags never read (three regexp passes per group on a million groups)."""
+    which the cost key and the flags never read (three regexp passes per group on a million groups). `live` keeps only
+    the sessions of the CTE `live` (a stored read)."""
     model_name = normalized_model_name("c.model_name")
     normalized_column = (
         f"\n               {model_name}                                 AS normalized_model_name," if normalized else ""
@@ -110,61 +124,69 @@ def model_token_groups(spend_only: bool = False, normalized: bool = True) -> str
                sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens,
                sum(c.cache_creation_5m_tokens)::bigint      AS cache_creation_5m_tokens,
                sum(c.cache_creation_1h_tokens)::bigint      AS cache_creation_1h_tokens
-        FROM {_token_rows(*_SEL_SESSIONS)}
+        FROM {_token_rows(*_sessions_of(live))}
         WHERE true{f" AND {_spend('c')}" if spend_only else ""}
         GROUP BY c.session_id, c.model_name) g"""
 
 
-# The priced token kinds of a `model_token_groups` row `g`, in `kind_tokens` order (input, output, cache read,
-# cache write = 5m + unsplit, cache write 1h), with the same clamp: the split never prices more than the write it
-# splits. The one SQL spelling of the kinds; the cost key and the flags both use it.
-_CACHE_1H = "least(coalesce(g.cache_creation_1h_tokens, 0), g.cache_creation_tokens)"
-_CACHE_5M = f"least(coalesce(g.cache_creation_5m_tokens, 0), g.cache_creation_tokens - {_CACHE_1H})"
-_KIND_TOKENS = (
-    "g.input_tokens",
-    "g.output_tokens",
-    "g.cache_read_tokens",
-    f"({_CACHE_5M} + (g.cache_creation_tokens - {_CACHE_1H} - {_CACHE_5M}))",
-    _CACHE_1H,
-)
-_RATE_COLUMNS = ("input", "output", "cache_read", "cache_write", "cache_write_1h")
+_RATE_COLUMNS = RATE_COLUMNS  # the name the reader and the page statements import
 
 
 def rates_params(rates: Sequence[ModelRates]) -> dict[str, Any]:
     """Bind parameters of `session_cost_key_sql`: one array per rate column (None = missing), one entry per model."""
     unique = list({r.model: r for r in rates}.values())
     params: dict[str, Any] = {"rate_models": [r.model for r in unique]}
-    for column in _RATE_COLUMNS:
+    for column in RATE_COLUMNS:
         params[f"rate_{column}"] = [None if getattr(r, column) is None else float(getattr(r, column)) for r in unique]
     return params
 
 
-def _cost_key_terms() -> str:
-    return " + ".join(
-        f"CASE WHEN {tokens} > 0 THEN {tokens}::float8 * coalesce(r.{column}, 0) ELSE 0 END"
-        for tokens, column in zip(_KIND_TOKENS, _RATE_COLUMNS, strict=True)
+def _kind_term(tokens: str, column: str) -> str:
+    return f"CASE WHEN {tokens} > 0 THEN {tokens}::float8 * coalesce(r.{column}, 0) ELSE 0 END"
+
+
+def cost_terms() -> str:
+    """The per-kind cost terms of one token group, summed; needs the alias `g` (token group) and `r` (rates)."""
+    return " + ".join(_kind_term(tokens, column) for tokens, column in zip(KIND_TOKENS, RATE_COLUMNS, strict=True))
+
+
+def cache_read_term() -> str:
+    """The cache-read kind's term of `cost_terms()` alone."""
+    return _kind_term(KIND_TOKENS[RATE_COLUMNS.index("cache_read")], "cache_read")
+
+
+def unpriced_test() -> str:
+    """Boolean: some kind with tokens > 0 has a NULL rate (a model without rates counts, all its rates are NULL)."""
+    return (
+        "("
+        + " OR ".join(
+            f"({tokens} > 0 AND r.{column} IS NULL)" for tokens, column in zip(KIND_TOKENS, RATE_COLUMNS, strict=True)
+        )
+        + ")"
     )
 
 
-_RATES_JOIN = (
+RATES_JOIN = (
     "LEFT JOIN unnest($rate_models::text[], "
-    + ", ".join(f"$rate_{c}::float8[]" for c in _RATE_COLUMNS)
+    + ", ".join(f"$rate_{c}::float8[]" for c in RATE_COLUMNS)
     + ") AS r(model_name, "
-    + ", ".join(_RATE_COLUMNS)
+    + ", ".join(RATE_COLUMNS)
     + ") ON r.model_name = g.model_name"
 )
 # The token groups of the window, computed once for the cost key and the kind flags of one statement.
 
 
-def cost_groups_cte() -> str:
-    return f"g AS MATERIALIZED (SELECT * FROM {model_token_groups(normalized=False)})"
+def cost_groups_cte(live: bool = False) -> str:
+    """`live`: only the groups of the sessions of the CTE `live` (the stored cost read prices the rest from
+    `session_dims`)."""
+    return f"g AS MATERIALIZED (SELECT * FROM {model_token_groups(normalized=False, live=live)})"
 
 
 def cost_key_from_groups_sql() -> str:
     """`session_cost_key_sql` over the CTE `cost_groups_cte()`: `k(session_id, cost_key)`, same terms and rates."""
     return (
-        f"(SELECT g.session_id, round(sum({_cost_key_terms()})::numeric, 9) AS cost_key "
-        f"FROM g {_RATES_JOIN} GROUP BY g.session_id) k"
+        f"(SELECT g.session_id, round(sum({cost_terms()})::numeric, 9) AS cost_key "
+        f"FROM g {RATES_JOIN} GROUP BY g.session_id) k"
     )
 
 
@@ -173,30 +195,60 @@ def kind_flags_from_groups_sql() -> str:
     (session, model) groups (after the clamp), as `fl(model_name, used_...)`. The T2 semantics, in the same
     statement as the key, so the groups are built once."""
     flags = ", ".join(
-        f"bool_or({tokens} > 0) AS used_{column}" for tokens, column in zip(_KIND_TOKENS, _RATE_COLUMNS, strict=True)
+        f"bool_or({tokens} > 0) AS used_{column}" for tokens, column in zip(KIND_TOKENS, RATE_COLUMNS, strict=True)
     )
     return f"(SELECT g.model_name, {flags} FROM g GROUP BY g.model_name) fl"
 
 
 def session_cost_key_sql(spend_only: bool = False) -> str:
     """The SQL twin of `CatalogPricer.price` summed per session, as a derived table `k(session_id, cost_key)`:
-    the kind-to-rate table of `_KIND_TOKENS` / `_RATE_COLUMNS`, a kind with `tokens <= 0` skipped, a missing rate
+    the kind-to-rate table of `KIND_TOKENS` / `RATE_COLUMNS`, a kind with `tokens <= 0` skipped, a missing rate
     (or a model without rates) counting as 0. `cost_key` is `round(cost, 9)` as numeric. Needs `sel` and the
     `rates_params` of the models; rates are bound as float8."""
     return (
-        f"(SELECT g.session_id, round(sum({_cost_key_terms()})::numeric, 9) AS cost_key "
-        f"FROM {model_token_groups(spend_only)} {_RATES_JOIN} GROUP BY g.session_id) k"
+        f"(SELECT g.session_id, round(sum({cost_terms()})::numeric, 9) AS cost_key "
+        f"FROM {model_token_groups(spend_only)} {RATES_JOIN} GROUP BY g.session_id) k"
     )
 
 
-def model_flags_sql() -> str:
+def model_flags_sql(live: bool = False) -> str:
     """Per raw model, whether any (session, model) token group of the window used each priced kind
     (`bool_or(kind tokens > 0)`, the cache split clamped on the group's sums), as the derived table
     `fl(model_name, used_input, used_output, used_cache_read, used_cache_write, used_cache_write_1h)`. It reads the
     same `model_token_groups` as the cost key and `kind_flags_from_groups_sql`, so the flags and the key cannot
     disagree about a split (a clamp per raw row would). Used only where no page statement carries the flags (an
-    empty page or window). The only other producer of the kind flags; needs `sel`."""
+    empty page or window). The only other producer of the kind flags; needs `sel` (and `live` with `live`)."""
     flags = ", ".join(
-        f"bool_or({tokens} > 0) AS used_{column}" for tokens, column in zip(_KIND_TOKENS, _RATE_COLUMNS, strict=True)
+        f"bool_or({tokens} > 0) AS used_{column}" for tokens, column in zip(KIND_TOKENS, RATE_COLUMNS, strict=True)
     )
-    return f"(SELECT g.model_name, {flags} FROM {model_token_groups(normalized=False)} GROUP BY g.model_name) fl"
+    groups = model_token_groups(normalized=False, live=live)
+    return f"(SELECT g.model_name, {flags} FROM {groups} GROUP BY g.model_name) fl"
+
+
+def stored_kind_flags_sql(keyed: bool = False) -> str:
+    """The kind flags of the sessions of `sel` outside the CTE `live`, from their stored `models_used` and
+    `kind_masks` (one mask per model, the bits of `KIND_BITS`): the distinct `(models_used, kind_masks)` pairs are
+    grouped first (a handful), then unnested per model, so the per-session token groups are never built. The mask is
+    the `tokens > 0` test of the same groups, so the flags equal `model_flags_sql`. As `sfl(model_name, used_...)`.
+    `keyed`: `sel` already carries `models_used` and `kind_masks` (from the covering index), so `session_dims` is not
+    joined."""
+    used = ", ".join(f"bool_or(m.mask & {KIND_BITS[c]} <> 0) AS used_{c}" for c in RATE_COLUMNS)
+    source = "FROM sel s" if keyed else "FROM sel s JOIN session_dims sd ON sd.session_id = s.session_id"
+    owner = "s" if keyed else "sd"
+    return f"""(SELECT m.model_name, {used}
+        FROM (SELECT {owner}.models_used, {owner}.kind_masks
+              {source}
+              WHERE {owner}.models_used IS NOT NULL AND s.session_id NOT IN (SELECT session_id FROM live)
+              GROUP BY {owner}.models_used, {owner}.kind_masks) grp,
+             unnest(grp.models_used, grp.kind_masks) AS m(model_name, mask)
+        GROUP BY m.model_name) sfl"""
+
+
+def merged_kind_flags_sql(live_flags: str, keyed: bool = False) -> str:
+    """The kind flags of a stored read, as `fl(model_name, used_...)`: `live_flags` (today's flags of the sessions of
+    `live`, a derived table of the same columns) or-ed per model with `stored_kind_flags_sql` (every other session)."""
+    used = ", ".join(f"bool_or(u.used_{c}) AS used_{c}" for c in RATE_COLUMNS)
+    return (
+        f"(SELECT u.model_name, {used} FROM (SELECT * FROM {live_flags} "
+        f"UNION ALL SELECT * FROM {stored_kind_flags_sql(keyed)}) u GROUP BY u.model_name) fl"
+    )

@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Move CLI analytics /users, /user-charts and /cost money and funding-bucket processing from Python into a shared grouped SQL cost module, bound connection use and return 504 on statement timeout, with the API contract and result parity unchanged.",
+  "generated": "2026-11-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base L: CLI analytics handler (users/user-charts/cost methods), funding_buckets, session_money, reader port and PostgreSQL reader, a new grouped_cost_sql module, and router error mapping, spread over 3 layers with shared pricing utilities (cost_key_sql, kind_masks). Bumped to XL because the shared readers and pricing helpers (get_session_model_costs, get_session_funding_costs, buckets, price_session_models) also feed Efficiency, Sessions and Overview, so several endpoint workflows are affected." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is session_cost_key_sql / KIND_TOKENS / record_unpriced_from_flags, used for the Sessions cost sort. It prices at the (session, raw model) grain and returns per-session totals only. Grouping by user, model, funding route and personal billing in SQL has no precedent. Parity is strict: the clamp grain, 9-decimal rounding against float sums, COLLATE \"C\" tie-breaks, per-group unpriced flags and NULL semantics all have to match. The 503 vs 504 mapping must change, and bounding connections changes pool behaviour. Base L, bumped to XL because performance and scalability are the main concern (8,000 users, about 600K sessions, pool exhaustion)." },
+    { "dimension": "file_change_estimate", "reason": "About 6-8 modified files (cli_analytics_handler, funding_buckets, session_money, reader, ports, router, possibly cost_key_sql and kind_masks) and 2-4 new ones (postgres/grouped_cost_sql.py, live SQL-vs-Python parity tests, golden baselines for /users), across service, repository and rest_api directories plus tests." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: affects multiple workflows (shared readers and pricing helpers also serve Efficiency, Sessions and Overview)",
+    "Technical Risk bumped from L to XL: performance and scalability are the main concern (event-loop blocking, pool exhaustion, statement timeouts at 8,000 users / 600K sessions)"
+  ],
+  "split_recommendation": null
+}

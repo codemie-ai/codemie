@@ -42,6 +42,7 @@ class LocalAnalyticsFilter:
         project_unattributed: bool = False,
         subscription_types: list[str] | None = None,
         project_origins: list[str] | None = None,
+        developers: list[str] | None = None,
         *,
         scope: Any,
     ) -> None:
@@ -57,6 +58,8 @@ class LocalAnalyticsFilter:
         # Response-vocabulary values (see scope.normalise_*); they only narrow, the scope still applies.
         self.subscription_types = [v.strip().lower() for v in subscription_types or [] if v.strip()] or None
         self.project_origins = [v.strip().lower() for v in project_origins or [] if v.strip()] or None
+        # Developer names of `sel.developer`; valid only with `_sessions_cte(with_developer=True)`.
+        self.developers = developers or None
         # Required, no default: the ViewerScope every list/aggregate is cut to. Absent or malformed denies all.
         self.scope = scope
 
@@ -93,4 +96,6 @@ class LocalAnalyticsFilter:
             p["subscription_types"] = self.subscription_types
         if self.project_origins:
             p["project_origins"] = self.project_origins
+        if self.developers:
+            p["developers"] = self.developers
         return p

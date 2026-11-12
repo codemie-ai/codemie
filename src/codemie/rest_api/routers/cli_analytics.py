@@ -42,12 +42,14 @@ Three modelling decisions are invisible in the payload but change every number
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import cache, wraps
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, available_timezones
@@ -62,6 +64,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.cli_analytics.factory import get_cli_analytics_storage
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.scope import ViewerScope
+from codemie.service.analytics.dashboard_cache import cached_dashboard
 from codemie.repository.cli_analytics.hook_events import datetime_to_ns
 from codemie.repository.cli_analytics.ports import (
     IngestResult,
@@ -70,6 +73,8 @@ from codemie.repository.cli_analytics.ports import (
     PublicationRejectedError,
     CliAnalyticsStorageConfigError,
     StalePolicyError,
+    RequestBudgetExceeded,
+    StatementTimeout,
     TelemetryIngestError,
     TelemetryPayloadTooLargeError,
     TelemetryStorageUnavailableError,
@@ -115,6 +120,8 @@ MAX_PER_PAGE = 1000
 _ERR_BODY_TOO_LARGE = "Request body too large"
 # The storage refuses its configuration; the reason is logged at startup, not sent to clients.
 _ERR_STORAGE_MISCONFIGURED = "Analytics storage is not available"
+_ERR_SESSIONS_TIMEOUT = "The sessions list took too long to build"
+_ERR_DASHBOARD_TIMEOUT = "The report took too long to build for this date range and filters"
 _PROTOBUF_CONTENT_TYPE = "application/x-protobuf"
 
 
@@ -262,7 +269,98 @@ def _parse_ndjson(body: bytes) -> list[dict]:
     return records
 
 
-def handle_errors(endpoint_name: str) -> Callable:
+_TRY_AGAIN_LATER = "Please try again later."
+
+
+def _storage_unavailable(endpoint_name: str, e: BaseException) -> ExtendedHTTPException:
+    """The 503 a timeout gets on an endpoint that has not opted in to 504 (same as the OSError branch)."""
+    logger.error(f"Analytics storage unreachable for {endpoint_name}: {type(e).__name__}: {e}")
+    return ExtendedHTTPException(
+        code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        message=_ERR_STORAGE_MISCONFIGURED,
+        details="The analytics storage cannot be reached; see the server log.",
+        help=_TRY_AGAIN_LATER,
+    )
+
+
+def _next_utc_day_start(moment: datetime) -> datetime:
+    """`moment`, moved forward to the start of a UTC day unless it is one. A window cut to the raw retention then
+    starts on a day boundary, which is what the per-user start-day rollup answers: cut at `end - 90 days` exactly,
+    the widest period (last year) never read it and always ran the live statements. It only ever shortens the window
+    (by less than a day), so the cut still keeps it inside the retention. Naive values are UTC, as elsewhere here."""
+    utc = moment.astimezone(timezone.utc) if moment.tzinfo else moment
+    day = utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day if day == utc else day + timedelta(days=1)
+
+
+def _unavailable(details: str, help_text: str) -> ExtendedHTTPException:
+    return ExtendedHTTPException(
+        code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        message=_ERR_STORAGE_MISCONFIGURED,
+        details=details,
+        help=help_text,
+    )
+
+
+def _timeout_error(endpoint_name: str, e: BaseException, timeout_504: str | None) -> ExtendedHTTPException:
+    """A statement past its time limit is a 504 on a route that opted in; a pool or connect timeout (the store that
+    cannot be reached) is a 503 on every route."""
+    slow = isinstance(e, asyncpg.QueryCanceledError | StatementTimeout)
+    if timeout_504 is None or not slow:
+        return _storage_unavailable(endpoint_name, e)
+    logger.warning(f"Analytics query timed out for {endpoint_name}: {type(e).__name__}")
+    return ExtendedHTTPException(
+        code=status.HTTP_504_GATEWAY_TIMEOUT,
+        message=timeout_504,
+        details=(
+            "The query exceeded the analytics time limit "
+            "(CLI_ANALYTICS_PG_STATEMENT_TIMEOUT_MS, 30000 ms by default, or the request budget)."
+        ),
+        help="Narrow the date range or the filters, then try again.",
+    )
+
+
+def _typed_error(endpoint_name: str, e: Exception, timeout_504: str | None) -> ExtendedHTTPException:
+    """The typed response of a storage or parameter error. The order matters: a `TimeoutError` is an `OSError`, and
+    TLS errors are `ValueError`s too."""
+    if isinstance(e, asyncpg.QueryCanceledError | TimeoutError):
+        return _timeout_error(endpoint_name, e, timeout_504)
+    if isinstance(e, CliAnalyticsStorageConfigError):
+        logger.error(f"Analytics storage unavailable for {endpoint_name}: {e}")
+        return _unavailable(
+            "The analytics storage refuses its configuration; see the server log.", "Contact your administrator."
+        )
+    if isinstance(e, asyncpg.PostgresError | asyncpg.InterfaceError):
+        logger.error(f"Analytics storage failed for {endpoint_name}: {type(e).__name__}: {e}")
+        return _unavailable("The analytics storage is unavailable; see the server log.", _TRY_AGAIN_LATER)
+    if isinstance(e, OSError):  # the network, TLS or a timeout
+        logger.error(f"Analytics storage unreachable for {endpoint_name}: {type(e).__name__}: {e}")
+        return _unavailable("The analytics storage cannot be reached; see the server log.", _TRY_AGAIN_LATER)
+    if isinstance(e, ValueError):
+        logger.warning(f"Invalid parameters for {endpoint_name}: {e}")
+        return ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message="Invalid request parameters",
+            details=str(e),
+            help="Please check your query parameter values.",
+        )
+    logger.exception(f"Failed to get {endpoint_name}: {e}")
+    return ExtendedHTTPException(
+        code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        message=f"Failed to retrieve {endpoint_name}",
+        details="An internal error occurred. Contact support if the issue persists.",
+        help="Please try again or contact support if the issue persists.",
+    )
+
+
+def handle_errors(endpoint_name: str, timeout_504: str | None = None) -> Callable:
+    """Map storage and parameter errors to typed responses.
+
+    With `timeout_504` set (the message text), a statement past its time limit (server side: `QueryCanceledError`,
+    client side: `StatementTimeout`) or a request past its budget (`RequestBudgetExceeded`) becomes a 504 instead of a
+    503. A plain `TimeoutError` is a pool or connect timeout, the store that cannot be reached: a 503 on every route.
+    """
+
     def decorator(func: Callable[..., Awaitable[JSONResponse]]) -> Callable[..., Awaitable[JSONResponse]]:
         # functools.wraps is load-bearing, not cosmetic: it sets __wrapped__, which is how
         # FastAPI recovers the endpoint's real signature. Without it FastAPI introspects
@@ -273,46 +371,8 @@ def handle_errors(endpoint_name: str) -> Callable:
                 return await func(*args, **kwargs)
             except ExtendedHTTPException:
                 raise
-            except CliAnalyticsStorageConfigError as e:
-                logger.error(f"Analytics storage unavailable for {endpoint_name}: {e}")
-                raise ExtendedHTTPException(
-                    code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    message=_ERR_STORAGE_MISCONFIGURED,
-                    details="The analytics storage refuses its configuration; see the server log.",
-                    help="Contact your administrator.",
-                ) from e
-            except (asyncpg.PostgresError, asyncpg.InterfaceError) as e:
-                logger.error(f"Analytics storage failed for {endpoint_name}: {type(e).__name__}: {e}")
-                raise ExtendedHTTPException(
-                    code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    message=_ERR_STORAGE_MISCONFIGURED,
-                    details="The analytics storage is unavailable; see the server log.",
-                    help="Please try again later.",
-                ) from e
-            except OSError as e:  # the network, TLS or a timeout; before ValueError, which TLS errors also are
-                logger.error(f"Analytics storage unreachable for {endpoint_name}: {type(e).__name__}: {e}")
-                raise ExtendedHTTPException(
-                    code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    message=_ERR_STORAGE_MISCONFIGURED,
-                    details="The analytics storage cannot be reached; see the server log.",
-                    help="Please try again later.",
-                ) from e
-            except ValueError as e:
-                logger.warning(f"Invalid parameters for {endpoint_name}: {e}")
-                raise ExtendedHTTPException(
-                    code=status.HTTP_400_BAD_REQUEST,
-                    message="Invalid request parameters",
-                    details=str(e),
-                    help="Please check your query parameter values.",
-                ) from e
             except Exception as e:
-                logger.exception(f"Failed to get {endpoint_name}: {e}")
-                raise ExtendedHTTPException(
-                    code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    message=f"Failed to retrieve {endpoint_name}",
-                    details="An internal error occurred. Contact support if the issue persists.",
-                    help="Please try again or contact support if the issue persists.",
-                ) from e
+                raise _typed_error(endpoint_name, e, timeout_504) from e
 
         return wrapper
 
@@ -516,6 +576,28 @@ async def ingest_event_hooks(request: Request) -> Response:
 # ── Read endpoints ──────────────────────────────────────────────────────────
 
 
+@contextlib.contextmanager
+def _statement_timeout_as_504(what: str):
+    """A statement past the analytics time limit (server side: QueryCanceledError, client side: the command timeout),
+    or a request past its whole budget, is a 504 that names the limit; the handler has released its connections by
+    then. A pool or connect timeout is a plain TimeoutError and stays the 503 of a store that cannot be reached."""
+    try:
+        yield
+    except (asyncpg.QueryCanceledError, StatementTimeout) as e:
+        if isinstance(e, RequestBudgetExceeded):
+            limit_s, details = config.CLI_ANALYTICS_DASHBOARD_REQUEST_BUDGET_S, "The request exceeded its budget of"
+        else:
+            limit_s = config.CLI_ANALYTICS_PG_STATEMENT_TIMEOUT_MS / 1000
+            details = "The query exceeded the analytics statement time limit of"
+        logger.warning("Local analytics %s timed out (limit %g s): %s", what, limit_s, type(e).__name__)
+        raise ExtendedHTTPException(
+            code=status.HTTP_504_GATEWAY_TIMEOUT,
+            message=f"The {what} took too long to build",
+            details=f"{details} {limit_s:g} seconds.",
+            help="Narrow the date range or the filters, then try again.",
+        ) from e
+
+
 @router.get(
     "/overview",
     response_model=LocalAnalyticsOverviewResponse,
@@ -526,11 +608,24 @@ async def ingest_event_hooks(request: Request) -> Response:
 async def get_overview(
     user: User = Depends(authenticate),
     filters: FilterParams = Depends(FilterParams),
+    include_class_lists: bool = Query(
+        True,
+        description="Fill the subscription and origin lists of the totals, days and models. A caller that does not "
+        "read them passes false: they are then empty.",
+    ),
+    include_buckets: bool = Query(
+        True,
+        description="Fill the funding-route and personal-billed estimates. A caller that does not read them passes "
+        "false: they are then zero. With both false the answer can come from the start-day rollup.",
+    ),
 ) -> JSONResponse:
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, pricer, data_as_of = await _handler().get_overview(f)
+    with _statement_timeout_as_504("overview"):
+        data, pricer, data_as_of = await _handler().get_overview(
+            f, include_class_lists=include_class_lists, include_buckets=include_buckets
+        )
     metadata = _metadata(start_ns, data_as_of, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsOverviewResponse)
 
@@ -541,15 +636,31 @@ async def get_overview(
     summary="Local analytics cost breakdown",
     dependencies=[Depends(_admin_gate)],
 )
-@handle_errors("local analytics cost")
+@handle_errors("local analytics cost", timeout_504=_ERR_DASHBOARD_TIMEOUT)
 async def get_cost(
     user: User = Depends(authenticate),
     filters: FilterParams = Depends(FilterParams),
+    include_class_lists: bool = Query(
+        True,
+        description="Fill the subscription and origin lists of the totals, users and models (a read over the whole "
+        "window). A caller that does not read them passes false: they are then empty.",
+    ),
+    include_buckets: bool = Query(
+        True,
+        description="Fill the funding-route and personal-billed buckets and `models_without_spend`. A caller that "
+        "does not read them passes false: they are then zero and empty.",
+    ),
 ) -> JSONResponse:
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, pricer = await _handler().get_cost(f)
+    data, pricer = await cached_dashboard(
+        "cost",
+        f,
+        lambda: _handler().get_cost(f, include_class_lists=include_class_lists, include_buckets=include_buckets),
+        include_class_lists,
+        include_buckets,
+    )
     metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsCostResponse)
 
@@ -560,20 +671,50 @@ async def get_cost(
     summary="Local analytics user leaderboard",
     dependencies=[Depends(_admin_gate)],
 )
-@handle_errors("local analytics users")
+@handle_errors("local analytics users", timeout_504=_ERR_DASHBOARD_TIMEOUT)
 async def get_users(
     user: User = Depends(authenticate),
     filters: FilterParams = Depends(FilterParams),
     page: int | None = Query(None, ge=0),
     per_page: int | None = Query(None, ge=1, le=MAX_PER_PAGE),
+    include_chart: bool = Query(
+        False, description="Add `chart` (every user's name and cost, in rank order) to a paged answer."
+    ),
+    include_daily_activity: bool = Query(
+        True,
+        description="Fill each row's `daily_activity` (a read over the whole window). A caller that does not read "
+        "it passes false: it is then empty.",
+    ),
+    include_avg_duration: bool = Query(
+        True,
+        description="Fill `avg_session_duration_ms` (a read over the whole window). A caller that does not read it "
+        "passes false: it is then null.",
+    ),
 ) -> JSONResponse:
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, pricer = await _handler().get_users(f, page, per_page)
+    data, pricer = await cached_dashboard(
+        "users",
+        f,
+        lambda: _handler().get_users(
+            f,
+            page,
+            per_page,
+            include_chart=include_chart,
+            include_daily_activity=include_daily_activity,
+            include_avg_duration=include_avg_duration,
+        ),
+        page,
+        per_page,
+        include_chart,
+        include_daily_activity,
+        include_avg_duration,
+    )
     await _attach_user_ids(data["rows"])
     metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
-    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsUsersResponse)
+    # The unpaged answer with daily activity is as large as /user-charts': validated and serialised off the event loop.
+    return await asyncio.to_thread(_respond, {"data": data, "metadata": metadata}, LocalAnalyticsUsersResponse)
 
 
 @router.get(
@@ -582,7 +723,7 @@ async def get_users(
     summary="Local analytics user chart data (unpaginated)",
     dependencies=[Depends(_admin_gate)],
 )
-@handle_errors("local analytics user charts")
+@handle_errors("local analytics user charts", timeout_504=_ERR_DASHBOARD_TIMEOUT)
 async def get_user_charts(
     user: User = Depends(authenticate),
     filters: FilterParams = Depends(FilterParams),
@@ -590,11 +731,14 @@ async def get_user_charts(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, pricer = await _handler().get_users(f, None, None)
+    # Every row with every field, as the endpoint has always answered: its contract is not narrowed to what the
+    # cost-share chart reads. The chart itself takes `/users?include_chart=true`, which is the cheap read.
+    data, pricer = await cached_dashboard("user-charts", f, lambda: _handler().get_users(f, None, None))
     data["total_count"] = None  # unpaginated by contract
     await _attach_user_ids(data["rows"])
     metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
-    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsUsersResponse)
+    # Every user's row (a body of tens of MB): validated, serialised and hashed off the event loop.
+    return await asyncio.to_thread(_respond, {"data": data, "metadata": metadata}, LocalAnalyticsUsersResponse)
 
 
 async def _attach_user_ids(rows: list[dict]) -> None:
@@ -642,7 +786,8 @@ async def get_repositories(
     else:
         resolved_page = page if page is not None else DEFAULT_PAGE
         resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
-    data, pricer = await _handler().get_repositories(f, resolved_page, resolved_per_page, include_branches, search)
+    with _statement_timeout_as_504("repositories"):
+        data, pricer = await _handler().get_repositories(f, resolved_page, resolved_per_page, include_branches, search)
     metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsRepositoriesResponse)
 
@@ -684,7 +829,8 @@ async def get_tools(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data = await _handler().get_tools(f)
+    with _statement_timeout_as_504("tools report"):
+        data = await _handler().get_tools(f)
     return _respond(
         {"data": data, "metadata": _metadata(start_ns, None, [], None, f.end_dt)}, LocalAnalyticsToolsResponse
     )
@@ -734,7 +880,8 @@ async def get_activity(
     zone = _activity_zone(tz)
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data = await _handler().get_activity(f, zone)
+    with _statement_timeout_as_504("activity heatmap"):
+        data = await _handler().get_activity(f, zone)
     return _respond(
         {"data": data, "metadata": _metadata(start_ns, None, [], None, f.end_dt)}, LocalAnalyticsActivityResponse
     )
@@ -754,7 +901,8 @@ async def get_efficiency(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, pricer = await _handler().get_efficiency(f)
+    with _statement_timeout_as_504("efficiency"):
+        data, pricer = await _handler().get_efficiency(f)
     metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsEfficiencyResponse)
 
@@ -776,7 +924,7 @@ async def get_frameworks(user: User = Depends(authenticate)) -> JSONResponse:
     response_model=LocalAnalyticsSessionsResponse,
     summary="Local analytics session list",
 )
-@handle_errors("local analytics sessions")
+@handle_errors("local analytics sessions", timeout_504=_ERR_SESSIONS_TIMEOUT)
 async def get_sessions(
     user: User = Depends(authenticate),
     filters: FilterParams = Depends(FilterParams),
@@ -798,27 +946,9 @@ async def get_sessions(
     f = await filters.resolve_sessions(user, is_project_unattributed, personal_only)
     resolved_page = page if page is not None else DEFAULT_PAGE
     resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
-    try:
-        data, pricer, data_as_of = await _handler().get_sessions(
-            f, resolved_page, resolved_per_page, sort_by, search, framework, is_unattributed, branch
-        )
-    except (asyncpg.QueryCanceledError, TimeoutError) as e:
-        # The heavy windows (framework filter, cost sort, search over a long range) can outrun the statement timeout
-        # (server side: QueryCanceledError) or the client-side command timeout (TimeoutError). A busy pool cannot
-        # surface here: `bounded()` waits for its first connection without a limit and swallows the second's timeout.
-        logger.warning(
-            "Sessions list timed out (sort_by=%s, framework=%.80r, search=%s): %s",
-            sort_by,
-            framework,
-            bool(search),
-            type(e).__name__,
-        )
-        raise ExtendedHTTPException(
-            code=status.HTTP_504_GATEWAY_TIMEOUT,
-            message="The sessions list took too long to build",
-            details="The query exceeded the analytics statement timeout for this date range and filters.",
-            help="Narrow the date range or drop the search, framework filter or cost sort, then try again.",
-        ) from e
+    data, pricer, data_as_of = await _handler().get_sessions(
+        f, resolved_page, resolved_per_page, sort_by, search, framework, is_unattributed, branch
+    )
     metadata = _metadata(start_ns, data_as_of, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsSessionsResponse)
 

@@ -22,7 +22,11 @@ the reader keeps the order builder and the connection handling only.
 
 from __future__ import annotations
 
-from codemie.repository.cli_analytics.postgres.cost_key_sql import _RATE_COLUMNS, kind_flags_from_groups_sql
+from codemie.repository.cli_analytics.postgres.cost_key_sql import (
+    _RATE_COLUMNS,
+    kind_flags_from_groups_sql,
+    merged_kind_flags_sql,
+)
 from codemie.repository.cli_analytics.postgres.session_derived import classifier_names_by_session_sql
 
 _C = 'COLLATE "C"'
@@ -75,9 +79,12 @@ def start_time_count_sql(ctes: str) -> str:
         SELECT ((SELECT count(*) FROM sel_main) + (SELECT count(*) FROM sel_rest))::bigint AS total"""
 
 
-def cost_page_sql(ctes: str) -> str:
-    """The cost page: total, the page ids and the kind flags of the window, from one build of the token groups."""
+def cost_page_sql(ctes: str, stored: bool = False, keyed: bool = False) -> str:
+    """The cost page: total, the page ids and the kind flags of the window, from one build of the token groups.
+    `stored` (the CTEs carry `live` and the groups of `live` only): the flags of the other sessions come from their
+    stored kind masks (`keyed`: `sel` carries them, `session_dims` is not joined)."""
     used = ", ".join(f"fl.used_{c}" for c in _RATE_COLUMNS)
+    flags = merged_kind_flags_sql(kind_flags_from_groups_sql(), keyed) if stored else kind_flags_from_groups_sql()
     return f"""
         WITH {ctes},
         page AS (
@@ -89,7 +96,7 @@ def cost_page_sql(ctes: str) -> str:
                coalesce((SELECT array_agg(session_id ORDER BY sort_key DESC, session_id {_C}) FROM page),
                         ARRAY[]::text[]) AS session_ids,
                (SELECT coalesce(jsonb_agg(jsonb_build_array(fl.model_name, {used}) ORDER BY fl.model_name {_C}),
-                                '[]'::jsonb) FROM {kind_flags_from_groups_sql()}) AS flags"""
+                                '[]'::jsonb) FROM {flags}) AS flags"""
 
 
 def framework_flags_select(with_groups: bool) -> str:
@@ -127,3 +134,145 @@ def framework_page_sql(ctes: str, flags_select: str) -> str:
 def framework_count_sql() -> str:
     """The exact total of the accepted sessions, for a page past the last one."""
     return f"SELECT count(*)::bigint AS total FROM {FRAMEWORK_NAMES_TABLE} n WHERE {FRAMEWORK_ACCEPTED}"
+
+
+# The stored framework read: `lv` is the sessions of `filtered` whose stored names cannot be read (no stamp, or in S,
+# `$stale`); their names are built set-wise like the temp table of the fallback, every other session reads
+# `session_dims.classifier_names`. A session without a name has the empty set, like the fallback.
+FRAMEWORK_STORED_NAMES = (
+    "coalesce(CASE WHEN lv.session_id IS NULL THEN sd.classifier_names ELSE nm.names END, ARRAY[]::text[])"
+)
+
+
+def _framework_stored_from(ctes: str) -> str:
+    return f"""
+        WITH {ctes},
+        lv AS (
+            SELECT s.session_id, s.started_at FROM sel s JOIN session_dims sd ON sd.session_id = s.session_id
+            WHERE sd.rates_version IS NULL OR s.session_id = ANY($stale::text[])
+        )"""
+
+
+def framework_stored_groups_sql(ctes: str) -> str:
+    """The distinct classifier name sets of the filtered window with their session counts (the groups the rule is
+    applied to)."""
+    return f"""{_framework_stored_from(ctes)}
+        SELECT g.names, count(*)::bigint AS n
+        FROM (SELECT {FRAMEWORK_STORED_NAMES} AS names
+              FROM filtered fw
+                   JOIN session_dims sd ON sd.session_id = fw.session_id
+                   LEFT JOIN lv ON lv.session_id = fw.session_id
+                   LEFT JOIN {classifier_names_by_session_sql("lv")} ON nm.session_id = fw.session_id) g
+        GROUP BY g.names"""
+
+
+def framework_stored_page_sql(ctes: str) -> str:
+    """The page of the sessions whose name set the rule accepted (`$matching`), in the order of the sort key."""
+    return f"""{_framework_stored_from(ctes)}
+        SELECT fw.session_id
+        FROM filtered fw
+             JOIN session_dims sd ON sd.session_id = fw.session_id
+             LEFT JOIN lv ON lv.session_id = fw.session_id
+             LEFT JOIN {classifier_names_by_session_sql("lv")} ON nm.session_id = fw.session_id
+        WHERE to_jsonb({FRAMEWORK_STORED_NAMES}) IN (SELECT jsonb_array_elements($matching::jsonb))
+        ORDER BY fw.sort_key DESC, fw.session_id {_C}
+        LIMIT $limit::bigint OFFSET $offset::bigint"""
+
+
+def ordered_page_sql(ctes: str) -> str:
+    """A page of `filtered` by its key: the exact total and the page ids in order."""
+    return f"""
+        WITH {ctes},
+        page AS (
+            SELECT session_id, sort_key FROM filtered
+            ORDER BY sort_key DESC, session_id {_C}
+            LIMIT $limit::bigint OFFSET $offset::bigint
+        )
+        SELECT (SELECT count(*) FROM filtered)::bigint AS total,
+               coalesce((SELECT array_agg(session_id ORDER BY sort_key DESC, session_id {_C}) FROM page),
+                        ARRAY[]::text[]) AS session_ids"""
+
+
+# ── the stored sort keys (EPMCDME-16427, part 2) ──
+
+# The kill switch: one row; no row reads as off.
+SORT_KEYS_ENABLED_SQL = "SELECT coalesce(bool_and(enabled), false) AS enabled FROM session_sort_keys_control"
+
+
+# Today's ctx key (`reader._sort_clause`) over the stored totals of `session_dims sd`: cache reads (subagent totals
+# included) per API call, rounded to 9 places, 0 without calls.
+def stored_ctx_key(alias: str = "sd") -> str:
+    """The stored ctx key over the columns of `alias`: `sd` (a join of `session_dims`) or `s` (the inputs `sel` carries,
+    `_sessions_cte(with_keys=True)`)."""
+    return (
+        f"CASE WHEN coalesce({alias}.api_call_total, 0) = 0 THEN 0::numeric "
+        f"ELSE round({alias}.cache_read_total::numeric / {alias}.api_call_total, 9) END"
+    )
+
+
+STORED_CTX_KEY = stored_ctx_key()
+
+
+# Today's cost key over `session_dims sd`, valid only while the stamp is the reader's current rates version.
+def stored_cost_key(alias: str = "sd") -> str:
+    """The stored cost key over `alias`: `sd` (a join of `session_dims`) or `s` (`sel` carries it)."""
+    return f"{alias}.cost_key"
+
+
+STORED_COST_KEY = stored_cost_key()
+
+# The stored columns `sel` carries out of the index-only scan of `session_dims_fw_win` (its INCLUDE list), by page.
+CTX_KEY_COLUMNS = ("cache_read_total", "api_call_total")
+COST_KEY_COLUMNS = ("cost_key", "models_used", "kind_masks")
+FLAG_COLUMNS = ("models_used", "kind_masks")
+
+
+def live_cte(only: str = "true") -> str:
+    """The sessions of `sel` whose value is computed live: the ids of S (`$stale`) that `only` keeps. S is read in the
+    SAME snapshot as the page (the reader runs both in one REPEATABLE READ transaction), so a session without a usable
+    stamp is in S and no other is: this CTE does not look at `session_dims` again, which made every request scan the
+    table and join it to the whole window even when S was empty. `only` is the request's own filter on `sel` (the
+    search, the unattributed filter): a session it drops never reaches the page, so it is not computed."""
+    return f"""
+        live AS (
+            SELECT s.session_id FROM sel s WHERE s.session_id = ANY($stale::text[]) AND ({only})
+        )"""
+
+
+LIVE_CTE = live_cte()
+
+
+UNSTAMPED_CTX_SQL = "SELECT session_id FROM session_dims WHERE rates_version IS NULL LIMIT $s_limit::bigint"
+# `<` and `>` instead of IS DISTINCT FROM: two index ranges of `session_dims_rates_version` that are empty when every
+# session carries the current version, where IS DISTINCT FROM would read the whole table.
+UNSTAMPED_COST_SQL = (
+    "SELECT session_id FROM session_dims WHERE rates_version IS NULL OR rates_version < $rates_version::text "
+    "OR rates_version > $rates_version::text LIMIT $s_limit::bigint"
+)
+
+
+def stored_cost_models_sql(sel: str) -> str:
+    """The raw model names of the window for the cost sort's rate resolution: the stored `models_used` of every
+    session of `sel` (which carries it) outside S, and the token rows of S (`$stale`), like the fallback statement.
+
+    A session whose `models_used` is NULL in `sel` is read from its token rows too, in S or not: `sel` may be the
+    request's temp table, built in an earlier snapshot than the one S is read in, and a session stamped between the
+    two would otherwise be in neither arm, its models priced with no rates for that request."""
+    return f"""
+        WITH {sel},
+        {LIVE_CTE},
+        unread AS MATERIALIZED (
+            SELECT session_id FROM live
+            UNION SELECT s.session_id FROM sel s WHERE s.models_used IS NULL)
+        SELECT m.model_name FROM (
+            SELECT u.model_name
+            FROM (SELECT s.models_used FROM sel s
+                  WHERE s.models_used IS NOT NULL AND s.session_id NOT IN (SELECT session_id FROM live)
+                  GROUP BY s.models_used) g, unnest(g.models_used) AS u(model_name)
+            WHERE u.model_name IS NOT NULL
+            UNION ALL SELECT c.model_name FROM cost_daily c
+                 WHERE c.model_name IS NOT NULL AND session_id IN (SELECT session_id FROM unread)
+            UNION ALL SELECT coalesce(u.model, '') FROM session_usage u
+                 WHERE u.attrs->>'token_source' = 'subagent_usage' AND session_id IN (SELECT session_id FROM unread)
+        ) m
+        GROUP BY m.model_name ORDER BY m.model_name {_C}"""

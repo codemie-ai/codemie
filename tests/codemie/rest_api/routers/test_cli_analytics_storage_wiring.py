@@ -19,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import ssl
+from contextlib import asynccontextmanager
 import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -162,6 +163,14 @@ class UnreachableReader:
 
         return query
 
+    @asynccontextmanager
+    async def bounded(self):
+        yield self
+
+    @asynccontextmanager
+    async def widened(self):
+        yield self
+
 
 @pytest.mark.parametrize(
     "error",
@@ -169,7 +178,7 @@ class UnreachableReader:
         # Also a ValueError: taken for one, it would answer 400 and blame the request.
         ssl.SSLCertVerificationError(1, "certificate verify failed: certificate is not valid for 'db.internal'"),
         ConnectionRefusedError(61, "Connect call failed ('10.0.0.5', 5432)"),
-        TimeoutError(),
+        TimeoutError(),  # a connect or pool-wait timeout: the store is down, not a slow statement
     ],
 )
 def test_a_storage_that_cannot_be_reached_answers_503(error):
@@ -417,6 +426,30 @@ async def test_windows_are_clamped_to_how_far_back_the_storage_keeps_raw_rows(st
         f = await _resolve_as_admin(params)
 
     assert f.start_dt == end - timedelta(days=kept_days)
+
+
+@pytest.mark.asyncio
+async def test_a_clamped_window_uses_the_exact_retention_cutoff(storage):
+    # The clamp is the exact retention boundary (`end - 90 days`), not rounded to midnight.  Sessions in the partial
+    # first day are still included; `serve_cohort` advances the rollup start to the next midnight and reads that gap live.
+    kept = dataclasses.replace(storage, raw_retention_days=90)
+    end = datetime(2026, 9, 23, 15, 30, tzinfo=timezone.utc)
+    params = router_module.FilterParams(
+        time_period=None,
+        start_date=end - timedelta(days=365),
+        end_date=end,
+        users=None,
+        projects=None,
+        repositories=None,
+        subscription_type=None,
+        project_origin=None,
+    )
+
+    with patch.object(router_module, "get_cli_analytics_storage", return_value=kept):
+        f = await _resolve_as_admin(params)
+
+    assert f.start_dt == end - timedelta(days=90)  # exact cutoff, never rounded
+    assert end - f.start_dt == timedelta(days=90)  # exactly the retention span
 
 
 @pytest.mark.asyncio

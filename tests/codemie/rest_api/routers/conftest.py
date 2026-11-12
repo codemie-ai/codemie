@@ -57,3 +57,13 @@ def _inject_request_uuid(monkeypatch):
 # that needs it; each test cleans its own rows. If PostgreSQL is unreachable
 # these fixtures **fail**, they do not skip — a skipped persistence test is
 # indistinguishable from a passing one on a dashboard (F-40).
+
+
+@pytest.fixture(autouse=True)
+def _empty_dashboard_cache():
+    """/users, /user-charts and /cost answers are cached per pod; a test must not see another test's answer."""
+    from codemie.service.analytics.dashboard_cache import reset_dashboard_cache
+
+    reset_dashboard_cache()
+    yield
+    reset_dashboard_cache()

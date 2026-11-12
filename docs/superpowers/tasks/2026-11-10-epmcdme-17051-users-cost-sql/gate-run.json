@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17051-grouped-cost-sql",
+  "head": "68be5a86ec2ddfca345f2822f35be61158a46877",
+  "runner": "poetry",
+  "started_at": "2026-11-11T09:48:33Z",
+  "completed_at": "2026-11-11T10:13:40Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "command": "docker run --rm -v <git archive HEAD snapshot>:/workspace ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --redact --config=/workspace/.gitleaks.toml /workspace",
+      "exit_code": 0,
+      "notes": "Ran on git archive HEAD snapshot by user decision (working-dir scan flags untracked local files); 'no leaks found'; snapshot removed."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "ci",
+      "status": "PASS",
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "command": "poetry run pytest tests/",
+      "exit_code": 1,
+      "notes": "Raw exit 1 from make test, but all failures classified pre-existing/flaky, none touch this branch. make test: 65 failed, 32666 passed, 1 error. None of the failing files are in git diff 224b33ba8e..HEAD. 64 failures + 1 collection error in enterprise/mcp_auth, test_openapi_snapshot, service/spend/test_attribution.py, usage_attribution/test_analysis_service.py reproduce on a base worktree (224b33ba8e): same failing ids (base had 1 extra). 1 failure in code_executor/test_tool_call_channel.py passes in isolation (79 passed): load flake. test_langgraph_event_adapter passed this run. Classified pre-existing, non-blocking; worktree removed."
+    },
+    {
+      "id": "live-pg17",
+      "source": "guide",
+      "status": "FAIL",
+      "command": "env -u CLI_ANALYTICS_PG_URL TEST_LOCAL_PG_URL=postgresql://postgres:password@127.0.0.1:55417/postgres poetry run pytest -q -n0 tests/codemie/repository/cli_analytics/postgres -k live -rs",
+      "exit_code": 1,
+      "notes": "Postgres 14 skipped at the user's request. Run 1 on fresh PG17: 10 failed/149 passed (relation session_dims/hook_events does not exist: fresh DB has no schema). Run 2 after migrations.run_migrations on the fresh DB: 8 failed/151 passed, 0 skips (cost_daily/hook_events: no partition for 2026-11-11 / 2026-08-02). Failures are missing schema/partitions in the empty container, not an assertion mismatch; not proven code-free. Container removed."
+    }
+  ],
+  "failures": {
+    "live-pg17": "\n>   ???\nE   asyncpg.exceptions.CheckViolationError: no partition of relation \"cost_daily\" found for row\nE   DETAIL:  Partition key of the failing row contains (day) = (2026-11-11).\n\nasyncpg/protocol/protocol.pyx:206: CheckViolationError\n_ test_the_table_is_dropped_after_an_error_and_after_a_cancel_during_a_statement _\n\n    @pytest.mark.asyncio\n    async def test_the_table_is_dropped_after_an_error_and_after_a_cancel_during_a_statement():\n        engine = await _engine()\n        seed = _Seed()\n        reader = PostgresCliAnalyticsReader(engine)\n        try:\n>           a, b = await _seed(engine, seed)\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/codemie/repository/cli_analytics/postgres/test_live_request_sel.py:113: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \ntests/codemie/repository/cli_analytics/postgres/test_live_request_sel.py:59: in _seed\n    await seed.session(engine, \"1\", a, turns=3, calls=4, ok=3)\ntests/codemie/repository/cli_analytics/postgres/test_live_users_page.py:83: in session\n    await conn.execute(_COST_SQL, day, sid, cost_email or email, _MODEL, input_tokens, 0, 0, 0, None, None)\n../../Library/Caches/pypoetry/virtualenvs/codemie-Y0l8wki8-py3.12/lib/python3.12/site-packages/asyncpg/connection.py:352: in execute\n    _, status, _ = await self._execute(\n../../Library/Caches/pypoetry/virtualenvs/codemie-Y0l8wki8-py3.12/lib/python3.12/site-packages/asyncpg/connection.py:1864: in _execute\n    result, _ = await self.__execute(\n../../Library/Caches/pypoetry/virtualenvs/codemie-Y0l8wki8-py3.12/lib/python3.12/site-packages/asyncpg/connection.py:1961: in __execute\n    result, stmt = await self._do_execute(\n../../Library/Caches/pypoetry/virtualenvs/codemie-Y0l8wki8-py3.12/lib/python3.12/site-packages/asyncpg/connection.py:2027: in _do_execute\n    result = await executor(stmt, timeout)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\n>   ???\nE   asyncpg.exceptions.CheckViolationError: no partition of relation \"cost_daily\" found for row\nE   DETAIL:  Partition key of the failing row contains (day) = (2026-11-11).\n\nasyncpg/protocol/protocol.pyx:206: CheckViolationError\n=============================== warnings summary ===============================\n../../Library/Caches/pypoetry/virtualenvs/codemie-Y0l8wki8-py3.12/lib/python3.12/site-packages/google/auth/transport/grpc.py:44\n  /Users/yevhen_slyva/Library/Caches/pypoetry/virtualenvs/codemie-Y0l8wki8-py3.12/lib/python3.12/site-packages/google/auth/transport/grpc.py:44: FutureWarning: grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In October 2026, google-auth will raise its minimum requirements to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography\n    warnings.warn(\n\n../../Library/Caches/pypoetry/virtualenvs/codemie-Y0l8wki8-py3.12/lib/python3.12/site-packages/langgraph/cache/base/__init__.py:8\n  /Users/yevhen_slyva/Library/Caches/pypoetry/virtualenvs/codemie-Y0l8wki8-py3.12/lib/python3.12/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.\n    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n8 failed, 151 passed, 1373 deselected, 2 warnings in 935.71s (0:15:35)"
+  }
+}

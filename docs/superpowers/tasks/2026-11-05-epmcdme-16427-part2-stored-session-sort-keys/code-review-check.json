@@ -1,0 +1,17 @@
+{
+  "decision": "approve",
+  "rationale": "All five prior blocking findings verified against current source and mapped evidence. CR-002 and CR-005 resolve through the user-approved, documented 825 ms limitation, with unused indexes removed from a1c1a0000012.",
+  "confidence": "medium",
+  "risk_flags": ["migration", "data-contract"],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [],
+  "deferred": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "Test files renamed to test_live_*; Makefile -k live now selects them."},
+    {"id": "CR-002", "status": "resolved", "notes": "Limitation approved and recorded in bench-results.md; unused ctx/cost indexes removed; migration docstring corrected. Restructuring is a documented follow-up."},
+    {"id": "CR-003", "status": "resolved", "notes": "rollups._write_sort_keys returns early when version == EMPTY_RATES_VERSION."},
+    {"id": "CR-004", "status": "resolved", "notes": "_ACTIVE_SINCE treats both-NULL activity as active; locked skipped stamps are counted and reported."},
+    {"id": "CR-005", "status": "resolved", "notes": "bench-results.md records re-price, framework group count, ingest baseline and explicit approval; figures reconciled. Auto-enable behaviour, the caller's mid-task change, not independently exercised."}
+  ]
+}

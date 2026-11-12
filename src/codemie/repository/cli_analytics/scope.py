@@ -104,6 +104,9 @@ def sql_private(a: str) -> str:
     return f"({origin} = 'personal' OR ({subscription} = 'personal' AND {origin} NOT IN ({shared})))"
 
 
+FUNDING_ROUTES = ("api_based", "subscription", "unknown")
+
+
 def sql_personal_billed(a: str) -> str:
     """The billing class over alias `a`: paid by the person, whichever project it is stored under."""
     return f"({sql_norm(f'{a}.subscription_type')} = 'personal')"

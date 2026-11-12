@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""AC18: time the plain build of the six session_dims indexes while writers run (EPMCDME-16427).
+"""AC18 / AC10: time the plain build of the session_dims indexes while writers run (EPMCDME-16427).
 
 Works on a disposable copy of session_dims in the schema `ac18` (create it first, never the live table):
 
@@ -23,6 +23,11 @@ refresher-like writer (one transaction updating 5000 rows, held ~1 s). For each 
 batch before the build, then builds with the runner's rule (SHARE lock wait bounded by lock_timeout 5 s, a failed
 attempt retried), timing the lock wait and the build separately, records the longest wait a writer saw during the build
 (an ingest binding blocked that long answers 503 after its acquire timeout), and measures the batch again after.
+
+`--revision 12` benchmarks the four sort-key indexes of revision a1c1a0000012 instead (their DDL is read from the
+migration itself); `--prepare-rows N` first builds the disposable copy `<schema>.session_dims` with N rows from the
+scratch database's `codemie_analytics.session_dims` (all columns, session ids suffixed), `--only-all` skips the
+single-index runs. The lock threshold of the storage guide comes from `all_four.build.lock_hold_ms` over several N.
 
 Finally it measures what the migration really does: all six builds in ONE transaction under ONE SHARE lock
 (`all_six`), reporting each build and `lock_hold_ms`, the time from the lock being granted to the commit, which is
@@ -38,6 +43,10 @@ import json
 import os
 import statistics
 import time
+
+import importlib.util
+import pathlib
+import re
 
 import asyncpg
 
@@ -67,11 +76,55 @@ INDEXES = {
     ),
 }
 BATCH = 5000
+_MIGRATION_12 = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "src/external/alembic_cli_analytics/versions/a1c1a0000012_cli_analytics_session_sort_keys.py"
+)
+
+
+def indexes_of_revision_12() -> dict[str, str]:
+    """The four indexes of a1c1a0000012 as format strings over {name} and {schema}, from the migration's own DDL."""
+    spec = importlib.util.spec_from_file_location("a1c1a0000012", _MIGRATION_12)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {
+        name: re.sub(
+            r"CREATE INDEX IF NOT EXISTS \w+ ON session_dims", "CREATE INDEX {name} ON {schema}.session_dims", ddl
+        )
+        for name, ddl in module.INDEXES
+    }
+
+
+async def prepare_copy(dsn: str, schema: str, rows: int, source: str = "codemie_analytics") -> int:
+    """A disposable `schema.session_dims` of `rows` rows copied (and repeated, ids suffixed) from `source`."""
+    conn = await asyncpg.connect(dsn)
+    await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}")
+    await conn.execute(f"CREATE TABLE {schema}.session_dims (LIKE {source}.session_dims INCLUDING DEFAULTS)")
+    have = await conn.fetchval(f"SELECT count(*) FROM {source}.session_dims")
+    copies = -(-rows // have)
+    columns = [
+        r[0]
+        for r in await conn.fetch(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 "
+            "AND table_name = 'session_dims' ORDER BY ordinal_position",
+            source,
+        )
+    ]
+    select = ", ".join("x.session_id || '-' || k.i" if c == "session_id" else f"x.{c}" for c in columns)
+    await conn.execute(
+        f"INSERT INTO {schema}.session_dims ({', '.join(columns)}) SELECT {select} FROM {source}.session_dims x "
+        f"CROSS JOIN generate_series(1, {copies}) k (i) LIMIT {rows}"
+    )
+    await conn.execute(f"ALTER TABLE {schema}.session_dims ADD PRIMARY KEY (session_id)")
+    await conn.execute(f"VACUUM ANALYZE {schema}.session_dims")
+    count = await conn.fetchval(f"SELECT count(*) FROM {schema}.session_dims")
+    await conn.close()
+    return count
 
 
 class Writers:
-    def __init__(self, dsn: str, schema: str, hold: float) -> None:
-        self.dsn, self.schema, self.hold = dsn, schema, hold
+    def __init__(self, dsn: str, schema: str, hold: float, rows: int = 700000) -> None:
+        self.dsn, self.schema, self.hold, self.rows = dsn, schema, hold, rows
         self.stop = asyncio.Event()
         self.binding_latencies: list[tuple[float, float]] = []  # (finished at, seconds)
         self.batch_seconds: list[tuple[float, float, str]] = []  # (finished at, seconds, column)
@@ -98,7 +151,7 @@ class Writers:
 
     async def refresher(self, column: str) -> None:
         conn = await asyncpg.connect(self.dsn)
-        offset = 100000
+        offset = 0
         while not self.stop.is_set():
             started = time.perf_counter()
             async with conn.transaction():
@@ -110,7 +163,7 @@ class Writers:
                 )
                 await asyncio.sleep(self.hold)  # the batch holds its row locks while it does the rest of its work
             self.batch_seconds.append((time.perf_counter(), time.perf_counter() - started - self.hold, column))
-            offset = (offset + BATCH) % 600000 + 100000
+            offset = (offset + BATCH) % max(self.rows - BATCH, 1)
         await conn.close()
 
 
@@ -164,24 +217,31 @@ async def build(dsn: str, schema: str, names: list[str]) -> dict:
     }
 
 
-async def main(schema: str, hold: float) -> dict:
+async def main(schema: str, hold: float, revision: int = 10, only_all: bool = False, prepare_rows: int = 0) -> dict:
+    global INDEXES
     dsn = os.environ["PG_URL"]
-    result: dict = {"schema": schema, "refresher_hold_s": hold, "rows": None}
+    if revision == 12:
+        INDEXES = indexes_of_revision_12()
+    result: dict = {"schema": schema, "refresher_hold_s": hold, "revision": revision, "rows": None}
+    if prepare_rows:
+        result["prepared_rows"] = await prepare_copy(dsn, schema, prepare_rows)
     conn = await asyncpg.connect(dsn)
-    await conn.execute(f"ALTER TABLE {schema}.session_dims ADD COLUMN IF NOT EXISTS {_FACT_COLUMNS}")
+    if revision == 10:
+        await conn.execute(f"ALTER TABLE {schema}.session_dims ADD COLUMN IF NOT EXISTS {_FACT_COLUMNS}")
     result["rows"] = await conn.fetchval(f"SELECT count(*) FROM {schema}.session_dims")
     for name in INDEXES:
         await conn.execute(f"DROP INDEX IF EXISTS {schema}.{name}")
     await conn.close()
     column = "started_at"
-    scenarios = [(name, [name]) for name in INDEXES] + [("all_six", list(INDEXES))]
+    all_label = "all_four" if revision == 12 else "all_six"
+    scenarios = ([] if only_all else [(name, [name]) for name in INDEXES]) + [(all_label, list(INDEXES))]
     for label, names in scenarios:
-        if label == "all_six":  # the single-index runs left their indexes behind; the migration starts without them
+        if label == all_label:  # the single-index runs left their indexes behind; the migration starts without them
             conn = await asyncpg.connect(dsn)
             for name in INDEXES:
                 await conn.execute(f"DROP INDEX IF EXISTS {schema}.{name}")
             await conn.close()
-        writers = Writers(dsn, schema, hold)
+        writers = Writers(dsn, schema, hold, result['rows'])
         tasks = [asyncio.create_task(writers.binding()), asyncio.create_task(writers.refresher(column))]
         await asyncio.sleep(max(8, 2 * hold))  # before: batches and bindings without this index
         before_end = time.perf_counter()
@@ -203,5 +263,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--schema", default="ac18")
     parser.add_argument("--hold", type=float, default=0.8, help="seconds a refresher-like batch holds its row locks")
+    parser.add_argument("--revision", type=int, choices=[10, 12], default=10)
+    parser.add_argument("--only-all", action="store_true")
+    parser.add_argument("--prepare-rows", type=int, default=0)
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(main(args.schema, args.hold)), indent=2))  # noqa: T201 - the recorded artifact
+    print(  # noqa: T201 - the result is the output
+        json.dumps(asyncio.run(main(args.schema, args.hold, args.revision, args.only_all, args.prepare_rows)), indent=2)
+    )  # noqa: T201 - the recorded artifact

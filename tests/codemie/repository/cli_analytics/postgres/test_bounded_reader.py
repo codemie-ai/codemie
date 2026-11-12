@@ -22,10 +22,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
+import asyncpg
 import pytest
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS
+from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, StatementTimeout
 from codemie.repository.cli_analytics.postgres import reader as reader_module
 from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
 from codemie.service.analytics.handlers import cli_analytics_handler
@@ -46,6 +47,16 @@ class CountingEngine:
         self.max_running = 0
         self.fetch_seconds = fetch_seconds
         self.fetch = AsyncMock(side_effect=self._fetch)
+
+    @asynccontextmanager
+    async def transaction(self, **kwargs):  # the stored-mode probe of the cost models reads in one
+        yield
+
+    async def execute(self, text, *args):  # the request's temp tables: created, analyzed and dropped here
+        return None
+
+    def terminate(self) -> None:
+        pass
 
     async def _fetch(self, text, *args):
         self.running += 1
@@ -222,6 +233,12 @@ class BoundedRepo:
         return run
 
     def __getattr__(self, name: str):
+        if name in ("materialize_sel", "materialize_files"):
+
+            async def prepare(*args, **kwargs):
+                return None
+
+            return prepare
         if name == "get_session_page":
             return self._stmt(name, (1, ["s1"]))
         if name == "get_window_model_flags":
@@ -278,3 +295,95 @@ async def test_a_sessions_request_holds_the_connection_block_once_and_frees_it_b
     window = {"get_session_page", "get_cost_page", "get_framework_page", "get_cost_models"}
     assert all(i < events.index("widen") for i, e in enumerate(events) if e in window)
     assert events.index("widen") < events.index("get_turns_by_session") < events.index("narrow")
+
+
+_DASHBOARD_CALLS = {
+    "get_overview": ((), 7, "get_overview_money"),
+    "get_repositories": ((0, 10, False), 2, "get_repository_ranking"),
+    "get_efficiency": ((), 4, "get_efficiency_money"),
+}  # method: (arguments after the filter, statements the request runs, its priced statement)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", _DASHBOARD_CALLS)
+async def test_a_dashboard_request_holds_one_connection_and_prices_in_its_statement(method) -> None:
+    """Overview, Repositories and Efficiency hold the request's connection once and run their (few) statements
+    inside the hold, one after another; the money is priced by the database (EPMCDME-17052), not by loading the
+    per-session money rows."""
+    events: list[str] = []
+    repo = BoundedRepo(events)
+    args, statements, _ = _DASHBOARD_CALLS[method]
+
+    await getattr(LocalAnalyticsHandler(repo), method)(_filter(), *args)
+
+    assert (repo.max_held, repo.held) == (1, 0)
+    assert events.count("acquire") == 1
+    assert "widen" not in events  # a dashboard request never takes a second connection
+    assert sum(e.startswith("get_") for e in events) == statements
+    assert {"get_session_model_costs", "get_session_funding_costs"}.isdisjoint(events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", _DASHBOARD_CALLS)
+async def test_a_dashboard_request_releases_its_connection_when_a_statement_fails(method) -> None:
+    repo = BoundedRepo([])
+    args, _, priced = _DASHBOARD_CALLS[method]
+    setattr(repo, priced, AsyncMock(side_effect=asyncpg.QueryCanceledError("statement timeout")))
+
+    with pytest.raises(asyncpg.QueryCanceledError):
+        await getattr(LocalAnalyticsHandler(repo), method)(_filter(), *args)
+
+    assert repo.held == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", _DASHBOARD_CALLS)
+async def test_a_dashboard_request_on_the_real_reader_holds_one_connection_and_one_statement_at_a_time(method) -> None:
+    engine = CountingEngine(capacity=8, fetch_seconds=0.005)
+    args, statements, _ = _DASHBOARD_CALLS[method]
+
+    await getattr(LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)), method)(_filter(), *args)  # type: ignore[arg-type]
+
+    assert (engine.acquisitions, engine.max_held, engine.max_running, engine.held) == (1, 1, 1, 0)
+    assert engine.fetch.await_count == statements + 1  # + the probe of the stored-mode switch (cost models)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", _DASHBOARD_CALLS)
+async def test_a_dashboard_statement_timeout_releases_the_connection_on_the_real_reader(method) -> None:
+    engine = CountingEngine(capacity=8)
+    engine.fetch = AsyncMock(side_effect=asyncpg.QueryCanceledError("statement timeout"))
+    args, _, _ = _DASHBOARD_CALLS[method]
+
+    with pytest.raises(asyncpg.QueryCanceledError):
+        await getattr(LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)), method)(_filter(), *args)  # type: ignore[arg-type]
+
+    assert (engine.acquisitions, engine.held) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_client_command_timeout_of_a_statement_is_a_statement_timeout_and_a_pool_wait_timeout_is_not() -> None:
+    engine = CountingEngine()
+    engine.fetch = AsyncMock(side_effect=TimeoutError())
+    with pytest.raises(StatementTimeout):
+        await PostgresCliAnalyticsReader(engine).get_cost_kpis(_filter())  # type: ignore[arg-type]
+
+    class Unreachable:
+        @asynccontextmanager
+        async def acquire(self, timeout=None):
+            raise TimeoutError
+            yield
+
+    with pytest.raises(TimeoutError) as raised:
+        await PostgresCliAnalyticsReader(Unreachable()).get_cost_kpis(_filter())  # type: ignore[arg-type]
+    assert not isinstance(raised.value, StatementTimeout)
+
+
+@pytest.mark.asyncio
+async def test_a_client_command_timeout_on_a_held_connection_is_a_statement_timeout_too() -> None:
+    """The cost models read in a transaction on the connection the request holds (`_fetch`): its timeout is the same."""
+    engine = CountingEngine()
+    engine.fetch = AsyncMock(side_effect=TimeoutError())
+
+    with pytest.raises(StatementTimeout):
+        await PostgresCliAnalyticsReader(engine)._fetch(engine, "SELECT 1", {})  # type: ignore[arg-type]

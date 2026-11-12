@@ -358,7 +358,7 @@ def test_server_settings_pin_schema_memory_timeouts_and_turn_jit_off():
 
     assert s.server_settings() == {
         "search_path": "analytics_x",
-        "application_name": "codemie-cli-analytics",
+        "application_name": "codemie-cli-analytics/sort-keys",
         "work_mem": "64MB",
         "statement_timeout": "1234",
         # Measured at x3: JIT compiled ~760 functions (one set per partition) for a 3 ms session
@@ -539,3 +539,9 @@ def test_the_session_retention_setting_reaches_the_retention_policy() -> None:
     policy = RetentionPolicy.from_settings(settings)
     assert policy.session_days == 180
     assert policy.session_purge_batch_size == 1234
+
+
+def test_the_cap_of_s_defaults_to_5000_and_is_read_from_the_config() -> None:
+    # Above the cap a stored Sessions-list read runs today's statements instead of merging S.
+    assert AnalyticsPgSettings.from_config(_config()).sort_keys_s_cap == 5000
+    assert AnalyticsPgSettings.from_config(_config(CLI_ANALYTICS_SORT_KEYS_S_CAP=12)).sort_keys_s_cap == 12

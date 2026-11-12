@@ -1,0 +1,215 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved the check round: 3/3 findings resolved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User: fix all three findings CR-001, CR-002, CR-003"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved the check round: 3/3 findings resolved"
+    }
+  ],
+  "reviewed_head": "b6321fb1607e8e84b57a7b33159ac47a00a4a728",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All three prior blocking findings verified against current source: total_count now a scalar outside LIMIT/OFFSET with a test, s_cap is passed from the reader into model_groups_mode with S read from the pending index and the guide aligned, and per-route 504 tests exist. Tests were not executed here (Stage 7 owns that); CR-002 reachability of a sustained over-cap state remains a design judgement.",
+  "confidence": "low",
+  "check_confidence": "medium",
+  "risk_flags": [
+    "migration",
+    "public-api",
+    "data-contract"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 3,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 1190,
+      "title": "/users total_count is 0 past the last page",
+      "problem": "get_users_money_page derives total_count as the max over the returned page rows. A page index past the end (or per_page=0) returns no rows, so total_count is 0. The story requires counts to match the baseline exactly, and the old handler returned the full developer count regardless of page.",
+      "impact": "Response-contract change on GET /users?page=N. A pagination UI reading total_count on an out-of-range page sees an empty dataset. Fails AC6 (counts exact), a required criterion.",
+      "recommendation": "Compute the distinct developer count from sel in a scalar subquery or separate column that is outside LIMIT/OFFSET, and read total_count from that.",
+      "status": "resolved",
+      "check_notes": "reader.py users page: total_count from count(DISTINCT developer) FROM sel, outside page; test asserts beyond.total_count == 4",
+      "fix": {
+        "change": "total_count is now a scalar count of distinct developers in sel, outside LIMIT/OFFSET",
+        "test": "test_live_users_page.py::test_users_page_ranks_ties_code_point_and_counts_total (beyond page total_count == 4)"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/stored_mode.py",
+      "line": 139,
+      "title": "Stored-groups cap counts the whole table, not the window",
+      "problem": "model_groups_mode reads S from session_dims for the whole table (rates_version IS NULL OR model_groups_rev differs) with a hard-coded GROUPS_S_CAP of 1000. It includes never-valid sessions and in-flight unstamped ones, and the reader never passes s_cap. The guide says the cap applies to sessions of the window and to the configured s_cap.",
+      "impact": "Over 1000 permanently never-valid or in-flight sessions push every dashboard request to the all-live form, which the bench puts at 22 s or more against a 30 s statement limit. The only signal is a rate-limited WARNING. Reachability of the sustained-over-cap state was not confirmed.",
+      "recommendation": "Exclude never-valid rows from S, scope S to the request's sel before applying the cap, and pass the configured cap from the reader. If the table-wide design is intended, update the guide.",
+      "status": "resolved",
+      "check_notes": "reader passes self._s_cap to model_groups_mode; S from pending index, cap configurable (default 5000); guide updated to match",
+      "fix": {
+        "change": "reader passes its configured s_cap to model_groups_mode; guide states S is table-wide with that cap",
+        "test": "test_live_money_stored_source.py::test_the_live_form_is_used_when_the_stored_one_may_not_be[over_cap]"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/test_cli_analytics_timeouts.py",
+      "title": "No route-level 504 test for /cost, /users, /user-charts",
+      "problem": "Only a synthetic endpoint is tested for the timeout_504 mapping. Dropping timeout_504 on any of the three dashboard routes keeps every test green.",
+      "impact": "The request budget and the dashboard-slot wait raise TimeoutError. Without the opt-in the route answers 503 instead of 504, which breaks AC9.",
+      "recommendation": "Add route tests that make the handler raise TimeoutError and asyncpg.QueryCanceledError for each route, and assert status 504 and the _ERR_DASHBOARD_TIMEOUT message.",
+      "status": "resolved",
+      "check_notes": "routes carry timeout_504; parametrized tests assert 504 and _ERR_DASHBOARD_TIMEOUT for QueryCanceledError and TimeoutError on all three",
+      "fix": {
+        "change": "route-level tests for /cost, /users, /user-charts mapping QueryCanceledError and TimeoutError to 504",
+        "test": "test_cli_analytics_timeouts.py::test_dashboard_routes_answer_504"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1 baseline recorded",
+      "status": "pending-stage-7",
+      "notes": "bench tooling added; run output is Stage 7 evidence"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2 no 503/504 at ~8,000 users / 600K sessions",
+      "status": "pending-stage-7",
+      "notes": "volume run is execution evidence"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3 one pool connection per request, all statements in bounded()",
+      "status": "pass",
+      "notes": "handler runs under asyncio.timeout + dashboard_slot + bounded()"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4 k=3 with ingestion",
+      "status": "pending-stage-7",
+      "notes": "cap and budget added; load result is runtime evidence"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5 no per-session rows / session_ids / buckets() scan",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6 dollars, counts, order match baseline",
+      "status": "partial",
+      "notes": "total_count is 0 for a page past the end; old code returned the full developer count"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7 unpriced lists match baseline",
+      "status": "pending-stage-7",
+      "notes": "comparison against recorded baseline"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8 empty filter returns today's empty response",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9 timeout returns 504, no connection held",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC10 OpenAPI baseline unchanged",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC11 grouped cost tests cover every pricing case",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC12 get_users no longer fetches file facts",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC13 ingestion delay within threshold",
+      "status": "pending-stage-7",
+      "notes": "volume measurement"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC14 volume test reports wall time per request",
+      "status": "pending-stage-7",
+      "notes": "runtime evidence"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 33 subjects in the range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "New source files carry license headers; new concerns placed in new modules; no Optional[] in added lines"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Added f-string SQL interpolates only internal constants and builders; user filters are positional parameters"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "One required criterion fails (AC6: /users total_count is 0 on an out-of-range page), the stored-groups cap is table-wide and can silently force 22 s+ live reads, and the 504 route mapping is untested. The diff is oversized, so coverage was limited to targeted reads of the three surviving findings and the remaining candidates were dismissed as low-impact or unconfirmed (about 19 dismissed). No items deferred; no lens failed, though the volume and load criteria are pending-stage-7.",
+    "confidence": "low",
+    "risk_flags": [
+      "migration",
+      "public-api",
+      "data-contract"
+    ]
+  }
+}

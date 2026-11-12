@@ -15,14 +15,35 @@
 import asyncio
 
 import pytest
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from tests.codemie.repository.cli_analytics.support.bounded import bounded_to_itself
+from tests.codemie.repository.cli_analytics.support.grouped_money import fake_cost_money, price_groups
 from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
+from tests.codemie.repository.cli_analytics.support.users_reads import install_users_reads
+from codemie.configs.config import config
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, ModelRates, ProjectPage
+from codemie.repository.cli_analytics.ports import (
+    RollupCost,
+    G_MODEL,
+    G_MODEL_PERSONAL,
+    G_MODEL_ROUTE,
+    G_PERSONAL,
+    G_ROUTE,
+    G_TOTAL,
+    G_USER,
+    G_USER_PERSONAL,
+    G_USER_ROUTE,
+    SESSION_PAGE_SORTS,
+    CostGroup,
+    GroupedMoney,
+    ModelRates,
+    ProjectPage,
+)
+from codemie.service.analytics.handlers.funding_buckets import buckets_from_groups
 from codemie.repository.cli_analytics.scope import ViewerScope
 from codemie.service.analytics.handlers.cli_analytics_handler import (
     LocalAnalyticsHandler,
@@ -984,7 +1005,7 @@ async def test_is_unattributed_false_delegates_to_repository():
 
 @pytest.mark.asyncio
 async def test_repositories_search_delegates_to_repository():
-    """search param must be forwarded to get_session_cost_facts; handler does not filter in-memory."""
+    """search param must be forwarded to the reader's ranking and facts statements; handler does not filter in-memory."""
     cost_facts = [
         {**BASE_COST_FACT, "session_id": "s1", "repository": "codemie", "branch": "main"},
     ]
@@ -999,12 +1020,13 @@ async def test_repositories_search_delegates_to_repository():
     handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False, search="codem")
-    repo.get_session_cost_facts.assert_called_once_with(ANY, search="codem", include_costless=True)
+    repo.get_repository_ranking.assert_called_once_with(ANY, False, "codem", ANY, 0, 50)
+    repo.get_repository_facts.assert_called_once_with(ANY, False, "codem", ["codemie"], unattributed=False)
 
 
 @pytest.mark.asyncio
 async def test_repositories_search_none_delegates_to_repository():
-    """None search must be forwarded to get_session_cost_facts with search=None."""
+    """None search must be forwarded to the reader's ranking and facts statements as search=None."""
     cost_facts = [
         {**BASE_COST_FACT, "session_id": "s1", "repository": "codemie", "branch": "main"},
         {**BASE_COST_FACT, "session_id": "s2", "repository": None, "branch": None},
@@ -1020,7 +1042,8 @@ async def test_repositories_search_none_delegates_to_repository():
     handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False, search=None)
-    repo.get_session_cost_facts.assert_called_once_with(ANY, search=None, include_costless=True)
+    repo.get_repository_ranking.assert_called_once_with(ANY, False, None, ANY, 0, 50)
+    repo.get_repository_facts.assert_called_once_with(ANY, False, None, ["codemie"], unattributed=True)
 
 
 @pytest.mark.asyncio
@@ -1536,55 +1559,6 @@ def test_a_skill_in_a_zero_length_session_keeps_its_duration():
     assert next(d for d in result if d["kind"] == "skill")["duration_ms"] == 2500
 
 
-def test_dead_sessions_counts_a_session_with_no_successful_file_change_as_dead():
-    """A priced session whose only file touches were rejected/failed (files_changed == 0, once
-    rollups.py/reader.py gate it on success) must be classified dead with its cost wasted
-    (EPMCDME-15583)."""
-    session_money = {"s1": 2.0}
-    files_by_session = {"s1": {"files_changed": 0}}
-    dead, wasted = LocalAnalyticsHandler._dead_sessions(session_money, files_by_session)
-    assert dead == 1
-    assert wasted == 2.0
-
-
-def test_dead_sessions_excludes_a_session_with_a_successful_file_change():
-    """A priced session with at least one genuinely successful Write/Edit (files_changed == 1)
-    must not be classified dead, even though other calls in the session may have been rejected
-    or failed."""
-    session_money = {"s1": 2.0}
-    files_by_session = {"s1": {"files_changed": 1}}
-    dead, wasted = LocalAnalyticsHandler._dead_sessions(session_money, files_by_session)
-    assert dead == 0
-    assert wasted == 0.0
-
-
-def test_dead_sessions_counts_a_prompt_only_session_as_dead():
-    """A priced session with no tool-call rows at all (prompt-only - no entry in files_by_session,
-    not just files_changed == 0) must still be classified dead with its cost wasted (EPMCDME-15448)."""
-    session_money = {"s1": 2.0}
-    files_by_session: dict[str, dict] = {}
-    dead, wasted = LocalAnalyticsHandler._dead_sessions(session_money, files_by_session)
-    assert dead == 1
-    assert wasted == 2.0
-
-
-def test_dead_sessions_counts_a_read_only_session_as_dead():
-    """A priced session that only read files (successfully or not) produces files_changed == 0,
-    same as the rejected/failed-write case - a Read is never written/edited (EPMCDME-15448), so
-    this must be classified dead with its cost wasted."""
-    session_money = {"s1": 0.0426152}
-    files_by_session = {"s1": {"files_changed": 0}}
-    dead, wasted = LocalAnalyticsHandler._dead_sessions(session_money, files_by_session)
-    assert dead == 1
-    assert wasted == 0.0426152
-
-
-def test_dead_sessions_counts_a_priced_session_with_no_files_changed():
-    dead, wasted = LocalAnalyticsHandler._dead_sessions({"s1": 2.0}, {"s1": {"files_changed": 0}})
-    assert dead == 1
-    assert wasted == 2.0
-
-
 def test_subtypes_count_only_the_agent_rows_the_reader_returns():
     """Denied Agent calls never reach the handler: the reader gates them.
     Subtype counts come from the rows the handler is given, so only executed Agent rows count."""
@@ -1595,61 +1569,25 @@ def test_subtypes_count_only_the_agent_rows_the_reader_returns():
     assert _count_dispatch_subtypes(rows) == {"Explore": 1, "Plan": 1}
 
 
-def _users_repo(user_rows):
+def _users_repo(user_rows, avg=None):
     repo = MagicMock()
-    for name in (
-        "get_users_daily_activity",
-        "get_users_last_active",
-        "get_lines_by_user",
-        "get_turns_by_session",
-        "get_file_facts_by_session",
-        "get_tool_success_by_session",
-        "get_session_model_costs",
-        "get_session_funding_costs",
-    ):
-        setattr(repo, name, AsyncMock(return_value=[]))
-    repo.get_users = AsyncMock(return_value=user_rows)
-    repo.get_session_durations = AsyncMock(
-        return_value=[
-            {"session_id": "s1", "duration_ms": 1000},
-            {"session_id": "s2", "duration_ms": 3000},
-            {"session_id": "s3", "duration_ms": 50000},
-        ]
-    )
-    return repo
+    install_users_reads(repo, user_rows, avg=avg)
+    return bounded_to_itself(repo)
 
 
 @pytest.mark.asyncio
-async def test_get_users_avg_duration_only_priced_sessions():
-    repo = _users_repo([{"developer_name": "dev", "session_ids": ["s1", "s2"]}])
-    result, _ = await LocalAnalyticsHandler(bounded_to_itself(repo)).get_users(make_filter(), page=None, per_page=None)
+async def test_get_users_reports_the_windows_average_duration():
+    """The reader's window mean (unknown durations skipped there) is the response figure, whatever the page."""
+    repo = _users_repo([{"developer_name": "dev"}], avg=2000)
+    result, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
     assert result["avg_session_duration_ms"] == 2000
 
 
 @pytest.mark.asyncio
-async def test_get_users_avg_duration_none_when_no_priced_sessions():
+async def test_get_users_avg_duration_none_when_no_known_duration():
     repo = _users_repo([])
-    result, _ = await LocalAnalyticsHandler(bounded_to_itself(repo)).get_users(make_filter(), page=None, per_page=None)
-    assert result["avg_session_duration_ms"] is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("durations", "expected"),
-    [
-        ([1000, 3000, None], 2000),  # an unknown end is skipped, not averaged in as 0
-        ([0, 3000, None], 1500),  # a genuine zero stays in the denominator
-        ([None, None, None], None),  # nothing known -> no average
-    ],
-)
-async def test_get_users_avg_duration_skips_unknown_durations(durations, expected):
-    repo = _users_repo([{"developer_name": "dev", "session_ids": ["s1", "s2", "s3"]}])
-    repo.get_session_durations = AsyncMock(
-        return_value=[{"session_id": f"s{n}", "duration_ms": d} for n, d in enumerate(durations, 1)]
-        + [{"session_id": "other", "duration_ms": 90000}]  # not listed: never part of the average
-    )
     result, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
-    assert result["avg_session_duration_ms"] == expected
+    assert result["avg_session_duration_ms"] is None
 
 
 def test_iso_attaches_utc_to_naive_datetime():
@@ -1697,24 +1635,8 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
 
     email = "dev@example.com"
     repo = MagicMock()
-    repo.get_users = AsyncMock(
-        return_value=[
-            {
-                "developer_name": email,
-                "session_count": 1,
-                "input_tokens": 1,
-                "output_tokens": 1,
-                "cache_read_tokens": 0,
-                "cache_creation_tokens": 0,
-                "cost_usd": 1.0,
-                "session_ids": [],
-            }
-        ]
-    )
+    install_users_reads(repo, [{"developer_name": email, "session_count": 1}])
     for name in (
-        "get_users_daily_activity",
-        "get_users_last_active",
-        "get_lines_by_user",
         "get_turns_by_session",
         "get_file_facts_by_session",
         "get_tool_success_by_session",
@@ -1734,7 +1656,8 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
         "get_class_lists",
     ):
         setattr(repo, name, AsyncMock(return_value=[]))
-    repo.get_cost_by_user = AsyncMock(return_value=[{"developer_name": email, "session_ids": ["s1"]}])
+    repo.get_cost_by_user = AsyncMock(return_value=[{"developer_name": email}])
+    repo.get_cost_money = fake_cost_money([])
     repo.get_session_cost_facts = AsyncMock(return_value=[{**BASE_COST_ROW, "developer_name": email}])
     repo.get_session_page = page_reader([BASE_COST_ROW])
     with_window_reads(repo)
@@ -2140,8 +2063,15 @@ def _money_handler(model_rows, **overrides):
         setattr(repo, name, AsyncMock(return_value=[]))
     repo.get_session_model_costs = AsyncMock(return_value=model_rows)
     repo.get_session_funding_costs = AsyncMock(return_value=[])
+    user_rows = overrides.pop("get_users", None)
     for name, rows in overrides.items():
         setattr(repo, name, AsyncMock(return_value=rows))
+    repo.get_cost_models = AsyncMock(return_value=[])
+    sessions = {sid: u["developer_name"] for u in overrides.get("get_cost_by_user", []) for sid in u["session_ids"]}
+    repo.get_cost_money = fake_cost_money(model_rows, sessions or None)
+    if user_rows is not None:  # the users' own money is priced from the sessions their rows list
+        by_session = {sid: u["developer_name"] for u in user_rows for sid in u.get("session_ids", [])}
+        install_users_reads(repo, user_rows, money=lambda: price_groups(model_rows, by_session))
     return LocalAnalyticsHandler(bounded_to_itself(repo))
 
 
@@ -2544,9 +2474,9 @@ async def test_repositories_lines_unknown_partial_and_known():
 async def test_users_net_lines_none_for_user_without_lines_row_and_zero_for_known_zero():
     repo = _users_repo(
         [
-            {"developer_name": "none", "session_ids": ["s1"]},
-            {"developer_name": "zero", "session_ids": ["s2"]},
-            {"developer_name": "some", "session_ids": ["s3"]},
+            {"developer_name": "none"},
+            {"developer_name": "zero"},
+            {"developer_name": "some"},
         ]
     )
     repo.get_lines_by_user = AsyncMock(
@@ -2694,3 +2624,749 @@ async def test_a_failing_detail_statement_raises_itself_and_cancels_its_siblings
     with pytest.raises(TimeoutError, match="statement timeout"):  # not an ExceptionGroup
         await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
     assert cancelled == ["turns"]  # cancelled and awaited before get_sessions returned
+
+
+# ── /cost on one bounded connection (EPMCDME-17051) ──
+
+
+def _cg(keys, cost, sessions=1, unpriced=(), cache=0.0):
+    return CostGroup(keys, cost, cache, sessions, tuple(unpriced), bool(unpriced))
+
+
+class _CostReader:
+    """The bounded reader of a /cost request: records the statements in order and answers from `money`."""
+
+    def __init__(self, money, by_user=(), calls=None, hold=0.0):
+        self.calls = [] if calls is None else calls
+        self.exited = False
+        self._hold = hold
+
+        async def record(name, value):
+            self.calls.append(name)
+            if self._hold:
+                await asyncio.sleep(self._hold)
+            return value
+
+        async def models(f):
+            return await record("get_cost_models", ["claude-sonnet-4-6"])
+
+        async def get_money(f, rates, buckets=True):
+            self.rates = list(rates)
+            return await record("get_cost_money", money)
+
+        async def kpis(f):
+            return await record("get_cost_kpis", [{"total_sessions": 2, "spend_sessions": 2}])
+
+        async def classes(f, by="all"):
+            return await record(f"get_class_lists:{by}", [])
+
+        async def users(f, with_classes=True):
+            return await record("get_cost_by_user", [{"developer_name": u} for u in by_user])
+
+        async def materialize_sel(f):
+            self.calls.append("materialize_sel")
+
+        self.materialize_sel = materialize_sel
+        self.get_cost_models, self.get_cost_money, self.get_cost_kpis = models, get_money, kpis
+        self.get_class_lists, self.get_cost_by_user = classes, users
+
+    def top_level(self):
+        outer = MagicMock(spec=["bounded"])
+        reader = self
+
+        @asynccontextmanager
+        async def bounded():
+            try:
+                yield reader
+            finally:
+                reader.exited = True
+
+        outer.bounded = bounded
+        return outer
+
+
+def _cost_handler(money, by_user=(), hold=0.0):
+    reader = _CostReader(money, by_user, hold=hold)
+    return LocalAnalyticsHandler(reader.top_level()), reader
+
+
+@pytest.mark.asyncio
+async def test_cost_runs_in_one_bounded_connection_in_order():
+    handler, reader = _cost_handler(GroupedMoney({}), by_user=["alice"])
+
+    await _priced(handler.get_cost(make_filter()))
+
+    assert reader.calls == [
+        "materialize_sel",
+        "get_cost_models",
+        "get_cost_money",
+        "get_cost_kpis",
+        "get_class_lists:all",
+        "get_class_lists:model",
+        "get_cost_by_user",
+    ]
+    assert [r.model for r in reader.rates] == ["claude-sonnet-4-6"]
+    assert reader.exited
+
+
+@pytest.mark.asyncio
+async def test_cost_without_the_class_lists_skips_their_statements_and_leaves_them_empty():
+    handler, reader = _cost_handler(GroupedMoney({}), by_user=["alice"])
+
+    data, _ = await handler.get_cost(make_filter(), include_class_lists=False)
+
+    assert reader.calls == [
+        "materialize_sel",
+        "get_cost_models",
+        "get_cost_money",
+        "get_cost_kpis",
+        "get_cost_by_user",
+    ]
+    assert data["kpis"]["subscription_types"] == [] and data["kpis"]["project_origins"] == []
+    assert data["cost_by_user"][0]["subscription_types"] == []
+
+
+@pytest.mark.asyncio
+async def test_cost_without_the_buckets_asks_only_for_the_spend_groupings_and_zeroes_them():
+    sonnet = "claude-sonnet-4-6"
+    money = GroupedMoney(
+        {
+            G_TOTAL: [_cg({}, 5.0, 2)],
+            G_USER: [_cg({"user": "alice"}, 5.0, 2)],
+            G_MODEL: [_cg({"model": sonnet}, 5.0, 2)],
+            G_ROUTE: [_cg({"funding_route": "api_based"}, 7.0, 3)],
+            G_PERSONAL: [_cg({"personal_billed": True}, 2.0, 1)],
+            G_MODEL_PERSONAL: [_cg({"model": "personal-only", "personal_billed": True}, 2.0, 1)],
+        }
+    )
+    handler, reader = _cost_handler(money, by_user=["alice"])
+    asked = []
+    inner = reader.get_cost_money
+
+    async def spy(f, rates, buckets=True):
+        asked.append(buckets)
+        return await inner(f, rates, buckets=buckets)
+
+    reader.get_cost_money = spy
+
+    full, _ = await handler.get_cost(make_filter())
+    lean, _ = await handler.get_cost(make_filter(), include_buckets=False)
+
+    assert asked == [True, False]
+    assert full["models_without_spend"] and full["funding"]["api_based"]["cost_usd"] == 7.0
+    assert lean["models_without_spend"] == []
+    assert "funding" not in lean and "personal_billed" not in lean  # the response model fills the zero buckets
+    # what the Cost tab reads is the same either way
+    assert lean["kpis"]["total_cost_usd"] == full["kpis"]["total_cost_usd"] == 5.0
+    assert [(r["developer_name"], r["cost_usd"]) for r in lean["cost_by_user"]] == [("alice", 5.0)]
+    assert [(r["model_name"], r["cost_usd"]) for r in lean["cost_by_model"]] == [(sonnet, 5.0)]
+
+
+def _rollup_cost_handler(answer):
+    """A /cost handler whose repository answers the rollup read with `answer` and whose live reader records calls."""
+    live = _CostReader(GroupedMoney({}), by_user=["live-user"])
+    outer = live.top_level()
+    outer.rollup_cost = AsyncMock(return_value=answer)
+    return LocalAnalyticsHandler(outer), live, outer.rollup_cost
+
+
+def _rollup_cost():
+    return RollupCost(
+        money=GroupedMoney(
+            {
+                G_TOTAL: [_cg({}, 6.0, 4)],
+                G_USER: [_cg({"user": "alice"}, 4.0, 3), _cg({"user": "bob"}, 2.0, 1)],
+                G_MODEL: [_cg({"model": "claude-sonnet-4-6"}, 6.0, 4)],
+            }
+        ),
+        developers=["alice", "bob", "carol"],
+        total_sessions=9,
+        spend_sessions=4,
+        total_tokens=1234,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cost_without_the_optional_parts_is_served_from_the_rollup_when_it_answers():
+    handler, live, rollup = _rollup_cost_handler(_rollup_cost())
+
+    data, _ = await handler.get_cost(make_filter(), include_class_lists=False, include_buckets=False)
+
+    rollup.assert_awaited_once()
+    assert live.calls == []  # no connection, no statement of the live path
+    assert data["kpis"]["total_sessions"] == 9 and data["kpis"]["total_tokens"] == 1234
+    assert data["kpis"]["total_cost_usd"] == 6.0 and data["kpis"]["avg_cost_per_session"] == 1.5
+    assert [(r["developer_name"], r["cost_usd"]) for r in data["cost_by_user"]] == [
+        ("alice", 4.0),
+        ("bob", 2.0),
+        ("carol", 0.0),  # listed, no spend figure
+    ]
+    assert [(r["model_name"], r["cost_usd"]) for r in data["cost_by_model"]] == [("claude-sonnet-4-6", 6.0)]
+
+
+@pytest.mark.asyncio
+async def test_cost_takes_the_live_statements_when_the_rollup_does_not_answer():
+    handler, live, rollup = _rollup_cost_handler(None)
+
+    await handler.get_cost(make_filter(), include_class_lists=False, include_buckets=False)
+
+    rollup.assert_awaited_once()
+    assert "get_cost_money" in live.calls and "get_cost_by_user" in live.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags", [{"include_class_lists": True}, {"include_buckets": True}, {}])
+async def test_cost_with_an_optional_part_never_asks_the_rollup_which_holds_neither(flags):
+    handler, live, rollup = _rollup_cost_handler(_rollup_cost())
+
+    await handler.get_cost(make_filter(), **flags)
+
+    rollup.assert_not_awaited()
+    assert "get_cost_money" in live.calls
+
+
+@pytest.mark.asyncio
+async def test_a_window_the_rollup_refused_goes_straight_to_the_live_statements_for_the_cache_ttl(monkeypatch):
+    from codemie.service.analytics import dashboard_cache
+
+    monkeypatch.setattr(config, "CLI_ANALYTICS_DASHBOARD_CACHE_TTL_S", 30)
+    dashboard_cache.reset_dashboard_cache()
+    handler, live, rollup = _rollup_cost_handler(None)
+    f = make_filter()  # as the test above: the scope the rollup's cache key is made for
+
+    await handler.get_cost(f, include_class_lists=False, include_buckets=False)
+    await handler.get_cost(f, include_class_lists=False, include_buckets=False)
+
+    rollup.assert_awaited_once()  # the second request does not repeat the reads that end in the same refusal
+    assert live.calls.count("get_cost_money") == 2
+    assert not dashboard_cache.rollup_recently_used()  # a request the rollup did not answer keeps no warm-up going
+    dashboard_cache.reset_dashboard_cache()
+
+
+@pytest.mark.asyncio
+async def test_a_second_cost_request_reuses_the_rollup_answer_for_the_cache_ttl(monkeypatch):
+    monkeypatch.setattr(config, "CLI_ANALYTICS_DASHBOARD_CACHE_TTL_S", 30)
+    handler, _, rollup = _rollup_cost_handler(_rollup_cost())
+
+    await handler.get_cost(make_filter(), include_class_lists=False, include_buckets=False)
+    await handler.get_cost(make_filter(), include_class_lists=False, include_buckets=False)
+
+    rollup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cost_budget_timeout_releases_connection(monkeypatch):
+    from codemie.configs.config import config as app_config
+
+    monkeypatch.setattr(app_config, "CLI_ANALYTICS_DASHBOARD_REQUEST_BUDGET_S", 0.01)
+    handler, reader = _cost_handler(GroupedMoney({}), hold=1.0)
+
+    with pytest.raises(TimeoutError):
+        await _priced(handler.get_cost(make_filter()))
+
+    assert reader.exited
+
+
+@pytest.mark.asyncio
+async def test_cost_subagent_only_session_in_totals_not_users():
+    """A session with only subagent-totals rows is in the total and the model, but in no user's figure."""
+    sonnet = "claude-sonnet-4-6"
+    money = GroupedMoney(
+        {
+            G_TOTAL: [_cg({}, 5.0, 2)],
+            G_USER: [_cg({"user": "alice"}, 3.0)],
+            G_MODEL: [_cg({"model": sonnet}, 5.0, 2)],
+        }
+    )
+    handler, _ = _cost_handler(money, by_user=["alice", "bob"])
+
+    data, _ = await _priced(handler.get_cost(make_filter()))
+
+    assert data["kpis"]["total_cost_usd"] == 5.0
+    assert [(r["developer_name"], r["cost_usd"]) for r in data["cost_by_user"]] == [("alice", 3.0), ("bob", 0.0)]
+    assert [(r["model_name"], r["cost_usd"]) for r in data["cost_by_model"]] == [(sonnet, 5.0)]
+
+
+@pytest.mark.asyncio
+async def test_cost_empty_filter_returns_todays_empty_response():
+    handler, _ = _cost_handler(GroupedMoney({}))
+
+    data, pricer = await _priced(handler.get_cost(make_filter()))
+
+    assert data["kpis"]["total_cost_usd"] == 0.0 and data["kpis"]["avg_cost_per_session"] == 0.0
+    assert (data["cost_by_user"], data["cost_by_model"], data["models_without_spend"]) == ([], [], [])
+    assert data["funding"] == buckets_from_groups([], [])["funding"]
+    assert data["personal_billed"] == buckets_from_groups([], [])["personal_billed"]
+    assert pricer.unpriced == []
+
+
+@pytest.mark.asyncio
+async def test_cost_unpriced_from_spend_total_only():
+    """metadata.unpriced is the spend total's; an estimate bucket's unpriced models stay in that bucket."""
+    money = GroupedMoney(
+        {
+            G_TOTAL: [_cg({}, 1.0, unpriced=["mystery"])],
+            G_ROUTE: [_cg({"funding_route": "api_based"}, 2.0, unpriced=["estimate-only"])],
+        }
+    )
+    handler, _ = _cost_handler(money)
+
+    data, pricer = await _priced(handler.get_cost(make_filter()))
+
+    assert pricer.unpriced == ["mystery"]
+    assert data["funding"]["api_based"]["unpriced_models"] == ["estimate-only"]
+    assert data["funding"]["api_based"]["cost_incomplete"] is True
+
+
+@pytest.mark.asyncio
+async def test_cost_joins_buckets_by_user_and_model_and_lists_models_without_spend():
+    money = GroupedMoney(
+        {
+            G_TOTAL: [_cg({}, 4.0, 2)],
+            G_USER: [_cg({"user": "alice"}, 4.0, 2)],
+            G_MODEL: [_cg({"model": "m-spend"}, 4.0, 2)],
+            G_USER_PERSONAL: [
+                _cg({"user": "alice", "personal_billed": True}, 7.0),
+                _cg({"user": "alice", "personal_billed": False}, 4.0),
+            ],
+            G_MODEL_PERSONAL: [_cg({"model": "m-personal", "personal_billed": True}, 9.0)],
+            G_MODEL_ROUTE: [_cg({"model": "m-spend", "funding_route": "api_based"}, 4.0)],
+        }
+    )
+    handler, _ = _cost_handler(money, by_user=["alice"])
+
+    data, _ = await _priced(handler.get_cost(make_filter()))
+
+    assert data["cost_by_user"][0]["personal_billed"]["cost_usd"] == 7.0
+    assert data["cost_by_model"][0]["funding"]["api_based"]["cost_usd"] == 4.0
+    assert [
+        (r["model_name"], r["cost_usd"], r["personal_billed"]["cost_usd"]) for r in data["models_without_spend"]
+    ] == [("m-personal", 0.0, 9.0)]
+
+
+# ── /users and /user-charts on one bounded connection (EPMCDME-17051) ──
+
+
+class _UsersReader:
+    """The bounded reader of a /users request: records the statements in order, with the developers each got."""
+
+    def __init__(self, user_rows, money=None, facts=None, avg=None, hold=0.0):
+        self.calls: list = []
+        self.exited = False
+        self.file_facts_fetched = False
+        repo = MagicMock()
+        install_users_reads(repo, user_rows, money=money, facts=facts, avg=avg, calls=self.calls)
+        self.repo = repo
+
+        async def record(name, rows, f=None):
+            self.calls.append((name, f.developers) if f is not None else name)
+            if hold:
+                await asyncio.sleep(hold)
+            return rows
+
+        async def lines(f):
+            return await record("get_lines_by_user", [], f)
+
+        async def last_active(f):
+            return await record("get_users_last_active", [], f)
+
+        async def daily(f):
+            return await record("get_users_daily_activity", [], f)
+
+        async def file_facts(f):
+            self.file_facts_fetched = True
+            return []
+
+        async def materialize_sel(f):
+            self.calls.append("materialize_sel")
+
+        repo.materialize_sel = materialize_sel
+        repo.get_lines_by_user, repo.get_users_last_active = lines, last_active
+        repo.get_users_daily_activity, repo.get_file_facts_by_session = daily, file_facts
+        if hold:
+            inner = repo.get_users_money_page
+
+            async def slow_page(f, rates, limit, offset):
+                await asyncio.sleep(hold)
+                return await inner(f, rates, limit, offset)
+
+            repo.get_users_money_page = slow_page
+
+    def top_level(self):
+        outer = MagicMock(spec=["bounded"])
+        reader = self
+
+        @asynccontextmanager
+        async def bounded():
+            try:
+                yield reader.repo
+            finally:
+                reader.exited = True
+
+        outer.bounded = bounded
+        return outer
+
+
+def _users_handler(user_rows, **kwargs):
+    reader = _UsersReader(user_rows, **kwargs)
+    return LocalAnalyticsHandler(reader.top_level()), reader
+
+
+def _page_money():
+    return GroupedMoney(
+        {
+            G_TOTAL: [_cg({}, 9.0, 3)],
+            G_USER: [_cg({"user": "alice"}, 3.0), _cg({"user": "bob"}, 6.0)],
+            G_USER_ROUTE: [_cg({"user": "bob", "funding_route": "api_based"}, 6.0)],
+        }
+    )
+
+
+_TWO_USERS = [{"developer_name": "alice", "session_count": 1}, {"developer_name": "bob", "session_count": 2}]
+
+
+@pytest.mark.asyncio
+async def test_users_runs_in_one_bounded_connection_in_order():
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+
+    data, _ = await handler.get_users(make_filter(), 0, 1)  # the page is bob alone
+
+    assert reader.calls == [
+        "materialize_sel",
+        "get_cost_models",
+        ("get_users_money_page", None, 0),  # the money of everyone; the page is cut from the ranking
+        "get_avg_session_duration_ms",
+        ("get_users", ["bob"]),
+        ("get_developer_session_facts", ["bob"]),
+        ("get_lines_by_user", ["bob"]),
+        ("get_users_last_active", ["bob"]),
+        ("get_users_daily_activity", ["bob"]),
+    ]
+    assert reader.exited
+    assert [(r["developer_name"], r["cost_usd"]) for r in data["rows"]] == [("bob", 6.0)]
+    assert data["total_count"] == 2
+    assert data["rows"][0]["funding"]["api_based"]["cost_usd"] == 6.0
+
+
+@pytest.mark.asyncio
+async def test_user_charts_returns_every_user():
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+
+    data, _ = await handler.get_users(make_filter(), None, None)
+
+    assert [r["developer_name"] for r in data["rows"]] == ["bob", "alice"]
+    assert data["total_count"] == 2  # the router replaces it with None for /user-charts
+    assert ("get_users_money_page", None, 0) in reader.calls
+    assert ("get_users", None) in reader.calls  # no developer restriction
+
+
+@pytest.mark.asyncio
+async def test_user_charts_only_reads_the_money_and_leaves_the_other_fields_at_their_defaults():
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+
+    data, _ = await handler.get_users(make_filter(), None, None, charts_only=True)
+
+    assert reader.calls == ["materialize_sel", "get_cost_models", ("get_users_money_page", None, 0)]
+    assert reader.exited
+    assert [(r["developer_name"], r["cost_usd"]) for r in data["rows"]] == [("bob", 6.0), ("alice", 3.0)]
+    assert data["rows"][0]["funding"]["api_based"]["cost_usd"] == 6.0  # the buckets come from the money statement
+    assert data["avg_session_duration_ms"] is None
+    bob = data["rows"][0]
+    assert (bob["session_count"], bob["input_tokens"], bob["turns"], bob["tool_calls"]) == (0, 0, 0, 0)
+    assert (bob["subscription_types"], bob["project_origins"], bob["daily_activity"]) == ([], [], [])
+    assert bob["net_lines"] is None and bob["last_active"] is None
+
+
+@pytest.mark.asyncio
+async def test_users_page_with_the_chart_ranks_everyone_once_and_serves_the_page_and_the_chart():
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+
+    data, _ = await handler.get_users(make_filter(), 1, 1, include_chart=True)  # the second page: alice
+
+    assert ("get_users_money_page", None, 0) in reader.calls  # the money of everyone, in one statement
+    assert not any(
+        c[0] == "get_users_money_page" and c != ("get_users_money_page", None, 0)
+        for c in reader.calls
+        if isinstance(c, tuple)
+    )
+    assert [r["developer_name"] for r in data["rows"]] == ["alice"]
+    assert data["total_count"] == 2
+    assert data["chart"] == [{"developer_name": "bob", "cost_usd": 6.0}, {"developer_name": "alice", "cost_usd": 3.0}]
+    assert ("get_users", ["alice"]) in reader.calls  # the facts stay those of the page's developers
+
+
+@pytest.mark.asyncio
+async def test_users_page_with_the_chart_gives_the_rows_of_the_page_without_it():
+    plain, _ = await _users_handler(_TWO_USERS, money=_page_money())[0].get_users(make_filter(), 0, 1)
+    charted, _ = await _users_handler(_TWO_USERS, money=_page_money())[0].get_users(
+        make_filter(), 0, 1, include_chart=True
+    )
+
+    assert charted.pop("chart") is not None
+    assert charted == plain
+
+
+@pytest.mark.asyncio
+async def test_users_page_past_the_end_still_reports_the_chart_and_the_count():
+    handler, _ = _users_handler(_TWO_USERS, money=_page_money())
+
+    data, _ = await handler.get_users(make_filter(), 5, 50, include_chart=True)
+
+    assert data["rows"] == [] and data["total_count"] == 2
+    assert [c["developer_name"] for c in data["chart"]] == ["bob", "alice"]
+
+
+@pytest.mark.asyncio
+async def test_users_page_reads_daily_activity_and_average_duration_only_when_asked():
+    asked, asked_reader = _users_handler(_TWO_USERS, money=_page_money(), avg=1234)
+    skipped, skipped_reader = _users_handler(_TWO_USERS, money=_page_money(), avg=1234)
+
+    full, _ = await asked.get_users(make_filter(), 0, 10)
+    slim, _ = await skipped.get_users(make_filter(), 0, 10, include_daily_activity=False, include_avg_duration=False)
+
+    assert "get_avg_session_duration_ms" in asked_reader.calls
+    assert ("get_users_daily_activity", ["bob", "alice"]) in asked_reader.calls
+    assert full["avg_session_duration_ms"] == 1234
+    assert "get_avg_session_duration_ms" not in skipped_reader.calls
+    assert not any(c[0] == "get_users_daily_activity" for c in skipped_reader.calls if isinstance(c, tuple))
+    assert slim["avg_session_duration_ms"] is None
+    assert all(r["daily_activity"] == [] for r in slim["rows"])
+    assert [r["developer_name"] for r in slim["rows"]] == [
+        r["developer_name"] for r in full["rows"]
+    ]  # the rest is intact
+
+
+@pytest.mark.asyncio
+async def test_a_second_page_reuses_the_ranking_and_reads_only_its_own_facts():
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+
+    first, _ = await handler.get_users(make_filter(), 0, 1)
+    reader.calls.clear()
+    second, _ = await handler.get_users(make_filter(), 1, 1)
+
+    assert [r["developer_name"] for r in first["rows"]] == ["bob"]
+    assert [r["developer_name"] for r in second["rows"]] == ["alice"]
+    assert second["total_count"] == 2
+    assert "get_cost_models" not in reader.calls  # the ranking came from the cache
+    assert not any(c[0] == "get_users_money_page" for c in reader.calls if isinstance(c, tuple))
+    assert ("get_users", ["alice"]) in reader.calls  # the facts are those of the new page
+
+
+@pytest.mark.asyncio
+async def test_user_charts_shares_the_ranking_with_the_pages():
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+
+    await handler.get_users(make_filter(), 0, 50)
+    reader.calls.clear()
+    charts, _ = await handler.get_users(make_filter(), None, None, charts_only=True)
+
+    assert [r["developer_name"] for r in charts["rows"]] == ["bob", "alice"]
+    assert not any(c[0] == "get_users_money_page" for c in reader.calls if isinstance(c, tuple))
+
+
+@pytest.mark.asyncio
+async def test_another_viewer_scope_never_reuses_the_ranking():
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+    other = make_filter()
+    other.scope = ViewerScope(
+        viewer_email="b@example.com", unrestricted=False, admin_projects=frozenset({"p"}), mode="detail"
+    )
+
+    await handler.get_users(make_filter(), 0, 50)
+    reader.calls.clear()
+    await handler.get_users(other, 0, 50)
+
+    assert ("get_users_money_page", None, 0) in reader.calls
+
+
+@pytest.mark.asyncio
+async def test_a_zero_ttl_computes_the_ranking_for_every_request():
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+
+    with patch.object(config, "CLI_ANALYTICS_DASHBOARD_CACHE_TTL_S", 0):
+        await handler.get_users(make_filter(), 0, 50)
+        reader.calls.clear()
+        await handler.get_users(make_filter(), 0, 50)
+
+    assert ("get_users_money_page", None, 0) in reader.calls
+
+
+# ── served from the user rollup ──
+
+# What the route passes: the two reads over the whole window are off unless asked for.
+SLIM = {"include_daily_activity": False, "include_avg_duration": False}
+
+
+def _rollup_users():
+    from codemie.repository.cli_analytics.ports import RollupUsers, UsersMoneyPage
+
+    money = _page_money()
+    page = UsersMoneyPage(["bob", "alice"], 2, money)
+    users = [
+        {"developer_name": "bob", "session_count": 2, "input_tokens": 5, "top_model": "m", "subscription_types": ["x"]},
+        {"developer_name": "alice", "session_count": 1, "input_tokens": 1, "subscription_types": []},
+    ]
+    facts = [{"developer": "bob", "turns": 4, "tool_calls": 3, "tool_successes": 3}, {"developer": "alice", "turns": 1}]
+    return RollupUsers(page, users, facts, [{"developer_name": "bob", "net_lines": 7}], [])
+
+
+class _RollupRepo:
+    """A repo with the rollup read and nothing else: the live statements must not be reached."""
+
+    def __init__(self, served):
+        self.served, self.calls = served, []
+
+    async def rollup_users(self, f, rate_of, max_age_s):
+        self.calls.append(max_age_s)
+        return self.served
+
+    def bounded(self):
+        raise AssertionError("the live statements ran")
+
+
+@pytest.mark.asyncio
+async def test_the_rollup_answers_a_page_without_touching_the_live_statements():
+    repo = _RollupRepo(_rollup_users())
+
+    data, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), 1, 1, include_chart=True, **SLIM)
+
+    assert [r["developer_name"] for r in data["rows"]] == ["alice"]  # the second page of the ranking
+    assert data["total_count"] == 2
+    assert data["chart"] == [{"developer_name": "bob", "cost_usd": 6.0}, {"developer_name": "alice", "cost_usd": 3.0}]
+    assert data["avg_session_duration_ms"] is None and data["rows"][0]["daily_activity"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_rollup_rows_of_a_page_carry_the_facts_of_its_developers():
+    repo = _RollupRepo(_rollup_users())
+
+    data, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), 0, 1, **SLIM)
+
+    (bob,) = data["rows"]
+    assert (bob["session_count"], bob["turns"], bob["tool_calls"], bob["net_lines"], bob["top_model"]) == (
+        2,
+        4,
+        3,
+        7,
+        "m",
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_charts_from_the_rollup_returns_every_user_with_money_only():
+    repo = _RollupRepo(_rollup_users())
+
+    data, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), None, None, charts_only=True)
+
+    assert [(r["developer_name"], r["cost_usd"]) for r in data["rows"]] == [("bob", 6.0), ("alice", 3.0)]
+    assert data["rows"][0]["turns"] == 0  # the facts are not read for the chart
+
+
+@pytest.mark.asyncio
+async def test_a_second_request_reuses_the_rollup_answer():
+    repo = _RollupRepo(_rollup_users())
+    handler = LocalAnalyticsHandler(repo)
+
+    await handler.get_users(make_filter(), 0, 1, **SLIM)
+    await handler.get_users(make_filter(), 1, 1, **SLIM)
+
+    assert len(repo.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{"include_daily_activity": True}, {"include_avg_duration": True}])
+async def test_reads_over_the_whole_window_skip_the_rollup(kwargs):
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+    served = _RollupRepo(_rollup_users())
+    handler._repo.rollup_users = served.rollup_users
+
+    await handler.get_users(make_filter(), 0, 1, **kwargs)
+
+    assert served.calls == []
+    assert "materialize_sel" in reader.calls  # the live statements ran
+
+
+@pytest.mark.asyncio
+async def test_without_a_rollup_answer_the_live_statements_run():
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+    served = _RollupRepo(None)
+    handler._repo.rollup_users = served.rollup_users
+
+    data, _ = await handler.get_users(make_filter(), 0, 1, **SLIM)
+
+    assert len(served.calls) == 1
+    assert [r["developer_name"] for r in data["rows"]] == ["bob"]
+    assert "materialize_sel" in reader.calls
+
+
+@pytest.mark.asyncio
+async def test_a_switched_off_rollup_is_not_asked():
+    repo = _RollupRepo(_rollup_users())
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+    handler._repo.rollup_users = repo.rollup_users
+
+    with patch.object(config, "CLI_ANALYTICS_USER_ROLLUP_ENABLED", False):
+        await handler.get_users(make_filter(), 0, 1, **SLIM)
+
+    assert repo.calls == []
+
+
+@pytest.mark.asyncio
+async def test_users_without_include_chart_carry_no_chart():
+    handler, _ = _users_handler(_TWO_USERS, money=_page_money())
+
+    data, _ = await handler.get_users(make_filter(), 0, 1)
+
+    assert "chart" not in data
+
+
+@pytest.mark.asyncio
+async def test_users_never_fetches_file_facts():
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money())
+
+    await handler.get_users(make_filter(), None, None)
+
+    assert not reader.file_facts_fetched
+
+
+@pytest.mark.asyncio
+async def test_users_budget_timeout_releases_connection(monkeypatch):
+    from codemie.configs.config import config as app_config
+
+    monkeypatch.setattr(app_config, "CLI_ANALYTICS_DASHBOARD_REQUEST_BUDGET_S", 0.01)
+    handler, reader = _users_handler(_TWO_USERS, money=_page_money(), hold=1.0)
+
+    with pytest.raises(TimeoutError):
+        await handler.get_users(make_filter(), 0, 10)
+
+    assert reader.exited
+
+
+@pytest.mark.asyncio
+async def test_users_empty_filter_returns_todays_empty_response():
+    handler, reader = _users_handler([], money=GroupedMoney({}))
+
+    data, pricer = await handler.get_users(make_filter(), 0, 50)
+
+    assert data["rows"] == [] and data["total_count"] == 0 and data["avg_session_duration_ms"] is None
+    assert data["funding"] == buckets_from_groups([], [])["funding"]
+    assert data["personal_billed"] == buckets_from_groups([], [])["personal_billed"]
+    assert pricer.unpriced == []
+    # An empty page must not turn into "no developer restriction" for the page facts.
+    assert [
+        c for c in reader.calls if isinstance(c, tuple) and c[0] in ("get_users", "get_developer_session_facts")
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_users_row_facts_come_from_the_developer_reads_and_overall_avg_from_the_window():
+    facts = [{"developer": "bob", "turns": 7, "tool_calls": 4, "tool_successes": 3}]
+    handler, _ = _users_handler(_TWO_USERS, money=_page_money(), facts=facts, avg=1234)
+
+    data, _ = await handler.get_users(make_filter(), None, None)
+
+    bob = next(r for r in data["rows"] if r["developer_name"] == "bob")
+    alice = next(r for r in data["rows"] if r["developer_name"] == "alice")
+    assert (bob["turns"], bob["tool_calls"], bob["tool_success_rate"]) == (7, 4, 75.0)
+    assert (alice["turns"], alice["tool_calls"]) == (0, 0)
+    assert data["avg_session_duration_ms"] == 1234

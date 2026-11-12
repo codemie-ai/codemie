@@ -38,22 +38,48 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import re
+import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+import asyncpg
+
 from codemie.configs.config import config
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, ModelRates, ProjectPage, Rows
+from codemie.repository.cli_analytics.ports import (
+    G_MODEL,
+    G_MODEL_PERSONAL,
+    G_MODEL_ROUTE,
+    G_PERSONAL,
+    G_ROUTE,
+    G_TOTAL,
+    G_USER,
+    G_USER_PERSONAL,
+    G_USER_ROUTE,
+    SESSION_PAGE_SORTS,
+    CostGroup,
+    UsersMoneyPage,
+    GroupedMoney,
+    ModelRates,
+    ProjectPage,
+    RollupCost,
+    RollupOverview,
+    RollupUsers,
+    Rows,
+    StatementTimeout,
+)
 from codemie.repository.cli_analytics.postgres.cost_key_sql import (
-    _RATE_COLUMNS,
     _SEL_SESSIONS,
+    _RATE_COLUMNS,
     _spend,
     _token_rows,
     cost_groups_cte,
     cost_key_from_groups_sql,
+    merged_kind_flags_sql,
     model_flags_sql,
     model_token_groups,
     normalized_model_name,
@@ -67,6 +93,11 @@ from codemie.repository.cli_analytics.postgres.agent_call_attribution import (
     agent_call_span_end,
     agent_call_tool,
     takes_parent,
+)
+from codemie.repository.cli_analytics.postgres.grouped_cost_sql import (
+    Grouping,
+    grouped_cost_sql,
+    priced_groups_cte,
 )
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
     dispatch_fork_candidate,
@@ -89,15 +120,45 @@ from codemie.repository.cli_analytics.postgres.route_identity import group_model
 from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.session_page_sql import (
     FRAMEWORK_NAMES_TABLE,
+    LIVE_CTE,
+    SORT_KEYS_ENABLED_SQL,
+    CTX_KEY_COLUMNS,
+    COST_KEY_COLUMNS,
+    FLAG_COLUMNS,
+    STORED_CTX_KEY,
+    stored_ctx_key,
+    stored_cost_key,
+    stored_cost_models_sql,
     cost_page_sql,
     framework_count_sql,
     framework_flags_select,
     framework_names_sql,
     framework_page_sql,
+    framework_stored_groups_sql,
+    framework_stored_page_sql,
+    ordered_page_sql,
     searched_start_time_page_sql,
+    live_cte,
+    UNSTAMPED_COST_SQL,
+    UNSTAMPED_CTX_SQL,
     start_time_count_sql,
     start_time_page_sql,
     window_count_sql,
+)
+from codemie.repository.cli_analytics.postgres.stored_mode import (
+    DEFAULT_S_CAP,
+    DISABLED,
+    FALLBACK_WARNINGS,
+    GROUPS_READ_ERROR,
+    NO_RATES_VERSION,
+    S_MERGED,
+    S_OVER_CAP,
+    UNEXPRESSIBLE,
+    ModelGroupsMode,
+    StoredMode,
+    expressible,
+    model_groups_mode,
+    report_framework_groups,
 )
 from codemie.repository.cli_analytics.scope import (
     sql_detail_condition,
@@ -120,6 +181,8 @@ _EPOCH = "'1970-01-01 00:00:00+00'::timestamptz"
 _TOOL, _EXEC, _INTERACTION = int(SpanKind.TOOL), int(SpanKind.TOOL_EXECUTION), int(SpanKind.INTERACTION)
 _API_REQUEST = int(EventKind.API_REQUEST)
 _LLM_REQUEST = int(SpanKind.LLM_REQUEST)
+
+logger = logging.getLogger(__name__)
 
 
 def _text_array(values: tuple[str, ...]) -> str:
@@ -169,6 +232,165 @@ _MAX_PAGE_OFFSET = 2**62  # far below the int64 bound of `OFFSET $offset::bigint
 _SUB = sql_subscription_type("s.subscription_type")
 _ORIGIN = sql_project_origin("s.project_origin")
 _CLASS_LISTS = f"array_agg(DISTINCT {_SUB}) AS subscription_types, array_agg(DISTINCT {_ORIGIN}) AS project_origins"
+
+
+def _turns_cte(sessions: str = "sel") -> str:
+    """Turns per session of the CTE `sessions`. The fact CTEs join it rather than filter by `IN (SELECT ...)`: the
+    planner then hashes the window's sessions against the rollup (0.8 s instead of 6.7 s at 600,000 sessions)."""
+    return (
+        "turns_t AS (SELECT t.session_id, sum(t.turns)::bigint AS turns FROM turns_daily t "
+        f"JOIN {sessions} s ON s.session_id = t.session_id GROUP BY t.session_id)"
+    )
+
+
+# A session's turns: observed turns prove activity, not completeness; a 0 is served only when the summary reports it.
+_TURNS_VALUE = f"greatest(nullif(turns_t.turns, 0), {_SUMMARY_TURNS})::bigint"
+_TURNS_FROM = (
+    "sel JOIN session_dims d ON d.session_id = sel.session_id LEFT JOIN turns_t ON turns_t.session_id = sel.session_id"
+)
+
+
+def _tools_cte(sessions: str = "sel") -> str:
+    """Tool calls per session of the CTE `sessions`. A join, not `IN (SELECT ...)`: the planner then hashes the window's
+    sessions against the rollup (1 s instead of 18 s at 600,000 sessions)."""
+    return (
+        "tool_o AS (SELECT i.session_id, sum(i.calls)::bigint AS tool_calls, "
+        "sum(i.success)::bigint AS tool_calls_success "
+        f"FROM invocations_hourly i JOIN {sessions} s ON s.session_id = i.session_id "
+        "WHERE i.kind = 1 AND i.session_id <> '' GROUP BY i.session_id)"
+    )
+
+
+def _files_ctes(sessions: str = "sel") -> str:
+    """Distinct files per session of the CTE `sessions`, counted in two hash steps (not count(DISTINCT)). `file_t`
+    holds the sessions with tool facts: only those report file counts (`file_l` is read through it)."""
+    return f"""file_t AS (
+            SELECT t.session_id, sum(t.tool_calls)::bigint AS tool_calls
+            FROM tool_facts_daily t JOIN {sessions} s ON s.session_id = t.session_id
+            GROUP BY t.session_id
+        ),
+        per_file AS (
+            SELECT f.session_id, f.file_path, bool_or(f.is_written) AS written, bool_or(f.is_edited) AS edited
+            FROM session_files_daily f JOIN {sessions} s ON s.session_id = f.session_id
+            GROUP BY f.session_id, f.file_path
+        ),
+        file_l AS (
+            SELECT session_id,
+                   count(*) FILTER (WHERE written OR edited) AS files_changed,
+                   count(*) FILTER (WHERE written) AS files_written,
+                   count(*) FILTER (WHERE edited)  AS files_edited
+            FROM per_file
+            GROUP BY session_id
+        )"""
+
+
+def _lines_cte(sessions: str = "sel") -> str:
+    return (
+        "lines_s AS (SELECT l.session_id, sum(l.lines_added)::bigint AS lines_added, "
+        "sum(l.lines_removed)::bigint AS lines_removed FROM lines_daily l "
+        f"JOIN {sessions} s ON s.session_id = l.session_id GROUP BY l.session_id)"
+    )
+
+
+# One row per selected session `s` with the non-money facts every grouped read aggregates. A fact the per-session
+# statements leave out for a session (no row) is 0 here, and lines stay NULL (unknown).
+_FILE_JOINS = """LEFT JOIN file_t ON file_t.session_id = s.session_id
+            LEFT JOIN file_l ON file_l.session_id = file_t.session_id"""
+_SESSION_FACTS_FROM = f"""sel s
+            JOIN session_dims d ON d.session_id = s.session_id
+            LEFT JOIN turns_t ON turns_t.session_id = s.session_id
+            {_FILE_JOINS}
+            LEFT JOIN lines_s ON lines_s.session_id = s.session_id"""
+_TOOL_FACTS_FROM = "LEFT JOIN tool_o ON tool_o.session_id = s.session_id"
+_TOOL_FACT_COLUMNS = (
+    "coalesce(tool_o.tool_calls, 0) AS tool_calls, coalesce(tool_o.tool_calls_success, 0) AS tool_calls_success"
+)
+_SESSION_FACT_COLUMNS = f"""s.session_id,
+                   coalesce({_TURNS_VALUE}, 0) AS turns,
+                   coalesce(file_l.files_changed, 0) AS files_changed,
+                   coalesce(file_l.files_written, 0) AS files_written,
+                   coalesce(file_l.files_edited, 0) AS files_edited,
+                   lines_s.lines_added, lines_s.lines_removed,
+                   coalesce(nullif({_SUB}, ''), 'unknown') AS sub,
+                   coalesce(nullif({_ORIGIN}, ''), 'none') AS origin"""
+
+# The columns of the dashboard statements; every part of their UNION ALL fills the ones it uses.
+_TEXT_ARRAY = "text[]"
+_CLIENT_TIMEOUT = "the statement outran the client command timeout"
+_PART_COLUMNS = (
+    ("part", "text"),
+    ("key", "text"),
+    ("n", "bigint"),
+    ("files_changed", "bigint"),
+    ("files_written", "bigint"),
+    ("files_edited", "bigint"),
+    ("lines_added", "bigint"),
+    ("lines_removed", "bigint"),
+    ("turns", "bigint"),
+    ("tool_calls", "bigint"),
+    ("tool_calls_success", "bigint"),
+    ("duration_ms", "bigint"),
+    ("net_lines", "bigint"),
+    ("nonzero", "boolean"),
+    ("subscription_types", _TEXT_ARRAY),
+    ("project_origins", _TEXT_ARRAY),
+    ("ratio", "float8"),
+    ("session_id", "text"),
+    ("session_title", "text"),
+    ("prompt", "text"),
+    ("project_name", "text"),
+    ("repository", "text"),
+    ("branch", "text"),
+    ("funding_route", "text"),
+    ("personal_billed", "boolean"),
+    ("cost_usd", "numeric"),
+    ("cache_read_cost_usd", "numeric"),
+    ("session_count", "bigint"),
+    ("unpriced_models", _TEXT_ARRAY),
+    ("cost_incomplete", "boolean"),
+)
+
+
+def _part(part: str, **values: str) -> str:
+    return ", ".join(
+        f"{repr(part) if name == 'part' else values.get(name, 'NULL')}::{kind} AS {name}"
+        for name, kind in _PART_COLUMNS
+    )
+
+
+# The money of a request's totals: the spend (whole selection, its unpriced models), and the funding-route and
+# personal-billed estimates over every selected session.
+_TOTAL_GROUPINGS = (
+    Grouping("spend", [], "spend"),
+    Grouping("route", ["funding_route"], "all"),
+    Grouping("billed", ["personal_billed"], "all"),
+)
+_GC_KEY_PARTS = {"project": "project_name", "repository": "repository", "branch": "branch"}
+
+
+def _used_keys(groupings: Sequence[Grouping]) -> set[str]:
+    return {key for grouping in groupings for key in grouping.keys}
+
+
+def _gc_part(part: str, groupings: Sequence[Grouping], alias: str = "m") -> str:
+    """The parts-shape select list over the rows `alias` of `grouped_cost_sql(groupings)` (the key is the grouping)."""
+    used = _used_keys(groupings)
+    values = {
+        "key": f'{alias}."grouping"',
+        "cost_usd": f"{alias}.cost_usd",
+        "cache_read_cost_usd": f"{alias}.cache_read_cost_usd",
+        "session_count": f"{alias}.session_count",
+        "unpriced_models": f"{alias}.unpriced_models",
+        "cost_incomplete": f"{alias}.cost_incomplete",
+    }
+    values.update({column: f"{alias}.{key}" for key, column in _GC_KEY_PARTS.items() if key in used})
+    values.update({key: f"{alias}.{key}" for key in ("funding_route", "personal_billed") if key in used})
+    return _part(part, **values)
+
+
+# a session's spend money: what the dead-session predicate reads
+_SESSION_COST = "scost AS (SELECT session_id, sum(cost) AS cost FROM priced_groups WHERE spend GROUP BY session_id)"
+
 
 _STARTED_IN_WINDOW = "started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
 # `day` columns are always written in UTC (see rollups.py's `AT TIME ZONE 'UTC'` casts); a bare
@@ -333,15 +555,38 @@ def _admitted_arms(alias: str, columns: str, scope: str | None = None) -> tuple[
     )
 
 
-def _sel_ctes(arms: tuple[str, ...], where: str = "", star: bool = True, split: bool = False) -> str:
+def _developer_narrowing(f: LocalAnalyticsFilter, repository_search: bool, page_repositories: bool) -> list[str]:
+    """The conditions over `sel`'s developer and repository columns (the form with `with_developer`)."""
+    narrowing = ["developer = ANY($developers::text[])"] if f.developers else []
+    if repository_search:
+        narrowing.append("nullif(repository, '') ILIKE $search::text")
+    if page_repositories:
+        narrowing.append(
+            "(nullif(repository, '') = ANY($page_repositories::text[])"
+            " OR ($page_unattributed::boolean AND nullif(repository, '') IS NULL))"
+        )
+    return narrowing
+
+
+def _sel_ctes(
+    arms: tuple[str, ...],
+    where: str = "",
+    star: bool = True,
+    split: bool = False,
+    developer_where: str | None = None,
+) -> str:
     """The CTE `sel`: the union of the arms (`where` filters the full projection). With `split` it is followed by
     `sel_main` (the started arm: the start_time page walks it in index order and the count reads it index-only) and
     `sel_rest` (the other arms, few rows). The unfiltered start_time page and count read those two directly, because
     the union hides the index order (the planner sorts every row of the started arm) and slows the count threefold;
-    `sel` itself is then not read, so nothing is computed twice."""
+    `sel` itself is then not read, so nothing is computed twice.
+    `developer_where` (a string, possibly empty; star form only, without `split`) adds the `developer` column, the
+    session's `_DEVELOPER` computed once over the rows that passed `where`, and applies that condition to it."""
     main, *others = arms
     union = " UNION ALL ".join(arms)
     body = f"SELECT * FROM ({union}) x{where}" if star else union
+    if developer_where is not None:
+        body = f"SELECT * FROM (SELECT s.*, {_DEVELOPER} AS developer FROM ({body}) s) s{developer_where}"
     ctes = f"""
         sel AS ({body})"""
     if split:
@@ -439,13 +684,15 @@ _TOP_MODEL = (
 )
 
 
-def _cost_rows(where: str) -> str:
+def _cost_rows(where: str, joined: bool = False) -> str:
     """`cost_daily` rows of the selection, each with the calls of its original grain (see _TOP_MODEL) and its
-    session's row email (see _DEVELOPER)."""
-    return (
-        f"(SELECT c.*, {_GRAIN_CALLS}, {_session_email('c')} FROM cost_daily c WHERE {where} "
-        f"WINDOW w AS (PARTITION BY {_GRAIN})) c"
+    session's row email (see _DEVELOPER). `joined` scopes them to `sel` by a join instead of `where`: `sel` has one
+    row per session, so the rows are the same, and at 600K sessions the planner probes every partition's index once
+    per session for `IN (SELECT session_id FROM sel)` and hashes `sel` once for the join."""
+    source = (
+        "cost_daily c JOIN sel x ON x.session_id = c.session_id WHERE true" if joined else f"cost_daily c WHERE {where}"
     )
+    return f"(SELECT c.*, {_GRAIN_CALLS}, {_session_email('c')} FROM {source} WINDOW w AS (PARTITION BY {_GRAIN})) c"
 
 
 _TOTAL_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
@@ -461,15 +708,29 @@ def _tokens(column: str, include_totals: bool) -> str:
     return f"(coalesce({base}, 0) + coalesce(max(t.{column}), 0))::bigint"
 
 
-def _totals_join() -> str:
+def _totals_join(only: str = "", scope: str = "sel") -> str:
     """Subagent totals-only rows of `session_usage` summed to one row per selected session, so the join cannot
-    multiply the cost rows of the outer GROUP BY. Scoped to `sel`, otherwise it would scan all of session_usage."""
+    multiply the cost rows of the outer GROUP BY. Scoped to the CTE `scope` (`sel`, or `live` for the live keys of a
+    stored read), otherwise it would scan all of session_usage; `only` narrows it further (a condition on
+    session_id)."""
     sums = ", ".join(f"sum(coalesce({c}, 0)) AS {c}" for c in _TOTAL_COLUMNS)
     return (
         f"(SELECT session_id, {sums} FROM session_usage "
-        "WHERE attrs->>'token_source' = 'subagent_usage' AND session_id IN (SELECT session_id FROM sel) "
+        f"WHERE attrs->>'token_source' = 'subagent_usage' AND session_id IN (SELECT session_id FROM {scope}){only} "
         "GROUP BY session_id) t"
     )
+
+
+# The cache-read tokens and API calls of the selected sessions, summed from `cost_daily` (one row per session); a
+# stored read sums them for the CTE `live` only (`{scope}` is `sel` or `live`).
+_CTX_TOKENS = (
+    "(SELECT session_id, sum(cache_read_tokens) AS cache_read, sum(api_call_count) AS calls "
+    "FROM cost_daily WHERE session_id IN (SELECT session_id FROM {scope}) GROUP BY session_id) c"
+)
+_CTX_KEY_FROM_TOKENS = (
+    "CASE WHEN coalesce(c.calls, 0) = 0 THEN 0::numeric ELSE "
+    "round((coalesce(c.cache_read, 0) + coalesce(t.cache_read_tokens, 0)) / c.calls, 9) END"
+)
 
 
 def _facts_from(include_costless: bool) -> str:
@@ -511,6 +772,56 @@ def positional(sql: str, params: dict[str, Any]) -> tuple[str, list[Any]]:
     return text, [params[name] for name in names]
 
 
+# The groupings of `get_cost_money`: spend ones sum Personal-paid out; `user` ones keep the `cost_daily` sessions
+# `get_cost_by_user` lists (a subagent-totals-only session is in the total and per model, in no user's figure).
+_COST_GROUPINGS = (
+    Grouping(G_TOTAL, [], "spend"),
+    Grouping(G_USER, ["user"], "spend", cost_daily_only=True),
+    Grouping(G_MODEL, ["model"], "spend"),
+    Grouping(G_ROUTE, ["funding_route"], "all"),
+    Grouping(G_PERSONAL, ["personal_billed"], "all"),
+    Grouping(G_USER_ROUTE, ["user", "funding_route"], "all", cost_daily_only=True),
+    Grouping(G_USER_PERSONAL, ["user", "personal_billed"], "all", cost_daily_only=True),
+    Grouping(G_MODEL_ROUTE, ["model", "funding_route"], "all"),
+    Grouping(G_MODEL_PERSONAL, ["model", "personal_billed"], "all"),
+)
+
+# What the Cost tab reads without the estimate buckets: the spend total, per user and per model.
+_COST_SPEND_GROUPINGS = _COST_GROUPINGS[:3]
+
+# The groupings of `get_users_money_page`: the same names as /cost, but per user over every session of `sel`.
+_USERS_GROUPINGS = (
+    Grouping(G_TOTAL, [], "spend"),
+    Grouping(G_USER, ["user"], "spend"),
+    Grouping(G_ROUTE, ["funding_route"], "all"),
+    Grouping(G_PERSONAL, ["personal_billed"], "all"),
+    Grouping(G_USER_ROUTE, ["user", "funding_route"], "all"),
+    Grouping(G_USER_PERSONAL, ["user", "personal_billed"], "all"),
+)
+
+
+def grouped_money(rows: Rows, groupings: Sequence[Grouping]) -> GroupedMoney:
+    """The `gc` rows (a `grouping` column, the key columns, the money columns) as a `GroupedMoney`: every requested
+    name is present, money is `float`, so a zero reads back as 0.0."""
+    keys = {g.name: g.keys for g in groupings}
+    groups: dict[str, list[CostGroup]] = {g.name: [] for g in groupings}
+    for row in rows:
+        name = row["grouping"]
+        if name is None:  # a ranked developer with no money row (users page): no group
+            continue
+        groups[name].append(
+            CostGroup(
+                keys={key: row[key] for key in keys[name]},
+                cost_usd=float(row["cost_usd"] or 0),
+                cache_read_cost_usd=float(row["cache_read_cost_usd"] or 0),
+                session_count=int(row["session_count"]),
+                unpriced_models=tuple(row["unpriced_models"] or ()),
+                cost_incomplete=bool(row["cost_incomplete"]),
+            )
+        )
+    return GroupedMoney(groups)
+
+
 def normalise(value: Any) -> Any:
     """asyncpg values -> the types the port returns (naive UTC datetime, int, float)."""
     if isinstance(value, datetime) and value.tzinfo is not None:
@@ -518,6 +829,14 @@ def normalise(value: Any) -> Any:
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     return value
+
+
+def _rows(records: Any, exact: bool) -> Rows:
+    """The records as the port's rows; with `exact` a `Decimal` stays one instead of becoming an int or a float."""
+    return [
+        {key: value if exact and isinstance(value, Decimal) else normalise(value) for key, value in record.items()}
+        for record in records
+    ]
 
 
 def truncate_to_ms(dt: datetime) -> datetime:
@@ -533,6 +852,8 @@ def window_params(f: LocalAnalyticsFilter) -> dict[str, Any]:
         "end_dt": end,
     }
     params.update(sql_list_condition(f.scope)[1])
+    if f.developers:  # applied to the `developer` column of `sel` even when `deny_all` empties the other filters
+        params["developers"] = list(f.developers)
     if f.deny_all:
         return params
     if f.users:
@@ -669,8 +990,19 @@ class _ConnectionPair:
 class PostgresCliAnalyticsReader:
     """Read-only PostgreSQL access for the Local Analytics endpoints."""
 
-    def __init__(self, engine: AnalyticsPgEngine) -> None:
+    def __init__(self, engine: AnalyticsPgEngine, s_cap: int = DEFAULT_S_CAP) -> None:
         self._engine = engine
+        self._s_cap = s_cap  # sessions of S beyond which a stored read runs today's statements
+        self._rates_version: Callable[[], str] | None = None
+        # The request's `sel` kept in a TEMP TABLE of the one held connection (see `materialize_sel`): its name and the
+        # key of the filter it was built for. None: every statement builds the `sel` CTE itself.
+        self._sel_temp: tuple[str, tuple[Any, ...], tuple[str, ...] | None] | None = None
+        self._files_temp: str | None = None  # TEMP table of the request's gated changed-file counts (prototype)
+
+    def set_rates(self, current_version: Callable[[], str] | None) -> None:
+        """Keep the current-rates-version callable (the service layer's catalog): the stored cost key of a session
+        is read only while its stamp equals what this returns."""
+        self._rates_version = current_version
 
     @contextlib.asynccontextmanager
     async def bounded(self) -> AsyncIterator[PostgresCliAnalyticsReader]:
@@ -681,7 +1013,14 @@ class PostgresCliAnalyticsReader:
         to the pool when their blocks end, so the caller keeps Python work (pricing, row building) outside the block.
         """
         async with self._engine.acquire() as first:
-            yield PostgresCliAnalyticsReader(_ConnectionPair(self._engine, [first]))
+            scoped = PostgresCliAnalyticsReader(_ConnectionPair(self._engine, [first]), s_cap=self._s_cap)
+            scoped.set_rates(self._rates_version)
+            try:
+                yield scoped
+            finally:
+                # A temp table outlives the pool's reset, so it is dropped before the connection goes back; a
+                # connection that cannot drop it (cancelled or broken) is closed instead of being reused.
+                await scoped._drop_sel(first)  # noqa: SLF001 - the scoped reader is this method's own
 
     @contextlib.asynccontextmanager
     async def widened(self) -> AsyncIterator[PostgresCliAnalyticsReader]:
@@ -690,17 +1029,113 @@ class PostgresCliAnalyticsReader:
         a request that finds the pool nearly exhausted runs the block on the one connection it has. A reader that is
         not bounded is returned as it is."""
         widen = getattr(self._engine, "widen", None)
-        if widen is None:
+        if widen is None or self._sel_temp is not None:  # a temp table is visible to its own connection only
             yield self
             return
         async with widen():
             yield self
 
-    async def _q(self, sql: str, params: dict[str, Any]) -> Rows:
+    @staticmethod
+    def _sel_key(f: LocalAnalyticsFilter) -> tuple[Any, ...]:
+        """What fixes the rows of `sel` apart from the developers filter: the window, the viewer scope and the other
+        filters (their bound values and the scope condition)."""
+        params = {k: v for k, v in window_params(f).items() if k != "developers"}
+        return (sql_list_condition(f.scope)[0], f.deny_all, f.project_unattributed, sorted(params.items(), key=str))
+
+    async def materialize_sel(self, f: LocalAnalyticsFilter, cohort: str | None = None) -> None:
+        """Builds `sel` of `f` once into a TEMP TABLE of the held connection (with the `developer` column and the
+        stored flag columns, ANALYZEd), so every later statement of this request that asks for the same selection
+        reads the table instead of evaluating the admission arms again. A statement whose filter differs from `f`
+        (other ids, other filters) keeps building its own CTE; a developers filter that is a subset of `f`'s is
+        applied to the table. Only on a bounded reader (one connection, so the table is visible to every statement);
+        `bounded()` drops it before the connection goes back to the pool."""
+        if self._sel_temp is not None or not isinstance(self._engine, _ConnectionPair):
+            return
+        name = f"request_sel_{uuid.uuid4().hex}"
+        cte = self._sessions_cte(f, with_developer=True, extra_columns=FLAG_COLUMNS)
+        # The user rollup splits the window's sessions by where they started: `started` keeps those that started in the
+        # window (what a start-day row holds), `before` those admitted because they were active in it.
+        where = {
+            None: "",
+            "started": " WHERE started_at >= $start_dt::timestamptz",
+            "before": " WHERE started_at < $start_dt::timestamptz",
+        }[cohort]
+        text, args = positional(f"CREATE TEMP TABLE {name} AS WITH {cte} SELECT * FROM sel{where}", window_params(f))
+        async with self._engine.acquire() as conn:
+            self._sel_temp = (name, self._sel_key(f), tuple(f.developers) if f.developers else None)
+            try:
+                async with conn.transaction(isolation="repeatable_read"):
+                    await conn.execute(text, *args)
+                await conn.execute(f"ANALYZE {name}")  # noqa: S608 - a name made here from a UUID
+            except TimeoutError as exc:  # the client command timeout, as `_records` reports it
+                raise StatementTimeout(_CLIENT_TIMEOUT) from exc
+
+    async def materialize_files(self, f: LocalAnalyticsFilter) -> None:
+        """The files_changed of the sessions with tool facts (the `file_t` gate), once, in a TEMP table of the held
+        connection; Overview's money and facts read it instead of each building `file_l`. Needs `materialize_sel`."""
+        if self._sel_temp is None or self._files_temp is not None:
+            return
+        name = f"request_files_{uuid.uuid4().hex}"
+        text, args = positional(
+            f"CREATE TEMP TABLE {name} AS WITH {self._sel_cte(f)}, {_files_ctes()} "
+            "SELECT l.session_id, l.files_changed, l.files_written, l.files_edited FROM file_l l "
+            "WHERE l.session_id IN (SELECT session_id FROM file_t)",
+            window_params(f),
+        )
+        async with self._engine.acquire() as conn:
+            self._files_temp = name
+            try:
+                async with conn.transaction(isolation="repeatable_read"):
+                    await conn.execute(text, *args)
+                await conn.execute(f"ANALYZE {name}")  # noqa: S608 - a name made here from a UUID
+            except TimeoutError as exc:  # the client command timeout, as `_records` reports it
+                raise StatementTimeout(_CLIENT_TIMEOUT) from exc
+
+    async def _priced_q(
+        self, f: LocalAnalyticsFilter, sql: str, params: dict[str, Any], *, exact: bool = False
+    ) -> Rows:
+        """`_q` for a statement over `priced_groups_cte()`: reads the stored groups when `_model_groups_mode` allows
+        it (one repeatable-read snapshot with the mode), the live build otherwise."""
+        async with self._engine.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
+            mode = await self._model_groups_mode(conn, f)
+            if mode.stored:
+                live = priced_groups_cte()
+                assert live in sql
+                sql, params = sql.replace(live, priced_groups_cte(stored=True)), {**params, "stale": list(mode.stale)}
+            return await self._fetch(conn, sql, params, exact=exact)
+
+    async def _drop_sel(self, conn: Any) -> None:
+        temp, self._sel_temp = self._sel_temp, None
+        files, self._files_temp = self._files_temp, None
+        names = [name for name in (files, temp and temp[0]) if name]
+        if not names:
+            return
+        try:
+            await conn.execute("DROP TABLE IF EXISTS " + ", ".join(f"pg_temp.{name}" for name in names))
+        except Exception:  # a failed drop must not replace the request's own error (a timeout is a 504)
+            with contextlib.suppress(Exception):
+                conn.terminate()  # the pool then discards it; a reused connection must not carry the table
+            logger.warning("cli_analytics: request temp table not dropped; the connection was closed")
+        except BaseException:  # cancelled while dropping: a failing terminate must not replace the CancelledError
+            with contextlib.suppress(Exception):
+                conn.terminate()
+            raise
+
+    @staticmethod
+    async def _records(conn: Any, text: str, args: list[Any]) -> list[Any]:
+        """The records of a statement; one that outruns the client command timeout is a `StatementTimeout` (a pool or
+        connect timeout never reaches here, so it stays a plain TimeoutError)."""
+        try:
+            return await conn.fetch(text, *args)
+        except TimeoutError as exc:
+            raise StatementTimeout(_CLIENT_TIMEOUT) from exc
+
+    async def _q(self, sql: str, params: dict[str, Any], *, exact: bool = False) -> Rows:
+        """`exact` keeps a `Decimal` as it is instead of the float of `normalise`, for a caller that adds it up."""
         text, args = positional(sql, params)
         async with self._engine.acquire() as conn:
-            records = await conn.fetch(text, *args)
-        return [{key: normalise(value) for key, value in record.items()} for record in records]
+            records = await self._records(conn, text, args)
+        return _rows(records, exact)
 
     # ── shared session selection ─────────────────────────────────────────────
 
@@ -726,6 +1161,59 @@ class PostgresCliAnalyticsReader:
             conditions.append(f"{sql_project_origin('x.project_origin')} = ANY($project_origins::text[])")
         return conditions
 
+    def _sel_cte(
+        self,
+        f: LocalAnalyticsFilter,
+        lean: bool = False,
+        searchable: bool = False,
+        ids_only: bool = False,
+        with_start: bool = False,
+        split_arms: bool = False,
+        with_keys: tuple[str, ...] = (),
+        with_developer: bool = False,
+    ) -> str:
+        """`_sessions_cte`, or, once `materialize_sel` ran for the same selection, the same columns read from the
+        request's temp table. Rows are the same: the table is the full form with the developer column."""
+        temp = self._sel_temp
+        if temp is not None and not split_arms and self._reads_temp(f, temp):
+            if f.developers and not with_developer:
+                raise ValueError("the developers filter needs with_developer=True")
+            if not (ids_only and (f.developers or not set(with_keys) <= set(FLAG_COLUMNS))):
+                return self._temp_sel_cte(temp[0], f, lean, searchable, ids_only, with_start, with_keys, with_developer)
+        return self._sessions_cte(f, lean, searchable, ids_only, with_start, split_arms, with_keys, with_developer)
+
+    def _reads_temp(self, f: LocalAnalyticsFilter, temp: tuple[str, tuple[Any, ...], tuple[str, ...] | None]) -> bool:
+        _, key, developers = temp
+        if self._sel_key(f) != key:
+            return False
+        return developers is None or (f.developers is not None and set(f.developers) <= set(developers))
+
+    @staticmethod
+    def _temp_sel_cte(
+        table: str,
+        f: LocalAnalyticsFilter,
+        lean: bool,
+        searchable: bool,
+        ids_only: bool,
+        with_start: bool,
+        with_keys: tuple[str, ...],
+        with_developer: bool,
+    ) -> str:
+        if ids_only:
+            columns = ["session_id"] + (["started_at"] if with_start else []) + list(with_keys)
+        else:
+            columns = ["session_id", "repository", "branch", "repo_remote", "project_name", "user_email", "started_at"]
+            if not lean:
+                columns += ["last_event_at", "activity_started_at", "ended_at"]
+            if searchable or not lean:
+                columns += ["first_prompt", "session_title"]
+            columns += ["owner_email", "subscription_type", "project_origin", "route_note"]
+            if with_developer:
+                columns.append("developer")
+        where = "\n            WHERE developer = ANY($developers::text[])" if f.developers and not ids_only else ""
+        return f"""
+        sel AS (SELECT {", ".join(columns)} FROM pg_temp.{table}{where})"""
+
     @staticmethod
     def _sessions_cte(
         f: LocalAnalyticsFilter,
@@ -734,6 +1222,11 @@ class PostgresCliAnalyticsReader:
         ids_only: bool = False,
         with_start: bool = False,
         split_arms: bool = False,
+        with_keys: tuple[str, ...] = (),
+        with_developer: bool = False,
+        extra_columns: tuple[str, ...] = (),
+        repository_search: bool = False,
+        page_repositories: bool = False,
     ) -> str:
         """Every session's dimensions (dimensions plus the session's email).
 
@@ -754,7 +1247,15 @@ class PostgresCliAnalyticsReader:
         Callers use it only when `_narrows_window` is false and nothing reads the other columns.
         `with_start` adds `started_at` to the ids-only output (every arm index keys it, so no extra column is read)
         for the statements that order by the start or bound the invocations by it (the framework filter).
+        `with_keys` (ids-only form) adds those stored columns of `session_dims` (the INCLUDE list of
+        `session_dims_fw_win`) that the statement reads, so it does not join `session_dims` again.
+        `with_developer` (full form) adds `developer text`, the session's `_DEVELOPER`, and applies `f.developers` to
+        it; `f.developers` without it raises ValueError. `repository_search` (with `with_developer`) keeps only the
+        sessions whose repository matches `$search` (ILIKE), so the search narrows the universe every statement reads;
+        `page_repositories` keeps those of `$page_repositories` (and, with `$page_unattributed`, those with none).
         """
+        if f.developers and not with_developer:
+            raise ValueError("the developers filter needs with_developer=True")
         searched = """
                        coalesce(d.first_prompt, '') AS first_prompt,
                        coalesce(d.session_title, '') AS session_title,"""
@@ -764,13 +1265,16 @@ class PostgresCliAnalyticsReader:
                        d.ended_at,"""
         if ids_only:
             # The scope is applied under the alias `x` inside the scan, so `sel` outputs the id alone.
-            columns = "x.session_id, x.started_at" if with_start else "x.session_id"
+            # with_keys: stored columns INCLUDEd by `session_dims_fw_win`: the scan stays index-only
+            columns = ("x.session_id, x.started_at" if with_start else "x.session_id") + "".join(
+                f", x.{column}" for column in with_keys
+            )
             return _sel_ctes(_admitted_arms("x", columns, sql_list_condition(f.scope)[0]), star=False)
         wide = ("" if lean else activity) + (searched if searchable or not lean else "")
         # The viewer scope is always the first condition: nothing appended later can displace it.
         conditions = [sql_list_condition(f.scope)[0]]
         conditions.extend(["false"] if f.deny_all else PostgresCliAnalyticsReader._filter_conditions(f))
-        where = ("\n            WHERE " + _AND.join(conditions)) if conditions else ""
+        where = "\n            WHERE " + _AND.join(conditions)  # the viewer scope is always there
         columns = f"""d.session_id,
                        coalesce(nullif(d.repo_remote, ''), nullif(d.repository, ''), '') AS repository,
                        coalesce(d.branch, '')       AS branch,
@@ -781,7 +1285,11 @@ class PostgresCliAnalyticsReader:
                        d.owner_email,
                        d.subscription_type,
                        d.project_origin,
-                       d.route_note"""
+                       d.route_note{"".join(f", d.{column}" for column in extra_columns)}"""
+        if with_developer:
+            narrowing = _developer_narrowing(f, repository_search, page_repositories)
+            by_developer = ("\n            WHERE " + _AND.join(narrowing)) if narrowing else ""
+            return _sel_ctes(_admitted_arms("d", columns), where, developer_where=by_developer)
         return _sel_ctes(_admitted_arms("d", columns), where, split=split_arms)
 
     @staticmethod
@@ -844,7 +1352,7 @@ class PostgresCliAnalyticsReader:
         params = window_params(f)
         if by == "invocation":
             params["builtin_commands"] = list(BUILTIN_COMMAND_NAMES)
-        return await self._q(f"WITH {self._sessions_cte(f)} {sources[by]}", params)
+        return await self._q(f"WITH {self._sel_cte(f)} {sources[by]}", params)
 
     async def get_cost_kpis(self, f: LocalAnalyticsFilter) -> Rows:
         """Every session of `sel` counts toward `total_sessions`, priced or not: the same
@@ -853,10 +1361,14 @@ class PostgresCliAnalyticsReader:
         token sum (NULL rows are ignored by `sum`), never NULL to the row as a whole. `total_cost_usd` is
         the one exception: it stays NULL, not 0, for a window with no `_spend`-eligible row, so "no spend
         data" (NULL) stays distinguishable from "confirmed $0 spend" -- `spend_sessions` and
-        `total_cost_usd` exclude Personal-paid sessions from the aggregate the same way (see `_spend`)."""
+        `total_cost_usd` exclude Personal-paid sessions from the aggregate the same way (see `_spend`).
+
+        The cost rows are read plain and scoped by a join to `sel`: nothing here needs `_cost_rows`'s per-row window
+        columns (grain calls, session email), and its `IN (SELECT session_id FROM sel)` form had the planner probe
+        every partition's index once per session."""
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sel_cte(f)}
         SELECT count(DISTINCT s.session_id)                              AS total_sessions,
                count(DISTINCT s.session_id)
                    FILTER (WHERE c.session_id IS NOT NULL AND {_spend("c")}) AS spend_sessions,
@@ -867,7 +1379,28 @@ class PostgresCliAnalyticsReader:
                coalesce(sum(c.cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens,
                coalesce(sum(c.api_call_count), 0)::bigint        AS total_api_calls
         FROM sel s
-             LEFT JOIN {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")} ON c.session_id = s.session_id""",
+             LEFT JOIN (SELECT c.* FROM cost_daily c JOIN sel x ON x.session_id = c.session_id) c
+                    ON c.session_id = s.session_id""",
+            window_params(f),
+        )
+
+    async def get_dashboard_kpis(self, f: LocalAnalyticsFilter) -> Rows:
+        """`get_cost_kpis` for Overview and Efficiency: the same one row (`total_sessions` over every selected session,
+        priced or not; `spend_sessions`, `total_cost_usd` and the token and call sums over the token rows), read as a
+        direct aggregate of `cost_daily` joined to `sel`. The sums need neither the window columns of `_cost_rows` (the
+        calls of the original grain, the session's row email) nor the left join from `sel` (3 times the cost)."""
+        return await self._q(
+            f"""
+        WITH {self._sel_cte(f)}
+        SELECT (SELECT count(DISTINCT session_id) FROM sel)                   AS total_sessions,
+               count(DISTINCT d.session_id) FILTER (WHERE {_spend("d")})      AS spend_sessions,
+               sum(d.cost_usd) FILTER (WHERE {_spend("d")})                   AS total_cost_usd,
+               coalesce(sum(d.input_tokens), 0)::bigint          AS total_input_tokens,
+               coalesce(sum(d.output_tokens), 0)::bigint         AS total_output_tokens,
+               coalesce(sum(d.cache_read_tokens), 0)::bigint     AS total_cache_read_tokens,
+               coalesce(sum(d.cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens,
+               coalesce(sum(d.api_call_count), 0)::bigint        AS total_api_calls
+        FROM cost_daily d JOIN sel s ON s.session_id = d.session_id""",
             window_params(f),
         )
 
@@ -875,7 +1408,7 @@ class PostgresCliAnalyticsReader:
         model_name = self._normalized_model_name("d.model_name")
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sel_cte(f)}
         SELECT {model_name}                                   AS model_name,
                count(DISTINCT d.session_id)                   AS session_count,
                sum(d.cost_usd) FILTER (WHERE {_spend("d")}) AS cost_usd,
@@ -896,7 +1429,7 @@ class PostgresCliAnalyticsReader:
         `spend_only` leaves out Personal-paid sessions: aggregate spend is company/project-paid only, while a
         single session keeps its own cost."""
         return await self._q(
-            f"WITH {self._sessions_cte(f)} SELECT g.* FROM {model_token_groups(spend_only)}",
+            f"WITH {self._sel_cte(f)} SELECT g.* FROM {model_token_groups(spend_only)}",
             window_params(f),
         )
 
@@ -905,11 +1438,20 @@ class PostgresCliAnalyticsReader:
         input of `CatalogPricer.record_unpriced_from_flags` and the model list the cost sort resolves rates for."""
         # The flags read only the window's session ids: an unfiltered window is an Index Only Scan of the cover index.
         ids_only = f.session_ids is None and not self._narrows_window(f)
-        rows = await self._q(
-            f"WITH {self._sessions_cte(f, lean=True, ids_only=ids_only)} "
-            f"SELECT * FROM {model_flags_sql()} ORDER BY model_name {_C}",
-            window_params(f),
-        )
+        params = window_params(f)
+        async with self._engine.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
+            # The kind masks do not depend on the rates: every stamped session is fresh, S is the unstamped ones.
+            mode = await self._stored_mode(conn, f, "model_flags")
+            # Stored: the masks ride in the index-only scan of `sel`, `session_dims` is not joined.
+            keys = FLAG_COLUMNS if (mode.stored and ids_only) else ()
+            sel = self._sel_cte(f, lean=True, ids_only=ids_only, with_keys=keys)
+            if mode.stored:
+                params["stale"] = list(mode.stale)
+                merged = merged_kind_flags_sql(model_flags_sql(live=True), keyed=bool(keys))
+                sql = f"WITH {sel},{LIVE_CTE} SELECT * FROM {merged} ORDER BY model_name {_C}"
+            else:
+                sql = f"WITH {sel} SELECT * FROM {model_flags_sql()} ORDER BY model_name {_C}"
+            rows = await self._fetch(conn, sql, params)
         return [(r["model_name"], tuple(bool(r[f"used_{c}"]) for c in _RATE_COLUMNS)) for r in rows]
 
     async def get_session_funding_costs(self, f: LocalAnalyticsFilter) -> Rows:
@@ -919,7 +1461,7 @@ class PostgresCliAnalyticsReader:
         model_name = self._normalized_model_name("c.model_name")
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sel_cte(f)}
         SELECT c.session_id,
                c.model_name                                 AS model_name,
                {model_name}                                 AS normalized_model_name,
@@ -938,38 +1480,207 @@ class PostgresCliAnalyticsReader:
             window_params(f),
         )
 
-    async def get_cost_by_user(self, f: LocalAnalyticsFilter) -> Rows:
+    async def get_cost_money(
+        self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates], buckets: bool = True
+    ) -> GroupedMoney:
+        """The money of the /cost page from one pricing pass over the window: the spend total, per user (the sessions
+        with a `cost_daily` row only, as `get_cost_by_user` lists them) and per model, plus (with `buckets`) the
+        funding-route and Personal-billed estimate buckets of the window, per user (`cost_daily` sessions) and per
+        model. Without them the six bucket groupings are not built."""
+        groupings = _COST_GROUPINGS if buckets else _COST_SPEND_GROUPINGS
+        rows = await self._money_rows(
+            f,
+            rates,
+            lambda priced: f"WITH {self._sel_cte(f, with_developer=True)}, {priced} "
+            f"SELECT gc.* FROM {grouped_cost_sql(groupings)}",
+        )
+        return grouped_money(rows, groupings)
+
+    async def _money_rows(self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates], statement: Any) -> Rows:
+        """Runs a money statement over `priced_groups` on one connection, in one repeatable-read transaction: the
+        stored model groups are read when `_model_groups_mode` allows it (`statement` gets the CTE text, `live` and
+        `priced_groups` with `$stale` bound to S) and the statement then runs in the snapshot S was read in;
+        otherwise the all-live CTE."""
+        params = {**window_params(f), **rates_params(rates)}
+        async with self._engine.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
+            mode = await self._model_groups_mode(conn, f)
+            if mode.stored:
+                params["stale"] = list(mode.stale)
+            return await self._fetch(conn, statement(priced_groups_cte(stored=mode.stored)), params)
+
+    async def _model_groups_mode(self, conn: Any, f: LocalAnalyticsFilter) -> ModelGroupsMode:
+        """`model_groups_mode` for a request: any error reading the switch or S (in a savepoint, so the request's
+        transaction stays usable) is a rate-limited WARNING and the all-live form."""
+        try:
+            async with conn.transaction():
+                return await model_groups_mode(conn, f.session_ids, self._s_cap)
+        except Exception as exc:
+            FALLBACK_WARNINGS.warn_groups(GROUPS_READ_ERROR, f" not read: {exc!r}")
+            return ModelGroupsMode(False, GROUPS_READ_ERROR)
+
+    async def get_users_money_page(
+        self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates], limit: int | None, offset: int
+    ) -> UsersMoneyPage:
+        """The ranking and the money of the Users page in one statement. The ranking is the distinct developers of
+        `sel` (every session counts, priced or not) LEFT JOIN their spend, ordered by the cost rounded to 9 places and
+        then by name in code-point order; LIMIT/OFFSET apply to it. The window groupings are returned whole, the
+        per-user ones only for the page's developers. `total_count` is the distinct developers of `sel`, a column
+        outside LIMIT/OFFSET, so a page beyond the end still reports it."""
+        groupings = _USERS_GROUPINGS
+        page = f"LIMIT {int(limit)} OFFSET {int(offset)}" if limit is not None else ""
+        rows = await self._money_rows(
+            f,
+            rates,
+            lambda priced: f"""
+        WITH {self._sel_cte(f, with_developer=True)}, {priced},
+        money AS MATERIALIZED (SELECT gc.* FROM {grouped_cost_sql(groupings)}),
+        ranked AS (
+            SELECT d.developer,
+                   row_number() OVER (ORDER BY round(coalesce(u.cost_usd, 0), 9) DESC, d.developer {_C}) AS pos
+            FROM (SELECT DISTINCT developer FROM sel) d
+                 LEFT JOIN money u ON u."grouping" = '{G_USER}' AND u."user" = d.developer
+            ORDER BY pos
+            {page}
+        )
+        SELECT (SELECT count(DISTINCT developer) FROM sel) AS total_count, x.*
+        FROM (SELECT 1) one LEFT JOIN (
+            SELECT r.developer AS page_developer, r.pos, m.*
+            FROM ranked r FULL JOIN money m ON m."user" = r.developer
+            WHERE r.developer IS NOT NULL OR m."user" IS NULL
+        ) x ON true""",
+        )
+        ranked = sorted({(r["pos"], r["page_developer"]) for r in rows if r["page_developer"] is not None})
+        total = max((int(r["total_count"]) for r in rows if r["total_count"] is not None), default=0)
+        return UsersMoneyPage([name for _, name in ranked], total, grouped_money(rows, groupings))
+
+    async def rollup_users(
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+    ) -> RollupUsers | None:
+        """See the port. Never raises for a missing table: a read that fails answers None, so the live path runs."""
+        from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports this one
+
+        version = self._rates_version() if self._rates_version is not None else None
+        try:
+            return await user_rollup.serve(self, f, rate_of, version, max_age_s=max_age_s)
+        except asyncpg.QueryCanceledError:
+            raise  # as a StatementTimeout or a pool timeout: the live statements would only be slower still
+        except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+            logger.warning(f"cli_analytics: user rollup not read, the live statements run instead: {exc!r}")
+            return None
+
+    async def rollup_overview(
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+    ) -> RollupOverview | None:
+        """See the port. Never raises for a missing table: a read that fails answers None, so the live path runs."""
+        from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports this one
+
+        version = self._rates_version() if self._rates_version is not None else None
+        try:
+            return await user_rollup.serve_overview(self, f, rate_of, version, max_age_s=max_age_s)
+        except asyncpg.QueryCanceledError:
+            raise  # as a StatementTimeout or a pool timeout: the live statements would only be slower still
+        except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+            logger.warning(f"cli_analytics: user rollup not read, the live statements run instead: {exc!r}")
+            return None
+
+    async def rollup_cost(
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+    ) -> RollupCost | None:
+        """See the port. Never raises for a missing table: a read that fails answers None, so the live path runs."""
+        from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports this one
+
+        version = self._rates_version() if self._rates_version is not None else None
+        try:
+            return await user_rollup.serve_cost(self, f, rate_of, version, max_age_s=max_age_s)
+        except asyncpg.QueryCanceledError:
+            raise  # as a StatementTimeout or a pool timeout: the live statements would only be slower still
+        except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+            logger.warning(f"cli_analytics: user rollup not read, the live statements run instead: {exc!r}")
+            return None
+
+    async def get_developer_session_facts(self, f: LocalAnalyticsFilter) -> Rows:
+        """Turns, tool calls, tool successes and the mean session duration per developer, over every session of `sel`
+        (`f.developers` keeps all of a developer's sessions, so a fallback-email session is counted). Same figures as
+        `get_turns_by_session`, `get_tool_success_by_session` and `get_session_durations`, summed per developer: a
+        missing value is 0, a session with an unknown duration (NULL) is left out of the mean, a real 0 is kept."""
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
-        SELECT {_DEVELOPER} AS developer_name, array_agg(DISTINCT c.session_id) AS session_ids,
-               {_CLASS_LISTS}
-        FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")} JOIN sel s ON s.session_id = c.session_id
-        GROUP BY 1
-        ORDER BY ({_DEVELOPER}) {_C}""",
+        WITH {self._sel_cte(f, with_developer=True)},{self._activity_cte()},
+        t AS (
+            SELECT x.session_id, sum(x.turns)::bigint AS turns
+            FROM turns_daily x JOIN sel ON sel.session_id = x.session_id
+            GROUP BY x.session_id
+        ),
+        o AS (
+            SELECT x.session_id, sum(x.calls)::bigint AS tool_calls, sum(x.success)::bigint AS tool_calls_success
+            FROM invocations_hourly x JOIN sel ON sel.session_id = x.session_id
+            WHERE x.kind = 1 AND x.session_id <> ''
+            GROUP BY x.session_id
+        )
+        SELECT s.developer,
+               coalesce(sum(greatest(nullif(t.turns, 0), {_SUMMARY_TURNS})), 0)::bigint AS turns,
+               coalesce(sum(o.tool_calls), 0)::bigint                                  AS tool_calls,
+               coalesce(sum(o.tool_calls_success), 0)::bigint                          AS tool_successes,
+               trunc(avg(act.duration_ms))::bigint                                     AS avg_session_duration_ms,
+               count(act.duration_ms)::bigint                                          AS duration_sessions
+        FROM sel s
+             JOIN session_dims d ON d.session_id = s.session_id
+             LEFT JOIN t ON t.session_id = s.session_id
+             LEFT JOIN o ON o.session_id = s.session_id
+             LEFT JOIN act ON act.session_id = s.session_id
+        GROUP BY s.developer""",
+            window_params(f),
+        )
+
+    async def get_avg_session_duration_ms(self, f: LocalAnalyticsFilter) -> int | None:
+        """The mean session duration over every session of `sel`, truncated to whole milliseconds like
+        `int(sum / len)`. A session with an unknown duration (NULL) is left out, a real 0 is kept; None when no
+        session has a known duration. Window-wide: the Users page reports it whatever page it shows."""
+        rows = await self._q(
+            f"""
+        WITH {self._sel_cte(f)},{self._activity_cte()}
+        SELECT trunc(avg(duration_ms))::bigint AS avg_session_duration_ms
+        FROM act""",
+            window_params(f),
+        )
+        value = rows[0]["avg_session_duration_ms"] if rows else None
+        return None if value is None else int(value)
+
+    async def get_cost_by_user(self, f: LocalAnalyticsFilter, with_classes: bool = True) -> Rows:
+        """Per developer of the sessions with at least one `cost_daily` row: the class lists (unless not `with_classes`,
+        then the names only). One row per session is grouped by `sel`'s `developer` (the session's `_DEVELOPER`, read
+        from the request's temp table), instead of evaluating `_DEVELOPER`'s subqueries and the window columns of
+        `_cost_rows` once per cost row."""
+        classes = f",\n               {_CLASS_LISTS}" if with_classes else ""
+        return await self._q(
+            f"""
+        WITH {self._sel_cte(f, with_developer=True)}
+        SELECT s.developer AS developer_name{classes}
+        FROM sel s
+        WHERE s.session_id IN (SELECT c.session_id FROM cost_daily c JOIN sel x ON x.session_id = c.session_id)
+        GROUP BY s.developer
+        ORDER BY s.developer {_C}""",
             window_params(f),
         )
 
     async def get_users(self, f: LocalAnalyticsFilter) -> Rows:
-        """Every session of `sel` counts toward a developer's `session_count`/`session_ids`, priced or not,
-        matching the Sessions list's costless-inclusive universe."""
+        """Every session of `sel` counts toward a developer's `session_count`, priced or not, matching the Sessions
+        list's costless-inclusive universe. No session ids, no money and no ordering: the page's money and ranking
+        come from `get_users_money_page`."""
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
-        SELECT {_DEVELOPER}                             AS developer_name,
+        WITH {self._sel_cte(f, with_developer=True)}
+        SELECT s.developer                              AS developer_name,
                count(DISTINCT s.session_id)             AS session_count,
                coalesce(sum(c.input_tokens), 0)::bigint              AS input_tokens,
                coalesce(sum(c.output_tokens), 0)::bigint             AS output_tokens,
                coalesce(sum(c.cache_read_tokens), 0)::bigint         AS cache_read_tokens,
                coalesce(sum(c.cache_creation_tokens), 0)::bigint     AS cache_creation_tokens,
-               sum(c.cost_usd) FILTER (WHERE {_spend("c")}) AS cost_usd,
                {_TOP_MODEL}                             AS top_model,
-               array_agg(DISTINCT s.session_id)         AS session_ids,
                {_CLASS_LISTS}
-        FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")}
+        FROM {_cost_rows("", joined=True)}
              RIGHT JOIN sel s ON s.session_id = c.session_id
-        GROUP BY 1
-        ORDER BY cost_usd DESC NULLS LAST, ({_DEVELOPER}) {_C}""",
+        GROUP BY 1""",
             window_params(f),
         )
 
@@ -978,18 +1689,17 @@ class PostgresCliAnalyticsReader:
         the day bucket comes from any of the five activity tables, not just `cost_daily`, so a costless
         session still appears on the day it was active."""
         days = " UNION ".join(
-            f"SELECT session_id, day FROM {t} WHERE session_id IN (SELECT session_id FROM sel)"
-            for t in _ACTIVITY_TABLES
+            f"SELECT x.session_id, x.day FROM {t} x JOIN sel ON sel.session_id = x.session_id" for t in _ACTIVITY_TABLES
         )
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
-        SELECT {_DEVELOPER} AS developer_name, act.day AS day, count(DISTINCT act.session_id) AS session_count,
+        WITH {self._sel_cte(f, with_developer=True)}
+        SELECT s.developer AS developer_name, act.day AS day, count(DISTINCT act.session_id) AS session_count,
                {_CLASS_LISTS}
         FROM ({days}) act
              JOIN sel s ON s.session_id = act.session_id
         GROUP BY 1, 2
-        ORDER BY ({_DEVELOPER}) {_C}, act.day""",
+        ORDER BY s.developer {_C}, act.day""",
             window_params(f),
         )
 
@@ -1002,16 +1712,21 @@ class PostgresCliAnalyticsReader:
         params = window_params(f)
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)},
+        WITH {self._sel_cte(f, with_developer=True)},
+        e AS (
+            -- one primary-key lookup per session: a join let the planner hash every row of session_dims
+            SELECT s.developer, s.session_id,
+                   (SELECT d.last_event_at FROM session_dims d WHERE d.session_id = s.session_id) AS last_event_at
+            FROM sel s
+        ),
         w AS (
-            SELECT {_DEVELOPER}
-                       AS developer_name,
-                   CASE WHEN d.last_event_at <= $end_dt::timestamptz THEN d.last_event_at
+            SELECT e.developer AS developer_name,
+                   CASE WHEN e.last_event_at <= $end_dt::timestamptz THEN e.last_event_at
                         ELSE (SELECT max(h.ts) FROM hook_events h
-                              WHERE h.session_id = s.session_id AND h.event_type = ANY({_ACTIVITY_HOOKS})
+                              WHERE h.session_id = e.session_id AND h.event_type = ANY({_ACTIVITY_HOOKS})
                                 AND h.{_TS})
                    END AS last_in_window
-            FROM sel s JOIN session_dims d ON d.session_id = s.session_id
+            FROM e
         )
         SELECT developer_name, max(last_in_window) AS last_active
         FROM w
@@ -1026,7 +1741,7 @@ class PostgresCliAnalyticsReader:
         """Summed lines of the selected sessions; NULL sums when none of them has a lines_daily row (unknown)."""
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sel_cte(f)}
         SELECT sum(lines_added)::bigint AS lines_added, sum(lines_removed)::bigint AS lines_removed
         FROM lines_daily
         WHERE true{self._scope(f)}""",
@@ -1037,7 +1752,7 @@ class PostgresCliAnalyticsReader:
         """Net lines per day with a lines_daily row; `nonzero` tells whether any row of the day reports lines."""
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sel_cte(f)}
         SELECT day, (sum(lines_added) - sum(lines_removed))::bigint AS net_lines,
                bool_or({_LINES_NONZERO}) AS nonzero
         FROM lines_daily
@@ -1048,15 +1763,18 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_lines_by_user(self, f: LocalAnalyticsFilter) -> Rows:
-        """Net lines per developer; a developer without any lines_daily row has no row."""
+        """Net lines per developer; a developer without any lines_daily row has no row. With `f.developers` the rows
+        are restricted on the very value that names the developer here (`_session_developer`)."""
+        developer = _session_developer("l.session_email")
+        only = f"\n        WHERE {developer} = ANY($developers::text[])" if f.developers else ""
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
-        SELECT {_session_developer("l.session_email")} AS developer_name,
+        WITH {self._sel_cte(f, with_developer=bool(f.developers))}
+        SELECT {developer} AS developer_name,
                (sum(l.lines_added) - sum(l.lines_removed))::bigint AS net_lines
         FROM (SELECT l.*, {_session_email("l", reporting_lines_only=True)} FROM lines_daily l
-              WHERE l.session_id IN (SELECT session_id FROM sel)) l
-             JOIN sel s ON s.session_id = l.session_id
+              JOIN sel x ON x.session_id = l.session_id) l
+             JOIN sel s ON s.session_id = l.session_id{only}
         GROUP BY 1""",
             window_params(f),
         )
@@ -1067,7 +1785,7 @@ class PostgresCliAnalyticsReader:
         session with no row at all is absent (unknown)."""
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sel_cte(f)}
         SELECT session_id, sum(lines_added)::bigint AS lines_added, sum(lines_removed)::bigint AS lines_removed
         FROM lines_daily
         WHERE true{self._scope(f)}
@@ -1080,18 +1798,13 @@ class PostgresCliAnalyticsReader:
     async def get_turns_by_session(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)},
-        t AS (
-            SELECT session_id, sum(turns)::bigint AS turns
-            FROM turns_daily
-            WHERE true{self._scope(f)}
-            GROUP BY session_id
-        )
+        WITH {self._sel_cte(f)},
+        {_turns_cte()}
         SELECT sel.session_id,
                -- observed turns prove activity, not completeness: a 0 is served only when the summary reports it
-               greatest(nullif(t.turns, 0), {_SUMMARY_TURNS})::bigint AS turns,
+               {_TURNS_VALUE} AS turns,
                {_SUMMARY_STATE} AS summary_state, {_SUMMARY_METRICS} AS summary_metrics
-        FROM sel JOIN session_dims d ON d.session_id = sel.session_id LEFT JOIN t ON t.session_id = sel.session_id""",
+        FROM {_TURNS_FROM}""",
             window_params(f),
         )
 
@@ -1099,59 +1812,36 @@ class PostgresCliAnalyticsReader:
         """Distinct files across the session's days, counted in two hash steps (not count(DISTINCT))."""
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)},
-        t AS (
-            SELECT session_id, sum(tool_calls)::bigint AS tool_calls
-            FROM tool_facts_daily
-            WHERE true{self._scope(f)}
-            GROUP BY session_id
-        ),
-        per_file AS (
-            SELECT session_id, file_path, bool_or(is_written) AS written, bool_or(is_edited) AS edited
-            FROM session_files_daily
-            WHERE true{self._scope(f)}
-            GROUP BY session_id, file_path
-        ),
-        fl AS (
-            SELECT session_id,
-                   count(*) FILTER (WHERE written OR edited) AS files_changed,
-                   count(*) FILTER (WHERE written) AS files_written,
-                   count(*) FILTER (WHERE edited)  AS files_edited
-            FROM per_file
-            GROUP BY session_id
-        )
-        SELECT t.session_id,
-               coalesce(fl.files_changed, 0) AS files_changed,
-               coalesce(fl.files_written, 0) AS files_written,
-               coalesce(fl.files_edited, 0)  AS files_edited,
-               t.tool_calls
-        FROM t LEFT JOIN fl ON fl.session_id = t.session_id""",
+        WITH {self._sel_cte(f)},
+        {_files_ctes()}
+        SELECT file_t.session_id,
+               coalesce(file_l.files_changed, 0) AS files_changed,
+               coalesce(file_l.files_written, 0) AS files_written,
+               coalesce(file_l.files_edited, 0)  AS files_edited,
+               file_t.tool_calls
+        FROM file_t LEFT JOIN file_l ON file_l.session_id = file_t.session_id""",
             window_params(f),
         )
 
     async def get_tool_success_by_session(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)},
-        o AS (
-            SELECT session_id, sum(calls)::bigint AS tool_calls, sum(success)::bigint AS tool_calls_success
-            FROM invocations_hourly
-            WHERE kind = 1 AND session_id <> ''{self._scope(f)}
-            GROUP BY session_id
-        )
-        SELECT sel.session_id, coalesce(o.tool_calls, 0)::bigint AS tool_calls,
-               coalesce(o.tool_calls_success, 0)::bigint AS tool_calls_success,
+        WITH {self._sel_cte(f)},
+        {_tools_cte()}
+        SELECT sel.session_id, coalesce(tool_o.tool_calls, 0)::bigint AS tool_calls,
+               coalesce(tool_o.tool_calls_success, 0)::bigint AS tool_calls_success,
                CASE WHEN {_SUMMARY_TOOL_CALLS} IS NOT NULL
-                    THEN greatest(coalesce(o.tool_calls, 0), {_SUMMARY_TOOL_CALLS}) END::bigint AS tool_calls_total
-        FROM sel JOIN session_dims d ON d.session_id = sel.session_id LEFT JOIN o ON o.session_id = sel.session_id
-        WHERE o.session_id IS NOT NULL OR {_SUMMARY_TOOL_CALLS} IS NOT NULL""",
+                    THEN greatest(coalesce(tool_o.tool_calls, 0), {_SUMMARY_TOOL_CALLS}) END::bigint AS tool_calls_total
+        FROM sel JOIN session_dims d ON d.session_id = sel.session_id
+             LEFT JOIN tool_o ON tool_o.session_id = sel.session_id
+        WHERE tool_o.session_id IS NOT NULL OR {_SUMMARY_TOOL_CALLS} IS NOT NULL""",
             window_params(f),
         )
 
     async def get_tool_usage(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sel_cte(f)}
         SELECT name AS tool_name, sum(calls)::bigint AS call_count, sum(success)::bigint AS success_count
         FROM invocations_hourly
         WHERE kind = 1{self._scope(f)}
@@ -1169,7 +1859,7 @@ class PostgresCliAnalyticsReader:
         params["builtin_commands"] = list(BUILTIN_COMMAND_NAMES)
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sel_cte(f)}
         SELECT CASE kind WHEN 2 THEN 'skill' WHEN 3 THEN 'agent' ELSE 'command' END AS kind,
                name,
                sum(c)::bigint AS count
@@ -1214,16 +1904,379 @@ class PostgresCliAnalyticsReader:
     async def get_session_durations(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)},{self._activity_cte()}
+        WITH {self._sel_cte(f)},{self._activity_cte()}
         SELECT session_id, duration_ms
         FROM act""",
+            window_params(f),
+        )
+
+    async def get_overview_facts(self, f: LocalAnalyticsFilter) -> Rows:
+        """The Overview's non-money totals over the selected sessions, as one row of `part` `facts`: `turns`,
+        `tool_calls`, `tool_calls_success`, `duration_ms` and `files_changed`, each the sum of the per-session
+        statement it replaces. A window with no session sums to 0."""
+        files = "" if self._files_temp else f",\n        {_files_ctes()}"
+        files_changed = (
+            f"(SELECT coalesce(sum(files_changed), 0) FROM pg_temp.{self._files_temp})"
+            if self._files_temp
+            else "(SELECT coalesce(sum(files_changed), 0) FROM file_l "
+            "WHERE session_id IN (SELECT session_id FROM file_t))"
+        )
+        return await self._q(
+            f"""
+        WITH {self._sel_cte(f)},{self._activity_cte()},
+        {_turns_cte()},
+        {_tools_cte()}{files}
+        SELECT {_part(
+            "facts",
+            turns=f"(SELECT coalesce(sum({_TURNS_VALUE}), 0) FROM {_TURNS_FROM})",
+            tool_calls="(SELECT coalesce(sum(tool_calls), 0) FROM tool_o)",
+            tool_calls_success="(SELECT coalesce(sum(tool_calls_success), 0) FROM tool_o)",
+            duration_ms="(SELECT coalesce(sum(duration_ms), 0) FROM act)",
+            files_changed=files_changed)}""",
+            window_params(f),
+        )
+
+    async def get_overview_models(self, f: LocalAnalyticsFilter) -> Rows:
+        """The Overview's models in one read of the token rows, as rows of `part` `model`: the normalised model
+        (`key`, never blank), the sessions that used it (`n`), their spend from `cost_daily` (`cost_usd`, the tie-break
+        of the order, an exact `Decimal`: the user rollup stores and adds it) and the sorted-distinct class lists of
+        those sessions. In the order of `get_model_breakdown` (sessions, then spend, then name) and over the same
+        sessions; the classes are
+        those of `get_class_lists(f, "model")`. The token rows join `sel` rather than filter by `IN`. The session
+        classes and the personal-billed test are computed once per session, and the normalisation once per distinct
+        raw name (`names`, materialised: otherwise the planner evaluates it for every token row). The raw names are
+        those of the selected sessions' rows (`tok`, the one read of `cost_daily`), not of the whole table."""
+        name = self._normalized_model_name("x.raw")
+        return await self._q(
+            f"""
+        WITH {self._sel_cte(f)},
+        tok AS MATERIALIZED (
+            SELECT c.session_id, c.model_name AS raw, sum(c.cost_usd) AS cost_usd,
+                   {_SUB} AS sub, {_ORIGIN} AS origin, coalesce({sql_personal_billed("s")}, false) AS billed
+            FROM cost_daily c JOIN sel s ON s.session_id = c.session_id
+            GROUP BY c.session_id, c.model_name, s.subscription_type, s.project_origin
+        ),
+        names AS MATERIALIZED (SELECT raw, {name} AS nm FROM (SELECT DISTINCT raw FROM tok) x)
+        SELECT {_part(
+            "model", key="n.nm", n="count(DISTINCT d.session_id)", subscription_types="array_agg(DISTINCT d.sub)",
+            project_origins="array_agg(DISTINCT d.origin)", cost_usd="sum(d.cost_usd) FILTER (WHERE NOT d.billed)")}
+        FROM tok d JOIN names n ON n.raw = d.raw
+        WHERE n.nm <> ''
+        GROUP BY n.nm
+        ORDER BY count(DISTINCT d.session_id) DESC, sum(d.cost_usd) FILTER (WHERE NOT d.billed) DESC, n.nm {_C}""",
+            window_params(f),
+            exact=True,
+        )
+
+    async def get_overview_lines(self, f: LocalAnalyticsFilter) -> Rows:
+        """The Overview's lines in one read of `lines_daily`, as rows of `part`: `total` (`lines_added`, `lines_removed`
+        summed over the selected sessions; NULL while none has a row, as `get_lines_totals`) and one `day` per day with
+        a row (`key` the day, `net_lines`, its `lines_added` and `lines_removed`, `nonzero` whether a row of the day
+        reports lines, and the class lists of the sessions whose rows do, as `get_lines_daily` and
+        `get_class_lists(f, "day")`). Unordered."""
+        return await self._q(
+            f"""
+        WITH {self._sel_cte(f)},
+        per_day AS (
+            SELECT l.day, sum(l.lines_added) AS added, sum(l.lines_removed) AS removed,
+                   bool_or({_LINES_NONZERO}) AS nonzero,
+                   array_agg(DISTINCT {_SUB}) FILTER (WHERE {_LINES_NONZERO}) AS subs,
+                   array_agg(DISTINCT {_ORIGIN}) FILTER (WHERE {_LINES_NONZERO}) AS origins
+            FROM lines_daily l JOIN sel s ON s.session_id = l.session_id
+            GROUP BY l.day
+        )
+        SELECT {_part("total", lines_added="sum(added)", lines_removed="sum(removed)")} FROM per_day
+        UNION ALL
+        SELECT {_part(
+            "day", key="day::text", net_lines="added - removed", nonzero="nonzero", subscription_types="subs",
+            project_origins="origins", lines_added="added", lines_removed="removed")} FROM per_day""",
+            window_params(f),
+        )
+
+    async def _dashboard_money(
+        self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates], classes: bool, exact: bool = False
+    ) -> Rows:
+        """The money of the selected sessions, priced once at `rates` by `priced_groups_cte`, as rows of `part`: `money`
+        (`spend`, `route`, `billed`: the rows of `grouped_cost_sql`, `key` is the grouping) and `dead` (`n` sessions
+        that cost money and changed no file, `cost_usd` their money, and with `classes` their class lists)."""
+        class_lists = (
+            {
+                "subscription_types": f"array_agg(DISTINCT coalesce(nullif({_SUB}, ''), 'unknown'))",
+                "project_origins": f"array_agg(DISTINCT coalesce(nullif({_ORIGIN}, ''), 'none'))",
+            }
+            if classes
+            else {}
+        )
+        changed = (
+            f"changed AS MATERIALIZED (SELECT session_id FROM pg_temp.{self._files_temp} WHERE files_changed > 0)"
+            if self._files_temp
+            else f"""{_files_ctes()},
+        changed AS MATERIALIZED (
+            SELECT session_id FROM file_l WHERE files_changed > 0 AND session_id IN (SELECT session_id FROM file_t)
+        )"""
+        )
+        return await self._priced_q(
+            f,
+            f"""
+        WITH {self._sel_cte(f, with_developer=True)},
+        {changed},
+        {priced_groups_cte()},
+        {_SESSION_COST}
+        SELECT {_gc_part("money", _TOTAL_GROUPINGS, "gc")} FROM {grouped_cost_sql(_TOTAL_GROUPINGS)}
+        UNION ALL
+        SELECT {_part("dead", n="count(*)", cost_usd="sum(c.cost)", **class_lists)}
+        FROM scost c JOIN sel s ON s.session_id = c.session_id
+        LEFT JOIN changed ch ON ch.session_id = c.session_id
+        WHERE c.cost > 0 AND ch.session_id IS NULL""",
+            {**window_params(f), **rates_params(rates)},
+            exact=exact,
+        )
+
+    async def get_overview_money(
+        self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates] = (), *, exact: bool = False
+    ) -> Rows:
+        """The Overview's money, see `_dashboard_money`. `exact` keeps the money as `Decimal` rather than the float of
+        `normalise`: the user rollup stores and adds it over days."""
+        return await self._dashboard_money(f, rates, classes=False, exact=exact)
+
+    async def get_efficiency_money(self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates] = ()) -> Rows:
+        """The Efficiency's money and dead sessions, see `_dashboard_money`."""
+        return await self._dashboard_money(f, rates, classes=True)
+
+    async def get_repository_ranking(
+        self,
+        f: LocalAnalyticsFilter,
+        include_branches: bool = False,
+        search: str | None = None,
+        rates: Sequence[ModelRates] = (),
+        page: int = 0,
+        per_page: int | None = None,
+    ) -> Rows:
+        """The Repositories groups of the sessions that `search` keeps (ILIKE on the repository, applied to the
+        selection before anything is priced or paged), priced, ranked and paged, as rows of `part`:
+
+        - `group`: a repository (project_name is its most frequent project, ties to the alphabetically first) or, with
+          `include_branches`, a (project, repository, branch). Empty names are NULL. `n` is its session count and
+          `cost_usd` its spend; `key` is the rank by session count, then spend, then name. Without `include_branches`
+          only the page is returned (`page` of `per_page`; every group when `per_page` is None).
+        - `count`: `n` groups before paging.
+        - `total`: `spend`, `route` and `billed` over the whole selection (before paging), as in Overview.
+        - `bucket`: `b_route` / `b_billed` rows, the funding and personal-billed estimates of the returned groups,
+          by repository (with `include_branches`: by project and repository, the level the branches roll up to).
+
+        The counts of the groups (turns, files, lines, tool calls, classes) are `get_repository_facts`."""
+        params = {**window_params(f), **rates_params(rates)}
+        if search:
+            params["search"] = f"%{search.strip().lower()}%"
+        if include_branches:
+            group_keys, bucket_keys = ["project", "repository", "branch"], ["project", "repository"]
+            groups = """SELECT nullif(project_name, '') AS project_name, nullif(repository, '') AS repository,
+                   nullif(branch, '') AS branch, count(*) AS session_count FROM sel GROUP BY 1, 2, 3"""
+            money_key = (
+                "m.project = coalesce(g.project_name, '') AND m.repository = coalesce(g.repository, '')"
+                " AND m.branch = coalesce(g.branch, '')"
+            )
+            paging = ""
+        else:
+            group_keys = bucket_keys = ["repository"]
+            groups = """SELECT top_project.project AS project_name, g.*
+            FROM (SELECT nullif(repository, '') AS repository, NULL::text AS branch, count(*) AS session_count
+                  FROM sel GROUP BY 1) g
+                 LEFT JOIN top_project ON top_project.repository IS NOT DISTINCT FROM g.repository"""
+            money_key = "m.repository = coalesce(g.repository, '')"
+            paging = ""
+            if per_page is not None:
+                paging = "WHERE rn > $offset::bigint AND rn <= $offset::bigint + $limit::bigint"
+                params["offset"], params["limit"] = page * per_page, per_page
+        groupings = [*_TOTAL_GROUPINGS, Grouping("g_spend", group_keys, "spend")]
+        if include_branches:  # the branches roll up to (project, repository): their estimates come with the groups
+            groupings += [
+                Grouping("b_route", [*bucket_keys, "funding_route"], "all"),
+                Grouping("b_billed", [*bucket_keys, "personal_billed"], "all"),
+            ]
+        return await self._priced_q(
+            f,
+            f"""
+        WITH {self._sessions_cte(f, with_developer=True, repository_search=bool(search))},
+        {priced_groups_cte()},
+        project_counts AS (
+            SELECT nullif(repository, '') AS repository, nullif(project_name, '') AS project, count(*) AS n
+            FROM sel WHERE nullif(project_name, '') IS NOT NULL GROUP BY 1, 2
+        ),
+        top_project AS (
+            SELECT DISTINCT ON (repository) repository, project FROM project_counts
+            ORDER BY repository, n DESC, project {_C}
+        ),
+        grp AS ({groups}),
+        money AS (SELECT * FROM {grouped_cost_sql(groupings)}),
+        ranked AS (
+            SELECT g.*, coalesce(m.cost_usd, 0) AS cost,
+                   row_number() OVER (ORDER BY g.session_count DESC, coalesce(m.cost_usd, 0) DESC,
+                                      coalesce(g.repository, '') {_C}, coalesce(g.project_name, '') {_C}) AS rn
+            FROM grp g LEFT JOIN money m ON m."grouping" = 'g_spend' AND {money_key}
+        ),
+        page AS (SELECT * FROM ranked {paging})
+        SELECT {_part(
+            "group", key="rn::text", n="session_count", project_name="project_name", repository="repository",
+            branch="branch", cost_usd="cost")} FROM page
+        UNION ALL
+        SELECT {_part("count", n="count(*)")} FROM grp
+        UNION ALL
+        SELECT {_gc_part("total", groupings)} FROM money m WHERE m."grouping" IN ('spend', 'route', 'billed')
+        UNION ALL
+        SELECT {_gc_part("bucket", groupings)} FROM money m WHERE m."grouping" IN ('b_route', 'b_billed')""",
+            params,
+        )
+
+    async def get_repository_buckets(
+        self,
+        f: LocalAnalyticsFilter,
+        search: str | None = None,
+        rates: Sequence[ModelRates] = (),
+        repositories: Sequence[str] = (),
+        unattributed: bool = False,
+    ) -> Rows:
+        """The funding-route and personal-billed estimates of the repositories named (`unattributed`: also the sessions
+        with none), priced from their sessions only, as rows of `part` `bucket` (`b_route` / `b_billed`, by
+        repository). `get_repository_ranking` returns the page; this prices the page, not the whole selection."""
+        groupings = [
+            Grouping("b_route", ["repository", "funding_route"], "all"),
+            Grouping("b_billed", ["repository", "personal_billed"], "all"),
+        ]
+        params = {**window_params(f), **rates_params(rates)}
+        params["page_repositories"], params["page_unattributed"] = list(repositories), unattributed
+        if search:
+            params["search"] = f"%{search.strip().lower()}%"
+        sel = self._sessions_cte(f, with_developer=True, repository_search=bool(search), page_repositories=True)
+        return await self._priced_q(
+            f,
+            f"""
+        WITH {sel},
+        {priced_groups_cte()}
+        SELECT {_gc_part("bucket", groupings, "gc")} FROM {grouped_cost_sql(groupings)}""",
+            params,
+        )
+
+    async def get_repository_facts(
+        self,
+        f: LocalAnalyticsFilter,
+        include_branches: bool = False,
+        search: str | None = None,
+        repositories: Sequence[str] = (),
+        unattributed: bool = False,
+    ) -> Rows:
+        """The non-money facts of the Repositories groups, as rows of `part` `group` (same groups and names as
+        `get_repository_ranking`): `n` sessions, `turns`, `files_changed`, `lines_added` / `lines_removed` (NULL while
+        no session reports lines), `tool_calls`, `tool_calls_success` and the sorted-distinct class lists. Without
+        `include_branches` only the sessions of the repositories named (`unattributed`: also those with none) are read,
+        so a page costs a page; with it every group is read."""
+        params = window_params(f)
+        if search:
+            params["search"] = f"%{search.strip().lower()}%"
+        name = "sel"
+        narrow = ""
+        if not include_branches:
+            name = "selp"
+            params["page_repositories"], params["page_unattributed"] = list(repositories), unattributed
+            narrow = """,
+        selp AS (SELECT * FROM sel WHERE nullif(repository, '') = ANY($page_repositories::text[])
+                 OR ($page_unattributed::boolean AND nullif(repository, '') IS NULL))"""
+        keys = "project, repository, branch" if include_branches else "repository"
+        project, branch = ("project", "branch") if include_branches else ("NULL", "NULL")
+        return await self._q(
+            f"""
+        WITH {self._sessions_cte(f, with_developer=True, repository_search=bool(search))}{narrow},
+        {_turns_cte(name)},
+        {_tools_cte(name)},
+        {_files_ctes(name)},
+        {_lines_cte(name)},
+        ps AS (
+            SELECT nullif(s.repository, '') AS repository, nullif(s.branch, '') AS branch,
+                   nullif(s.project_name, '') AS project, {_SESSION_FACT_COLUMNS}, {_TOOL_FACT_COLUMNS}
+            FROM {_SESSION_FACTS_FROM.replace("sel s", f"{name} s", 1)}
+            {_TOOL_FACTS_FROM}
+        )
+        SELECT {_part(
+            "group", n="count(*)", turns="sum(turns)", files_changed="sum(files_changed)",
+            lines_added="sum(lines_added)", lines_removed="sum(lines_removed)", tool_calls="sum(tool_calls)",
+            tool_calls_success="sum(tool_calls_success)", subscription_types="array_agg(DISTINCT sub)",
+            project_origins="array_agg(DISTINCT origin)", project_name=project,
+            repository="repository", branch=branch)}
+        FROM ps GROUP BY {keys}""",
+            params,
+        )
+
+    async def get_efficiency_facts(self, f: LocalAnalyticsFilter) -> Rows:
+        """The Efficiency's non-money facts over the selected sessions, as rows of `part`: `worst` (the session with the
+        most cache-read tokens per API call, ties to the lowest id, with the columns of its prompt, read for that one
+        session only, so `sel` carries no prompt or title), `depth` (one row
+        per session-depth bucket in use, as `key`, with its `n` and class lists), `all` (the class lists of every
+        selected session) and `code` (the file and line sums and the class lists of the sessions that changed a file
+        or a line). Reads the request's file-count table when `materialize_files` built one."""
+        files, facts_from = f"{_files_ctes()},\n        ", _SESSION_FACTS_FROM
+        if self._files_temp:
+            files = ""
+            facts_from = facts_from.replace(
+                _FILE_JOINS, f"LEFT JOIN pg_temp.{self._files_temp} file_l ON file_l.session_id = s.session_id"
+            )
+        return await self._q(
+            f"""
+        WITH {self._sel_cte(f, lean=True)},
+        {_turns_cte()},
+        {files}{_lines_cte()},
+        facts AS (
+            SELECT {_SESSION_FACT_COLUMNS}, coalesce(lines_s.lines_added <> 0 OR lines_s.lines_removed <> 0, false)
+                   AS lines_changed
+            FROM {facts_from}
+        ),
+        ps AS (
+            SELECT facts.*,
+                   CASE WHEN turns <= 1 THEN '1' WHEN turns <= 5 THEN '2-5' WHEN turns <= 10 THEN '6-10'
+                        WHEN turns <= 25 THEN '11-25' WHEN turns <= 50 THEN '26-50' ELSE '50+' END AS depth
+            FROM facts
+        ),
+        calls AS (
+            SELECT d.session_id, sum(d.cache_read_tokens) AS cache_read, sum(d.api_call_count)::bigint AS calls
+            FROM cost_daily d JOIN sel s ON s.session_id = d.session_id GROUP BY d.session_id
+        ),
+        pick AS (
+            SELECT s.session_id, s.repository, s.branch,
+                   (coalesce(calls.cache_read, 0) + coalesce(t.cache_read_tokens, 0))::float8 / calls.calls AS ratio
+            FROM sel s JOIN calls ON calls.session_id = s.session_id
+                 LEFT JOIN {_totals_join()} ON t.session_id = s.session_id
+            WHERE calls.calls > 0
+            ORDER BY ratio DESC, s.session_id {_C}
+            LIMIT 1
+        ),
+        worst AS (
+            SELECT p.session_id, coalesce(d.session_title, '') AS session_title,
+                   coalesce(d.first_prompt, '') AS first_prompt, p.repository, p.branch, p.ratio
+            FROM pick p LEFT JOIN session_dims d ON d.session_id = p.session_id
+        )
+        SELECT {_part(
+            "worst", ratio="ratio", session_id="session_id", session_title="session_title", prompt="first_prompt",
+            repository="repository", branch="branch")} FROM worst
+        UNION ALL
+        SELECT {_part(
+            "depth", key="depth", n="count(*)", subscription_types="array_agg(DISTINCT sub)",
+            project_origins="array_agg(DISTINCT origin)")} FROM ps GROUP BY depth
+        UNION ALL
+        SELECT {_part(
+            "all", n="count(*)", subscription_types="array_agg(DISTINCT sub)",
+            project_origins="array_agg(DISTINCT origin)")} FROM ps
+        UNION ALL
+        SELECT {_part(
+            "code", n="count(*)", files_changed="sum(files_changed)", files_written="sum(files_written)",
+            files_edited="sum(files_edited)", lines_added="sum(lines_added)", lines_removed="sum(lines_removed)",
+            subscription_types="array_agg(DISTINCT sub) FILTER (WHERE files_changed > 0 OR lines_changed)",
+            project_origins="array_agg(DISTINCT origin) FILTER (WHERE files_changed > 0 OR lines_changed)")} FROM ps""",
             window_params(f),
         )
 
     async def get_active_ms_by_session(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sel_cte(f)}
         SELECT session_id, (sum(active_ms_user) + sum(active_ms_cli))::bigint AS active_ms
         FROM active_time_daily
         WHERE true{self._scope(f)}
@@ -1253,7 +2306,7 @@ class PostgresCliAnalyticsReader:
         group_col = session_col = "s.session_id" if include_costless else "c.session_id"
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)},{self._activity_cte()}
+        WITH {self._sel_cte(f)},{self._activity_cte()}
         SELECT {session_col} AS session_id,
                {_DEVELOPER}                                 AS developer_name,
                max(s.repository)                            AS repository,
@@ -1281,24 +2334,107 @@ class PostgresCliAnalyticsReader:
 
     @staticmethod
     def _sort_clause(
-        sort_by: str, rates: Sequence[ModelRates] | None, with_groups: bool, params: dict[str, Any]
+        sort_by: str,
+        rates: Sequence[ModelRates] | None,
+        with_groups: bool,
+        params: dict[str, Any],
+        stored: bool = False,
+        keyed: bool = False,
     ) -> tuple[str, str]:
-        """The joins of `filtered` and the SQL of its sort key; the cost key adds its rates to `params`."""
+        """The joins of `filtered` and the SQL of its sort key; the cost key adds its rates to `params`. `stored`
+        (ctx_per_call, and cost_usd over the groups of `live`) reads the stored key of `session_dims` and today's key
+        for the sessions of `live`. `keyed` (ctx_per_call): `sel` already carries the stored inputs of the key, so
+        `session_dims` is not joined again."""
         if sort_by == "start_time":
             return "", "s.started_at"
+        # A stored read computes today's key for the sessions of `live` alone (the CTE `live_keys`, a handful of rows);
+        # `filtered` only joins that small CTE to `sel`, so nothing groups the token rows against the whole window.
+        stored_joins = """JOIN session_dims sd ON sd.session_id = s.session_id
+             LEFT JOIN live_keys lk ON lk.session_id = s.session_id
+             """
+        if keyed:
+            stored_joins = """LEFT JOIN live_keys lk ON lk.session_id = s.session_id
+             """
+        stored_cost = stored_cost_key("s" if keyed else "sd")
         if sort_by == "cost_usd":
             params.update(rates_params(rates or []))
+            if stored:
+                return stored_joins, f"CASE WHEN lk.session_id IS NULL THEN {stored_cost} ELSE lk.live_key END"
             key = cost_key_from_groups_sql() if with_groups else session_cost_key_sql()
             return f"LEFT JOIN {key} ON k.session_id = s.session_id", "coalesce(k.cost_key, 0::numeric)"
-        joins = f"""LEFT JOIN (SELECT session_id, sum(cache_read_tokens) AS cache_read, sum(api_call_count) AS calls
-                       FROM cost_daily WHERE session_id IN (SELECT session_id FROM sel) GROUP BY session_id) c
-                  ON c.session_id = s.session_id
+        if stored:
+            stored_key = stored_ctx_key("s") if keyed else STORED_CTX_KEY
+            return stored_joins, f"CASE WHEN lk.session_id IS NULL THEN {stored_key} ELSE lk.live_key END"
+        joins = f"""LEFT JOIN {_CTX_TOKENS.replace("{scope}", "sel")} ON c.session_id = s.session_id
              LEFT JOIN {_totals_join()} ON t.session_id = s.session_id"""
-        sort_key = (
-            "CASE WHEN coalesce(c.calls, 0) = 0 THEN 0::numeric ELSE "
-            "round((coalesce(c.cache_read, 0) + coalesce(t.cache_read_tokens, 0)) / c.calls, 9) END"
-        )
-        return joins, sort_key
+        return joins, _CTX_KEY_FROM_TOKENS
+
+    @staticmethod
+    def _live_keys_cte(cost: bool, with_groups: bool) -> str:
+        """The CTE `live_keys(session_id, live_key)` of a stored read: today's sort key of the sessions of `live`, from
+        their own token rows (ctx_per_call) or from the cost groups of `live` (cost_usd)."""
+        if cost:
+            return f"""live_keys AS (
+            SELECT l.session_id, coalesce(k.cost_key, 0::numeric) AS live_key
+            FROM live l LEFT JOIN {cost_key_from_groups_sql()} ON k.session_id = l.session_id
+        )"""
+        return f"""live_keys AS (
+            SELECT l.session_id, {_CTX_KEY_FROM_TOKENS} AS live_key
+            FROM live l
+                 LEFT JOIN {_CTX_TOKENS.replace("{scope}", "live")} ON c.session_id = l.session_id
+                 LEFT JOIN {_totals_join(scope="live")} ON t.session_id = l.session_id
+        )"""
+
+    @staticmethod
+    def _window_conditions(search: str | None, is_unattributed: bool, params: dict[str, Any]) -> list[str]:
+        """The conditions of `filtered` on `sel` (`true` first, so they can always be joined by AND): the search over
+        the searchable columns and the unattributed filter. Binds `$search` in `params`."""
+        conditions = ["true"]
+        if search:
+            conditions.append(
+                "(" + " OR ".join(f"s.{c} ILIKE $search::text ESCAPE '\\'" for c in _SEARCH_COLUMNS) + ")"
+            )
+            params["search"] = "%" + _escape_like(search.strip().lower()) + "%"
+        if is_unattributed:
+            conditions.append("s.repository = ''")
+        return conditions
+
+    @staticmethod
+    def _live_and_group_ctes(cost: bool, stored: bool, with_groups: bool, conditions: list[str]) -> str:
+        """The CTEs after `sel`: `live` of a stored read and the cost groups. The ctx page reads only its own key, so
+        only the sessions its search keeps are computed live; the cost page also derives the kind flags of the whole
+        window from `live`, which then covers all of it (S was counted so)."""
+        live_only = "true" if cost else _AND.join(conditions)
+        groups = f",{live_cte(live_only)}" if stored else ""
+        if with_groups and cost:
+            groups += f",\n        {cost_groups_cte(live=stored)}"
+        if stored:
+            groups += f",\n        {PostgresCliAnalyticsReader._live_keys_cte(cost, with_groups)}"
+        return groups
+
+    def _sel_form(
+        self,
+        f: LocalAnalyticsFilter,
+        sort_by: str,
+        search: str | None,
+        is_unattributed: bool,
+        stored: bool,
+        with_groups: bool,
+        framework: bool,
+    ) -> tuple[bool, tuple[str, ...]]:
+        """How `sel` is read: `(ids_only, keys)`. The ctx key reads only session ids from `sel`, and so does the stored
+        cost page (its key and flags come from the stored columns or from `live`): the unfiltered shared list can
+        scan them index-only. Then `keys` are the stored columns the statement reads, which ride in that same scan
+        (the INCLUDE list of `session_dims_fw_win`), so `session_dims` is not joined again. A search, the
+        unattributed filter, a session-id filter or a narrowed window need the full projection and the join."""
+        narrowed = bool(search or is_unattributed or f.session_ids is not None or self._narrows_window(f))
+        cost_stored = sort_by == "cost_usd" and stored and with_groups
+        ids_only = (sort_by == "ctx_per_call" or framework or cost_stored) and not narrowed
+        if not (ids_only and stored):
+            return ids_only, ()
+        if sort_by == "ctx_per_call":
+            return ids_only, CTX_KEY_COLUMNS
+        return ids_only, COST_KEY_COLUMNS if cost_stored else ()
 
     def _ordered_window(
         self,
@@ -1310,34 +2446,36 @@ class PostgresCliAnalyticsReader:
         with_groups: bool = False,
         framework: bool = False,
         split_arms: bool = False,
+        stored: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """The one order builder of the session list: the CTEs `sel` and `filtered(session_id, sort_key)` (the
         sessions of `sel` that pass `search` and `is_unattributed`, with the key of `sort_by`) and their parameters.
         Callers order by `sort_key DESC, session_id COLLATE "C"`. `start_time` is the stored start, `cost_usd` the
         rounded SQL cost key priced with `rates`, `ctx_per_call` the cache-read tokens (totals-only subagent rows
         included) per API call, 0 without calls. `framework` (the statements of the framework filter) reads `sel` as
-        the ids and the start alone, like `ctx_per_call`, whatever the sort."""
+        the ids and the start alone, like `ctx_per_call`, whatever the sort. `stored` (ctx_per_call, and cost_usd with
+        `with_groups`) adds the CTE `live` (`$stale` binds S, `$rates_version` the current version for the cost key)
+        and reads the stored key of every other session; the cost groups are then built for `live` only."""
         if sort_by not in SESSION_PAGE_SORTS:
             raise ValueError(f"cannot order sessions by {sort_by!r}; sorts: {SESSION_PAGE_SORTS}")
         if sort_by == "cost_usd" and rates is None:
             raise ValueError("sorting by cost_usd needs the rates of the window models")
         params = window_params(f)
-        conditions = ["true"]
-        if search:
-            conditions.append(
-                "(" + " OR ".join(f"s.{c} ILIKE $search::text ESCAPE '\\'" for c in _SEARCH_COLUMNS) + ")"
-            )
-            params["search"] = "%" + _escape_like(search.strip().lower()) + "%"
-        if is_unattributed:
-            conditions.append("s.repository = ''")
-        joins, sort_key = self._sort_clause(sort_by, rates, with_groups, params)
-        groups = f",\n        {cost_groups_cte()}" if with_groups and sort_by == "cost_usd" else ""
-        # The ctx_per_call key reads only session ids from `sel`; the unfiltered shared list can scan them index-only.
-        ids_only = (sort_by == "ctx_per_call" or framework) and not (
-            search or is_unattributed or f.session_ids is not None or self._narrows_window(f)
-        )
-        sel = self._sessions_cte(
-            f, lean=True, searchable=bool(search), ids_only=ids_only, with_start=framework, split_arms=split_arms
+        conditions = self._window_conditions(search, is_unattributed, params)
+        cost = sort_by == "cost_usd"
+        stored = stored and (sort_by == "ctx_per_call" or (cost and with_groups))
+        ids_only, keys = self._sel_form(f, sort_by, search, is_unattributed, stored, with_groups, framework)
+        keyed = bool(keys)
+        joins, sort_key = self._sort_clause(sort_by, rates, with_groups, params, stored, keyed)
+        groups = self._live_and_group_ctes(cost, stored, with_groups, conditions)
+        sel = self._sel_cte(
+            f,
+            lean=True,
+            searchable=bool(search),
+            ids_only=ids_only,
+            with_start=framework,
+            split_arms=split_arms,
+            with_keys=keys,
         )
         ctes = f"""{sel}{groups},
         filtered AS (
@@ -1364,6 +2502,8 @@ class PostgresCliAnalyticsReader:
         (`_ordered_window`; `cost_usd` needs `rates`). `total` counts every such session, not the page."""
         if search and "\x00" in search:
             return 0, []  # PostgreSQL text cannot hold a NUL, so no session matches; the driver would reject it
+        if sort_by == "ctx_per_call":
+            return await self._ctx_page(f, page, per_page, search, is_unattributed)
         indexed = sort_by == "start_time" and not (search or is_unattributed or self._narrows_window(f))
         ctes, params = self._ordered_window(f, sort_by, rates, search, is_unattributed, split_arms=indexed)
         params["limit"] = per_page
@@ -1372,20 +2512,73 @@ class PostgresCliAnalyticsReader:
             if not indexed:
                 return await self._searched_start_time_page(ctes, params, page * per_page > 0)
             return await self._start_time_page(ctes, params)
-        rows = await self._q(
-            f"""
-        WITH {ctes},
-        page AS (
-            SELECT session_id, sort_key FROM filtered
-            ORDER BY sort_key DESC, session_id {_C}
-            LIMIT $limit::bigint OFFSET $offset::bigint
-        )
-        SELECT (SELECT count(*) FROM filtered)::bigint AS total,
-               coalesce((SELECT array_agg(session_id ORDER BY sort_key DESC, session_id {_C}) FROM page),
-                        ARRAY[]::text[]) AS session_ids""",
-            params,
-        )
+        rows = await self._q(ordered_page_sql(ctes), params)
         return int(rows[0]["total"]), list(rows[0]["session_ids"])
+
+    async def _ctx_page(
+        self, f: LocalAnalyticsFilter, page: int, per_page: int, search: str | None, is_unattributed: bool
+    ) -> tuple[int, list[str]]:
+        """The ctx_per_call page, on one connection: the stored keys of the fresh sessions merged with today's key of
+        the sessions of S, or (`_stored_mode` says why) today's statement over the whole window."""
+        async with self._engine.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
+            mode = await self._stored_mode(conn, f)
+            ctes, params = self._ordered_window(f, "ctx_per_call", None, search, is_unattributed, stored=mode.stored)
+            if mode.stored:
+                params["stale"] = list(mode.stale)
+            params["limit"] = per_page
+            params["offset"] = min(page * per_page, _MAX_PAGE_OFFSET)
+            rows = await self._fetch(conn, ordered_page_sql(ctes), params)
+        return int(rows[0]["total"]), list(rows[0]["session_ids"])
+
+    async def _stored_mode(
+        self,
+        conn: Any,
+        f: LocalAnalyticsFilter,
+        sort_by: str = "ctx_per_call",
+    ) -> StoredMode:
+        """Whether this request reads the stored values of `sort_by` (ctx_per_call, cost_usd or model_flags, the kind
+        masks): the scope is expressible, the cost key has a current rates version, the control row (read once) says
+        on, and S (`_stale_ids`) has at most `s_cap` sessions. Each fallback and each merge of a non-empty S logs a
+        rate-limited WARNING with the reason and |S|."""
+        if not expressible(f.scope):
+            return StoredMode(False, UNEXPRESSIBLE)
+        version = None
+        if sort_by == "cost_usd":
+            version = self._rates_version() if self._rates_version is not None else None
+            if not version:
+                FALLBACK_WARNINGS.warn(NO_RATES_VERSION, " not read", sort_by)
+                return StoredMode(False, NO_RATES_VERSION)
+        enabled = await self._fetch(conn, SORT_KEYS_ENABLED_SQL, {})
+        if not (enabled and enabled[0].get("enabled")):
+            FALLBACK_WARNINGS.warn(DISABLED, " not read", sort_by)
+            return StoredMode(False, DISABLED)
+        stale = await self._stale_ids(conn, f, version)
+        if len(stale) > self._s_cap:
+            FALLBACK_WARNINGS.warn(S_OVER_CAP, f">{self._s_cap}", sort_by)
+            return StoredMode(False, S_OVER_CAP)
+        if stale:
+            FALLBACK_WARNINGS.warn(S_MERGED, f"={len(stale)}", sort_by)
+        return StoredMode(True, None, tuple(stale), version)
+
+    async def _stale_ids(self, conn: Any, f: LocalAnalyticsFilter, version: str | None) -> list[str]:
+        """S: the sessions without a stamp or, with the cost key's `version`, without a stamp of that version, at most
+        `s_cap + 1` of them (one more than the cap tells the request to fall back).
+
+        They are read from `session_dims_rates_version` alone (a few ids, none when every session is stamped), not from
+        the window: the page statement keeps only the members of S that are in its own `sel` (`live_cte`), so S may
+        hold sessions outside the window or the viewer's scope. More than `s_cap` of them in the whole table fall back
+        whatever the window holds."""
+        params: dict[str, Any] = {"s_limit": self._s_cap + 1}
+        if version is not None:
+            params["rates_version"] = version
+        candidates_sql = UNSTAMPED_CTX_SQL if version is None else UNSTAMPED_COST_SQL
+        candidates = [r["session_id"] for r in await self._fetch(conn, candidates_sql, params)]
+        if len(candidates) > self._s_cap:
+            return candidates
+        if f.session_ids is not None:
+            asked = set(f.session_ids)
+            candidates = [c for c in candidates if c in asked]
+        return candidates
 
     @staticmethod
     def _narrows_window(f: LocalAnalyticsFilter) -> bool:
@@ -1397,6 +2590,7 @@ class PostgresCliAnalyticsReader:
         return bool(
             f.deny_all
             or f.users
+            or f.developers
             or f.projects
             or f.project_unattributed
             or f.repositories
@@ -1442,13 +2636,34 @@ class PostgresCliAnalyticsReader:
         """The distinct raw model names that token rows (`cost_daily`, and the subagent totals of `session_usage`)
         carry in the filtered window and viewer scope: the models whose catalog rates the cost sort resolves before
         it reads the window. Scoped by `sel` like every other window statement, so a model used only by sessions
-        outside the window or the viewer's scope never reaches rate resolution."""
+        outside the window or the viewer's scope never reaches rate resolution.
+
+        With the stored columns on (the unfiltered shared list), the models of every stamped session are its stored
+        `models_used`, read in the index-only scan of `sel` (a handful of distinct arrays); only the unstamped
+        sessions (set S) are read from the token rows."""
         ids_only = f.session_ids is None and not self._narrows_window(f)
+        params = window_params(f)
+        if ids_only and expressible(f.scope):
+            async with self._engine.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
+                enabled = await self._fetch(conn, SORT_KEYS_ENABLED_SQL, {})
+                if enabled and enabled[0].get("enabled"):
+                    stale = await self._stale_ids(conn, f, None)
+                    if len(stale) <= self._s_cap:
+                        sel = self._sel_cte(f, lean=True, ids_only=True, with_keys=("models_used",))
+                        params["stale"] = list(stale)
+                        rows = await self._fetch(conn, stored_cost_models_sql(sel), params)
+                        return [r["model_name"] for r in rows]
         rows = await self._q(
-            f"WITH {self._sessions_cte(f, lean=True, ids_only=ids_only)} "
-            f"SELECT c.model_name FROM {_token_rows(*_SEL_SESSIONS)} "
-            f'WHERE c.model_name IS NOT NULL GROUP BY c.model_name ORDER BY c.model_name COLLATE "C"',
-            window_params(f),
+            f"WITH {self._sel_cte(f, lean=True, ids_only=ids_only)} "
+            # Each token source is joined to `sel`, never `IN (SELECT ... FROM sel)`: the planner turns that into one
+            # index probe per session and partition (14M probes on a million sessions, ~40 s); the join hashes `sel`.
+            f"SELECT m.model_name FROM ("
+            f"SELECT c.model_name FROM cost_daily c JOIN sel ON sel.session_id = c.session_id "
+            f"WHERE c.model_name IS NOT NULL "
+            f"UNION ALL SELECT coalesce(u.model, '') FROM session_usage u JOIN sel ON sel.session_id = u.session_id "
+            f"WHERE u.attrs->>'token_source' = 'subagent_usage') m "
+            f'GROUP BY m.model_name ORDER BY m.model_name COLLATE "C"',
+            params,
         )
         return [r["model_name"] for r in rows]
 
@@ -1463,16 +2678,24 @@ class PostgresCliAnalyticsReader:
     ) -> tuple[int, list[str], list[tuple[str, tuple[bool, ...]]]]:
         """`get_session_page` for the cost sort plus the kind flags of the whole filtered window, from one build of
         the (session, model) token groups: `(total, session_ids, model_flags)`. The flags are `get_window_model_flags`'
-        input of `CatalogPricer.record_unpriced_from_flags` and are not narrowed by `search` / `is_unattributed`."""
+        input of `CatalogPricer.record_unpriced_from_flags` and are not narrowed by `search` / `is_unattributed`.
+
+        On one connection: when `_stored_mode` allows it, the stored key and kind masks of every session stamped with
+        the current rates version are read, and the groups, key and flags of S (and of any session without such a
+        stamp) are computed by today's statement; otherwise today's statement runs over the whole window."""
         if search and "\x00" in search:
             return 0, [], await self.get_window_model_flags(f)
-        ctes, params = self._ordered_window(f, "cost_usd", rates, search, is_unattributed, with_groups=True)
-        params["limit"] = per_page
-        params["offset"] = min(page * per_page, _MAX_PAGE_OFFSET)
-        rows = await self._q(
-            cost_page_sql(ctes),
-            params,
-        )
+        async with self._engine.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
+            mode = await self._stored_mode(conn, f, "cost_usd")
+            ctes, params = self._ordered_window(
+                f, "cost_usd", rates, search, is_unattributed, with_groups=True, stored=mode.stored
+            )
+            if mode.stored:
+                params["stale"] = list(mode.stale)
+            params["limit"] = per_page
+            params["offset"] = min(page * per_page, _MAX_PAGE_OFFSET)
+            keyed = bool(self._sel_form(f, "cost_usd", search, is_unattributed, mode.stored, True, False)[1])
+            rows = await self._fetch(conn, cost_page_sql(ctes, stored=mode.stored, keyed=keyed), params)
         row = rows[0]
         flags = json.loads(row["flags"]) if isinstance(row["flags"], str) else row["flags"]
         return (
@@ -1539,6 +2762,70 @@ class PostgresCliAnalyticsReader:
         the groups of its key). `matching` must be fast and synchronous: it runs while the connection is held."""
         if search and "\x00" in search:
             return 0, [], await self.get_window_model_flags(f)
+        cost = sort_by == "cost_usd"
+        # One snapshot for S and the page, as in the ctx and cost pages (see `live_cte`).
+        async with self._engine.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
+            mode = await self._stored_mode(conn, f, "cost_usd" if cost else "ctx_per_call")
+            if mode.stored:
+                total, ids = await self._stored_framework_page(
+                    conn, mode, f, sort_by, page, per_page, matching, rates, search, is_unattributed
+                )
+        if mode.stored:
+            return total, ids, await self.get_window_model_flags(f)
+        return await self._framework_page(f, sort_by, page, per_page, matching, rates, search, is_unattributed)
+
+    async def _stored_framework_page(
+        self,
+        conn: Any,
+        mode: StoredMode,
+        f: LocalAnalyticsFilter,
+        sort_by: str,
+        page: int,
+        per_page: int,
+        matching: Callable[[list[list[str]]], list[list[str]]],
+        rates: Sequence[ModelRates] | None,
+        search: str | None,
+        is_unattributed: bool,
+    ) -> tuple[int, list[str]]:
+        """The framework page from the stored classifier names: the fresh sessions' names are read from
+        `session_dims`, those of S are built set-wise, the distinct name sets and their counts (the groups) go to
+        `matching` (Python, the customer's rule), `total` is the sum of the accepted groups' counts and the page is
+        cut from the sessions of the accepted sets in the order of the sort key (stored for ctx_per_call and
+        cost_usd, with the live key for S). The stored `delivery_framework` is never read. `conn` is inside the
+        caller's repeatable-read transaction, the one `_stored_mode` read S in."""
+        names_ctes, params = self._ordered_window(f, "start_time", None, search, is_unattributed, framework=True)
+        params["stale"] = list(mode.stale)
+        groups = await self._fetch(conn, framework_stored_groups_sql(names_ctes), params)
+        accepted = {tuple(names) for names in matching([list(g["names"]) for g in groups])}
+        total = sum(int(g["n"]) for g in groups if tuple(g["names"]) in accepted)
+        report_framework_groups(len(groups), len(accepted), total)
+        if not total or page * per_page >= total:
+            return total, []
+        ctes, page_params = self._ordered_window(
+            f, sort_by, rates, search, is_unattributed, with_groups=sort_by == "cost_usd", framework=True,
+            stored=True,
+        )  # fmt: skip
+        page_params["stale"] = list(mode.stale)
+        if mode.version is not None:
+            page_params["rates_version"] = mode.version
+        page_params["matching"] = json.dumps([list(names) for names in accepted])
+        page_params["limit"] = per_page
+        page_params["offset"] = min(page * per_page, _MAX_PAGE_OFFSET)
+        rows = await self._fetch(conn, framework_stored_page_sql(ctes), page_params)
+        return total, [r["session_id"] for r in rows]
+
+    async def _framework_page(
+        self,
+        f: LocalAnalyticsFilter,
+        sort_by: str,
+        page: int,
+        per_page: int,
+        matching: Callable[[list[list[str]]], list[list[str]]],
+        rates: Sequence[ModelRates] | None,
+        search: str | None,
+        is_unattributed: bool,
+    ) -> tuple[int, list[str], list[tuple[str, tuple[bool, ...]]]]:
+        """Today's statements of the framework filter (the temp table of the names, then the page)."""
         # The names need no sort key: the window is read in the cheap start_time order, whatever the final sort.
         names_ctes, names_params = self._ordered_window(f, "start_time", None, search, is_unattributed, framework=True)
         with_groups = sort_by == "cost_usd"
@@ -1581,15 +2868,15 @@ class PostgresCliAnalyticsReader:
         flags = json.loads(raw_flags) if isinstance(raw_flags, str) else raw_flags
         return total, ids, [(entry[0], tuple(bool(v) for v in entry[1:])) for entry in flags]
 
-    async def _fetch(self, conn: Any, sql: str, params: dict[str, Any]) -> Rows:
+    async def _fetch(self, conn: Any, sql: str, params: dict[str, Any], *, exact: bool = False) -> Rows:
         text, args = positional(sql, params)
-        records = await conn.fetch(text, *args)
-        return [{key: normalise(value) for key, value in record.items()} for record in records]
+        records = await self._records(conn, text, args)
+        return _rows(records, exact)
 
     async def get_session_start_times(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)},{self._activity_cte()}
+        WITH {self._sel_cte(f)},{self._activity_cte()}
         SELECT session_start AS started_at FROM act""",
             window_params(f),
         )
@@ -1602,7 +2889,7 @@ class PostgresCliAnalyticsReader:
             params["search"] = f"%{search.strip().lower()}%"
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sel_cte(f)}
         SELECT session_id, repository, branch, project_name FROM sel
         WHERE repository <> ''{search_clause}""",
             params,

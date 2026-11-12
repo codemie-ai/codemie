@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Iterable, Sequence
@@ -144,6 +145,33 @@ def _has_usable_rate(cost: CostConfig) -> bool:
     return bool(cost.input or cost.output or (cost.cache_read_input_token_cost or 0) > 0)
 
 
+# Bump with any change of how `lookup_cost_config` or `normalize_model` resolve a raw name to a rate that neither the
+# catalog nor the route map shows: a stored cost key priced by the previous resolution is then re-priced.
+PRICING_LOGIC_VERSION = 1
+
+
+def catalog_rate_fingerprint() -> dict[str, ModelRates]:
+    """Everything `lookup_cost_config` reads, as a rate set to version (`rates_version`): every catalog entry in catalog
+    order (the first-priced entry of a shared base name wins), with its deployment and base names and its whole tariff.
+    The key carries the full tariff, whose every field takes part in the conflict checks, and the values the priced
+    rates. Equal fingerprints resolve every raw model name, alias or not, to the same rates. With entries it also
+    carries every route price of the LiteLLM route map (`_route_cost` reads it before the catalog) and
+    `PRICING_LOGIC_VERSION`. An empty catalog stays an empty rate set: it is the version no stamp is trusted under."""
+    entries: dict[str, ModelRates] = {}
+    for index, m in enumerate(llm_service.get_all_llm_model_info()):
+        tariff = json.dumps(m.cost.model_dump(), sort_keys=True) if m.cost is not None else "-"
+        key = f"{index}|{m.deployment_name or ''}|{m.base_name or ''}|{tariff}"
+        usable = m.cost is not None and _has_usable_rate(m.cost)
+        entries[key] = ModelRates(key, *_kind_rates(m.cost)) if usable and m.cost is not None else ModelRates(key)
+    if not entries:
+        return entries
+    entries[f"logic|{PRICING_LOGIC_VERSION}"] = ModelRates("logic")
+    for route, cost in sorted(llm_service.get_route_costs().items()):
+        key = f"route|{route}|{json.dumps(cost.model_dump(), sort_keys=True)}"
+        entries[key] = ModelRates(key, *_kind_rates(cost)) if _has_usable_rate(cost) else ModelRates(key)
+    return entries
+
+
 @dataclass(frozen=True)
 class TokenCounts:
     """Token counts of one model group; ``cache_5m`` / ``cache_1h`` are None when the source has no split."""
@@ -179,7 +207,7 @@ def _kind_rates(cost: CostConfig) -> tuple[float | None, ...]:
 def model_rates_for(model: str) -> ModelRates:
     """Catalog rates of a raw model name (all None when it has no catalog entry)."""
     cost = lookup_cost_config(model) if model else None
-    if cost is None:
+    if cost is None or not _has_usable_rate(cost):  # a zero-rate entry is no price, as in `CatalogPricer`
         return ModelRates(model=model)
     return ModelRates(model, *_kind_rates(cost))
 
@@ -235,6 +263,10 @@ class CatalogPricer:
         if missing:
             self._unpriced.add(model)
         return total, missing
+
+    def record_unpriced(self, models: Iterable[str]) -> None:
+        """Record models already known to have tokens without a price (the unpriced models the database summed)."""
+        self._unpriced.update(models)
 
     def record_unpriced_from_flags(self, rows: Iterable[tuple[str, Sequence[bool]]]) -> None:
         """Record unpriced models from per-kind "used" flags (`kind_tokens` order, true = tokens > 0) instead of

@@ -48,6 +48,7 @@ from datetime import date, timedelta
 
 import asyncpg
 
+from codemie.repository.cli_analytics.ports import RatesFor
 from codemie.repository.cli_analytics.postgres.cost_key_sql import normalized_model_name
 from codemie.repository.cli_analytics.postgres.dirty import (
     _CROSS_MIDNIGHT,
@@ -78,6 +79,12 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
     skill_end_agent_id,
 )
 from codemie.repository.cli_analytics.postgres.hook_row_sql import is_claude_code
+from codemie.repository.cli_analytics.postgres.rates_version import EMPTY_RATES_VERSION
+from codemie.repository.cli_analytics.postgres.session_derived import read_classifier_names
+from codemie.repository.cli_analytics.postgres.session_sort_keys import (
+    derive_session_sort_keys,
+    unstamp_session_sort_keys,
+)
 from codemie.repository.cli_analytics.vocabulary import (
     ACTIVE_TIME_METRICS,
     ACTIVITY_HOOK_TYPES,
@@ -854,6 +861,9 @@ _COST_DAILY = _replace_daily(
 # when the recompute has none.
 # The keys whose session the SESSION statements (and the derived update after them) recompute.
 _SESSION_KEY_BITS = _LOG | _SPANS | _METRICS | _SESSION
+# The keys whose recompute can change a stored sort key (`session_sort_keys`): the cost rows (_LOG, _USAGE), the
+# invocation and skill-name sources (_LOG, _SPANS) and the session row (_SESSION: commands, started_at).
+_SORT_KEY_BITS = _LOG | _USAGE | _SPANS | _SESSION
 _SESSION_EVENT = "agent.session.start"
 _ENV_EVENT = "agent.session.env"
 _GIT_EVENT = "agent.git.snapshot"
@@ -2138,6 +2148,19 @@ _LOAD_KEYS = f"INSERT INTO {_KEYS} SELECT * FROM unnest($1::date[], $2::text[], 
 # Every claimed row is locked first, in (day, session_id) order: the order in which ingest
 # upserts them, so the two cannot deadlock. A row an open ingest has marked again is locked
 # once that ingest commits, and the next two statements see its new version.
+# One more recompute on the start day of each of the sessions (`$1`): the user rollup (`user_rollup`) rebuilds a day
+# whose `touched` differs from the `built_touched` its build recorded. A day without a state row gets one the rollup
+# job reads as never built (no rates version). In day order, so two transactions take the row locks the same way.
+_TOUCH_USER_ROLLUP_DAYS = """
+INSERT INTO user_rollup_day_state (start_day, sessions, active, last_sum, cost_sum, ident_sum, class_sum,
+                                   rates_version, touched)
+SELECT x.day, 0, 0, 0, 0, 0, 0, '', 1
+FROM (SELECT DISTINCT (started_at AT TIME ZONE 'UTC')::date AS day
+      FROM session_dims WHERE session_id = ANY($1::text[]) AND started_at IS NOT NULL) x
+ORDER BY x.day
+ON CONFLICT (start_day) DO UPDATE SET touched = user_rollup_day_state.touched + 1"""
+_MAX_UNTOUCHED = 10_000  # sessions kept for the next mark after a failed one
+
 _LOCK_CLAIMED_KEYS = f"""
 SELECT 1 FROM rollup_dirty d JOIN {_KEYS} k USING (day, session_id)
 ORDER BY d.day, d.session_id FOR UPDATE OF d"""
@@ -2365,9 +2388,19 @@ class RollupRefresher:
         self._raw_retention_days = raw_retention_days
         self._clock = clock
         self._lock_timeout = f"SET LOCAL lock_timeout = {int(lock_timeout_ms)}"
+        self._untouched: set[str] = set()  # sessions whose start day a failed mark left uncounted
         self._classify = classify
+        self._rates: RatesFor | None = None
+        self._rates_version: Callable[[], str] | None = None
         self._flagged = False  # the last step left keys to take one at a time
         self._drained = False  # the last step claimed a short batch: nothing else is due
+
+    def set_rates(self, current_version: Callable[[], str] | None, rates: RatesFor | None) -> None:
+        """Hand in the current catalog rates version and the `RatesFor` callable the stored session sort keys are
+        priced with (the service layer's catalog, so the repository never imports it). Without both the keys are not
+        written and the reader computes them live."""
+        self._rates_version = current_version
+        self._rates = rates
 
     async def claim(self, conn: asyncpg.Connection) -> list[asyncpg.Record]:
         """The oldest queued keys with their versions, read without locking them."""
@@ -2400,6 +2433,24 @@ class RollupRefresher:
             return 0
         return len(keys)
 
+    async def _touch_user_rollup_days(
+        self, conn: asyncpg.Connection, keys: list[asyncpg.Record], timeout: float
+    ) -> None:
+        """Count this recompute on the start day of every session of `keys` (`user_rollup_day_state.touched`), so the
+        user rollup rebuilds the day: its own signature reads `session_dims` only and misses facts that leave the
+        session row as it was. In a savepoint: the rollup is an optimisation of the reads, so a failure here (a lock
+        wait behind the job's write of the day) must not abort the recompute; the sessions are counted with the next."""
+        sessions = sorted({k["session_id"] for k in keys if k["session_id"]} | self._untouched)
+        if not sessions:
+            return
+        try:
+            async with conn.transaction():
+                await conn.execute(_TOUCH_USER_ROLLUP_DAYS, sessions, timeout=timeout)
+            self._untouched = set()
+        except Exception as exc:  # noqa: BLE001 - nothing here may fail the rollup; the error is logged
+            self._untouched = set(sessions[:_MAX_UNTOUCHED])
+            logger.warning(f"cli_analytics: user rollup days not marked for {len(sessions)} session(s): {exc!r}")
+
     async def _recompute(self, conn: asyncpg.Connection, keys: list[asyncpg.Record]) -> None:
         timeout = _REFRESH_CLIENT_TIMEOUT_S
         async with conn.transaction():
@@ -2420,11 +2471,65 @@ class RollupRefresher:
                 await conn.execute(statement, timeout=timeout)
             # Last: feature_id and delivery_framework derive from what the SESSION statements wrote.
             sessions = sorted({k["session_id"] for k in keys if k["kinds"] & _SESSION_KEY_BITS and k["session_id"]})
-            await update_session_derived(conn, sessions, self._classify, timeout)
+            derived_names = await update_session_derived(conn, sessions, self._classify, timeout)
             # Also last: the activity facts read the day rows the statements above wrote, for every session of the keys.
             await derive_session_activity(conn, [k["session_id"] for k in keys], timeout)
+            await self._write_sort_keys(conn, keys, derived_names, timeout)
+            await self._touch_user_rollup_days(conn, keys, timeout)  # late: its row locks are held to the commit
             for statement in (_LOCK_CLAIMED_KEYS, _RELEASE_KEYS, _RESTAMP_KEYS):
                 await conn.execute(statement, timeout=timeout)
+
+    async def _write_sort_keys(
+        self, conn: asyncpg.Connection, keys: list[asyncpg.Record], names: dict[str, list[str]], timeout: float
+    ) -> None:
+        """Also last: the stored sort keys read the day rows and the names written above, for the sessions of keys that
+        carry a bit of any of them. A session whose names `update_session_derived` did not read (a usage-only key) has
+        them read here, so a stored row never keeps names of a moved start."""
+        sessions = sorted({k["session_id"] for k in keys if k["kinds"] & _SORT_KEY_BITS and k["session_id"]})
+        if not sessions:
+            return
+        derived, error = False, None
+        if self._rates is not None and self._rates_version is not None:
+            try:
+                # A savepoint: the stored keys are an optimisation of the reads, so a failure here (the catalog read,
+                # the rates callable, a statement that times out) must not abort the rollup transaction nor cost a key
+                # its retries.
+                async with conn.transaction():
+                    derived = await self._derive_sort_keys(conn, keys, sessions, names, timeout)
+            except Exception as exc:  # noqa: BLE001 - nothing here may fail the rollup; the error is logged
+                derived, error = False, exc
+        if derived:
+            return
+        # The day rows of these sessions were just rewritten but their stored keys were not (a failure above, no
+        # catalog yet, or a refresher built without rates, as the backfill command's): the readers trust a stamp, so
+        # drop it. The sessions are then computed live (the set S) until the
+        # maintenance job derives them. Deliberately not guarded: were this statement to fail, the transaction is
+        # aborted anyway, and rolling the whole recompute back (the key is retried) leaves rows and stamps consistent,
+        # which swallowing the error would not.
+        await unstamp_session_sort_keys(conn, sessions, timeout)
+        if error is not None:
+            logger.warning(
+                f"cli_analytics: the stored sort keys of {len(sessions)} sessions were not written, they are "
+                f"unstamped until the maintenance job derives them: {type(error).__name__}: {error}"
+            )
+
+    async def _derive_sort_keys(
+        self,
+        conn: asyncpg.Connection,
+        keys: list[asyncpg.Record],
+        sessions: list[str],
+        names: dict[str, list[str]],
+        timeout: float,
+    ) -> bool:
+        """True when the keys of `sessions` were written."""
+        version = self._rates_version()  # before the rates: see derive_session_sort_keys
+        if version == EMPTY_RATES_VERSION:  # no catalog yet: zero costs under it would be trusted by the readers
+            return False
+        already_read = {k["session_id"] for k in keys if k["kinds"] & _SESSION_KEY_BITS}
+        rest = [s for s in sessions if s not in already_read]
+        all_names = {**await read_classifier_names(conn, rest, timeout), **names}
+        await derive_session_sort_keys(conn, sessions, all_names, self._rates, version, timeout)
+        return True
 
     async def _timed_out(self, conn: asyncpg.Connection, key: asyncpg.Record, error: Exception) -> None:
         timeouts = key["timeouts"] + 1  # in a row: a recompute in time resets them

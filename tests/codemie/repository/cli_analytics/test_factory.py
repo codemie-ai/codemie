@@ -76,6 +76,13 @@ def test_adapters_share_one_pool_configured_from_settings() -> None:
     assert (engine.settings.schema, engine.settings.dsn) == ("custom_schema", "postgresql://u:p@analytics/db")
 
 
+def test_the_configured_s_cap_reaches_the_reader() -> None:
+    with patch.object(config, "CLI_ANALYTICS_SORT_KEYS_S_CAP", 123):
+        storage = get_cli_analytics_storage()
+
+    assert storage.reader._s_cap == 123
+
+
 def test_raw_rows_reach_back_as_far_as_configured() -> None:
     with patch.object(config, "CLI_ANALYTICS_RAW_RETENTION_DAYS", 30):
         assert get_cli_analytics_storage().raw_retention_days == 30

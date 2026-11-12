@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-11-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 40,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Stored sort-key columns, kill-switch control table, backfill/re-price/maintenance step with operator CLI, hybrid reader with live merge, rates version, settings and job wiring across the cli_analytics postgres package." },
+    { "dimension": "technical_risk", "reason": "Two Alembic revisions (columns, then index), backfill/re-pricing of existing data, kill-switch-gated hybrid read path correctness; performance-critical sessions list sort; plus a large edge-case test matrix." },
+    { "dimension": "file_change_estimate", "reason": "40 files changed (about 24 source/doc/bench plus 17 tests), 5334 insertions, spanning repository, service, alembic, scripts and guide directories." },
+    { "dimension": "affected_layers", "reason": "DB-persistence (schema migrations, indexes), service (jobs, pricing handler), repository/API read path, and configuration/operator infrastructure." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: schema change with data backfill/re-pricing and performance-critical read path",
+    "Affected Layers: database schema significantly changed"
+  ],
+  "split_recommendation": null
+}

@@ -32,6 +32,8 @@ from codemie.repository.cli_analytics.scope import normalise_project_origin, nor
 from codemie.rest_api.models import cli_analytics as models
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
 from tests.codemie.repository.cli_analytics.support.bounded import bounded_to_itself
+from tests.codemie.repository.cli_analytics.support.grouped_money import fake_cost_money
+from tests.codemie.repository.cli_analytics.support.users_reads import install_users_reads
 from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 
 DAY = date(2026, 9, 2)
@@ -90,6 +92,8 @@ def _fake_reader(with_lists: bool) -> MagicMock:
     repo.get_session_durations = rows([])
     repo.get_session_model_costs = rows([])
     repo.get_session_funding_costs = rows([])
+    repo.get_cost_models = rows([])
+    repo.get_cost_money = fake_cost_money([])
     repo.get_lines_by_session = rows([])
     repo.get_lines_by_user = rows([])
     repo.get_users_last_active = rows([])
@@ -121,7 +125,8 @@ def _fake_reader(with_lists: bool) -> MagicMock:
     repo.get_session_cost_facts = rows(facts)
     repo.get_session_page = rows((len(ids), ids))
     repo.get_window_model_flags = rows([])
-    repo.get_users = rows(
+    install_users_reads(
+        repo,
         [
             {
                 "developer_name": "u@x",
@@ -130,12 +135,10 @@ def _fake_reader(with_lists: bool) -> MagicMock:
                 "output_tokens": 250,
                 "cache_read_tokens": 0,
                 "cache_creation_tokens": 0,
-                "cost_usd": 5.0,
                 "top_model": "claude",
-                "session_ids": ids,
                 **(_classes(ids) if with_lists else {}),
             }
-        ]
+        ],
     )
     repo.get_users_daily_activity = rows(
         [{"developer_name": "u@x", "day": DAY, "session_count": 5, **(_classes(ids) if with_lists else {})}]
@@ -286,8 +289,8 @@ async def test_class_list_queries_read_sel_with_the_viewer_scope_and_sum_nothing
 @pytest.mark.parametrize(
     ("method", "group_by"),
     [
-        ("get_users", "GROUP BY 1 ORDER BY cost_usd"),
-        ("get_cost_by_user", "GROUP BY 1 ORDER BY"),
+        ("get_users", "GROUP BY 1"),
+        ("get_cost_by_user", "GROUP BY s.developer ORDER BY"),
         ("get_users_daily_activity", "GROUP BY 1, 2 ORDER BY"),
     ],
 )
@@ -302,6 +305,11 @@ async def test_lists_added_to_user_queries_use_the_existing_sel_join_and_groupin
         assert sql.count("JOIN sel s") == 1 and "RIGHT JOIN sel s ON s.session_id = c.session_id" in sql
         assert "count(DISTINCT s.session_id) AS session_count" in sql
         assert "array_agg(DISTINCT c.session_id)" not in sql
+        assert "ORDER BY cost_usd" not in sql  # the ranking lives in get_users_money_page
+    elif method == "get_cost_by_user":
+        # One row per selected session (`FROM sel s`), kept when it has a cost row; the developer comes from `sel`.
+        assert sql.count("FROM sel s") == 1 and "JOIN sel s" not in sql
+        assert "GROUP BY s.developer" in sql and "_DEVELOPER" not in sql
     else:
         assert sql.count("JOIN sel s") == 1
         assert sql.count("array_agg(DISTINCT c.session_id)") <= 1

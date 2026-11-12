@@ -258,10 +258,20 @@ class LocalAnalyticsUserRow(_ClassLists, _EstimateBuckets):
     daily_activity: list[LocalAnalyticsDailyActivityBucket] = Field(default_factory=list)
 
 
+class LocalAnalyticsUserCost(BaseModel):
+    developer_name: str = Field(..., description="Resolved user email")
+    cost_usd: float
+
+
 class LocalAnalyticsUsersData(_EstimateBuckets):
     rows: list[LocalAnalyticsUserRow]
     avg_session_duration_ms: int | None = None
     total_count: int | None = None
+    chart: list[LocalAnalyticsUserCost] | None = Field(
+        None,
+        description="Every user of the window, in rank order, with the cost; only when include_chart=true "
+        "(/users), so the cost-share chart needs no request of its own.",
+    )
 
 
 class LocalAnalyticsUsersResponse(BaseModel):

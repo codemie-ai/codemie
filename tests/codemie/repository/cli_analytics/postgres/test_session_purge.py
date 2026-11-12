@@ -45,8 +45,14 @@ from tests.codemie.repository.cli_analytics.support.maintenance_connections impo
 )
 
 
-SESSION_TABLES = ("session_usage", "session_usage_hourly", "subagent_invocations", "session_dims")
-SESSION_CHILDREN = ("session_usage", "session_usage_hourly", "subagent_invocations")
+SESSION_TABLES = (
+    "session_usage",
+    "session_usage_hourly",
+    "subagent_invocations",
+    "session_model_groups",
+    "session_dims",
+)
+SESSION_CHILDREN = ("session_usage", "session_usage_hourly", "subagent_invocations", "session_model_groups")
 
 
 def _deletes_from(conn: RecordingConnection, table: str) -> list[str]:
@@ -135,7 +141,7 @@ async def test_purge_plan_above_zero_deletes_whole_sessions_then_orphans() -> No
 
     (whole,) = _whole_session_purges(conn)
     orphans = [sql for sql in conn.statements if sql.startswith("DELETE FROM") and "NOT EXISTS" in sql]
-    assert [sql.split()[2] for sql in orphans] == ["session_usage", "session_usage_hourly", "subagent_invocations"]
+    assert [sql.split()[2] for sql in orphans] == list(SESSION_CHILDREN)
     assert all(conn.statements.index(o) > conn.statements.index(whole) for o in orphans)
     assert report.purged_rows == 0
     for table in SESSION_TABLES:  # no other statement deletes by session age, none by rollup retention
@@ -157,7 +163,8 @@ async def test_a_whole_session_purge_skips_held_rows_and_reaches_children_throug
     assert "heavy AS (SELECT session_id FROM visible WHERE n > $3)" in whole
     assert "WHERE w.running <= $3)" in whole
     assert (
-        "session_usage_visible.n + session_usage_hourly_visible.n + subagent_invocations_visible.n AS n FROM batch s"
+        "session_usage_visible.n + session_usage_hourly_visible.n + subagent_invocations_visible.n "
+        "+ session_model_groups_visible.n AS n FROM batch s"
     ) in whole
     assert (
         "chosen AS (SELECT * FROM (SELECT v.*, sum(v.n) OVER (ORDER BY v.session_id) AS running "
@@ -203,9 +210,12 @@ async def test_a_whole_session_purge_skips_held_rows_and_reaches_children_throug
         "session_usage_hourly_locked ON session_usage_hourly_locked.session_id = c.session_id "
         "LEFT JOIN (SELECT session_id, count(*) AS n FROM subagent_invocations_held GROUP BY session_id) "
         "subagent_invocations_locked ON subagent_invocations_locked.session_id = c.session_id "
+        "LEFT JOIN (SELECT session_id, count(*) AS n FROM session_model_groups_held GROUP BY session_id) "
+        "session_model_groups_locked ON session_model_groups_locked.session_id = c.session_id "
         "WHERE c.session_usage_rows <> coalesce(session_usage_locked.n, 0) "
         "OR c.session_usage_hourly_rows <> coalesce(session_usage_hourly_locked.n, 0) "
-        "OR c.subagent_invocations_rows <> coalesce(subagent_invocations_locked.n, 0))"
+        "OR c.subagent_invocations_rows <> coalesce(subagent_invocations_locked.n, 0) "
+        "OR c.session_model_groups_rows <> coalesce(session_model_groups_locked.n, 0))"
     ) in normalised
     # a chosen session not held is torn when any child table deleted fewer of its rows than were counted
     assert (
@@ -216,10 +226,13 @@ async def test_a_whole_session_purge_skips_held_rows_and_reaches_children_throug
         "session_usage_hourly_deleted ON session_usage_hourly_deleted.session_id = c.session_id "
         "LEFT JOIN (SELECT session_id, count(*) AS n FROM subagent_invocations_purged GROUP BY session_id) "
         "subagent_invocations_deleted ON subagent_invocations_deleted.session_id = c.session_id "
+        "LEFT JOIN (SELECT session_id, count(*) AS n FROM session_model_groups_purged GROUP BY session_id) "
+        "session_model_groups_deleted ON session_model_groups_deleted.session_id = c.session_id "
         "WHERE NOT EXISTS (SELECT 1 FROM held h WHERE h.session_id = c.session_id) "
         "AND (c.session_usage_rows <> coalesce(session_usage_deleted.n, 0) "
         "OR c.session_usage_hourly_rows <> coalesce(session_usage_hourly_deleted.n, 0) "
-        "OR c.subagent_invocations_rows <> coalesce(subagent_invocations_deleted.n, 0)))"
+        "OR c.subagent_invocations_rows <> coalesce(subagent_invocations_deleted.n, 0) "
+        "OR c.session_model_groups_rows <> coalesce(session_model_groups_deleted.n, 0)))"
     ) in normalised
     # the child deletes come first, torn reads what they deleted, idle reads torn
     assert normalised.index("session_usage_purged AS") < normalised.index("torn AS") < normalised.index("idle AS")
@@ -227,7 +240,8 @@ async def test_a_whole_session_purge_skips_held_rows_and_reaches_children_throug
     assert normalised.endswith(
         "RETURNING d.session_id) SELECT (SELECT count(*) FROM batch), (SELECT count(*) FROM idle), "
         "(SELECT count(*) FROM idle) + (SELECT count(*) FROM session_usage_purged) "
-        "+ (SELECT count(*) FROM session_usage_hourly_purged) + (SELECT count(*) FROM subagent_invocations_purged), "
+        "+ (SELECT count(*) FROM session_usage_hourly_purged) + (SELECT count(*) FROM subagent_invocations_purged) "
+        "+ (SELECT count(*) FROM session_model_groups_purged), "
         "ARRAY(SELECT session_id FROM held UNION ALL SELECT session_id FROM torn), ARRAY(SELECT session_id FROM heavy)"
     )
 
@@ -317,7 +331,7 @@ def test_a_session_part_skips_held_rows_and_deletes_the_session_only_when_none_i
     assert part.startswith("WITH dims AS MATERIALIZED (SELECT session_id FROM session_dims WHERE session_id = $2 AND ")
     dims = part[: part.index("visible AS")]
     assert dims.endswith("FOR UPDATE SKIP LOCKED), ")
-    for table in ("session_usage", "session_usage_hourly", "subagent_invocations"):
+    for table in SESSION_CHILDREN:
         assert (
             f"CROSS JOIN LATERAL (SELECT count(*) AS n FROM (SELECT 1 FROM {table} "
             f"WHERE {table}.session_id = s.session_id LIMIT $3 + 1) x) {table}_visible"
@@ -328,14 +342,17 @@ def test_a_session_part_skips_held_rows_and_deletes_the_session_only_when_none_i
     done = part[part.index("done AS (DELETE FROM session_dims") :]
     assert (
         "AND b.session_usage_take = b.session_usage_rows AND b.session_usage_hourly_take = b.session_usage_hourly_rows "
-        "AND b.subagent_invocations_take = b.subagent_invocations_rows AND NOT EXISTS (SELECT 1 FROM held) RETURNING 1)"
+        "AND b.subagent_invocations_take = b.subagent_invocations_rows "
+        "AND b.session_model_groups_take = b.session_model_groups_rows AND NOT EXISTS (SELECT 1 FROM held) RETURNING 1)"
     ) in done  # session_dims goes only with the last of every child table's rows
     # the tables share one budget of $3 rows in turn
     assert (
         "budget AS (SELECT *, least(session_usage_rows, $3) AS session_usage_take, "
         "least(session_usage_hourly_rows, greatest($3 - session_usage_rows, 0)) AS session_usage_hourly_take, "
         "least(subagent_invocations_rows, greatest($3 - session_usage_rows - session_usage_hourly_rows, 0)) "
-        "AS subagent_invocations_take FROM visible)"
+        "AS subagent_invocations_take, "
+        "least(session_model_groups_rows, greatest($3 - session_usage_rows - session_usage_hourly_rows "
+        "- subagent_invocations_rows, 0)) AS session_model_groups_take FROM visible)"
     ) in part
     assert part.count(f"updated_at) < {CUTOFF}") == 1
     assert " NOT IN " not in part
@@ -346,15 +363,18 @@ def test_a_session_part_skips_held_rows_and_deletes_the_session_only_when_none_i
         "WHERE b.session_usage_take <> (SELECT count(*) FROM session_usage_held) "
         "OR b.session_usage_hourly_take <> (SELECT count(*) FROM session_usage_hourly_held) "
         "OR b.subagent_invocations_take <> (SELECT count(*) FROM subagent_invocations_held) "
+        "OR b.session_model_groups_take <> (SELECT count(*) FROM session_model_groups_held) "
         "OR (SELECT count(*) FROM session_usage_purged) <> (SELECT count(*) FROM session_usage_held) "
         "OR (SELECT count(*) FROM session_usage_hourly_purged) <> (SELECT count(*) FROM session_usage_hourly_held) "
-        "OR (SELECT count(*) FROM subagent_invocations_purged) <> (SELECT count(*) FROM subagent_invocations_held))"
+        "OR (SELECT count(*) FROM subagent_invocations_purged) <> (SELECT count(*) FROM subagent_invocations_held) "
+        "OR (SELECT count(*) FROM session_model_groups_purged) <> (SELECT count(*) FROM session_model_groups_held))"
     ) in part
     # the loop unpacks the answer by position: taken, rows, held, done
     assert part.endswith(
         "RETURNING 1) SELECT (SELECT count(*) FROM dims), "
         "(SELECT count(*) FROM done) + (SELECT count(*) FROM session_usage_purged) "
-        "+ (SELECT count(*) FROM session_usage_hourly_purged) + (SELECT count(*) FROM subagent_invocations_purged), "
+        "+ (SELECT count(*) FROM session_usage_hourly_purged) + (SELECT count(*) FROM subagent_invocations_purged) "
+        "+ (SELECT count(*) FROM session_model_groups_purged), "
         "EXISTS (SELECT 1 FROM held), EXISTS (SELECT 1 FROM done)"
     )
 
@@ -512,9 +532,12 @@ async def test_session_purges_are_bound_to_the_session_cutoff_and_each_batch_has
     ]
     # neither the raw nor the rollup cutoff; the batch size of the policy, the row cap, an empty skip list
     assert _batch_args(conn) == [(SESSION_CUTOFF, 5000, 100000, [])] * 2
-    assert [args for _, args in orphans] == [(SESSION_CUTOFF,)] * 3
+    assert [args for _, args in orphans] == [(SESSION_CUTOFF,)] * 4
     batches = [sql for sql, _ in conn.args if sql.startswith("WITH batch AS")]
-    assert all(CUTOFF in sql or "day < $1::date" in sql for sql in batches + [sql for sql, _ in orphans])
+    assert all(
+        CUTOFF in sql or "day < $1::date" in sql or "$1::date IS NOT NULL" in sql
+        for sql in batches + [sql for sql, _ in orphans]
+    )
     # each batch: the raised statement timeout, the short lock timeout, then the one statement
     assert [len(tx) for tx in _batch_transactions(conn)] == [3, 3]
     # then the count of idle sessions left, in a transaction of its own, bound to the time read once before
@@ -557,7 +580,7 @@ async def test_a_failing_session_purge_is_reported_and_does_not_stop_the_others(
     assert _count_args(conn) == []  # nor the count: the sessions left were never tried
     assert "purging expired rows of sessions failed" in logger.error.call_args.args[0]
     assert any(sql.startswith("DELETE FROM session_attributes") for sql in conn.statements)
-    assert len([sql for sql in conn.statements if sql.startswith("DELETE FROM") and "NOT EXISTS" in sql]) == 3
+    assert len([sql for sql in conn.statements if sql.startswith("DELETE FROM") and "NOT EXISTS" in sql]) == 4
 
 
 @pytest.mark.asyncio
@@ -578,7 +601,7 @@ async def test_a_failing_part_is_reported_and_ends_the_session_purge() -> None:
     assert [args[1] for args in _part_args(conn)] == ["big1"]  # no part of big2 is tried
     assert _count_args(conn) == []
     assert "purging expired rows of sessions failed" in logger.error.call_args.args[0]
-    assert len([sql for sql in conn.statements if sql.startswith("DELETE FROM") and "NOT EXISTS" in sql]) == 3
+    assert len([sql for sql in conn.statements if sql.startswith("DELETE FROM") and "NOT EXISTS" in sql]) == 4
 
 
 @pytest.mark.asyncio

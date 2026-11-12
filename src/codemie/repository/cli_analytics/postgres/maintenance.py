@@ -28,13 +28,16 @@ bounds in the DDL come from code constants and dates only, never from input.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+import time
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import asyncpg
 
-from codemie.repository.cli_analytics.postgres import session_activity, session_purge
+from codemie.repository.cli_analytics.ports import RatesFor
+from codemie.repository.cli_analytics.postgres import session_activity, session_purge, session_sort_keys
+from codemie.repository.cli_analytics.postgres.rates_version import EMPTY_RATES_VERSION
 from codemie.repository.cli_analytics.postgres.engine import CLIENT_TIMEOUT_MARGIN_S, AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 
@@ -61,6 +64,17 @@ PARTITION_KEY: dict[str, str] = {
     LEDGER_TABLE: "day",
 }
 _TIMESTAMP_KEYED = frozenset({*RAW_TABLES, HOURLY_TABLE})
+# Tables whose rows the stored sort keys of a session are derived from, and that retention removes rows of: a session
+# that loses rows there must lose its stamp in the same transaction, or the readers keep trusting keys of data that is
+# gone (the backfill only derives unstamped sessions and the re-price only those of another catalog version).
+_SORT_KEY_SOURCES = frozenset({"cost_daily", HOURLY_TABLE, "session_skills"})
+# Sessions of an expiring partition are unstamped in batches of this many, each its own transaction, before the DROP.
+_UNSTAMP_BATCH = 5000
+_PARTITION_SESSIONS = "SELECT DISTINCT session_id FROM {source} WHERE session_id > $1 ORDER BY session_id LIMIT $2"
+_UNSTAMP_SESSIONS_OF = (
+    "UPDATE session_dims SET rates_version = NULL WHERE rates_version IS NOT NULL "
+    "AND session_id IN (SELECT session_id FROM {source} {where})"
+)
 # Rollup slices are deleted and re-inserted by the refresher: leave room for the new rows
 # on the same page and vacuum sooner than the default 20% of dead rows.
 _REWRITTEN_STORAGE = "WITH (fillfactor = 90, autovacuum_vacuum_scale_factor = 0.05)"
@@ -71,7 +85,9 @@ _REWRITTEN = frozenset({*ROLLUP_TABLES, HOURLY_TABLE})
 DDL_LOCK_TIMEOUT_MS = 2000
 
 
-_SESSION_CHILDREN = ("session_usage", "session_usage_hourly", "subagent_invocations")
+# Per-session tables with a session_id-leading primary key that go with their session. session_model_groups (stored
+# model groups of the Sessions stamp, no foreign key) is derived and has no date: only its session decides.
+_SESSION_CHILDREN = ("session_usage", "session_usage_hourly", "subagent_invocations", "session_model_groups")
 
 
 def quote_ident(name: str) -> str:
@@ -222,6 +238,9 @@ class MaintenanceReport:
     dropped: list[str] = field(default_factory=list)
     purged_rows: int = 0
     derived_sessions: int = 0  # sessions whose stored activity facts this run derived (see session_activity)
+    sort_keys_derived: int = 0  # sessions whose stored sort keys this run derived (see session_sort_keys)
+    sort_keys_repriced: int = 0  # sessions whose stored cost key this run re-priced after a rates change
+    model_groups_derived: int = 0  # sessions whose stored model groups this run wrote (see session_sort_keys)
     rows_in_default: dict[str, int] = field(default_factory=dict)
     failed: list[str] = field(default_factory=list)  # steps, partitions or purges that raised; the rest ran
     defaults_ready: bool = False  # every table has its DEFAULT partition: ingest always has a target
@@ -255,6 +274,14 @@ _ACTIVITY_BUDGET_S = 120.0
 # returns to the steady budget as soon as the backlog is small. The count is capped: it never reads more rows than that.
 _ACTIVITY_CATCH_UP_BUDGET_S = 600.0
 _ACTIVITY_CATCH_UP_ABOVE = 50_000
+# The stored sort keys: a batch is one transaction of this many sessions, a run works this long (split between the
+# backfill and the re-price), and the batches are paced. Lists are exact meanwhile (sessions without keys are computed).
+_SORT_KEYS_BATCH = 1_000
+_SORT_KEYS_BUDGET_S = 120.0
+_SORT_KEYS_PAUSE_S = 0.05
+# The stored model groups: one batch of this many sessions per run (the hourly job spreads the rollout; a quiet-window
+# rollout uses `sort_keys_cli backfill-groups`).
+_MODEL_GROUPS_BATCH = 1000
 _ACTIVITY_BACKLOG_SQL = (
     "SELECT count(*) FROM (SELECT 1 FROM session_dims WHERE has_activity IS NULL "
     f"LIMIT {_ACTIVITY_CATCH_UP_ABOVE + 1}) p"
@@ -274,6 +301,14 @@ class PartitionMaintainer:
         self._policy = policy
         self._clock = clock
         self._lock_timeout = f"SET LOCAL lock_timeout = {int(ddl_lock_timeout_ms)}"
+        self._rates_version: Callable[[], str] | None = None
+        self._rates: RatesFor | None = None
+
+    def set_rates(self, current_version: Callable[[], str] | None, rates: RatesFor | None = None) -> None:
+        """Keep the callables of the service layer's catalog: the current rates version and the `RatesFor` callable
+        the sort-key backfill and re-price price with (the repository never imports the service)."""
+        self._rates_version = current_version
+        self._rates = rates
 
     async def run(self, conn: asyncpg.Connection | None = None) -> MaintenanceReport:
         """Runs on `conn` when given (the connection holding the job's advisory lock)."""
@@ -287,6 +322,8 @@ class PartitionMaintainer:
             ("_drop_expired", lambda: self._drop_expired(conn, today, report)),
             ("_purge_expired_rows", lambda: self._purge_expired_rows(conn, today, report)),
             ("_derive_session_activity", lambda: self._derive_session_activity(conn, report)),
+            ("_backfill_session_sort_keys", lambda: self._backfill_session_sort_keys(conn, report)),
+            ("_backfill_model_groups", lambda: self._backfill_model_groups(conn, report)),
             ("_count_default_rows", lambda: self._count_default_rows(conn, report)),
         )
         for name, step in steps:
@@ -312,6 +349,73 @@ class PartitionMaintainer:
         report.derived_sessions += await session_activity.backfill_session_activity(
             conn, _ACTIVITY_BATCH, budget, MAINTENANCE_STATEMENT_TIMEOUT_S
         )
+
+    async def _backfill_session_sort_keys(self, conn: asyncpg.Connection, report: MaintenanceReport) -> None:
+        """Derive the stored sort keys of sessions without them, then re-price those priced by another rate set, for at
+        most `_SORT_KEYS_BUDGET_S` in all. The version stamped is the current catalog version, read once before any
+        rates are resolved, the one the readers compare stamps with. With no rates or version injected, or an empty
+        catalog (which would price everything at zero), nothing is done. Last, the readers are turned on once every
+        session is stamped (never after an operator's `disable`)."""
+        if self._rates is None or self._rates_version is None:
+            return
+        version = self._rates_version()
+        if version == EMPTY_RATES_VERSION:
+            return
+        rates = self._rates
+        started = time.monotonic()
+        derived = await session_sort_keys.backfill_session_sort_keys(
+            conn,
+            rates,
+            version,
+            _SORT_KEYS_BATCH,
+            budget_s=_SORT_KEYS_BUDGET_S / 2,
+            pause_s=_SORT_KEYS_PAUSE_S,
+            timeout=_RAISED_CLIENT_TIMEOUT_S,
+        )
+        report.sort_keys_derived += derived.derived
+        repriced = await session_sort_keys.reprice_cost_keys(
+            conn,
+            rates,
+            version,
+            _SORT_KEYS_BATCH,
+            budget_s=max(_SORT_KEYS_BUDGET_S - (time.monotonic() - started), 1.0),
+            pause_s=_SORT_KEYS_PAUSE_S,
+            timeout=_RAISED_CLIENT_TIMEOUT_S,
+        )
+        report.sort_keys_repriced += repriced.repriced
+        await session_sort_keys.auto_enable_session_sort_keys(conn, version, _RAISED_CLIENT_TIMEOUT_S)
+        if derived.derived or repriced.repriced:
+            logger.info(
+                f"cli_analytics: stored sort keys: {derived.derived} derived, {repriced.repriced} re-priced in "
+                f"{derived.duration_s + repriced.duration_s:.1f}s, WAL {derived.wal_bytes}/{repriced.wal_bytes} bytes"
+            )
+
+    async def _backfill_model_groups(self, conn: asyncpg.Connection, report: MaintenanceReport) -> None:
+        """Write the stored model groups of `_MODEL_GROUPS_BATCH` pending sessions (through the same derivation as the
+        sort keys, which needs the rates), then turn the groups' readers on once none is pending (never after an
+        operator's `disable-groups`). Separate from the Sessions switch. With no rates or version injected, or an empty
+        catalog, nothing is done."""
+        if self._rates is None or self._rates_version is None:
+            return
+        version = self._rates_version()
+        if version == EMPTY_RATES_VERSION:
+            return
+        result = await session_sort_keys.backfill_model_groups(
+            conn,
+            self._rates,
+            version,
+            _MODEL_GROUPS_BATCH,
+            pause_s=_SORT_KEYS_PAUSE_S,
+            timeout=_RAISED_CLIENT_TIMEOUT_S,
+            max_batches=1,
+        )
+        report.model_groups_derived += result.derived
+        await session_sort_keys.auto_enable_model_groups(conn, _RAISED_CLIENT_TIMEOUT_S)
+        if result.derived:
+            logger.info(
+                f"cli_analytics: stored model groups: {result.derived} sessions derived in {result.duration_s:.1f}s, "
+                f"WAL {result.wal_bytes} bytes"
+            )
 
     async def _existing(self, conn: asyncpg.Connection) -> set[tuple[str, str]]:
         rows = await conn.fetch(_EXISTING_PARTITIONS_SQL, self._engine.settings.schema)
@@ -381,7 +485,21 @@ class PartitionMaintainer:
     async def _drop_expired(self, conn: asyncpg.Connection, today: date, report: MaintenanceReport) -> None:
         for _table, name in expired_partitions(sorted(await self._existing(conn)), today, self._policy):
             try:
-                await self._ddl(conn, f"DROP TABLE IF EXISTS {quote_ident(name)}")
+                if _table in _SORT_KEY_SOURCES:
+                    # The batches below are committed before the DROP is tried, so a DROP that then loses its lock
+                    # wait would leave the partition in place with its sessions unstamped, on every run. The lock
+                    # the DROP needs is taken and given back first: a busy parent skips the partition untouched.
+                    await self._ddl(conn, f"LOCK TABLE {quote_ident(_table)} IN ACCESS EXCLUSIVE MODE")
+                    # The bulk of the unstamping, in committed batches: one statement over a large partition can
+                    # exceed the statement timeout and then stall the partition's retention on every run. The
+                    # statement of the DROP's own transaction below only catches sessions restamped meanwhile.
+                    await self._unstamp_sessions_of(conn, name)
+                before = (
+                    [_UNSTAMP_SESSIONS_OF.format(source=quote_ident(name), where="")]
+                    if _table in _SORT_KEY_SOURCES
+                    else []
+                )
+                await self._ddl(conn, f"DROP TABLE IF EXISTS {quote_ident(name)}", before)
                 report.dropped.append(name)
             except asyncpg.LockNotAvailableError:
                 logger.info("cli_analytics: partition %s is busy, dropping it on the next run", name)
@@ -389,6 +507,24 @@ class PartitionMaintainer:
                 # The others still go: retention must not stop at one partition.
                 report.failed.append(name)
                 logger.error(f"cli_analytics: cannot drop expired partition {name}: {exc!r}")
+
+    @staticmethod
+    async def _unstamp_sessions_of(conn: asyncpg.Connection, source: str) -> None:
+        """Drop the stamp of every session that has rows in `source`, `_UNSTAMP_BATCH` sessions to a transaction,
+        walking the partition in `session_id` order (the partitions carry an index on it)."""
+        last = ""
+        while True:
+            rows = await conn.fetch(
+                _PARTITION_SESSIONS.format(source=quote_ident(source)),
+                last,
+                _UNSTAMP_BATCH,
+                timeout=_RAISED_CLIENT_TIMEOUT_S,
+            )
+            if not rows:
+                return
+            ids = [r["session_id"] for r in rows]
+            await session_sort_keys.unstamp_session_sort_keys(conn, ids, _RAISED_CLIENT_TIMEOUT_S)
+            last = ids[-1]
 
     async def _purge_expired_rows(self, conn: asyncpg.Connection, today: date, report: MaintenanceReport) -> None:
         """Rows retention cannot drop with a partition: DEFAULT partitions and per-session tables."""
@@ -404,11 +540,21 @@ class PartitionMaintainer:
                 key = quote_ident(PARTITION_KEY[table])
                 condition = f"{key} < {utc_midnight if table in _TIMESTAMP_KEYED else '$1::date'}"
             default = default_partition_name(table)
-            statements.append((default, [f"DELETE FROM {quote_ident(default)} WHERE {condition}"], cutoff))
+            sqls = [f"DELETE FROM {quote_ident(default)} WHERE {condition}"]
+            if table in _SORT_KEY_SOURCES:
+                sqls.insert(0, _UNSTAMP_SESSIONS_OF.format(source=quote_ident(default), where=f"WHERE {condition}"))
+            statements.append((default, sqls, cutoff))
         rollup_cutoff = today - timedelta(days=self._policy.rollup_days)
         raw_cutoff = today - timedelta(days=self._policy.raw_days)
         statements += [
-            ("session_skills", [f"DELETE FROM session_skills WHERE updated_at < {utc_midnight}"], rollup_cutoff),
+            (
+                "session_skills",
+                [
+                    _UNSTAMP_SESSIONS_OF.format(source="session_skills", where=f"WHERE updated_at < {utc_midnight}"),
+                    f"DELETE FROM session_skills WHERE updated_at < {utc_midnight}",
+                ],
+                rollup_cutoff,
+            ),
             ("session_attributes", [f"DELETE FROM session_attributes WHERE updated_at < {utc_midnight}"], raw_cutoff),
             # Only raw rows reference a resource, and they are gone after the raw retention.
             ("otel_resources", [f"DELETE FROM otel_resources WHERE last_seen < {utc_midnight}"], raw_cutoff),
@@ -433,7 +579,9 @@ class PartitionMaintainer:
             async with conn.transaction():
                 await conn.execute(_RAISED_STATEMENT_TIMEOUT, timeout=_RAISED_CLIENT_TIMEOUT_S)
                 for sql in sqls:
-                    deleted += await self._purge(conn, sql, cutoff)
+                    changed = await self._purge(conn, sql, cutoff)
+                    if not sql.startswith("UPDATE"):  # the unstamping of the sessions is no purged row
+                        deleted += changed
         except _ISOLATED_FAILURES as exc:
             report.failed.append(f"purge {what}")
             logger.error(f"cli_analytics: purging expired rows of {what} failed: {exc!r}")
@@ -462,6 +610,7 @@ class PartitionMaintainer:
             "session_usage": "day < $1::date",
             "session_usage_hourly": f"hour < {utc_midnight}",
             "subagent_invocations": f"{subagent_date} < {utc_midnight}",
+            "session_model_groups": "$1::date IS NOT NULL",  # no date of its own; every statement binds the cutoff
         }
         return [
             f"DELETE FROM {t} WHERE {own_date[t]} AND NOT EXISTS (SELECT 1 FROM session_dims d "
@@ -475,7 +624,11 @@ class PartitionMaintainer:
             if count:
                 report.rows_in_default[table] = int(count)
 
-    async def _ddl(self, conn: asyncpg.Connection, sql: str) -> None:
+    async def _ddl(self, conn: asyncpg.Connection, sql: str, before: Sequence[str] = ()) -> None:
+        """`sql` under the DDL lock wait; `before` runs first, in the same transaction (the unstamping of the sessions a
+        dropped partition held rows of: a lock timeout of the DROP then rolls it back too)."""
         async with conn.transaction():
             await conn.execute(self._lock_timeout)
+            for statement in before:
+                await conn.execute(statement, timeout=_RAISED_CLIENT_TIMEOUT_S)
             await conn.execute(sql)

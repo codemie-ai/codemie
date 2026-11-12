@@ -260,6 +260,32 @@ class Config(BaseSettings):
     CLI_ANALYTICS_ROLLUP_BATCH_SIZE: int = Field(default=5_000, ge=1)
     CLI_ANALYTICS_PARTITION_PREMAKE_WEEKS: int = Field(default=4, ge=1)
     CLI_ANALYTICS_MAINTENANCE_INTERVAL_MINUTES: int = Field(default=60, ge=1)
+    # The Sessions list reads the stored sort keys unless more than this many sessions of the whole table lack a usable
+    # stamp (the count is not bounded by the request's window); above it the request runs the per-session statements
+    # over the whole window.
+    CLI_ANALYTICS_SORT_KEYS_S_CAP: int = Field(default=5_000, ge=0)
+    # Wall-clock budget of one dashboard request (/overview, /efficiency, /repositories, /tools, /users, /user-charts,
+    # /cost), below the 600 s proxy-read-timeout.
+    CLI_ANALYTICS_DASHBOARD_REQUEST_BUDGET_S: float = Field(default=540, gt=0)
+    # Dashboard requests (the same seven routes) one pod runs at once; each holds a pooled connection for its whole
+    # run, so the rest queue (the wait counts against the budget). 0: pool size minus 4, at least 1. A value above
+    # the pool size is cut to it.
+    CLI_ANALYTICS_DASHBOARD_MAX_CONCURRENT: int = Field(default=0, ge=0)
+    # Seconds a /users, /user-charts or /cost answer is reused by the pod that computed it (identical requests that
+    # arrive meanwhile share one computation). The default is the rollup refresh interval. 0 turns the cache off.
+    CLI_ANALYTICS_DASHBOARD_CACHE_TTL_S: float = Field(default=30, ge=0)
+    # The per-user start-day rollup that serves /users and /user-charts in seconds (EPMCDME-17051): a job keeps one
+    # row per session start day and developer current, and a request whose filters it can express reads it instead
+    # of pricing every session of the window; anything else, and any day it does not hold, takes the live statements.
+    CLI_ANALYTICS_USER_ROLLUP_ENABLED: bool = True
+    CLI_ANALYTICS_USER_ROLLUP_INTERVAL_S: int = Field(default=30, ge=5)
+    CLI_ANALYTICS_USER_ROLLUP_DAYS: int = Field(default=90, ge=1)
+    CLI_ANALYTICS_USER_ROLLUP_RUN_S: float = Field(default=25.0, gt=0)
+    # A day whose sessions changed is rebuilt at most this often (a past day, ten times as rarely).
+    CLI_ANALYTICS_USER_ROLLUP_MIN_REBUILD_S: int = Field(default=120, ge=0)
+    # Seconds between refreshes of the rollup answer for the last 7 and 30 days in memory (only while the rollup is in
+    # use); 0 turns the warm-up off.
+    CLI_ANALYTICS_USER_ROLLUP_WARM_S: int = Field(default=60, ge=0)
 
     INDEXES_PERMITTED_FOR_SEARCH: list[str] = [
         KZ_USERS_INDEX,

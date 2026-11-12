@@ -27,6 +27,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 import codemie.rest_api.routers.cli_analytics as router_module
+from codemie.repository.cli_analytics.ports import StatementTimeout
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
@@ -315,12 +316,21 @@ def test_a_sessions_query_timeout_is_a_504_with_a_clear_message_on_the_sessions_
 
 def test_a_client_side_sessions_timeout_is_a_504_too(make):
     client, env = make(ORDINARY())
-    env.handler.get_sessions = AsyncMock(side_effect=TimeoutError())
+    env.handler.get_sessions = AsyncMock(side_effect=StatementTimeout())  # the client command timeout of a statement
 
     resp = client.get(f"{BASE}/sessions", params={"search": "x" * 500, "framework": "f" * 500})
 
     assert resp.status_code == 504
     assert resp.json()["message"] == "The sessions list took too long to build"
+
+
+def test_a_pool_timeout_on_the_sessions_route_is_a_503(make):
+    client, env = make(ORDINARY())
+    env.handler.get_sessions = AsyncMock(side_effect=TimeoutError())
+
+    resp = client.get(f"{BASE}/sessions")
+
+    assert resp.status_code == 503
 
 
 def test_other_storage_errors_on_the_sessions_route_keep_their_503(make):

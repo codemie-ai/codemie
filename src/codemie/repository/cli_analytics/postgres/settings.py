@@ -28,7 +28,11 @@ from codemie.repository.cli_analytics.ports import CliAnalyticsStorageConfigErro
 
 logger = logging.getLogger(__name__)
 
-APPLICATION_NAME = "codemie-cli-analytics"
+# The application name of every analytics connection. Code from before the stored sort keys connected as
+# `LEGACY_APPLICATION_NAME` and does not keep them current, so a connection still carrying that name (a pod of a rolling
+# deploy that has not been replaced yet) holds back the automatic enable of the stored readers.
+LEGACY_APPLICATION_NAME = "codemie-cli-analytics"
+APPLICATION_NAME = f"{LEGACY_APPLICATION_NAME}/sort-keys"
 
 _POSTGRESQL_SCHEME = "postgresql://"
 _SCHEME = re.compile(r"^(?:postgresql|postgres)(?:\+[a-z0-9_]+)?://")
@@ -311,6 +315,13 @@ def _read_url(url: str) -> _Target:
     return _Target(**parts, libpq_params=tuple(params.libpq), asyncpg_params=tuple(params.asyncpg))  # type: ignore[arg-type]
 
 
+def dashboard_concurrency_limit(configured: int, pool_size: int) -> int:
+    """Dashboard requests one pod runs at once: `configured` when positive (never above the pool: a slot without a
+    connection only moves the queue to the pool), else the pool minus 4 (ingestion keeps those connections), never
+    below 1."""
+    return min(configured, max(1, pool_size)) if configured > 0 else max(1, pool_size - 4)
+
+
 @dataclass(frozen=True)
 class AnalyticsPgSettings:
     # The DSNs may carry a password, so they never appear in repr() or logs.
@@ -331,6 +342,13 @@ class AnalyticsPgSettings:
     ingest_statement_timeout_ms: int = 10_000
     session_retention_days: int = 0  # 0: the session tables are not purged by age
     session_purge_batch_size: int = 5000
+    sort_keys_s_cap: int = 5000  # sessions of S beyond which the stored Sessions-list read falls back
+    dashboard_request_budget_s: float = 540  # seconds one /users, /user-charts or /cost request may run
+    user_rollup_enabled: bool = True  # build and read the per-user start-day rollup (EPMCDME-17051)
+    user_rollup_interval_s: int = 30  # seconds between the job's runs
+    user_rollup_days: int = 90  # start days kept current, counted back from today; longer windows use the live path
+    user_rollup_run_s: float = 25.0  # seconds one run may spend rebuilding days
+    user_rollup_min_rebuild_s: int = 120  # a changed day is rebuilt at most this often (past days: ten times)
     migration_dsn: str = field(default="", repr=False)  # libpq's, for the migrations; `dsn` when empty
 
     @classmethod
@@ -378,6 +396,13 @@ class AnalyticsPgSettings:
             ingest_statement_timeout_ms=cfg.CLI_ANALYTICS_PG_INGEST_STATEMENT_TIMEOUT_MS,
             session_retention_days=session_days,
             session_purge_batch_size=cfg.CLI_ANALYTICS_SESSION_PURGE_BATCH_SIZE,
+            sort_keys_s_cap=cfg.CLI_ANALYTICS_SORT_KEYS_S_CAP,
+            dashboard_request_budget_s=cfg.CLI_ANALYTICS_DASHBOARD_REQUEST_BUDGET_S,
+            user_rollup_enabled=cfg.CLI_ANALYTICS_USER_ROLLUP_ENABLED,
+            user_rollup_interval_s=cfg.CLI_ANALYTICS_USER_ROLLUP_INTERVAL_S,
+            user_rollup_days=min(cfg.CLI_ANALYTICS_USER_ROLLUP_DAYS, cfg.CLI_ANALYTICS_RAW_RETENTION_DAYS),
+            user_rollup_run_s=cfg.CLI_ANALYTICS_USER_ROLLUP_RUN_S,
+            user_rollup_min_rebuild_s=cfg.CLI_ANALYTICS_USER_ROLLUP_MIN_REBUILD_S,
         )
 
     @staticmethod

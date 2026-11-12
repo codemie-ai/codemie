@@ -39,6 +39,7 @@ from codemie.core.constants import (
     HEADER_CODEMIE_WORK_CONSENT,
 )
 from codemie.repository.cli_analytics.ports import IngestGate, IngestResult, gate_binding
+from codemie.repository.cli_analytics.scope import FUNDING_ROUTES
 from codemie.rest_api.security.user import User
 from codemie.rest_api.security.user_type_validator import is_personal_project_excluded
 from codemie.service.analytics.cli_analytics_project_gate import build_evidence_gate
@@ -95,7 +96,7 @@ def _organization(headers, routed: bool, client_type: str) -> str | None:
 CONSENT_EXPLICIT_FOLDER = "explicit-folder"
 HEADER_DESTINATION = "X-CodeMie-Destination"
 HEADER_BOUND_PROJECT = "X-CodeMie-Bound-Project"
-_FUNDING_VALUES = {"api_based", "subscription", "unknown"}
+_FUNDING_VALUES = set(FUNDING_ROUTES)
 
 
 class PublicationContract(NamedTuple):

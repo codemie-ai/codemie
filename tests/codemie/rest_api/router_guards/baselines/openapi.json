@@ -17879,6 +17879,25 @@
         "title": "LocalAnalyticsToolsResponse",
         "type": "object"
       },
+      "LocalAnalyticsUserCost": {
+        "properties": {
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "developer_name": {
+            "description": "Resolved user email",
+            "title": "Developer Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "developer_name",
+          "cost_usd"
+        ],
+        "title": "LocalAnalyticsUserCost",
+        "type": "object"
+      },
       "LocalAnalyticsUserRow": {
         "properties": {
           "cache_creation_tokens": {
@@ -18033,6 +18052,21 @@
               }
             ],
             "title": "Avg Session Duration Ms"
+          },
+          "chart": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/LocalAnalyticsUserCost"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Every user of the window, in rank order, with the cost; only when include_chart=true (/users), so the cost-share chart needs no request of its own.",
+            "title": "Chart"
           },
           "funding": {
             "$ref": "#/components/schemas/LocalAnalyticsFundingBuckets",
@@ -44499,6 +44533,30 @@
         "operationId": "get_cost_v1_analytics_cli_analytics_cost_get",
         "parameters": [
           {
+            "description": "Fill the subscription and origin lists of the totals, users and models (a read over the whole window). A caller that does not read them passes false: they are then empty.",
+            "in": "query",
+            "name": "include_class_lists",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Fill the subscription and origin lists of the totals, users and models (a read over the whole window). A caller that does not read them passes false: they are then empty.",
+              "title": "Include Class Lists",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Fill the funding-route and personal-billed buckets and `models_without_spend`. A caller that does not read them passes false: they are then zero and empty.",
+            "in": "query",
+            "name": "include_buckets",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Fill the funding-route and personal-billed buckets and `models_without_spend`. A caller that does not read them passes false: they are then zero and empty.",
+              "title": "Include Buckets",
+              "type": "boolean"
+            }
+          },
+          {
             "description": "e.g. last_7_days, last_30_days",
             "in": "query",
             "name": "time_period",
@@ -44982,6 +45040,30 @@
       "get": {
         "operationId": "get_overview_v1_analytics_cli_analytics_overview_get",
         "parameters": [
+          {
+            "description": "Fill the subscription and origin lists of the totals, days and models. A caller that does not read them passes false: they are then empty.",
+            "in": "query",
+            "name": "include_class_lists",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Fill the subscription and origin lists of the totals, days and models. A caller that does not read them passes false: they are then empty.",
+              "title": "Include Class Lists",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Fill the funding-route and personal-billed estimates. A caller that does not read them passes false: they are then zero. With both false the answer can come from the start-day rollup.",
+            "in": "query",
+            "name": "include_buckets",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Fill the funding-route and personal-billed estimates. A caller that does not read them passes false: they are then zero. With both false the answer can come from the start-day rollup.",
+              "title": "Include Buckets",
+              "type": "boolean"
+            }
+          },
           {
             "description": "e.g. last_7_days, last_30_days",
             "in": "query",
@@ -46463,6 +46545,42 @@
                 }
               ],
               "title": "Per Page"
+            }
+          },
+          {
+            "description": "Add `chart` (every user's name and cost, in rank order) to a paged answer.",
+            "in": "query",
+            "name": "include_chart",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Add `chart` (every user's name and cost, in rank order) to a paged answer.",
+              "title": "Include Chart",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Fill each row's `daily_activity` (a read over the whole window). A caller that does not read it passes false: it is then empty.",
+            "in": "query",
+            "name": "include_daily_activity",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Fill each row's `daily_activity` (a read over the whole window). A caller that does not read it passes false: it is then empty.",
+              "title": "Include Daily Activity",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Fill `avg_session_duration_ms` (a read over the whole window). A caller that does not read it passes false: it is then null.",
+            "in": "query",
+            "name": "include_avg_duration",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Fill `avg_session_duration_ms` (a read over the whole window). A caller that does not read it passes false: it is then null.",
+              "title": "Include Avg Duration",
+              "type": "boolean"
             }
           },
           {

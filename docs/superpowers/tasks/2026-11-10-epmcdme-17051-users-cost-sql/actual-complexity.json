@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-11-11T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 25,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 50,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Reader, new grouped cost SQL module, stored-mode/maintenance/sort-key CLI, settings, router, ingest route, analytics handler and funding buckets all changed; new shared module for EPMCDME-17052." },
+    { "dimension": "technical_risk", "reason": "Aggregation and pricing moved from Python to SQL (parity-sensitive), new table with backfill and kill switch, concurrency cap and 504 on statement timeout; schema change." },
+    { "dimension": "file_change_estimate", "reason": "50 files changed (6774 insertions), about 25 of them tests, plus docs and bench scripts." },
+    { "dimension": "affected_layers", "reason": "API routers, service handler, repository/SQL, DB migration a1c1a0000013, config/settings (infrastructure)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: changes database schema (new table and migration) and requires backfill",
+    "Affected Layers bumped: schema change with migration"
+  ],
+  "split_recommendation": null
+}

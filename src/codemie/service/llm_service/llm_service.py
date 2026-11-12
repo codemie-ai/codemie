@@ -82,6 +82,12 @@ class LLMService:
             return None
         return self._litellm_route_costs.get(route)
 
+    def get_route_costs(self) -> dict[str, CostConfig]:
+        """A copy of every route price `get_route_cost` can answer; empty unless the catalog is LiteLLM's."""
+        if self.catalog_source() != "litellm":
+            return {}
+        return dict(self._litellm_route_costs)
+
     def get_all_embedding_model_info(self) -> List[LLMModel]:
         """Retrieve all labels and base names from embedding models across all providers.
 

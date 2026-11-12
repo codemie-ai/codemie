@@ -145,6 +145,7 @@ async def test_a_storage_with_a_runtime_is_started_and_scheduled() -> None:
     ):
         order = MagicMock()  # one parent to read the order of the calls off
         order.attach_mock(runtime.set_classifier, "set_classifier")
+        order.attach_mock(runtime.set_rates, "set_rates")
         order.attach_mock(runtime.start, "runtime_start")
         order.attach_mock(scheduler_type.return_value.add_job, "add_job")
         jobs = await start_cli_analytics_runtime()
@@ -152,10 +153,17 @@ async def test_a_storage_with_a_runtime_is_started_and_scheduled() -> None:
 
     runtime.start.assert_awaited_once()
     assert jobs is not None
-    scheduler_type.return_value.add_job.assert_called_once()
+    # The runtime's own job and the warm-up of the user rollup's answer.
+    added = scheduler_type.return_value.add_job.call_args_list
+    assert [c.kwargs["id"] for c in added] == ["refresh", "cli_analytics_user_rollup_warm"]
     # The refresher gets the delivery-framework classifier before anything can run it.
     runtime.set_classifier.assert_called_once_with(classify_delivery_framework)
-    assert [c[0] for c in order.mock_calls] == ["set_classifier", "add_job", "runtime_start"]
+    # The rates version reaches the runtime and the reader as one shared callable.
+    (version_source,) = runtime.set_rates.call_args.args
+    storage.reader.set_rates.assert_called_once_with(version_source)
+    # The stored keys are priced with the request-time resolution of each raw model name.
+    assert runtime.set_rates.call_args.kwargs["rates"] is cli_analytics_jobs.model_rates_by_name
+    assert [c[0] for c in order.mock_calls] == ["set_classifier", "set_rates", "add_job", "add_job", "runtime_start"]
 
 
 @pytest.mark.asyncio
@@ -172,7 +180,7 @@ async def test_the_application_does_not_wait_for_the_analytics_database_at_start
         patch.object(cli_analytics_jobs, "AsyncIOScheduler") as scheduler_type,
     ):
         jobs = await asyncio.wait_for(start_cli_analytics_runtime(), timeout=1)
-        scheduler_type.return_value.add_job.assert_called_once()
+        assert scheduler_type.return_value.add_job.call_count == 2  # the runtime's job and the rollup warm-up
 
         await stop_cli_analytics_runtime(jobs)  # a start still pending is cancelled
 
@@ -205,3 +213,111 @@ async def test_stopping_closes_the_runtime_after_the_scheduler():
 @pytest.mark.asyncio
 async def test_stopping_without_a_runtime_does_nothing():
     await stop_cli_analytics_runtime(None)
+
+
+# ── the warm-up of the user rollup's answer ──
+
+
+class _WarmReader:
+    def __init__(self, served, overview=None, overview_fails_on=None):
+        self.served, self.overview, self.overview_fails_on = served, overview, overview_fails_on
+        self.windows, self.overview_windows = [], []
+
+    async def rollup_users(self, f, rate_of, max_age_s):
+        self.windows.append((f.start_dt, f.scope))
+        return self.served
+
+    async def rollup_overview(self, f, rate_of, max_age_s):
+        self.overview_windows.append(f.start_dt)
+        if self.overview_fails_on == len(self.overview_windows):
+            raise RuntimeError("the window's overview read failed")
+        return self.overview
+
+
+def _admin_request_filter(period):
+    from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
+    from codemie.repository.cli_analytics.scope import ViewerScope
+    from codemie.service.analytics.time_parser import TimeParser
+
+    start, end = TimeParser.parse(period, None, None)
+    scope = ViewerScope(viewer_email="admin@example.com", unrestricted=True, admin_projects=frozenset(), mode="exclude")
+    return LocalAnalyticsFilter(start_dt=start, end_dt=end, scope=scope)
+
+
+@pytest.mark.asyncio
+async def test_the_warm_up_does_nothing_while_nobody_uses_the_rollup():
+    from codemie.service.analytics import dashboard_cache as dc
+    from codemie.service.analytics.cli_analytics_jobs import warm_user_rollup
+
+    dc.reset_dashboard_cache()
+    reader = _WarmReader(object())
+
+    await warm_user_rollup(reader)
+
+    assert reader.windows == []
+
+
+@pytest.mark.asyncio
+async def test_the_warmed_answer_is_found_by_the_key_of_a_real_admin_request():
+    from codemie.service.analytics import dashboard_cache as dc
+    from codemie.service.analytics.cli_analytics_jobs import WARM_PERIODS, warm_user_rollup
+
+    dc.reset_dashboard_cache()
+    dc.mark_rollup_used()
+    served = object()
+    reader = _WarmReader(served)
+
+    await warm_user_rollup(reader)
+
+    assert len(reader.windows) == len(WARM_PERIODS)
+    for period in WARM_PERIODS:
+        assert dc.get_ranking_cache().get(dc.rollup_key(_admin_request_filter(period))) is served
+
+
+@pytest.mark.asyncio
+async def test_the_overview_answer_is_warmed_under_the_key_its_request_reads():
+    from codemie.service.analytics import dashboard_cache as dc
+    from codemie.service.analytics.cli_analytics_jobs import WARM_PERIODS, warm_user_rollup
+
+    dc.reset_dashboard_cache()
+    dc.mark_rollup_used()
+    overview = object()
+
+    await warm_user_rollup(_WarmReader(None, overview))
+
+    for period in WARM_PERIODS:
+        key = dc.rollup_key(_admin_request_filter(period), "overview-rollup")
+        assert dc.get_ranking_cache().get(key) is overview
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_warmed_when_the_rollup_cannot_answer():
+    from codemie.service.analytics import dashboard_cache as dc
+    from codemie.service.analytics.cli_analytics_jobs import warm_user_rollup
+
+    dc.reset_dashboard_cache()
+    dc.mark_rollup_used()
+
+    await warm_user_rollup(_WarmReader(None))
+
+    assert dc.get_ranking_cache().get(dc.rollup_key(_admin_request_filter("last_30_days"))) is None
+
+
+@pytest.mark.asyncio
+async def test_an_overview_read_that_fails_does_not_skip_the_remaining_windows():
+    from codemie.service.analytics import dashboard_cache as dc
+    from codemie.service.analytics.cli_analytics_jobs import WARM_PERIODS, warm_user_rollup
+
+    dc.reset_dashboard_cache()
+    dc.mark_rollup_used()
+    served, overview = object(), object()
+    reader = _WarmReader(served, overview, overview_fails_on=1)
+
+    await warm_user_rollup(reader)  # does not raise
+
+    assert len(reader.windows) == len(WARM_PERIODS) == len(reader.overview_windows)  # every window was tried
+    first, second = (_admin_request_filter(p) for p in WARM_PERIODS)
+    cache = dc.get_ranking_cache()
+    assert cache.get(dc.rollup_key(first)) is served  # the Users answer of the failed window is kept
+    assert cache.get(dc.rollup_key(first, "overview-rollup")) is None  # the failed read warmed nothing
+    assert cache.get(dc.rollup_key(second, "overview-rollup")) is overview  # the next window was warmed

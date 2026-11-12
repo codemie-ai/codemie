@@ -736,6 +736,26 @@ class TestZeroRateEntry:
             assert pricer.unpriced == [self._MODEL]
             assert pricer.is_priced(self._MODEL) is False
 
+    @pytest.mark.parametrize("cache_read_rate", [0.0, None])
+    def test_model_rates_for_a_zero_rate_entry_has_no_rates(self, cache_read_rate):
+        """The request-time cost sort and the stored keys both resolve rates through `model_rates_for`."""
+        from codemie.repository.cli_analytics.ports import ModelRates
+        from codemie.service.analytics.handlers.coding_agent_pricing import model_rates_for
+
+        entry = self._entry(input=0.0, output=0.0, cache_read_input_token_cost=cache_read_rate)
+        with _patch_config([entry]):
+            assert model_rates_for(self._MODEL) == ModelRates(model=self._MODEL)
+
+    def test_model_rates_for_a_positive_cache_read_rate_alone_keeps_the_rates(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import model_rates_for
+
+        entry = self._entry(input=0.0, output=0.0, cache_read_input_token_cost=1e-08)
+        with _patch_config([entry]):
+            rates = model_rates_for(self._MODEL)
+
+        assert rates.model == self._MODEL
+        assert rates.cache_read == pytest.approx(1e-08)
+
     def test_positive_cache_read_rate_alone_is_priced(self):
         from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
 
@@ -755,3 +775,51 @@ class TestZeroRateEntry:
             assert pricer.price(self._MODEL, TokenCounts(output=1_000)) == pytest.approx(0.001)
             assert pricer.unpriced == []
             assert pricer.is_priced(self._MODEL) is True
+
+
+class TestCatalogRateFingerprint:
+    _ROUTE = "bedrock/eu.anthropic.claude-opus-4-6"
+
+    def _version(self, routes: dict[str, CostConfig], source: str = "litellm") -> str:
+        from codemie.repository.cli_analytics.postgres.rates_version import rates_version
+        from codemie.service.analytics.handlers.coding_agent_pricing import catalog_rate_fingerprint
+
+        with _patch_catalog([_make_llm_model("claude-opus-4-6", 1e-07)], routes, source):
+            return rates_version(catalog_rate_fingerprint())
+
+    def test_a_route_price_change_changes_the_version(self):
+        before = self._version({self._ROUTE: CostConfig(input=1e-05, output=5e-05)})
+        after = self._version({self._ROUTE: CostConfig(input=2e-05, output=5e-05)})
+
+        assert before != after
+
+    def test_a_new_route_changes_the_version(self):
+        assert self._version({}) != self._version({self._ROUTE: CostConfig(input=1e-05, output=5e-05)})
+
+    def test_equal_route_maps_give_equal_versions(self):
+        routes = {self._ROUTE: CostConfig(input=1e-05, output=5e-05)}
+
+        assert self._version(routes) == self._version(dict(routes))
+
+    def test_routes_of_a_yaml_catalog_are_not_part_of_the_version(self):
+        routes = {self._ROUTE: CostConfig(input=1e-05, output=5e-05)}
+
+        assert self._version(routes, source="yaml") == self._version({}, source="yaml")
+
+    def test_an_empty_catalog_stays_the_empty_rate_set_whatever_the_routes_hold(self):
+        from codemie.repository.cli_analytics.postgres.rates_version import EMPTY_RATES_VERSION, rates_version
+        from codemie.service.analytics.handlers.coding_agent_pricing import catalog_rate_fingerprint
+
+        with _patch_catalog([], {self._ROUTE: CostConfig(input=1e-05, output=5e-05)}):
+            assert rates_version(catalog_rate_fingerprint()) == EMPTY_RATES_VERSION
+
+    def test_the_pricing_logic_version_changes_the_version(self):
+        from codemie.service.analytics.handlers import coding_agent_pricing
+
+        before = self._version({})
+        with patch.object(
+            coding_agent_pricing, "PRICING_LOGIC_VERSION", coding_agent_pricing.PRICING_LOGIC_VERSION + 1
+        ):
+            after = self._version({})
+
+        assert before != after
