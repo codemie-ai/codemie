@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, tzinfo
 from collections.abc import Callable, Hashable
 from typing import Any
 
@@ -1297,7 +1297,9 @@ class LocalAnalyticsHandler:
 
     # ── Activity ─────────────────────────────────────────────────────────────
 
-    async def get_activity(self, f: LocalAnalyticsFilter) -> dict:
+    async def get_activity(self, f: LocalAnalyticsFilter, tz: tzinfo = timezone.utc) -> dict[str, Any]:
+        """Weekday/hour buckets in `tz`. Each session is converted with its own UTC offset, so sessions
+        recorded under another DST offset than today's still land on their local hour and weekday."""
         rows = await self._repo.get_session_start_times(f)
         heat = [[0] * 24 for _ in range(7)]
         by_hour = [0] * 24
@@ -1306,6 +1308,9 @@ class LocalAnalyticsHandler:
             started = row.get("started_at")
             if not isinstance(started, datetime):
                 continue
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            started = started.astimezone(tz)
             weekday = started.weekday()  # Monday=0 .. Sunday=6, matching the contract
             hour = started.hour
             heat[weekday][hour] += 1

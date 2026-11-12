@@ -44262,6 +44262,25 @@
         "operationId": "get_activity_v1_analytics_cli_analytics_activity_get",
         "parameters": [
           {
+            "description": "IANA time zone to bucket weekday/hour in, e.g. Europe/Madrid (DST-aware per session). Default UTC.",
+            "in": "query",
+            "name": "tz",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "IANA time zone to bucket weekday/hour in, e.g. Europe/Madrid (DST-aware per session). Default UTC.",
+              "title": "Tz"
+            }
+          },
+          {
             "description": "e.g. last_7_days, last_30_days",
             "in": "query",
             "name": "time_period",

@@ -48,8 +48,9 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from functools import wraps
+from functools import cache, wraps
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, available_timezones
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
@@ -689,6 +690,29 @@ async def get_tools(
     )
 
 
+@cache
+def _iana_zones() -> frozenset[str]:
+    # Linux lists "localtime" (a link to /etc/localtime): it is the server's own zone, not the viewer's.
+    return frozenset(available_timezones()) - {"localtime"}
+
+
+def _activity_zone(tz: str | None) -> timezone | ZoneInfo:
+    """The viewer's IANA zone, or UTC when none is given; an unknown name is the caller's error.
+
+    Checked against the zone list rather than by loading it: ZoneInfo also opens zoneinfo folders
+    ("Europe" -> IsADirectoryError) and non-zone files such as "posixrules"."""
+    if not tz:
+        return timezone.utc
+    if tz not in _iana_zones():
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Unknown time zone",
+            details="The tz parameter must be an IANA time zone name, e.g. Europe/Madrid.",
+            help="Send Intl.DateTimeFormat().resolvedOptions().timeZone or omit tz for UTC.",
+        )
+    return ZoneInfo(tz)
+
+
 @router.get(
     "/activity",
     response_model=LocalAnalyticsActivityResponse,
@@ -699,11 +723,18 @@ async def get_tools(
 async def get_activity(
     user: User = Depends(authenticate),
     filters: FilterParams = Depends(FilterParams),
+    tz: str | None = Query(
+        None,
+        max_length=64,
+        description="IANA time zone to bucket weekday/hour in, e.g. Europe/Madrid (DST-aware per session). "
+        "Default UTC.",
+    ),
 ) -> JSONResponse:
     _ensure_enabled()
+    zone = _activity_zone(tz)
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data = await _handler().get_activity(f)
+    data = await _handler().get_activity(f, zone)
     return _respond(
         {"data": data, "metadata": _metadata(start_ns, None, [], None, f.end_dt)}, LocalAnalyticsActivityResponse
     )
