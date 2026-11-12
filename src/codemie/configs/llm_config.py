@@ -209,6 +209,8 @@ class LlmRouterOption(BaseModel):
     classifier_model: str | None = None
     # Minimum context window across the router's distinct tier models; None when any tier is unknown.
     max_input_tokens: int | None = None
+    # Mirrors LLMModel.forbidden_for_web: a CLI-only router, listed only when include_all is asked.
+    forbidden_for_web: bool = False
 
 
 class SttConfig(BaseModel):

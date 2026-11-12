@@ -716,6 +716,16 @@ class TestLiteLLMAutoRouterCatalog:
         assert service.get_allowed_router_options(include_all=False) == []
         assert len(service.get_allowed_router_options(include_all=True)) == 1
 
+    def test_reports_forbidden_for_web_so_clients_can_mark_cli_only_routers(self):
+        cli_only = self._router_model(base_name="cli-router", forbidden_for_web=True)
+        web = self._router_model(base_name="web-router")
+        service = LLMService(self._config([cli_only, web]))
+
+        options = {o.base_name: o for o in service.get_allowed_router_options(include_all=True)}
+
+        assert options["cli-router"].forbidden_for_web is True
+        assert options["web-router"].forbidden_for_web is False
+
     def test_excluded_by_project_allowed_models(self):
         """Bug repro: a litellm_auto router excluded from project.allowed_models must not
         appear in get_allowed_router_options — previously the method had no project param

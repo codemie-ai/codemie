@@ -150,6 +150,11 @@ class ProjectService:
         CHARGEBACK_ATTRIBUTION_NO_COST_CENTER="Cost center attribution requires a linked, active cost center",
         # Allowed models validation
         ALLOWED_MODELS_EMPTY="At least one chat model is required in allowed_models",
+        ALLOWED_MODELS_NO_WEB_MODEL=(
+            "At least one model available on the web is required in allowed_models; "
+            "CLI-only models cannot be the project default"
+        ),
+        DEFAULT_MODEL_CLI_ONLY="default_model must be available on the web; CLI-only models cannot be the default",
         ALLOWED_MODELS_INVALID_MODEL="Invalid model identifier in allowed_models: {model}",
         ALLOWED_MODELS_UNAUTHORIZED="Only project admins and maintainers can update allowed models",
         DEFAULT_MODEL_REQUIRED_WITH_ALLOWED_MODELS="default_model is required when allowed_models is set",
@@ -253,12 +258,14 @@ class ProjectService:
 
         # Initialize project-level model availability + default model
         # so the UI shows a checked "DEFAULT" radio on first open.
-        models = llm_service.get_allowed_chat_models(actor, include_all=False)
+        # CLI-only models are allowed too (CodeMie CLI and its connectors list a project's models);
+        # the default comes from the web-available ones, since web chat starts on it.
+        models = llm_service.get_allowed_chat_models(actor, include_all=True)
         deployment_names = [m.deployment_name for m in models]
         validated_models = cls.validate_allowed_models(deployment_names)
         cls.ensure_chat_model_allowed(validated_models)
         project.allowed_models = validated_models
-        project.default_model = validated_models[0]
+        project.default_model = next(m.deployment_name for m in models if m.forbidden_for_web is not True)
 
         activity_event_repository.insert(
             ActivityEventCreate(
@@ -842,9 +849,10 @@ class ProjectService:
 
     @staticmethod
     def ensure_chat_model_allowed(allowed_models: list[str] | None) -> None:
-        """Validate that at least one chat model is allowed in the given list.
+        """Validate that at least one web-available chat model is allowed in the given list.
 
-        This ensures that when models are restricted, at least one chat model remains available.
+        CLI-only models and routers (forbidden_for_web) may be listed, but do not count: web chat
+        and the project default need a model the web can use.
         If allowed_models is None, this is valid (all models allowed by default).
         If allowed_models is a list, we need to verify it contains at least one chat model ID.
 
@@ -866,12 +874,12 @@ class ProjectService:
         available_chat_model_ids = ProjectService._get_available_chat_model_ids(all_models)
         available_router_model_ids = ProjectService._get_available_router_model_ids(all_models)
 
-        has_chat_model = bool(set(allowed_models) & (available_chat_model_ids | available_router_model_ids))
+        has_web_chat_model = bool(set(allowed_models) & (available_chat_model_ids | available_router_model_ids))
 
-        if not has_chat_model:
+        if not has_web_chat_model:
             raise ExtendedHTTPException(
                 code=400,
-                message=ProjectService.ERRORS.ALLOWED_MODELS_EMPTY,
+                message=ProjectService.ERRORS.ALLOWED_MODELS_NO_WEB_MODEL,
             )
 
     @classmethod
@@ -885,13 +893,20 @@ class ProjectService:
         Raises:
             ExtendedHTTPException 400: If default_model not in allowed_models
         """
-        if default_model is None or allowed_models is None:
+        if default_model is None:
             return
 
-        if default_model not in allowed_models:
+        if allowed_models is not None and default_model not in allowed_models:
             raise ExtendedHTTPException(
                 code=400,
                 message="default_model must be in allowed_models list",
+            )
+
+        # Also with no allow-list: web chat starts on the default whatever the project allows.
+        if default_model in cls._get_cli_only_model_ids():
+            raise ExtendedHTTPException(
+                code=400,
+                message=cls.ERRORS.DEFAULT_MODEL_CLI_ONLY,
             )
 
     @classmethod
@@ -934,8 +949,26 @@ class ProjectService:
 
     @staticmethod
     def _get_available_chat_model_ids(all_models: list) -> set[str]:
-        """Deployment_names of plain (non-router) chat models."""
-        return {model.deployment_name for model in all_models if not model.is_declared_litellm_router()}
+        """Deployment_names of plain (non-router) chat models available on the web."""
+        return {
+            model.deployment_name
+            for model in all_models
+            if not model.is_declared_litellm_router() and model.forbidden_for_web is not True
+        }
+
+    @staticmethod
+    def _get_cli_only_model_ids() -> set[str]:
+        """Identifiers (deployment and base names) of CLI-only models and routers: forbidden_for_web."""
+        from codemie.service.llm_service.llm_service import llm_service
+
+        cli_only: set[str] = set()
+        for model in llm_service.get_all_llm_model_info():
+            if model.forbidden_for_web is True:
+                cli_only.update({model.deployment_name, model.base_name})
+        for router in llm_service.get_llm_routers():
+            if router.forbidden_for_web is True:
+                cli_only.add(router.base_name)
+        return cli_only
 
     @staticmethod
     def _get_available_router_model_ids(all_models: list) -> set[str]:

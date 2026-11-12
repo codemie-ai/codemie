@@ -3912,7 +3912,7 @@ class TestAllowedModelsEndpoint:
             ProjectService.ensure_chat_model_allowed(["non-existent-model"])
 
         assert exc_info.value.code == 400
-        assert "At least one chat model is required" in exc_info.value.message
+        assert "At least one model available on the web is required" in exc_info.value.message
 
 
 class TestProjectDescriptionOptional:

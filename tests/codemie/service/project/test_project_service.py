@@ -349,11 +349,13 @@ class TestCreateSharedProjectInSession:
             yield
 
     @staticmethod
-    def _prepare(mock_application_repository, mock_llm_service, models=("gpt-4o", "claude-3")):
+    def _prepare(mock_application_repository, mock_llm_service, models=("gpt-4o", "claude-3"), cli_only=()):
         mock_application_repository.get_by_name_case_insensitive.return_value = None
         project = SimpleNamespace(name="epm-aimf")
         mock_application_repository.create.return_value = project
-        mock_llm_service.get_allowed_chat_models.return_value = [SimpleNamespace(deployment_name=m) for m in models]
+        mock_llm_service.get_allowed_chat_models.return_value = [
+            SimpleNamespace(deployment_name=m, forbidden_for_web=m in cli_only) for m in models
+        ]
         return project
 
     def test_creates_project_without_creator_membership(
@@ -452,8 +454,30 @@ class TestCreateSharedProjectInSession:
 
         project = ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
 
-        mock_llm_service.get_allowed_chat_models.assert_called_once_with(service_account, include_all=False)
+        mock_llm_service.get_allowed_chat_models.assert_called_once_with(service_account, include_all=True)
         assert project.allowed_models == ["gpt-4o", "claude-3"]
+        assert project.default_model == "gpt-4o"
+
+    def test_new_project_allows_cli_only_models_but_defaults_to_a_web_one(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
+        self._prepare(
+            mock_application_repository,
+            mock_llm_service,
+            models=("claude-router-cli", "gpt-4o"),
+            cli_only=("claude-router-cli",),
+        )
+
+        project = ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
+
+        assert project.allowed_models == ["claude-router-cli", "gpt-4o"]
         assert project.default_model == "gpt-4o"
 
     def test_writes_project_created_activity_event(
@@ -828,6 +852,25 @@ class TestValidateAtLeastOneChatModelAllowed:
         ):
             ProjectService.ensure_chat_model_allowed(["sy-signal-claude-4-5-sonnet-test"])  # no raise
 
+    def test_cli_only_plain_model_does_not_count_as_a_web_chat_model(self):
+        catalog = [self._model("gpt-cli", forbidden_for_web=True)]
+        with patch(
+            "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+            return_value=catalog,
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                ProjectService.ensure_chat_model_allowed(["gpt-cli"])
+        assert exc_info.value.code == 400
+        assert "CLI-only" in exc_info.value.message
+
+    def test_cli_only_models_are_accepted_next_to_a_web_model(self):
+        catalog = [self._model("gpt-cli", forbidden_for_web=True), self._model("gpt-4o")]
+        with patch(
+            "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+            return_value=catalog,
+        ):
+            ProjectService.ensure_chat_model_allowed(["gpt-cli", "gpt-4o"])  # no raise
+
     def test_disabled_litellm_auto_router_does_not_count_as_a_chat_model(self):
         catalog = [self._model("gpt-smart-router", is_router=True, enabled=False)]
         with patch(
@@ -905,6 +948,58 @@ class TestValidateAtLeastOneChatModelAllowed:
             with pytest.raises(ExtendedHTTPException) as exc_info:
                 ProjectService.ensure_chat_model_allowed(["sy-signal-claude-4-5-sonnet-test"])
         assert exc_info.value.code == 400
+
+
+class TestValidateDefaultModelCliOnly:
+    """The project default is what web chat starts on, so it must be a model the web can use."""
+
+    @staticmethod
+    def _catalog(cli_only_model: bool = False, cli_only_router: bool = False):
+        model = MagicMock()
+        model.deployment_name = "gpt-cli-2025"
+        model.base_name = "gpt-cli"
+        model.forbidden_for_web = cli_only_model
+        router = MagicMock()
+        router.base_name = "claude-router-cli"
+        router.forbidden_for_web = cli_only_router
+        return (
+            patch(
+                "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+                return_value=[model],
+            ),
+            patch(
+                "codemie.service.llm_service.llm_service.llm_service.get_llm_routers",
+                return_value=[router],
+            ),
+        )
+
+    def test_cli_only_model_cannot_be_the_default(self):
+        models_patch, routers_patch = self._catalog(cli_only_model=True)
+        with models_patch, routers_patch, pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.validate_default_model("gpt-cli-2025", ["gpt-cli-2025", "gpt-4o"])
+        assert exc_info.value.code == 400
+        assert "CLI-only" in exc_info.value.message
+
+    def test_cli_only_router_cannot_be_the_default(self):
+        models_patch, routers_patch = self._catalog(cli_only_router=True)
+        with models_patch, routers_patch, pytest.raises(ExtendedHTTPException):
+            ProjectService.validate_default_model("claude-router-cli", ["claude-router-cli", "gpt-4o"])
+
+    def test_cli_only_default_is_rejected_when_every_model_is_allowed(self):
+        models_patch, routers_patch = self._catalog(cli_only_model=True)
+        with models_patch, routers_patch, pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.validate_default_model("gpt-cli-2025", None)
+        assert exc_info.value.code == 400
+
+    def test_web_default_is_valid_when_every_model_is_allowed(self):
+        models_patch, routers_patch = self._catalog(cli_only_model=True)
+        with models_patch, routers_patch:
+            ProjectService.validate_default_model("gpt-4o", None)
+
+    def test_web_model_is_a_valid_default_next_to_cli_only_ones(self):
+        models_patch, routers_patch = self._catalog(cli_only_model=True, cli_only_router=True)
+        with models_patch, routers_patch:
+            ProjectService.validate_default_model("gpt-4o", ["gpt-cli-2025", "claude-router-cli", "gpt-4o"])
 
 
 class TestCheckAllowedModelsAuthorization:

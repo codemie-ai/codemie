@@ -15480,6 +15480,11 @@
             "title": "Enabled",
             "type": "boolean"
           },
+          "forbidden_for_web": {
+            "default": false,
+            "title": "Forbidden For Web",
+            "type": "boolean"
+          },
           "is_premium": {
             "anyOf": [
               {

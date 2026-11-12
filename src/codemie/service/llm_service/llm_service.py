@@ -250,6 +250,7 @@ class LLMService:
             tiers=tiers,
             classifier_model=router.switchyard.classifier_model,
             max_input_tokens=self._router_max_input_tokens(tiers, by_name),
+            forbidden_for_web=router.forbidden_for_web is True,
         )
 
     @staticmethod
@@ -284,6 +285,7 @@ class LLMService:
             tiers=litellm_router.tiers,
             classifier_model=litellm_router.classifier_model,
             max_input_tokens=LLMService._router_max_input_tokens(litellm_router.tiers, by_name),
+            forbidden_for_web=model.forbidden_for_web is True,
         )
 
     def get_allowed_router_options(
