@@ -1,0 +1,301 @@
+{
+  "decision": "approve",
+  "rationale": "All 12 blocking findings resolved in fix-up commit 8501afdec with a targeted test each; the fix-up diff (689 lines) introduced no new high-risk issue, so no confirmation pass was needed. Touched suites pass; remaining failures match origin/main (Postgres/alembic, Windows-only, frontend checkout).",
+  "confidence": "high",
+  "risk_flags": [
+    "security",
+    "breaking-change"
+  ],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "Rows 1-3, 5-8: personal/project/shared/marketplace assistants",
+      "status": "pass",
+      "notes": "attribution_resolver.select_target + matrix tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Row 4 / AC member + unfunded project -> D else P",
+      "status": "partial",
+      "notes": "Resolver correct; web treats any scope as funded when the model is unknown, then runtime falls straight to P"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Rows 9-10: project / marketplace workflow",
+      "status": "pass",
+      "notes": "workflow.py passes workflow_config to set_llm_context"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Row 11 / D2: workflow node with saved assistant attributed per that assistant",
+      "status": "partial",
+      "notes": "build_agent_for_workflow forces is_global on saved assistants in global workflows"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Row 12: asset-less flows -> D -> P",
+      "status": "pass",
+      "notes": "AssetKind.NO_ASSET"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Row 13 / D10: datasource indexing",
+      "status": "pass",
+      "notes": "Both processors pass the index"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Rows 14-15: CLI no project / member project",
+      "status": "pass",
+      "notes": "_apply_budget_attribution, category-aware funded check"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Row 16 / D3 / AC non-member CLI project neither charged nor shown",
+      "status": "fail",
+      "notes": "Credentials still resolved for the raw header project (premium key); personal-key bypass emits it in analytics"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Row 17 / D7: triggers as owner with memberships",
+      "status": "pass",
+      "notes": "resolve_trigger_user"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Row 18: personal key pays",
+      "status": "pass",
+      "notes": "Bypass unchanged on web and CLI"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Row 19 / D4: exhausted budget not rerouted (hard block, soft warn)",
+      "status": "pass",
+      "notes": "Funded SQL ignores spend; enforcement unchanged"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC marketplace (non-member, member, D unfunded, global workflow)",
+      "status": "pass",
+      "notes": "Resolver rows 6-8 + utils tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC shared to non-member / personal assistant with and without default",
+      "status": "pass",
+      "notes": "utils matrix wiring tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC orchestrator sub-assistant never charges a non-member project",
+      "status": "pass",
+      "notes": "scoped_llm_context around sub-assistant prebuild"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC web and CLI fallbacks land on the same personal budget (username)",
+      "status": "pass",
+      "notes": "_resolve_user_email maps the current user's email to the username"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC admin change applies within ~1 min; history not moved",
+      "status": "pass",
+      "notes": "60 s TTL incl. negative entries"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC / D8 IDP-claims mode uses the personal project",
+      "status": "pass",
+      "notes": "LegacyJwtUserProvider derivation"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC analytics: project shown is the charged project",
+      "status": "partial",
+      "notes": "CLI personal-key bypass emits the raw header project"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC analytics: fallback shows original target and kind",
+      "status": "pass",
+      "notes": "budget_fallback_from + budget_fallback_kind on web and CLI"
+    },
+    {
+      "kind": "story-ac",
+      "item": "D1, D6, D9, D11",
+      "status": "pass",
+      "notes": "select_target is_global branch; PROJECT_BUDGET_FUNDED_SQL; username identity; row 7"
+    },
+    {
+      "kind": "story-ac",
+      "item": "D5 every fallback goes to D before P",
+      "status": "partial",
+      "notes": "Runtime fallback in llm_factory can skip D (see row 4)"
+    },
+    {
+      "kind": "spec",
+      "item": "One shared resolver, sync + async parity",
+      "status": "pass",
+      "notes": "attribution_resolver"
+    },
+    {
+      "kind": "spec",
+      "item": "One funded query instead of three copies",
+      "status": "partial",
+      "notes": "resolve_sync keeps its own inline SQL"
+    },
+    {
+      "kind": "spec",
+      "item": "Cache key and 60 s TTL unchanged; P terminal and unchecked",
+      "status": "pass",
+      "notes": "_store_project_budget_scopes; _decision"
+    },
+    {
+      "kind": "spec",
+      "item": "Section 3 IDP-claims D derived by email, not username",
+      "status": "partial",
+      "notes": "Code treats the username workspace as personal/D; spec text not updated"
+    },
+    {
+      "kind": "spec",
+      "item": "Section 4 LiteLLMContext gains budget_target_project",
+      "status": "partial",
+      "notes": "Not added; target carried in budget_fallback_from; spec text not updated"
+    },
+    {
+      "kind": "spec",
+      "item": "Shared-asset flag cannot charge a non-member asset project",
+      "status": "pass",
+      "notes": "Flag only nulls creds"
+    },
+    {
+      "kind": "spec",
+      "item": "Nested assets scoped; analytics fallback kind; readers treat default-project fallbacks as charged back",
+      "status": "pass",
+      "notes": "scoped_llm_context; has_fb; cache v3"
+    },
+    {
+      "kind": "spec",
+      "item": "Personal customer id = username",
+      "status": "pass",
+      "notes": "_resolve_user_email"
+    },
+    {
+      "kind": "spec",
+      "item": "CLI header honoured only for members, else ignored, logged, kept out of analytics",
+      "status": "fail",
+      "notes": "Credential resolution and bypass metrics still use the raw header"
+    },
+    {
+      "kind": "spec",
+      "item": "Anti-goal: never charge a non-member project",
+      "status": "fail",
+      "notes": "Premium key of the ignored header project"
+    },
+    {
+      "kind": "spec",
+      "item": "Anti-goal: web and CLI attribution identical",
+      "status": "partial",
+      "notes": "CLI category-aware; web not when model unknown"
+    },
+    {
+      "kind": "spec",
+      "item": "Table-driven matrix test covering rows 1-19",
+      "status": "partial",
+      "notes": "Rows 9, 10, 11, 13 not covered end to end"
+    },
+    {
+      "kind": "spec",
+      "item": "Log style, no new deps, no migration, cli config not committed",
+      "status": "pass",
+      "notes": "Verified in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "MR description requests /sanity",
+      "status": "na",
+      "notes": "No MR yet"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 15 commits use 'EPMCDME-16625: Description' with the attribution trailer"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "ruff format/check and license header check pass on the whole tree"
+    },
+    {
+      "kind": "security",
+      "status": "partial",
+      "notes": "No secrets or tokens logged; budget authorization gap tracked as CR-005 and CR-008"
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "spec.md sections 3 and 4 now describe the username workspace and the budget_fallback_from-only target"
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "scoped_llm_context sets parent.model_copy(); test_in_place_mutation_inside_the_scope_does_not_leak"
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "file processor passes the index only when project_name is set; test_reindex_without_project_stays_asset_less"
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "has_real_project_context also excludes personal_project; test_personal_project_is_not_a_project_context_when_id_is_the_username"
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "notes": "_extract_request_info keeps PROJECT to member projects (else default/username) before credential lookup, bypass and analytics; 3 proxy tests"
+    },
+    {
+      "id": "CR-006",
+      "status": "resolved",
+      "notes": "build_agent_for_workflow bills saved assistants as themselves; row-11 test fails on the old code and passes now"
+    },
+    {
+      "id": "CR-007",
+      "status": "resolved",
+      "notes": "attribution_input_for_user drops a non-member fallback hint; test_non_member_fallback_hint_is_not_a_default"
+    },
+    {
+      "id": "CR-008",
+      "status": "resolved",
+      "notes": "_is_member exact; member_spelling maps a unique case variant for the CLI header; resolver and proxy tests"
+    },
+    {
+      "id": "CR-009",
+      "status": "resolved",
+      "notes": "single .get() read with a miss sentinel in the probe cache and resolve_sync; test_probe_treats_an_entry_expiring_mid_read_as_a_miss"
+    },
+    {
+      "id": "CR-010",
+      "status": "resolved",
+      "notes": "resolve_sync uses _load_project_budget_rows_sync(PROJECT_BUDGET_FUNDED_SQL); test_resolve_sync_uses_the_shared_funded_query"
+    },
+    {
+      "id": "CR-011",
+      "status": "resolved",
+      "notes": "set_llm_context falls back to llm_service.default_llm_model; test_default_model_is_used_when_the_asset_names_none"
+    },
+    {
+      "id": "CR-012",
+      "status": "resolved",
+      "notes": "end-to-end tests for rows 9, 10, 11 and 13 added"
+    }
+  ]
+}

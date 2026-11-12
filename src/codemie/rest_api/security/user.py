@@ -19,13 +19,18 @@ from pydantic import BaseModel, Field, computed_field, model_validator
 
 from codemie.core.constants import Environment, DEMO_PROJECT
 from codemie.core.models import UserEntity
-from codemie.configs import config
+from codemie.configs import config, logger
 from codemie.rest_api.security.permissions import is_admin_or_maintainer
 
 DEMO_USER_ROLE = "demo_user"
 
 USER_ID_HEADER = "user-id"
 AUTHORIZATION_HEADER = "Authorization"
+
+
+def same_project_name(a: str | None, b: str | None) -> bool:
+    """Project names compare case-insensitively; empty values never match (EPMCDME-16625)."""
+    return bool(a) and bool(b) and a.casefold() == b.casefold()
 
 
 def resolve_default_project(project_names: Iterable[str], stored_default: str | None, email: str | None) -> str | None:
@@ -41,9 +46,36 @@ def resolve_default_project(project_names: Iterable[str], stored_default: str | 
     names = set(project_names)
     if not names:
         return None
-    if email and email in names:
-        return email
+    personal = next((name for name in sorted(names) if same_project_name(name, email)), None)
+    if personal:
+        return personal
     return min(names)
+
+
+def idp_workspace_name(project_names: Iterable[str], username: str | None) -> str | None:
+    """The username-named personal workspace IDP-claims mode creates when the claims list it (legacy_jwt)."""
+    return username if username and username in set(project_names) else None
+
+
+def derive_idp_default_project(project_names: Iterable[str], email: str | None, username: str | None) -> str | None:
+    """IDP-claims mode stores no default: the email-named personal project, else the username workspace,
+    else the first project by name (EPMCDME-16625 D8). Login and runs started without a request share it."""
+    names = list(project_names)
+    derived = resolve_default_project(names, None, email)
+    if same_project_name(derived, email):
+        return derived
+    return idp_workspace_name(names, username) or derived
+
+
+def personal_workspace_names(email: str | None, username: str | None, project_names: Iterable[str]) -> frozenset[str]:
+    """Names that denote the user's own personal budget rather than a project budget (EPMCDME-16625).
+
+    The email-named personal project always counts; in IDP-claims mode the username-named workspace does too.
+    """
+    names = {email} if email else set()
+    if not config.ENABLE_USER_MANAGEMENT and (workspace := idp_workspace_name(project_names, username)):
+        names.add(workspace)
+    return frozenset(names)
 
 
 def resolve_membership_default(memberships: Iterable[Any], email: str | None) -> str | None:
@@ -161,8 +193,22 @@ class User(BaseModel):
         """Check if user is external (temporary marketplace user)"""
         return self.user_type == config.EXTERNAL_USER_TYPE
 
+    def effective_default_project(self) -> str | None:
+        """The default project the UI shows and budget attribution tries first, or None without projects.
+
+        IDP-claims mode stores no default, so it is derived as attribution derives it: the UI then shows the
+        project that pays (EPMCDME-16625 AR-7; routing follows what the UI shows, EPMCDME-15738).
+        """
+        if config.ENABLE_USER_MANAGEMENT:
+            return resolve_default_project(self.project_names, self.default_project, self.email)
+        return self.default_project or derive_idp_default_project(
+            self.project_names, self.email or None, self.username or None
+        )
+
     @property
     def current_project(self) -> str:
+        # Not effective_default_project(): asset-less calls use this as their credentials project, and credentials
+        # keep their pre-EPMCDME-16625 choice (matrix row 18).
         return resolve_default_project(self.project_names, self.default_project, self.email) or DEMO_PROJECT
 
     def has_access_to_application(self, app_name: str) -> bool:
@@ -173,6 +219,18 @@ class User(BaseModel):
 
     def as_user_model(self) -> UserEntity:
         return UserEntity(user_id=self.id, name=self.name, username=self.username)
+
+
+def stand_in_user(user_id: str, *, component: str, auth_token: str | None = None) -> User:
+    """A user known only by id: no memberships and no project-admin rights (EPMCDME-16625 AR-3).
+
+    The model's ``['demo']`` default would count as a membership and bill the run to "demo"; without memberships
+    budget attribution charges the personal budget.
+    """
+    logger.info(f"budget_event=stand_in_owner component={component} user_id={user_id!r}")
+    return User(
+        id=user_id, username=user_id, name=user_id, project_names=[], admin_project_names=[], auth_token=auth_token
+    )
 
 
 class UserContext(BaseModel):

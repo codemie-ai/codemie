@@ -121,6 +121,9 @@ async def ask_virtual_assistant(
         is_react=True,
         creator=user.name,
     )
+    # The project above only selects credentials; the request is billed as asset-less, to the user's default
+    # project, as the IDE and the CLI do (EPMCDME-16625 row 12).
+    assistant._runtime_bills_as_asset_less = True
 
     tools_config = request.tools_config or AssistantService.prepare_tools_config_from_toolkits(assistant.toolkits)
 

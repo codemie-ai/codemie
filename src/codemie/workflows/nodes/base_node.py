@@ -26,6 +26,7 @@ from codemie.chains.base import (
     WorkflowStateEventType,
 )
 from codemie.configs import logger
+from codemie.core.dependecies import scoped_llm_context
 from codemie.core.exceptions import (
     MCPAuthenticationRequiredException,
     ModelAvailabilityException,
@@ -215,6 +216,15 @@ class BaseNode(ABC, Generic[StateSchemaType]):
         pass
 
     def __call__(self, state_schema: Type[StateSchemaType]):
+        """Run the node; its own LLM attribution is undone afterwards (EPMCDME-16625).
+
+        LangGraph runs a lone task inline in the caller's context, so a node's billing context would
+        otherwise be inherited by the nodes and workflow code that run after it.
+        """
+        with scoped_llm_context():
+            return self._call_node(state_schema)
+
+    def _call_node(self, state_schema: Type[StateSchemaType]):
         """Execute the node with full lifecycle management.
 
         This method orchestrates the complete node execution lifecycle including:

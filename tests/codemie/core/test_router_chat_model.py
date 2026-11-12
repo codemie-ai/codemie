@@ -402,3 +402,140 @@ class TestBuildChatModelFor:
         assert result.router is router
         assert result.candidates == {"gpt-smart-router": "client-gpt-smart-router"}
         assert result.default_model == "gpt-smart-router"
+
+
+class TestRoutedPayer:
+    """A routed chat reports the payer of the candidate that runs, not of the one built last (EPMCDME-16625)."""
+
+    @pytest.fixture
+    def llm_context(self):
+        from codemie.core.dependecies import litellm_context
+        from codemie.rest_api.models.settings import LiteLLMContext
+
+        context = LiteLLMContext(
+            credentials=None,
+            current_project="dept-a",
+            principal_email="user@example.com",
+            personal_project="user@example.com",
+            routing_project="dept-a",
+            budget_candidates=["dept-a", "dept-b"],
+        )
+        token = litellm_context.set(context)
+        yield context
+        litellm_context.reset(token)
+
+    @staticmethod
+    def _builds_charging(payers: dict):
+        """A get_llm_by_credentials stand-in whose build records the payer, as _record_direct_budget_attribution does."""
+        from codemie.core.dependecies import litellm_context
+
+        def build(*, llm_model, **kwargs):
+            payer = payers.get(llm_model)
+            if payer is not None:
+                context = litellm_context.get()
+                context.current_project, context.budget_fallback_kind = payer
+                context.budget_fallback_from = "dept-a" if payer[1] else None
+                context.budget_outcome_built = True
+            return _make_candidate(llm_model, f"reply from {llm_model}")
+
+        return build
+
+    def test_each_candidate_keeps_its_own_payer_and_the_context_names_the_default(self, monkeypatch, llm_context):
+        from codemie.core.router_chat_model import LLMParams
+
+        router = MagicMock()
+        router.candidate_models.return_value = ("sonnet", "haiku")
+        monkeypatch.setattr(
+            "codemie.core.dependecies.get_llm_by_credentials",
+            self._builds_charging({"sonnet": ("dept-a", None), "haiku": ("user@example.com", "personal")}),
+        )
+
+        result = build_chat_model_for(
+            router, model_name="router", request_id="req-1", llm_params=LLMParams(temperature=None, top_p=None)
+        )
+
+        assert result.payers["sonnet"].current_project == "dept-a"
+        assert result.payers["haiku"].current_project == "user@example.com"
+        assert result.payers["haiku"].budget_fallback_kind == "personal"
+        assert llm_context.current_project == "dept-a"
+        assert llm_context.budget_fallback_kind is None
+        assert llm_context.budget_outcome_built is True
+
+    @pytest.mark.asyncio
+    async def test_the_selected_candidate_payer_is_what_analytics_read(self, monkeypatch, llm_context):
+        from codemie.core.dependecies import get_current_project
+        from codemie.core.router_chat_model import LLMParams
+
+        decision = RoutingDecision(
+            model="haiku", tier="efficient", decision_source="llm_classifier", routing_family="switchyard"
+        )
+        router = _make_router(decision)
+        # The selected candidate is neither the default nor the one built last.
+        router.candidate_models.return_value = ("sonnet", "haiku", "opus")
+        monkeypatch.setattr(
+            "codemie.core.dependecies.get_llm_by_credentials",
+            self._builds_charging(
+                {"sonnet": ("dept-a", None), "haiku": ("user@example.com", "personal"), "opus": ("dept-b", None)}
+            ),
+        )
+        chat_model = build_chat_model_for(
+            router, model_name="router", request_id="req-1", llm_params=LLMParams(temperature=None, top_p=None)
+        )
+
+        await chat_model._agenerate([AIMessage(content="hi")])
+
+        assert get_current_project() == "user@example.com"
+        assert llm_context.budget_fallback_kind == "personal"
+        assert llm_context.budget_fallback_from == "dept-a"
+
+    def test_a_build_that_records_no_payer_is_not_credited_with_an_earlier_one(self, monkeypatch, llm_context):
+        from codemie.core.router_chat_model import LLMParams
+
+        llm_context.budget_outcome_built = True
+        router = MagicMock()
+        router.candidate_models.return_value = ("own-creds",)
+        monkeypatch.setattr("codemie.core.dependecies.get_llm_by_credentials", self._builds_charging({}))
+
+        result = build_chat_model_for(
+            router, model_name="router", request_id="req-1", llm_params=LLMParams(temperature=None, top_p=None)
+        )
+
+        assert result.payers == {"own-creds": None}
+        assert llm_context.current_project == "dept-a"
+
+    @pytest.mark.asyncio
+    async def test_a_payer_built_for_another_request_is_not_restored(self, monkeypatch, llm_context):
+        from codemie.core.dependecies import BuiltPayer
+
+        router = _make_router(decision=None)
+        stale = BuiltPayer(
+            request=("other@example.com", "dept-a", ("dept-a",)),
+            current_project="other@example.com",
+            budget_fallback_from="dept-a",
+            budget_fallback_kind="personal",
+            budget_funding_unknown=False,
+        )
+        chat_model = RouterChatModel(
+            router=router,
+            candidates={"sonnet": _make_candidate("sonnet", "reply")},
+            default_model="sonnet",
+            payers={"sonnet": stale},
+        )
+
+        await chat_model._agenerate([AIMessage(content="hi")])
+
+        assert llm_context.current_project == "dept-a"
+        assert llm_context.budget_fallback_kind is None
+
+    def test_bind_tools_keeps_the_payers(self):
+        payer = object()
+        candidate = MagicMock()
+        candidate.bind_tools.return_value = candidate
+        chat_model = RouterChatModel(
+            router=_make_router(None),
+            candidates={"sonnet": candidate},
+            default_model="sonnet",
+            payers={"sonnet": payer},
+        )
+
+        assert chat_model.bind_tools([]).payers == {"sonnet": payer}

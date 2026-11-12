@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "task": "Unify budget attribution (target -> default project -> personal) across web/in-app and CLI/IDE proxy paths, workflows, sub-assistants, indexing and triggers, with web/CLI personal-budget identity unification and analytics fallback-kind.",
+  "generated": "2026-10-30",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 25,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base XL (5): new shared resolver under service/budget plus llm_service/utils, llm_factory, proxy_router, User default derivation, trigger user resolution, LiteLLMContext, monitoring and usage_attribution readers, and ~15 set_llm_context call sites. Bumped to XXL for touching core shared utilities and multiple workflows/agents." },
+    { "dimension": "technical_risk", "reason": "Money-attribution and budget enforcement are security-relevant. Web (email) and CLI (username) customer ids must be unified, which affects existing LiteLLM customer and spend continuity. Funded-probe SQL is triplicated, the contextvar is overwritten in build_agent_for_workflow, and there are sync/async twins and a 60s cache. Base L (4), bumped to XL for the security/compliance flag." },
+    { "dimension": "file_change_estimate", "reason": "Estimated 15-25 source files plus a large test surface across llm_service, enterprise/litellm, service/budget, rest_api/security, triggers, monitoring, usage_attribution and datasource processors." },
+    { "dimension": "affected_layers", "reason": "API call sites, Service, Repository (funded SQL), Workflow, Agent-Tool and External (LiteLLM, CLI proxy), plus analytics. No schema migration is expected." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL: touches core shared utilities (set_llm_context, LiteLLMContext) and affects multiple workflows, agents and triggers",
+    "Technical Risk bumped from L to XL: security/compliance (budget enforcement) and authorization-adjacent attribution; MR must request /sanity"
+  ],
+  "split_recommendation": null
+}

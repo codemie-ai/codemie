@@ -32,6 +32,7 @@ from codemie.core.constants import (
     PROJECT,
 )
 from codemie.rest_api.security.user import User
+from codemie.service.budget.attribution_resolver import FallbackKind
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService, limit_string
 from codemie.service.monitoring.metrics_constants import MetricsAttributes
 
@@ -354,7 +355,7 @@ class LLMProxyMonitoringService(BaseMonitoringService):
 
     # Keys in request_info that must never appear in logs or metric attributes.
     _SENSITIVE_REQUEST_INFO_KEYS = frozenset(
-        {"budget_provider_api_key", "budget_provider_headers", "budget_provider_base_url"}
+        {"budget_provider_api_key", "budget_provider_headers", "budget_provider_base_url", "cli_requested_project"}
     )
 
     @classmethod
@@ -523,10 +524,15 @@ class LLMProxyMonitoringService(BaseMonitoringService):
             # explicit llm_model argument (e.g. a LiteLLM-router-routed model) with
             # request_info's pre-request snapshot. The explicit argument must win.
             attributes[MetricsAttributes.LLM_MODEL] = llm_model
-            if request_info.get(MetricsAttributes.BUDGET_FALLBACK_FROM):
-                # The project had no budget for this user: personal/default paid, so analytics
-                # must show the personal identity; the original project stays in budget_fallback_from.
-                attributes[MetricsAttributes.PROJECT] = user.username
+            fallback_kind = request_info.get(MetricsAttributes.BUDGET_FALLBACK_KIND)
+            if (
+                request_info.get(MetricsAttributes.BUDGET_FALLBACK_FROM)
+                and fallback_kind != FallbackKind.DEFAULT_PROJECT
+            ):
+                # The personal budget paid, so analytics show the personal project, named as on the web path; the
+                # original project stays in budget_fallback_from. A default-project charge keeps that project
+                # (EPMCDME-16625).
+                attributes[MetricsAttributes.PROJECT] = user.email or user.username
 
             cls.send_count_metric(
                 name=LLM_PROXY_USAGE,

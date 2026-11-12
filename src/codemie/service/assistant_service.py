@@ -664,7 +664,8 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         # Read via the safe helper: a DB-loaded assistant has no Pydantic private storage, so getattr raises.
         is_builtin_clone = LangGraphAssistantBuilder._safe_get_runtime_attr(assistant, "_runtime_builtin_subagent")
         llm_model = resolve_assistant_model(assistant, user_pick, report_fallback=is_builtin_clone is None)
-        # The LiteLLM budget scope is decided for the model the agent actually runs on.
+        # The LiteLLM budget scope is decided for the model the agent actually runs on: a conversation override can
+        # move it to another budget category than the saved model, and models built below fix their billing headers.
         set_llm_context(assistant, None, user, llm_model)
 
         is_react = llm_model in llm_service.get_react_llms()
@@ -932,8 +933,13 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         assistant = cls._load_and_configure_workflow_assistant(
             workflow_assistant, user, project_name, execution_id, owner_user_id=owner_user_id
         )
+        # Billing follows the saved assistant itself (rows 1-8 for the user who started the run); only an inline
+        # assistant belongs to the marketplace workflow and is billed as global (EPMCDME-16625 rows 10-11).
+        billing_asset = assistant
         if is_global and not assistant.is_global:
             assistant = assistant.model_copy(update={"is_global": True})
+            if not workflow_assistant.assistant_id:
+                billing_asset = assistant
 
         llm_model = assistant.llm_model_type
         is_react = assistant.is_react
@@ -949,7 +955,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             f"request_uuid: {request_uuid}"
         )
 
-        set_llm_context(assistant, None, user)
+        set_llm_context(billing_asset, None, user, credentials_asset=assistant)
         set_disable_prompt_cache(disable_cache)
 
         # Build request with workflow context
@@ -1061,6 +1067,8 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
                 ),
                 build_context=SubagentBuildContext.root(BuildChannel.WORKFLOW),
             )
+            # The agent re-applies the LLM context on every invocation; keep it on the saved assistant.
+            agent_kwargs["billing_assistant"] = billing_asset
 
         agent = agent_class(**agent_kwargs)
 

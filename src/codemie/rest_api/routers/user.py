@@ -76,9 +76,11 @@ def _get_user_response(user: User) -> UserResponse:
             default_project = resolve_membership_default(user_projects, user.email)
             default_projects = {default_project} if default_project else set()
         else:
-            # Legacy path: derive from security context (IDP mode); no default-project concept
+            # Legacy path: derive from security context (IDP mode). Its default is derived, never stored: show the
+            # one budget attribution charges first (EPMCDME-16625 AR-7).
             project_admin_map = {name: name in user.admin_project_names for name in user.project_names}
-            default_projects = set()
+            default_project = user.effective_default_project()
+            default_projects = {default_project} if default_project else set()
 
         display_name_map = dict(
             session.exec(

@@ -308,10 +308,12 @@ async def test_authenticate_with_valid_hmac_signature(mocker):
     mock_request.state = MagicMock()
 
     mock_user = User(id=user_id, username=user_id, name=user_id)
-    with patch.object(LocalIdp, 'authenticate', new_callable=AsyncMock, return_value=mock_user):
+    with patch.object(LocalIdp, 'authenticate', new_callable=AsyncMock, return_value=mock_user) as local_auth:
         user = await authenticate(mock_request, internal_user_id=user_id, bind_key=headers["X-Bind-Key"])
 
     assert user.id == user_id
+    # Only the signed branch may read the owner's IDP-claims snapshot (EPMCDME-16625 AR-5)
+    assert local_auth.await_args.kwargs["signed_loopback"] is True
 
 
 @pytest.mark.anyio

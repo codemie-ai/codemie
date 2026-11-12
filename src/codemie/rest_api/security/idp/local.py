@@ -19,7 +19,7 @@ from fastapi import Request, status
 from codemie.configs import config, logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.idp.base import BaseIdp
-from codemie.rest_api.security.user import User, USER_ID_HEADER, AUTHORIZATION_HEADER, resolve_membership_default
+from codemie.rest_api.security.user import User, USER_ID_HEADER, AUTHORIZATION_HEADER, stand_in_user
 
 _LOCAL_MOCK_JWT_SECRET = "codemie-local-dev-only-not-for-production"
 
@@ -67,13 +67,26 @@ class LocalIdp(BaseIdp):
             details="User is not active",
         )
 
-    async def authenticate(self, request: Request, *, allow_stand_in: bool = True) -> User:
+    def _user_without_active_row(
+        self, user_id: str, auth_token: str, *, has_row: bool, allow_stand_in: bool, signed_loopback: bool
+    ) -> User:
+        """The user for an id with no active users row: refused when deactivated, else a stand-in."""
+        # A deactivated user has no access, also not through signed trigger callbacks
+        if not allow_stand_in or has_row:
+            raise self._user_not_active()
+        return stand_in_user(user_id, component=_stand_in_component(signed_loopback), auth_token=auth_token)
+
+    async def authenticate(
+        self, request: Request, *, allow_stand_in: bool = True, signed_loopback: bool = False
+    ) -> User:
         """Authenticate using user-id header
 
         Args:
             request: FastAPI request object with user-id header
             allow_stand_in: False for signed internal callbacks with user management on, which
                 get a stand-in user only on ENV local and otherwise need an active user row
+            signed_loopback: True only for HMAC-signed internal callbacks. Only those may read an
+                owner's IDP-claims snapshot (EPMCDME-16625 AR-5); a bare header never does.
 
         Returns:
             User object populated from DB when available, stub otherwise
@@ -99,46 +112,29 @@ class LocalIdp(BaseIdp):
             return User(id=user_id, username=user_id, name=user_id, auth_token=auth_token)
 
         from codemie.clients.postgres import get_async_session
-        from codemie.repository.user_kb_repository import user_kb_repository
-        from codemie.repository.user_project_repository import user_project_repository
-        from codemie.repository.user_repository import user_repository
+        from codemie.service.user.user_by_id_loader import aload_user_by_id
 
         try:
             async with get_async_session() as session:
-                db_user = await user_repository.aget_active_by_id(session, user_id)
-                if db_user is None:
-                    # A deactivated user has no access, also not through signed trigger callbacks
-                    if not allow_stand_in or await user_repository.aget_by_id(session, user_id) is not None:
-                        raise self._user_not_active()
-                    return User(id=user_id, username=user_id, name=user_id, auth_token=auth_token)
-
-                projects = await user_project_repository.aget_by_user_id(session, db_user.id)
-                kbs = await user_kb_repository.aget_by_user_id(session, db_user.id)
-
-            default_project = resolve_membership_default(projects, db_user.email)
-            return User(
-                id=db_user.id,
-                username=db_user.username,
-                name=db_user.name or "",
-                email=db_user.email,
-                picture=db_user.picture or "",
-                user_type=db_user.user_type,
-                roles=[],
-                project_names=[p.project_name for p in projects],
-                admin_project_names=[p.project_name for p in projects if p.is_project_admin],
-                default_project=default_project,
-                knowledge_bases=[kb.kb_name for kb in kbs],
-                is_admin=db_user.is_admin,
-                is_maintainer=db_user.is_maintainer,
-                is_auditor=db_user.is_auditor,
-                project_limit=db_user.project_limit,
-                auth_token=auth_token,
-            )
-        except ExtendedHTTPException:
-            raise
+                lookup = await aload_user_by_id(session, user_id, with_snapshot=signed_loopback)
         except Exception as e:
             if not allow_stand_in:
                 logger.warning(f"LocalIdp: DB lookup failed for internal call, user_id='{user_id}': {e}")
                 raise self._user_not_active() from e
             logger.warning(f"LocalIdp: DB lookup failed for user_id='{user_id}', falling back to stub user: {e}")
-            return User(id=user_id, username=user_id, name=user_id, auth_token=auth_token)
+            return stand_in_user(user_id, component=_stand_in_component(signed_loopback), auth_token=auth_token)
+
+        if lookup.user is None:
+            return self._user_without_active_row(
+                user_id,
+                auth_token,
+                has_row=lookup.has_row,
+                allow_stand_in=allow_stand_in,
+                signed_loopback=signed_loopback,
+            )
+        lookup.user.auth_token = auth_token
+        return lookup.user
+
+
+def _stand_in_component(signed_loopback: bool) -> str:
+    return "local_idp_loopback" if signed_loopback else "local_idp"

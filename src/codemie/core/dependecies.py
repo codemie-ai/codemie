@@ -15,13 +15,16 @@
 import boto3
 import contextvars
 import json
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from botocore.config import Config
 from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_elasticsearch import ElasticsearchStore
 from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
 from openai.lib.azure import AzureOpenAI
-from typing import Optional, Any
+from typing import Optional, Any, TypeVar
 
 from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
 from codemie.clients.elasticsearch import ElasticSearchClient
@@ -39,6 +42,8 @@ from codemie.core.models import ElasticSearchKwargs, GitRepo, SVNRepo, CodeField
 from codemie.service.llm.model_availability_service import ProjectModelPolicy
 from codemie.rest_api.models.settings import DialCredentials, LiteLLMContext
 from codemie.service.llm_service.llm_service import llm_service, LLMService
+
+T = TypeVar("T")
 
 
 def get_embeddings_model(
@@ -140,6 +145,80 @@ def set_litellm_context(context: LiteLLMContext | None):
         litellm_context.set(context)
 
 
+@contextmanager
+def scoped_llm_context() -> Iterator[None]:
+    """Undo LLM attribution and credentials set inside the block once it exits.
+
+    A nested asset (sub-assistant prebuild, workflow node) sets its own context; without this the caller's
+    later model builds and metrics would be charged by the nested asset's attribution (EPMCDME-16625).
+    """
+    # A copy, because model construction updates the context in place (_record_direct_budget_attribution).
+    parent = litellm_context.get(None)
+    litellm_token = litellm_context.set(parent.model_copy() if parent is not None else None)
+    dial_token = dial_credentials.set(dial_credentials.get(None))
+    try:
+        yield
+    finally:
+        dial_credentials.reset(dial_token)
+        litellm_context.reset(litellm_token)
+
+
+@dataclass(frozen=True, slots=True)
+class BuiltPayer:
+    """The payer one model's construction recorded, restored when that model is the one called (EPMCDME-16625).
+
+    A routed chat builds every candidate up front and each build records its own payer. Analytics must name the
+    payer of the candidate that actually runs, not of the one built last.
+    """
+
+    request: tuple
+    current_project: str | None
+    budget_fallback_from: str | None
+    budget_fallback_kind: str | None
+    budget_funding_unknown: bool
+
+
+def _request_of(context: LiteLLMContext) -> tuple:
+    return context.principal_email, context.routing_project, tuple(context.budget_candidates or ())
+
+
+def build_with_payer(build: Callable[[], T]) -> tuple[T, BuiltPayer | None]:
+    """Build one model in its own copy of the context and return the payer that build recorded, if any.
+
+    The copy starts with no recorded outcome, so a build that records none (own credentials) is not credited with
+    an earlier build's payer. The caller's context is left as it was.
+    """
+    parent = litellm_context.get(None)
+    scoped = parent.model_copy(update={"budget_outcome_built": False}) if parent is not None else None
+    token = litellm_context.set(scoped)
+    try:
+        model = build()
+        context = litellm_context.get(None)
+        if context is None or not context.budget_outcome_built:
+            return model, None
+        return model, BuiltPayer(
+            request=_request_of(context),
+            current_project=context.current_project,
+            budget_fallback_from=context.budget_fallback_from,
+            budget_fallback_kind=context.budget_fallback_kind,
+            budget_funding_unknown=context.budget_funding_unknown,
+        )
+    finally:
+        litellm_context.reset(token)
+
+
+def restore_built_payer(payer: BuiltPayer | None) -> None:
+    """Make the current context name *payer* when it describes the same request; otherwise leave it as it is."""
+    context = litellm_context.get(None)
+    if payer is None or context is None or _request_of(context) != payer.request:
+        return
+    context.current_project = payer.current_project
+    context.budget_fallback_from = payer.budget_fallback_from
+    context.budget_fallback_kind = payer.budget_fallback_kind
+    context.budget_funding_unknown = payer.budget_funding_unknown
+    context.budget_outcome_built = True
+
+
 def get_current_project(fallback: str | None = None) -> str:
     """Get the billing-aware project from the current LiteLLM context.
 
@@ -157,6 +236,18 @@ def get_budget_fallback_from() -> str | None:
     """Project whose budget was expected but that fell back to personal/default for this request."""
     ctx = litellm_context.get(None)
     return ctx.budget_fallback_from if ctx else None
+
+
+def get_budget_fallback_kind() -> str | None:
+    """Where a fallen-back request was charged: 'default_project' or 'personal' (EPMCDME-16625)."""
+    ctx = litellm_context.get(None)
+    return ctx.budget_fallback_kind if ctx else None
+
+
+def get_budget_funding_unknown() -> bool:
+    """Whether a funded check failed when this request's payer was decided (EPMCDME-16625 final review AR-2)."""
+    ctx = litellm_context.get(None)
+    return bool(ctx and ctx.budget_funding_unknown)
 
 
 def get_project_for_metric() -> str:
@@ -220,13 +311,23 @@ def _should_wrap_llm_client(llm_model_details: LLMModel, llm: Any) -> bool:
 
 
 def _resolve_username(username: str | None) -> str | None:
-    if not username or username in ("-", "unknown"):
-        from codemie.rest_api.security.user_context import get_current_user
+    """LiteLLM personal customer id for this request: the username, as budget provisioning and the CLI use.
 
-        current_user = get_current_user()
+    A caller that still logs the current user's email is mapped to their username, so both mean the same personal
+    budget (EPMCDME-16625 D9). Other identities are kept as given.
+    """
+    from codemie.rest_api.security.user_context import get_current_user
+
+    current_user = get_current_user()
+    if not username or username in ("-", "unknown"):
         if current_user:
             return current_user.username or current_user.email or None
+        return username
 
+    email = getattr(current_user, "email", None) if current_user else None
+    current_username = getattr(current_user, "username", None) if current_user else None
+    if current_username and email and username.casefold() == email.casefold():
+        return current_username
     return username
 
 

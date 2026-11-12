@@ -204,6 +204,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         tree_requires_confirmation: bool = False,
         can_resume_pause: bool = False,
         received_request: AssistantChatRequest | None = None,
+        billing_assistant: Optional[AssistantBase] = None,
     ):
         ensure_langgraph_supervisor_compatibility()
 
@@ -241,6 +242,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self.supervisor_callbacks = supervisor_callbacks or []
         self.output_schema = self._preprocess_output_schema(output_schema) if output_schema else None
         self.assistant = assistant
+        # A workflow node runs a global copy of a saved assistant; billing still follows the saved one (EPMCDME-16625).
+        self.billing_assistant = billing_assistant
         self.override_global_checkpointer = override_global_checkpointer
         self.trace_context = trace_context
         self._origin = current_origin()
@@ -310,6 +313,11 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self._callback_bridge = LangGraphCallbackBridge(self, get_logger=lambda: logger)
         self._event_adapter = LangGraphEventAdapter(self)
         self._buffered_supervisor_contexts: dict[str, list[_SupervisorChunkContext]] = {}
+
+    @property
+    def llm_context_asset(self) -> Optional[AssistantBase]:
+        """The asset LLM requests are attributed to: the saved assistant when a workflow runs a global copy of it."""
+        return getattr(self, "billing_assistant", None) or self.assistant
 
     @property
     def _handoff_run_ids(self) -> dict[str, HandoffRunBinding]:
@@ -726,7 +734,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         if history is None:
             history = []
         try:
-            set_llm_context(self.assistant, None, self.user, self.llm_model)
+            set_llm_context(self.llm_context_asset, None, self.user, self.llm_model, credentials_asset=self.assistant)
             inputs = self._get_inputs(input, history)
             inputs.update(args)
             response = self._invoke_agent(inputs)
@@ -764,7 +772,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         # No lock needed: AgentNode.generate_execution_context always builds a fresh instance per call
         # (init_agent_node never passes assistant=), so _last_truncated is never shared across concurrent branches.
         self._last_truncated = False
-        set_llm_context(self.assistant, None, self.user, self.llm_model)
+        set_llm_context(self.llm_context_asset, None, self.user, self.llm_model, credentials_asset=self.assistant)
         logger.debug(
             f"Invoking workflow task. Agent={self.agent_name}, "
             f"Input={self._truncate_log_content(workflow_input)}, "
@@ -808,7 +816,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             # Clear previous errors before new execution
             self.tool_error_callback.clear()
 
-            set_llm_context(self.assistant, None, self.user, self.llm_model)
+            set_llm_context(self.llm_context_asset, None, self.user, self.llm_model, credentials_asset=self.assistant)
             response = self._invoke_agent(self._get_inputs())
             output = response.generated
 
@@ -891,7 +899,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 conversation_id=self.conversation_id,
                 username=self.user.username,
             )
-            set_llm_context(self.assistant, None, self.user, self.llm_model)
+            set_llm_context(self.llm_context_asset, None, self.user, self.llm_model, credentials_asset=self.assistant)
 
             execution_start = time()
             chunks_collector = []
@@ -1361,7 +1369,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
 
     def _invoke_agent(self, inputs) -> GenerationResult:
         logger.debug(f"Invoking task. Agent={self.agent_name}. Inputs={self._serialize_inputs_for_log(inputs)}")
-        set_llm_context(self.assistant, None, self.user, self.llm_model)
+        set_llm_context(self.llm_context_asset, None, self.user, self.llm_model, credentials_asset=self.assistant)
         try:
             import contextlib
 

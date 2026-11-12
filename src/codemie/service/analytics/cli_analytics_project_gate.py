@@ -52,7 +52,7 @@ from codemie.repository.cli_analytics.ports import (
     TelemetryStorageUnavailableError,
 )
 from codemie.repository.user_project_repository import user_project_repository
-from codemie.rest_api.security.user import User, resolve_default_project
+from codemie.rest_api.security.user import User
 from codemie.rest_api.security.user_type_validator import is_personal_project_excluded
 from codemie.service.project.personal_project_service import personal_project_service
 from codemie.service.project.repository_registration_service import RepositoryRegistrationRepository
@@ -283,7 +283,7 @@ async def _shared_route(
                 if application is not None:
                     return application, ORIGIN_REGISTERED, ""
                 note = note or NOTE_REGISTERED_INACCESSIBLE
-            default = resolve_default_project(user.project_names, user.default_project, user.email)
+            default = user.effective_default_project()
             if default is None:
                 return None, ORIGIN_DEFAULT, note
             application = await _routable(session, user, default)

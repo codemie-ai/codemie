@@ -16,11 +16,22 @@
 Tests for LiteLLM context functionality in llm_service utils module.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from codemie.service.llm_service.utils import _resolve_effective_project, set_llm_context
+import pytest
+
+from codemie.service.llm_service.utils import _litellm_budgets_active as _real_budgets_active
+from codemie.service.llm_service.utils import set_llm_context
 from codemie.rest_api.models.settings import LiteLLMCredentials, LiteLLMContext
 from codemie.rest_api.security.user import User
+
+
+@pytest.fixture(autouse=True)
+def _litellm_budgets_active():
+    """Budget attribution runs only in LiteLLM mode; tests that need the other mode patch it back."""
+    with patch('codemie.service.llm_service.utils._litellm_budgets_active', return_value=True) as active:
+        yield active
 
 
 def _make_user(email: str = "user@test.com") -> MagicMock:
@@ -51,6 +62,9 @@ class TestSetLLMContext:
         mock_user = MagicMock()
         mock_user.id = user_id
         mock_user.email = "user@test.com"
+        mock_user.project_names = [project_name]
+        mock_user.admin_project_names = []
+        mock_user.default_project = None
 
         # Mock LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -97,6 +111,9 @@ class TestSetLLMContext:
         mock_user = MagicMock()
         mock_user.id = user_id
         mock_user.email = "user@test.com"
+        mock_user.project_names = [project_name]
+        mock_user.admin_project_names = []
+        mock_user.default_project = None
 
         # Mock None LiteLLM credentials
         mock_settings_service.get_litellm_creds.return_value = None
@@ -140,6 +157,9 @@ class TestSetLLMContext:
         mock_user = MagicMock()
         mock_user.id = user_id
         mock_user.email = "user@test.com"
+        mock_user.project_names = [project_name]
+        mock_user.admin_project_names = []
+        mock_user.default_project = None
 
         # Mock LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -183,6 +203,9 @@ class TestSetLLMContext:
         mock_user = MagicMock()
         mock_user.id = user_id
         mock_user.email = "user@test.com"
+        mock_user.project_names = [project_name]
+        mock_user.admin_project_names = []
+        mock_user.default_project = None
 
         # Mock exception in get_litellm_creds
         mock_settings_service.get_litellm_creds.side_effect = Exception("LiteLLM service error")
@@ -220,6 +243,9 @@ class TestSetLLMContext:
         mock_user = MagicMock()
         mock_user.id = user_id
         mock_user.email = "user@test.com"
+        mock_user.project_names = [project_name]
+        mock_user.admin_project_names = []
+        mock_user.default_project = None
 
         # Mock successful LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -267,6 +293,9 @@ class TestSetLLMContext:
         mock_user = MagicMock()
         mock_user.id = user_id
         mock_user.email = "user@test.com"
+        mock_user.project_names = [project_name]
+        mock_user.admin_project_names = []
+        mock_user.default_project = None
 
         # Mock successful credential retrieval
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -302,137 +331,7 @@ class TestSetLLMContext:
         assert "Context setting error" in warning_message
 
 
-class TestResolveEffectiveProjectSharing:
-    def test_global_asset_not_a_member_uses_default_project(self):
-        """AC2: not a member, has default project -> charged to default project."""
-        asset = MagicMock(spec=['project', 'is_global'])
-        asset.project = "assistant-project"
-        asset.is_global = True
-        user = _make_user()
-        user.default_project = "my-default-project"
-
-        result = _resolve_effective_project(asset, None, user)
-
-        assert result == "my-default-project"
-
-    def test_global_asset_not_a_member_no_default_falls_back_to_email(self):
-        """AC3: not a member, no default -> personal fallback unchanged."""
-        asset = MagicMock(spec=['project', 'is_global'])
-        asset.project = "assistant-project"
-        asset.is_global = True
-        user = _make_user()
-        user.default_project = None
-
-        result = _resolve_effective_project(asset, None, user)
-
-        assert result == user.email
-
-    def test_global_asset_membership_wins_over_different_default(self):
-        """AC7: member of asset's project AND has a different default -> asset's project wins."""
-        asset = MagicMock(spec=['project', 'is_global'])
-        asset.project = "assistant-project"
-        asset.is_global = True
-        user = _make_user()
-        user.project_names = ["assistant-project"]
-        user.default_project = "some-other-project"
-
-        result = _resolve_effective_project(asset, None, user)
-
-        assert result == "assistant-project"
-
-    def test_shared_assistant_returns_project(self):
-        asset = MagicMock()
-        asset.project = "proj-a"
-        asset.shared = True
-        asset.is_global = False
-        user = _make_user()
-
-        result = _resolve_effective_project(asset, None, user)
-
-        assert result == "proj-a"
-
-    def test_private_assistant_returns_project(self):
-        asset = MagicMock()
-        asset.project = "proj-a"
-        asset.shared = False
-        asset.is_global = False
-        user = _make_user()
-
-        result = _resolve_effective_project(asset, None, user)
-
-        assert result == "proj-a"
-
-    def test_shared_workflow_config_returns_project(self):
-        asset = MagicMock()
-        asset.project = "proj-b"
-        asset.shared = True
-        asset.is_global = False
-        user = _make_user()
-
-        result = _resolve_effective_project(asset, None, user)
-
-        assert result == "proj-b"
-
-    def test_private_workflow_config_returns_project(self):
-        asset = MagicMock()
-        asset.project = "proj-b"
-        asset.shared = False
-        asset.is_global = False
-        user = _make_user()
-
-        result = _resolve_effective_project(asset, None, user)
-
-        assert result == "proj-b"
-
-    def test_shared_index_info_returns_project_name(self):
-        # IndexInfo has project_name (not project) and project_space_visible (not shared).
-        # Use spec to ensure getattr(asset, 'shared', None) returns None (not a MagicMock).
-        asset = MagicMock(spec=['id', 'project_name', 'project_space_visible'])
-        asset.project_name = "proj-c"
-        asset.project_space_visible = True
-        user = _make_user()
-
-        result = _resolve_effective_project(asset, None, user)
-
-        assert result == "proj-c"
-
-    def test_private_index_info_returns_project_name(self):
-        asset = MagicMock(spec=['id', 'project_name', 'project_space_visible'])
-        asset.project_name = "proj-c"
-        asset.project_space_visible = False
-        user = _make_user()
-
-        result = _resolve_effective_project(asset, None, user)
-
-        assert result == "proj-c"
-
-    def test_flag_disabled_private_asset_still_returns_project(self):
-        asset = MagicMock()
-        asset.project = "proj-d"
-        asset.shared = False
-        asset.is_global = False
-        user = _make_user()
-
-        with patch('codemie.service.llm_service.utils.config') as mock_config:
-            mock_config.LLM_PROXY_SHARED_ASSET_PROJECT_BUDGET_ROUTING_ENABLED = False
-            result = _resolve_effective_project(asset, None, user)
-
-        assert result == "proj-d"
-
-    def test_none_asset_returns_fallback_project_name(self):
-        user = _make_user()
-
-        result = _resolve_effective_project(None, "fallback-proj", user)
-
-        assert result == "fallback-proj"
-
-    def test_none_asset_none_fallback_returns_none(self):
-        user = _make_user()
-
-        result = _resolve_effective_project(None, None, user)
-
-        assert result is None
-
+class TestSetLLMContextProjectSelection:
     @patch('codemie.service.llm_service.utils.set_litellm_context')
     @patch('codemie.service.llm_service.utils.set_dial_credentials')
     @patch('codemie.service.llm_service.utils.SettingsService')
@@ -461,6 +360,7 @@ class TestResolveEffectiveProjectSharing:
         asset.shared = False
         asset.is_global = False
         user = _make_user()
+        user.project_names = ["proj-a"]
 
         set_llm_context(asset, None, user)
 
@@ -488,6 +388,7 @@ class TestResolveEffectiveProjectSharing:
         asset.shared = True
         asset.is_global = False
         user = _make_user()
+        user.project_names = ["proj-a"]
 
         set_llm_context(asset, None, user)
 
@@ -518,6 +419,7 @@ class TestResolveEffectiveProjectSharing:
         asset.shared = True  # shared asset — normally nulls creds
         asset.is_global = False  # not a marketplace assistant
         user = _make_user()
+        user.project_names = ["other-project"]
 
         set_llm_context(asset, None, user)
 
@@ -545,6 +447,7 @@ class TestResolveEffectiveProjectSharing:
         asset.shared = False
         asset.is_global = False
         user = _make_user()
+        user.project_names = ["proj-a"]
 
         set_llm_context(asset, None, user)
 
@@ -566,6 +469,7 @@ class TestResolveEffectiveProjectSharing:
         asset.shared = True
         asset.is_global = False
         user = _make_user()
+        user.project_names = ["proj-a"]
 
         set_llm_context(asset, None, user)
 
@@ -663,7 +567,8 @@ class TestUnfundedProjectAtContextCreation:
         assert result is None
         probe.assert_not_called()
 
-    def test_probe_failure_keeps_original_attribution(self):
+    def test_probe_failure_is_reported_as_unknown_funding(self):
+        """A failed funded check propagates, so the resolver walks on exactly as on the CLI (EPMCDME-16625 AR-1)."""
         from codemie.service.llm_service.utils import _unfunded_project
 
         with (
@@ -673,8 +578,39 @@ class TestUnfundedProjectAtContextCreation:
                 side_effect=RuntimeError("db down"),
             ),
             patch("codemie.service.llm_service.utils.config.LLM_PROXY_MODE", "lite_llm"),
+            pytest.raises(RuntimeError, match="db down"),
         ):
-            assert _unfunded_project("proj-c", None, self._user()) is None
+            _unfunded_project("proj-c", None, self._user(), "gpt-4.1")
+
+    def test_probe_failure_walks_to_the_default_project(self):
+        from codemie.service.budget.attribution_resolver import (
+            AssetKind,
+            FallbackKind,
+            attribution_input_for_user,
+            resolve_attribution,
+        )
+
+        user = SimpleNamespace(
+            id="u-1",
+            email="carol@example.com",
+            username="carol",
+            project_names=["proj-c", "proj-d"],
+            admin_project_names=[],
+            default_project="proj-d",
+        )
+
+        def is_funded(project: str) -> bool:
+            if project == "proj-c":
+                raise RuntimeError("db down")
+            return True
+
+        inp = attribution_input_for_user(user, kind=AssetKind.PROJECT_ASSET, asset_project="proj-c")
+        decision = resolve_attribution(inp, is_funded)
+
+        assert decision.charged_project == "proj-d"
+        assert decision.fallback_kind is FallbackKind.DEFAULT_PROJECT
+        assert decision.funding_unknown is True
+        assert decision.candidates == ("proj-c", "proj-d")
 
     @patch("codemie.service.llm_service.utils.set_dial_credentials")
     @patch("codemie.service.llm_service.utils.set_litellm_context")
@@ -723,3 +659,504 @@ class TestUnfundedProjectIsCategoryAware:
         from codemie.service.budget.budget_enums import BudgetCategory
 
         assert self._run({BudgetCategory.CLI}, llm_model=None) is None
+
+
+class TestAttributionMatrixWiring:
+    """EPMCDME-16625: set_llm_context charges target -> default project -> personal via the shared resolver."""
+
+    @staticmethod
+    def _user(default="team-d", members=("team-a", "team-d")):
+        return User(
+            id="u-1",
+            username="carol",
+            email="carol@example.com",
+            project_names=list(members),
+            default_project=default,
+        )
+
+    @staticmethod
+    def _asset(project="team-a", is_global=False, shared=False):
+        asset = MagicMock(spec=['project', 'is_global', 'shared', 'llm_model_type', 'id'])
+        asset.project = project
+        asset.is_global = is_global
+        asset.shared = shared
+        asset.llm_model_type = None
+        return asset
+
+    @staticmethod
+    def _ctx(asset, user, funded, fallback=None):
+        def fake_unfunded(project, creds, u, model=None):
+            return None if project in funded else project
+
+        with (
+            patch('codemie.service.llm_service.utils.set_litellm_context') as set_ctx,
+            patch('codemie.service.llm_service.utils.set_dial_credentials'),
+            patch('codemie.service.llm_service.utils.SettingsService') as settings,
+            patch('codemie.service.llm_service.utils._unfunded_project', side_effect=fake_unfunded) as unfunded,
+        ):
+            settings.get_litellm_creds.return_value = None
+            set_llm_context(asset, fallback, user)
+        return set_ctx.call_args[0][0], unfunded
+
+    def test_marketplace_assistant_member_charges_default_project(self):
+        ctx, _ = self._ctx(self._asset(is_global=True), self._user(), {"team-a", "team-d"})
+
+        assert ctx.current_project == "team-d"
+        assert ctx.budget_fallback_from is None
+        assert ctx.budget_fallback_kind is None
+
+    def test_marketplace_assistant_nonmember_charges_default_project(self):
+        user = self._user(members=("team-d",))
+
+        ctx, _ = self._ctx(self._asset(project="foreign", is_global=True), user, {"foreign", "team-d"})
+
+        assert ctx.current_project == "team-d"
+
+    def test_marketplace_default_unfunded_falls_to_personal_recorded_from_default(self):
+        ctx, _ = self._ctx(self._asset(is_global=True), self._user(), set())
+
+        assert ctx.current_project == "carol@example.com"
+        assert ctx.budget_fallback_from == "team-d"
+        assert ctx.budget_fallback_kind == "personal"
+
+    def test_shared_assistant_nonmember_never_charges_asset_project(self):
+        user = self._user(members=("team-d",))
+
+        ctx, unfunded = self._ctx(self._asset(project="foreign", shared=True), user, {"foreign", "team-d"})
+
+        assert ctx.current_project == "team-d"
+        assert "foreign" not in [call.args[0] for call in unfunded.call_args_list]
+
+    def test_personal_assistant_owner_with_team_default_charges_default(self):
+        user = self._user(members=("team-d", "carol@example.com"))
+
+        ctx, _ = self._ctx(self._asset(project="carol@example.com"), user, {"team-d"})
+
+        assert ctx.current_project == "team-d"
+
+    def test_personal_assistant_without_assigned_default_stays_personal(self):
+        user = self._user(default="carol@example.com", members=("carol@example.com",))
+
+        ctx, _ = self._ctx(self._asset(project="carol@example.com"), user, set())
+
+        assert ctx.current_project == "carol@example.com"
+        assert ctx.budget_fallback_from is None
+        assert ctx.budget_fallback_kind is None
+
+    def test_member_unfunded_project_falls_to_funded_default(self):
+        ctx, _ = self._ctx(self._asset(), self._user(), {"team-d"})
+
+        assert ctx.current_project == "team-d"
+        assert ctx.budget_fallback_from == "team-a"
+        assert ctx.budget_fallback_kind == "default_project"
+
+    def test_member_unfunded_project_and_default_fall_to_personal(self):
+        ctx, _ = self._ctx(self._asset(), self._user(), set())
+
+        assert ctx.current_project == "carol@example.com"
+        assert ctx.budget_fallback_from == "team-a"
+        assert ctx.budget_fallback_kind == "personal"
+
+    def test_member_funded_project_is_charged(self):
+        ctx, _ = self._ctx(self._asset(), self._user(), {"team-a", "team-d"})
+
+        assert ctx.current_project == "team-a"
+        assert ctx.budget_fallback_kind is None
+
+    def test_asset_less_flow_with_unfunded_default_falls_to_personal(self):
+        ctx, _ = self._ctx(None, self._user(), set(), fallback="request-project")
+
+        assert ctx.current_project == "carol@example.com"
+        assert ctx.budget_fallback_from == "team-d"
+        assert ctx.budget_fallback_kind == "personal"
+
+    def test_deployment_tags_keep_the_asset_project_when_the_default_pays(self):
+        """Review AR-5: attribution moves the charge, not the request, to the default project's deployments."""
+        ctx, _ = self._ctx(self._asset(), self._user(), {"team-d"})
+
+        assert ctx.current_project == "team-d"
+        assert ctx.routing_project == "team-a"
+
+    def test_user_without_email_is_charged_personal_under_their_username(self):
+        """Review AR-1: a stand-in owner is reported as a personal charge, not under the asset's project."""
+        user = User(id="u-1", username="u-1", email="", project_names=[], default_project=None)
+
+        ctx, unfunded = self._ctx(self._asset(), user, set())
+
+        assert ctx.current_project == "u-1"
+        assert ctx.personal_project == "u-1"
+        assert ctx.budget_candidates == []
+        unfunded.assert_not_called()
+
+
+class TestAReDecisionWithUnknownFundingKeepsTheBuiltOutcome:
+    """Final review AR-2: the agent's model is built once; a later re-decision whose funded check fails must not
+    replace the payer that model actually charges."""
+
+    @staticmethod
+    def _decide(funded_or_error, previous):
+        from codemie.core.dependecies import litellm_context
+
+        def fake_unfunded(project, creds, u, model=None):
+            if funded_or_error == "error":
+                raise RuntimeError("db blip")
+            return None if project in funded_or_error else project
+
+        token = litellm_context.set(previous)
+        try:
+            with (
+                patch('codemie.service.llm_service.utils.set_litellm_context') as set_ctx,
+                patch('codemie.service.llm_service.utils.set_dial_credentials'),
+                patch('codemie.service.llm_service.utils.SettingsService') as settings,
+                patch('codemie.service.llm_service.utils._unfunded_project', side_effect=fake_unfunded),
+            ):
+                settings.get_litellm_creds.return_value = None
+                set_llm_context(TestAttributionMatrixWiring._asset(), None, TestAttributionMatrixWiring._user())
+        finally:
+            litellm_context.reset(token)
+        return set_ctx.call_args[0][0]
+
+    @staticmethod
+    def _built(**overrides):
+        values = {
+            "credentials": None,
+            "current_project": "team-a",
+            "principal_email": "carol@example.com",
+            "personal_project": "carol@example.com",
+            "budget_candidates": ["team-a", "team-d"],
+            "routing_project": "team-a",
+            "budget_outcome_built": True,
+        }
+        values.update(overrides)
+        return LiteLLMContext(**values)
+
+    def test_the_built_payer_is_kept(self):
+        ctx = self._decide("error", self._built())
+
+        assert ctx.current_project == "team-a"
+        assert ctx.budget_fallback_kind is None
+        assert ctx.budget_outcome_built is True
+
+    def test_an_agreeing_readable_re_decision_keeps_the_built_mark(self):
+        """Between the build and a failing re-decision the agent re-decides with readable funding on every call."""
+        agreeing = self._decide({"team-a"}, self._built())
+        assert agreeing.budget_outcome_built is True
+
+        ctx = self._decide("error", agreeing)
+
+        assert ctx.current_project == "team-a"
+        assert ctx.budget_fallback_kind is None
+
+    def test_a_readable_re_decision_still_replaces_it(self):
+        ctx = self._decide({"team-d"}, self._built())
+
+        assert ctx.current_project == "team-d"
+        assert ctx.budget_fallback_kind == "default_project"
+
+    def test_a_context_of_another_request_is_not_kept(self):
+        ctx = self._decide("error", self._built(routing_project="other"))
+
+        assert ctx.current_project == "carol@example.com"
+        assert ctx.budget_fallback_kind == "personal"
+        assert ctx.budget_funding_unknown is True
+
+    def test_funding_unknown_reaches_metrics_with_the_fallback(self):
+        from codemie.core.dependecies import litellm_context
+        from codemie.service.monitoring.base_monitoring_service import _add_budget_fallback_attribute
+
+        ctx = self._decide("error", None)
+        token = litellm_context.set(ctx)
+        try:
+            attributes: dict = {}
+            _add_budget_fallback_attribute(attributes)
+        finally:
+            litellm_context.reset(token)
+
+        assert attributes["budget_fallback_kind"] == "personal"
+        assert attributes["budget_funding_unknown"] is True
+
+
+class TestVirtualAssistantWithoutANamedProject:
+    """Final review AR-4: the virtual assistant's project only selects credentials; the request is billed as
+    asset-less, to the default the profile shows, on the IDE and the inline endpoint alike."""
+
+    @staticmethod
+    def _virtual(project="team-a", asset_less=True):
+        from codemie.rest_api.models.assistant import VirtualIdeAssistant
+
+        assistant = VirtualIdeAssistant(
+            id="ide-1", name="Virtual", description="N/A", system_prompt="s", project=project, llm_model_type="m"
+        )
+        assistant._runtime_bills_as_asset_less = asset_less
+        return assistant
+
+    def test_the_default_project_pays_although_the_assistant_names_a_member_project(self):
+        ctx, _ = TestAttributionMatrixWiring._ctx(
+            self._virtual(), TestAttributionMatrixWiring._user(), {"team-a", "team-d"}
+        )
+
+        assert ctx.current_project == "team-d"
+        assert ctx.budget_fallback_kind is None
+        assert ctx.routing_project == "team-a"
+
+    def test_credentials_are_still_looked_up_under_the_assistant_project(self):
+        creds_project, dial_project = TestCredentialLookupProjectUnchanged._lookup_project(
+            self._virtual(), TestAttributionMatrixWiring._user()
+        )
+
+        assert creds_project == "team-a"
+        assert dial_project == "team-a"
+
+    def test_a_named_project_is_billed_as_the_target(self):
+        ctx, _ = TestAttributionMatrixWiring._ctx(
+            self._virtual(asset_less=False), TestAttributionMatrixWiring._user(), {"team-a", "team-d"}
+        )
+
+        assert ctx.current_project == "team-a"
+
+
+class TestCredentialLookupProjectUnchanged:
+    """EPMCDME-16625 row 18: own-key lookup keeps using the asset's project; only budget attribution moved."""
+
+    @staticmethod
+    def _lookup_project(asset, user):
+        with (
+            patch('codemie.service.llm_service.utils.set_litellm_context'),
+            patch('codemie.service.llm_service.utils.set_dial_credentials'),
+            patch('codemie.service.llm_service.utils.SettingsService') as settings,
+            patch('codemie.service.llm_service.utils._unfunded_project', return_value=None),
+        ):
+            settings.get_litellm_creds.return_value = None
+            set_llm_context(asset, None, user)
+        return settings.get_litellm_creds.call_args.kwargs["project_name"], settings.get_dial_creds.call_args.args[0]
+
+    def test_marketplace_member_looks_up_own_key_in_asset_project(self):
+        user = TestAttributionMatrixWiring._user()
+
+        creds_project, dial_project = self._lookup_project(TestAttributionMatrixWiring._asset(is_global=True), user)
+
+        assert creds_project == "team-a"
+        assert dial_project == "team-a"
+
+    def test_shared_nonmember_looks_up_own_key_in_asset_project(self):
+        user = TestAttributionMatrixWiring._user(members=("team-d",))
+
+        creds_project, _ = self._lookup_project(TestAttributionMatrixWiring._asset(project="foreign"), user)
+
+        assert creds_project == "foreign"
+
+
+class TestPartialUserObjects:
+    """Attribution must not break a request for user objects missing membership data (e.g. internal callers)."""
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_user_without_membership_fields_still_gets_context(self, mock_settings, _dial, mock_set_litellm):
+        from types import SimpleNamespace
+
+        mock_settings.get_litellm_creds.return_value = None
+        user = SimpleNamespace(id="u-1", username="carol", email="carol@example.com")
+        asset = MagicMock(spec=['project', 'is_global', 'llm_model_type'])
+        asset.project = "team-a"
+        asset.is_global = False
+        asset.llm_model_type = None
+
+        set_llm_context(asset, None, user)
+
+        assert mock_set_litellm.call_args[0][0].current_project == "carol@example.com"
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_mock_user_with_non_list_memberships_still_gets_context(self, mock_settings, _dial, mock_set_litellm):
+        from unittest.mock import Mock
+
+        mock_settings.get_litellm_creds.return_value = None
+        user = Mock()
+        user.id = "u-1"
+        user.email = "carol@example.com"
+
+        set_llm_context(None, "team-a", user)
+
+        mock_set_litellm.assert_called_once()
+
+
+class TestFundedCheckUsesARealModel:
+    """CR-011: with no model on the asset the funded check uses the platform default model, so it is category-aware."""
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_default_model_is_used_when_the_asset_names_none(self, mock_settings, _dial, _set_ctx):
+        mock_settings.get_litellm_creds.return_value = None
+        user = TestAttributionMatrixWiring._user()
+
+        from unittest.mock import PropertyMock
+
+        from codemie.service.llm_service.llm_service import LLMService
+
+        with (
+            patch('codemie.service.llm_service.utils._unfunded_project', return_value=None) as unfunded,
+            patch.object(LLMService, 'default_llm_model', new_callable=PropertyMock, return_value='platform-default'),
+        ):
+            set_llm_context(TestAttributionMatrixWiring._asset(), None, user)
+
+        assert unfunded.call_args.args[3] == 'platform-default'
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_indexing_is_checked_against_the_embedding_model(self, mock_settings, _dial, _set_ctx):
+        """Indexing calls the datasource's embedding model, so funding is checked in that model's category."""
+
+        mock_settings.get_litellm_creds.return_value = None
+        user = TestAttributionMatrixWiring._user()
+        index = _index_info(embeddings_model='emb-x')
+
+        with patch('codemie.service.llm_service.utils._unfunded_project', return_value=None) as unfunded:
+            set_llm_context(index, None, user)
+
+        assert unfunded.call_args.args[3] == 'emb-x'
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_indexing_without_a_model_uses_the_default_embedding_model(self, mock_settings, _dial, _set_ctx):
+        from unittest.mock import PropertyMock
+
+        from codemie.service.llm_service.llm_service import LLMService
+
+        mock_settings.get_litellm_creds.return_value = None
+        user = TestAttributionMatrixWiring._user()
+        index = _index_info(embeddings_model=None)
+
+        with (
+            patch('codemie.service.llm_service.utils._unfunded_project', return_value=None) as unfunded,
+            patch.object(LLMService, 'default_embedding_model', new_callable=PropertyMock, return_value='emb-default'),
+        ):
+            set_llm_context(index, None, user)
+
+        assert unfunded.call_args.args[3] == 'emb-default'
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_indexing_with_native_embeddings_is_checked_against_the_default_chat_model(
+        self, mock_settings, _dial, set_ctx
+    ):
+        """Final review AR-3: only indexing's chat models reach a budget then, so the walk is decided for them."""
+        from unittest.mock import PropertyMock
+
+        from codemie.service.llm_service.llm_service import LLMService
+
+        mock_settings.get_litellm_creds.return_value = None
+        user = TestAttributionMatrixWiring._user()
+        index = _index_info(embeddings_model='emb-x')
+
+        with (
+            patch('codemie.service.llm_service.utils.config.LLM_PROXY_EMBEDDINGS_DISABLED', True),
+            patch('codemie.service.llm_service.utils._unfunded_project', return_value=None) as unfunded,
+            patch.object(LLMService, 'default_llm_model', new_callable=PropertyMock, return_value='chat-default'),
+        ):
+            set_llm_context(index, None, user)
+
+        assert unfunded.call_args.args[3] == 'chat-default'
+        assert set_ctx.call_args.args[0].budget_candidates == ['team-a', 'team-d']
+
+
+def _index_info(embeddings_model):
+    from codemie.rest_api.models.index import IndexInfo
+
+    index = MagicMock(spec=IndexInfo)
+    index.project = None
+    index.project_name = 'team-a'
+    index.is_global = False
+    index.embeddings_model = embeddings_model
+    return index
+
+
+class TestWithoutLiteLLM:
+    """Without LiteLLM no budget pays, so the context keeps the project used before EPMCDME-16625."""
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_marketplace_assistant_keeps_its_project(self, mock_settings, _dial, set_ctx, _litellm_budgets_active):
+        mock_settings.get_litellm_creds.return_value = None
+        _litellm_budgets_active.return_value = False
+        user = TestAttributionMatrixWiring._user()
+
+        with patch('codemie.service.llm_service.utils.resolve_attribution') as resolver:
+            set_llm_context(TestAttributionMatrixWiring._asset("team-a", is_global=True), None, user)
+
+        resolver.assert_not_called()
+        context = set_ctx.call_args.args[0]
+        assert context.current_project == "team-a"
+        assert context.budget_fallback_from is None
+        mock_settings.get_dial_creds.assert_called_once_with("team-a")
+
+
+class TestCredentialsAssetIsSeparateFromBilling:
+    """A marketplace workflow bills the saved assistant it runs but keeps the run's credentials (EPMCDME-16625)."""
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_credentials_follow_the_execution_copy(self, mock_settings, _dial, _set_ctx, _litellm_budgets_active):
+        mock_settings.get_litellm_creds.return_value = None
+        user = TestAttributionMatrixWiring._user(default=None, members=("team-d",))
+        saved = TestAttributionMatrixWiring._asset("team-a", is_global=False)
+        execution_copy = TestAttributionMatrixWiring._asset("team-a", is_global=True)
+
+        with patch('codemie.service.llm_service.utils._unfunded_project', return_value=None):
+            set_llm_context(saved, None, user, credentials_asset=execution_copy)
+
+        mock_settings.get_litellm_creds.assert_called_once_with(project_name=user.email, user_id=user.id)
+        mock_settings.get_dial_creds.assert_called_once_with(user.email)
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_without_litellm_credentials_still_follow_the_execution_copy(
+        self, mock_settings, _dial, set_ctx, _litellm_budgets_active
+    ):
+        mock_settings.get_litellm_creds.return_value = None
+        _litellm_budgets_active.return_value = False
+        user = TestAttributionMatrixWiring._user(default=None, members=("team-d",))
+
+        set_llm_context(
+            TestAttributionMatrixWiring._asset("team-a"),
+            None,
+            user,
+            credentials_asset=TestAttributionMatrixWiring._asset("team-a", is_global=True),
+        )
+
+        mock_settings.get_dial_creds.assert_called_once_with(user.email)
+        assert set_ctx.call_args.args[0].current_project == user.email
+
+
+class TestLiteLLMBudgetsActive:
+    """Attribution applies only to requests a LiteLLM budget pays for."""
+
+    @pytest.mark.parametrize(
+        "enabled,mode,expected",
+        [(True, "lite_llm", True), (True, "internal", False), (False, "lite_llm", False)],
+        ids=["lite-llm", "internal-mode", "disabled"],
+    )
+    def test_gate(self, enabled, mode, expected):
+        with (
+            patch("codemie.enterprise.litellm.dependencies.is_litellm_enabled", return_value=enabled),
+            patch("codemie.service.llm_service.utils.config.LLM_PROXY_MODE", mode),
+        ):
+            assert _real_budgets_active() is expected
+
+    @pytest.mark.parametrize("embeddings_disabled", [False, True], ids=["litellm-embeddings", "native-embeddings"])
+    def test_indexing_is_attributed_whatever_runs_its_embeddings(self, embeddings_disabled):
+        """Final review AR-3: indexing's summary and document chat models still go through LiteLLM."""
+        with (
+            patch("codemie.enterprise.litellm.dependencies.is_litellm_enabled", return_value=True),
+            patch("codemie.service.llm_service.utils.config.LLM_PROXY_MODE", "lite_llm"),
+            patch("codemie.service.llm_service.utils.config.LLM_PROXY_EMBEDDINGS_DISABLED", embeddings_disabled),
+        ):
+            assert _real_budgets_active() is True

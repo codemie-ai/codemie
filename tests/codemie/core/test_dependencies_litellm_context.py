@@ -106,3 +106,81 @@ class TestSetLiteLLMContext:
         # Original context should still be available and unchanged
         stored_context_after = litellm_context.get()
         assert stored_context_after == context1
+
+
+class TestScopedLLMContext:
+    """EPMCDME-16625: a nested asset's attribution must not outlive it in the caller's context."""
+
+    def test_restores_previous_context_after_nested_set(self):
+        from codemie.core.dependecies import get_current_project, scoped_llm_context, set_litellm_context
+
+        set_litellm_context(LiteLLMContext(credentials=None, current_project="parent"))
+
+        with scoped_llm_context():
+            set_litellm_context(LiteLLMContext(credentials=None, current_project="child"))
+            assert get_current_project() == "child"
+
+        assert get_current_project() == "parent"
+
+    def test_restores_on_exception(self):
+        from codemie.core.dependecies import get_current_project, scoped_llm_context, set_litellm_context
+
+        set_litellm_context(LiteLLMContext(credentials=None, current_project="parent"))
+
+        with contextlib.suppress(RuntimeError), scoped_llm_context():
+            set_litellm_context(LiteLLMContext(credentials=None, current_project="child"))
+            raise RuntimeError("boom")
+
+        assert get_current_project() == "parent"
+
+    def test_restores_unset_context(self):
+        from codemie.core.dependecies import litellm_context, scoped_llm_context, set_litellm_context
+
+        def run():
+            with scoped_llm_context():
+                set_litellm_context(LiteLLMContext(credentials=None, current_project="child"))
+            return litellm_context.get(None)
+
+        assert contextvars.Context().run(run) is None
+
+
+class TestPersonalBudgetIdentity:
+    """EPMCDME-16625 D9: web LLM calls use the same personal customer id as the CLI and budget provisioning."""
+
+    _CURRENT_USER = "codemie.rest_api.security.user_context.get_current_user"
+
+    @staticmethod
+    def _resolve(value):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from codemie.core.dependecies import _resolve_username
+
+        user = SimpleNamespace(username="alice", email="alice@example.com")
+        with patch(TestPersonalBudgetIdentity._CURRENT_USER, return_value=user):
+            return _resolve_username(value)
+
+    def test_auth_time_email_is_replaced_by_the_username(self):
+        assert self._resolve("alice@example.com") == "alice"
+
+    def test_unknown_logging_identity_resolves_to_the_username(self):
+        assert self._resolve("-") == "alice"
+
+    def test_other_identity_is_kept(self):
+        assert self._resolve("bob") == "bob"
+
+
+class TestScopedLLMContextIsolation:
+    """CR-002: in-place attribution changes inside the scope never reach the parent's context object."""
+
+    def test_in_place_mutation_inside_the_scope_does_not_leak(self):
+        from codemie.core.dependecies import get_current_project, litellm_context, scoped_llm_context
+
+        parent = LiteLLMContext(credentials=None, current_project="parent")
+        litellm_context.set(parent)
+
+        with scoped_llm_context():
+            litellm_context.get().current_project = "mutated-by-nested-build"
+
+        assert parent.current_project == "parent"
+        assert get_current_project() == "parent"

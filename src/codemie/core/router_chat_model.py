@@ -40,7 +40,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Annotated, Any, cast
 
 from langchain_core.callbacks import AsyncCallbackHandler, AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
-from pydantic import SkipValidation
+from pydantic import Field, SkipValidation
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage, convert_to_openai_messages
 from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
@@ -160,6 +160,9 @@ class RouterChatModel(BaseChatModel):
     router: Annotated[Router, SkipValidation]
     candidates: dict[str, Annotated[BaseChatModel | Runnable[LanguageModelInput, AIMessage], SkipValidation]]
     default_model: str
+    # The payer each candidate's construction recorded (core.dependecies.BuiltPayer); the selected one is restored
+    # before the call, so analytics name the budget that model charges (EPMCDME-16625).
+    payers: dict[str, Annotated[Any, SkipValidation]] = Field(default_factory=dict)
 
     @property
     def _llm_type(self) -> str:
@@ -185,7 +188,9 @@ class RouterChatModel(BaseChatModel):
         if tool_choice is not None:
             bind_kwargs["tool_choice"] = cast(Any, tool_choice)
         bound = {name: model.bind_tools(**bind_kwargs) for name, model in self.candidates.items()}
-        return RouterChatModel(router=self.router, candidates=bound, default_model=self.default_model)
+        return RouterChatModel(
+            router=self.router, candidates=bound, default_model=self.default_model, payers=self.payers
+        )
 
     async def _agenerate(
         self,
@@ -199,6 +204,9 @@ class RouterChatModel(BaseChatModel):
 
         selected_name = decision.model if decision is not None else self.default_model
         selected = self.candidates[selected_name]
+        from codemie.core.dependecies import restore_built_payer
+
+        restore_built_payer(self.payers.get(selected_name))
         routed_model_name = self._model_name(selected)
         logger.info(
             f"[ROUTING] router={self.router.name!r} selected={routed_model_name!r} "
@@ -294,7 +302,7 @@ def build_chat_model_for(router: Router, *, model_name: str, request_id: str, ll
     deployment by convention (see SwitchyardRouter.candidate_models()'s ordering); for LiteLLM
     it's simply its own sole candidate.
     """
-    from codemie.core.dependecies import get_llm_by_credentials
+    from codemie.core.dependecies import build_with_payer, get_llm_by_credentials, restore_built_payer
 
     candidates = router.candidate_models()
     if not candidates:
@@ -302,10 +310,15 @@ def build_chat_model_for(router: Router, *, model_name: str, request_id: str, ll
             llm_model=model_name, request_id=request_id, temperature=llm_params.temperature, top_p=llm_params.top_p
         )
 
-    llms: dict[str, BaseChatModel | Runnable[LanguageModelInput, AIMessage]] = {
-        m: get_llm_by_credentials(
-            llm_model=m, request_id=request_id, temperature=llm_params.temperature, top_p=llm_params.top_p
+    # Each candidate is built in its own copy of the LLM context and keeps the payer its build recorded; until a
+    # call selects one, the context names the default candidate's payer (EPMCDME-16625).
+    llms: dict[str, BaseChatModel | Runnable[LanguageModelInput, AIMessage]] = {}
+    payers: dict[str, Any] = {}
+    for m in candidates:
+        llms[m], payers[m] = build_with_payer(
+            lambda m=m: get_llm_by_credentials(
+                llm_model=m, request_id=request_id, temperature=llm_params.temperature, top_p=llm_params.top_p
+            )
         )
-        for m in candidates
-    }
-    return RouterChatModel(router=router, candidates=llms, default_model=candidates[0])
+    restore_built_payer(payers[candidates[0]])
+    return RouterChatModel(router=router, candidates=llms, default_model=candidates[0], payers=payers)

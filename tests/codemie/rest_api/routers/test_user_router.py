@@ -227,10 +227,20 @@ def test_get_user_response_derives_personal_default_when_none_stored(mock_user):
     assert {p.name: p.is_default for p in response.projects} == {"test-project": False, "test@example.com": True}
 
 
-def test_get_user_response_legacy_path_has_no_default(mock_user):
-    """Legacy (IDP) mode has no default-project concept: every project is_default=False."""
+@pytest.mark.parametrize(
+    "project_names,expected_default",
+    [
+        (["test-project", "another-project"], "another-project"),
+        (["alpha", "testuser"], "testuser"),
+        (["testuser", "test@example.com"], "test@example.com"),
+    ],
+    ids=["first-by-name", "username-workspace", "email-project"],
+)
+def test_get_user_response_legacy_path_marks_the_default_billing_charges(project_names, expected_default):
+    """IDP mode stores no default; /v1/user marks the one budget attribution derives (EPMCDME-16625 AR-7)."""
     from codemie.rest_api.routers.user import _get_user_response
 
+    user = User(id="user-123", username="testuser", email="test@example.com", project_names=project_names)
     session = MagicMock()
     session.exec.return_value.all.return_value = []
     with (
@@ -238,10 +248,9 @@ def test_get_user_response_legacy_path_has_no_default(mock_user):
         patch("codemie.clients.postgres.get_session") as mock_get_session,
     ):
         mock_get_session.return_value.__enter__.return_value = session
-        response = _get_user_response(mock_user)
+        response = _get_user_response(user)
 
-    assert response.projects
-    assert all(p.is_default is False for p in response.projects)
+    assert [p.name for p in response.projects if p.is_default] == [expected_default]
 
 
 # =============================================================================

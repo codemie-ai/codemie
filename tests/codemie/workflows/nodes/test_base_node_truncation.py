@@ -114,3 +114,23 @@ def test_run_success_path_forwards_truncation_signal_to_on_node_end_callback():
         execution_context={},
         truncated=True,
     )
+
+
+def test_node_attribution_does_not_leak_to_the_next_node():
+    """EPMCDME-16625: LangGraph runs a lone task inline, so a node's own billing context must be undone."""
+    from codemie.core.dependecies import get_current_project, set_litellm_context
+    from codemie.rest_api.models.settings import LiteLLMContext
+
+    node = _make_node()
+
+    def build_node_context(_state):
+        set_litellm_context(LiteLLMContext(credentials=None, current_project="node-assistant-project"))
+        return {}
+
+    node.generate_execution_context = MagicMock(side_effect=build_node_context)
+    node.before_execution = MagicMock(return_value="redirect")
+    node.get_node_name = MagicMock(return_value="agent_node")
+    set_litellm_context(LiteLLMContext(credentials=None, current_project="workflow-project"))
+
+    assert node(MagicMock()) == "redirect"
+    assert get_current_project() == "workflow-project"

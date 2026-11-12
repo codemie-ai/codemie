@@ -976,6 +976,135 @@ class TestLiteLLMChatOpenAI:
         assert (result.generation_info or {}).get("litellm_cost") is None
 
 
+class TestModelConstructionWalksTheAttributionSteps:
+    """EPMCDME-16625 AR-1: model construction re-decides the payer for the model it builds; it must try the
+    default project before the personal budget, as the attribution walk does."""
+
+    @staticmethod
+    def _context(**overrides):
+        from codemie.rest_api.models.settings import LiteLLMContext
+
+        values = {
+            "credentials": None,
+            "current_project": "team-a",
+            "principal_email": "u@example.com",
+            "personal_project": "u@example.com",
+            "budget_candidates": ["team-a", "team-d"],
+        }
+        values.update(overrides)
+        return LiteLLMContext(**values)
+
+    @staticmethod
+    def _configure(context, runtime_by_project):
+        from codemie.enterprise.litellm.llm_factory import _configure_direct_runtime_overrides
+
+        tried: list[str | None] = []
+
+        def resolve(*, llm_model_details, litellm_context, user_id, username):
+            project = litellm_context.current_project
+            tried.append(project)
+            return runtime_by_project.get(project, ({}, None, None, False, None))
+
+        merged_headers: dict = {}
+        with (
+            patch("codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime", side_effect=resolve),
+            patch("codemie.enterprise.litellm.llm_factory._try_apply_premium_budget", return_value=False),
+            patch("codemie.enterprise.litellm.llm_factory._apply_platform_budget") as platform,
+        ):
+            category = _configure_direct_runtime_overrides(
+                llm_model_details=MagicMock(base_name="gpt-4.1"),
+                litellm_context=context,
+                username="u",
+                user_id="uid-1",
+                creds=None,
+                merged_headers=merged_headers,
+                request_params={},
+            )
+        return category, tried, platform, merged_headers
+
+    def test_the_default_project_pays_when_the_target_cannot_fund_this_model(self):
+        context = self._context()
+        default_runtime = ({"x-litellm-customer-id": "member-d"}, "key-d", None, True, _CoreBudgetCategory.PLATFORM)
+
+        category, tried, platform, headers = self._configure(context, {"team-d": default_runtime})
+
+        assert tried == ["team-a", "team-d"]
+        assert category == _CoreBudgetCategory.PLATFORM
+        platform.assert_not_called()
+        assert headers["x-litellm-customer-id"] == "member-d"
+        assert context.current_project == "team-d"
+        assert context.budget_fallback_from == "team-a"
+        assert context.budget_fallback_kind == "default_project"
+        # Code review CR-006: the build marks the shared context, so a later unreadable re-decision keeps this payer.
+        assert context.budget_outcome_built is True
+
+    def test_a_context_already_on_personal_retries_every_step(self):
+        context = self._context(
+            current_project="u@example.com", budget_fallback_from="team-a", budget_fallback_kind="personal"
+        )
+        default_runtime = ({"x-litellm-customer-id": "member-d"}, "key-d", None, True, _CoreBudgetCategory.PLATFORM)
+
+        _category, tried, platform, _headers = self._configure(context, {"team-d": default_runtime})
+
+        assert tried == ["team-a", "team-d"]
+        platform.assert_not_called()
+        assert context.budget_fallback_kind == "default_project"
+
+    def test_personal_pays_only_after_every_step(self):
+        context = self._context()
+
+        _category, tried, platform, _headers = self._configure(context, {})
+
+        assert tried == ["team-a", "team-d"]
+        platform.assert_called_once()
+        assert context.current_project == "u@example.com"
+        assert context.budget_fallback_from == "team-a"
+        assert context.budget_fallback_kind == "personal"
+        assert context.budget_outcome_built is True
+
+    def test_the_target_paying_records_no_fallback(self):
+        context = self._context()
+        target_runtime = ({"x-litellm-customer-id": "member-a"}, "key-a", None, True, _CoreBudgetCategory.PLATFORM)
+
+        _category, tried, _platform, _headers = self._configure(context, {"team-a": target_runtime})
+
+        assert tried == ["team-a"]
+        assert context.current_project == "team-a"
+        assert context.budget_fallback_from is None
+        assert context.budget_fallback_kind is None
+
+    def test_an_empty_walk_goes_to_personal_without_probing_the_personal_project(self):
+        """Review AR-3: with no target and no default, web charges personal as the CLI does."""
+        context = self._context(current_project="u@example.com", budget_candidates=[])
+
+        _category, tried, platform, _headers = self._configure(context, {})
+
+        assert tried == []
+        platform.assert_called_once()
+        assert context.current_project == "u@example.com"
+        assert context.budget_fallback_kind is None
+
+
+class TestDeploymentTagsFollowTheRequestsProject:
+    """Review AR-5: tags pick the deployments of the project the request runs for, not of the payer."""
+
+    @staticmethod
+    def _tag(**context_values):
+        from codemie.configs import config
+        from codemie.enterprise.litellm.llm_factory import generate_litellm_headers_from_context
+        from codemie.rest_api.models.settings import LiteLLMContext
+
+        context = LiteLLMContext(credentials=None, **context_values)
+        with patch.object(config, "LITE_LLM_PROJECTS_TO_TAGS_LIST", "team-a,team-d"):
+            return generate_litellm_headers_from_context(context)["x-litellm-tags"]
+
+    def test_routing_project_picks_the_tag(self):
+        assert self._tag(current_project="team-d", routing_project="team-a") == "team-a"
+
+    def test_without_a_routing_project_the_current_project_is_used(self):
+        assert self._tag(current_project="team-d") == "team-d"
+
+
 class TestConfigureDirectRuntimeOverrides:
     """Tests for _configure_direct_runtime_overrides — bypass-mode customer header behaviour."""
 
@@ -1357,7 +1486,7 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
 
     Root cause of second regression (this fix's predecessor): has_project_context was set from
     bool(litellm_context.current_project) without excluding the email-as-project case that
-    _resolve_effective_project produces for global assistants accessed by non-members.
+    attribution produces when the charge lands on the personal budget.
     """
 
     @pytest.fixture(autouse=True)
@@ -1407,6 +1536,18 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
                 request_params=request_params,
             )
         return request_params, merged_headers
+
+    def test_personal_project_is_not_a_project_context_when_id_is_the_username(self):
+        """CR-004: the personal customer id is the username, while a personal charge names the email project."""
+        from codemie.rest_api.models.settings import LiteLLMContext
+
+        context = LiteLLMContext(
+            credentials=None, current_project="alice@example.com", personal_project="alice@example.com"
+        )
+        with patch("codemie.enterprise.litellm.llm_factory._try_apply_premium_budget", return_value=True) as premium:
+            self._invoke(litellm_context=context, username="alice")
+
+        assert premium.call_args.kwargs["has_project_context"] is False
 
     def test_premium_model_project_context_no_scope_uses_platform_budget(self):
         """Regression: project context + premium model + no project premium scope → PLATFORM budget.
@@ -1494,7 +1635,7 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
     def test_premium_model_global_assistant_email_as_project_uses_premium_budget(self):
         """Global assistant accessed by non-member: current_project == username.
 
-        _resolve_effective_project sets current_project = user.email for personal users
+        Attribution sets current_project = user.email when the personal budget pays
         on a global assistant. This is NOT a real project context — personal premium budget
         must still be enforced, not suppressed by has_project_context guard.
         """
@@ -1936,3 +2077,71 @@ class TestFilterLiteLLMParamsMaxTokensForwarding:
         filtered = _filter_litellm_params(base_args, mock_model_details)
 
         assert filtered["max_tokens"] is None
+
+
+class TestDefaultProjectFallbackAttribution:
+    """EPMCDME-16625: a charge that landed on the default project keeps its fallback record at runtime."""
+
+    @staticmethod
+    def _context():
+        from codemie.rest_api.models.settings import LiteLLMContext
+
+        return LiteLLMContext(
+            credentials=None,
+            current_project="team-d",
+            personal_project="user@test.com",
+            budget_fallback_from="team-a",
+            budget_fallback_kind="default_project",
+        )
+
+    @staticmethod
+    def _configure(context, runtime_result):
+        from codemie.enterprise.litellm.llm_factory import _configure_direct_runtime_overrides
+
+        with (
+            patch(
+                "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime",
+                return_value=runtime_result,
+            ) as resolve,
+            patch("codemie.enterprise.litellm.llm_factory._try_apply_premium_budget", return_value=False),
+            patch("codemie.enterprise.litellm.llm_factory._apply_platform_budget"),
+        ):
+            _configure_direct_runtime_overrides(
+                llm_model_details=MagicMock(),
+                litellm_context=context,
+                username="user@test.com",
+                user_id="uid-1",
+                creds=None,
+                merged_headers={},
+                request_params={},
+            )
+        return resolve
+
+    def test_runtime_resolves_the_charged_default_project_not_the_original_target(self):
+        context = self._context()
+
+        resolve = self._configure(
+            context, ({"x-litellm-customer-id": "member"}, "key", "http://litellm", True, _CoreBudgetCategory.PLATFORM)
+        )
+
+        assert resolve.call_args.kwargs["litellm_context"].current_project == "team-d"
+
+    def test_funded_default_project_keeps_fallback_record(self):
+        context = self._context()
+
+        self._configure(
+            context, ({"x-litellm-customer-id": "member"}, "key", "http://litellm", True, _CoreBudgetCategory.PLATFORM)
+        )
+
+        assert context.current_project == "team-d"
+        assert context.budget_fallback_from == "team-a"
+        assert context.budget_fallback_kind == "default_project"
+
+    def test_default_project_unfunded_at_runtime_falls_to_personal_recorded_from_original_target(self):
+        context = self._context()
+
+        self._configure(context, ({}, None, None, False, None))
+
+        assert context.current_project == "user@test.com"
+        assert context.budget_fallback_from == "team-a"
+        assert context.budget_fallback_kind == "personal"
