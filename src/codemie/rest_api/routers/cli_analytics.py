@@ -182,9 +182,8 @@ async def classification_policy() -> dict[str, Any]:
         "organizations": orgs,
         "version": policy_version(orgs),
         "organization_encodings": [ORGANIZATION_ENCODING],
+        "publication_contracts": ["1"],
     }
-    if config.CLI_ANALYTICS_PUBLICATION_CONTRACTS_ENABLED:  # key omitted (not null) when off
-        policy["publication_contracts"] = ["1"]
     return policy
 
 

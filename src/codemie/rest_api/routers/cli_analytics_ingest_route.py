@@ -23,7 +23,6 @@ from typing import NamedTuple
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from codemie.configs.config import config
 from codemie.configs.customer_config import customer_config
 from codemie.core.constants import (
     HEADER_CODEMIE_CLI_PROJECT,
@@ -147,15 +146,14 @@ def parse_publication_contract(headers) -> PublicationContract | None:
 
 
 def check_publication_contract(request: Request, user: User) -> PublicationContract | None:
-    """Pre-body check of every ingest route: headers, the rollout setting and user type only (no DB).
+    """Pre-body check of every ingest route: headers and user type only (no DB).
 
-    Raises PublicationContractRejected; None means a legacy request.
+    Raises PublicationContractRejected; None means a legacy request. Personal/Unknown-with-subscription requests
+    without consent are denied later by the evidence gate (a final discard, see `EvidenceGate.__call__`).
     """
     contract = parse_publication_contract(request.headers)
     if contract is None:
         return None
-    if not config.CLI_ANALYTICS_PUBLICATION_CONTRACTS_ENABLED:
-        raise PublicationContractRejected(status.HTTP_503_SERVICE_UNAVAILABLE, "publication_contract_unavailable")
     if not (request.headers.get(HEADER_CODEMIE_SESSION_ID) or "").strip():
         # Never the legacy gate: a contract or consent request without a session cannot be bound or echoed.
         raise _reject_422("publication_contract_requires_session")
@@ -164,7 +162,9 @@ def check_publication_contract(request: Request, user: User) -> PublicationContr
         routed = (headers.get(HEADER_CODEMIE_ROUTED_VIA_CODEMIE) or "").strip().lower() in {"1", "true", "yes"}
         client_type = (headers.get(HEADER_CODEMIE_SUBSCRIPTION_TYPE) or "").strip().lower()
         organization = _organization(headers, routed, client_type)
-        if classify(routed, organization, corporate_organizations()) in {"personal", "unknown"}:
+        # Personal and Unknown+subscription are the gate's final discard (terminal for the CLI); only the rest is held.
+        unknown = classify(routed, organization, corporate_organizations()) == "unknown"
+        if unknown and contract.funding != "subscription":
             raise PublicationContractRejected(status.HTTP_503_SERVICE_UNAVAILABLE, "personal_storage_unsupported")
     return contract
 

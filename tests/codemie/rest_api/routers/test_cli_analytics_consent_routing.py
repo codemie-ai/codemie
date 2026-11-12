@@ -21,6 +21,7 @@ Only the database is faked: the recording connection (ingestor) and the World fi
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -99,7 +100,6 @@ def env(world):
         patch.object(ingest_router, "get_cli_analytics_storage", return_value=storage),
         patch.object(ingest_router, "customer_config", customer_config),
         patch.object(route_module, "customer_config", customer_config),
-        patch.object(config, "CLI_ANALYTICS_PUBLICATION_CONTRACTS_ENABLED", True),
         patch.object(config, "ENABLE_USER_MANAGEMENT", True),
     ):
         yield Env(TestClient(app), engine, world)
@@ -212,15 +212,81 @@ def test_a_bound_consent_session_is_accepted_without_rebinding_and_echoed(env, r
     assert env.engine.conn.sql("INSERT INTO session_dims") == []
 
 
+FUNDING = "X-CodeMie-Funding-Route"
+PERSONAL_CLASS = {"X-CodeMie-Organization": "Elsewhere", "X-CodeMie-Subscription-Type": "personal"}
+UNKNOWN_CLASS = {"X-CodeMie-Organization": "", "X-CodeMie-Subscription-Type": ""}
+ROUTED = {"X-CodeMie-Routed-Via-CodeMie": "true"}
+
+
 @pytest.mark.parametrize("route", ROUTES)
-def test_a_contract_request_without_consent_is_echoed_with_its_private_destination(env, route):
-    headers = _evidence_headers(**{"X-CodeMie-Organization": "Elsewhere", "X-CodeMie-Subscription-Type": "personal"})
+@pytest.mark.parametrize(
+    "extra",
+    [
+        PERSONAL_CLASS,
+        {**PERSONAL_CLASS, FUNDING: "api_based"},  # Personal is denied whatever the funding claim says
+        {**PERSONAL_CLASS, FUNDING: "subscription"},
+        {**UNKNOWN_CLASS, FUNDING: "subscription"},
+    ],
+)
+def test_synthetic_a_contract_request_without_consent_for_personal_or_unknown_subscription_is_a_final_discard(
+    env, route, extra
+):
+    headers = _evidence_headers(**extra)
 
     response = env.post(route, {**headers, CONTRACT: "1"})
 
-    assert response.status_code == 200
-    assert (response.headers[CONTRACT], response.headers[DESTINATION]) == ("1", "personal")
-    assert BOUND_PROJECT not in response.headers
+    assert _reason(response, route) == "personal_storage_denied"  # a 200 discard body, as the CLI's discard path reads
+    assert not any(h in response.headers for h in ECHO)
+    assert env.engine.conn.sql("INSERT INTO") == []  # nothing persisted (no dims, rows or binding)
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize(
+    "extra",
+    [
+        UNKNOWN_CLASS,  # missing funding claim
+        {**UNKNOWN_CLASS, FUNDING: "api_based"},  # a proven API-based route is never read as subscription
+        {**UNKNOWN_CLASS, FUNDING: "unknown"},
+        {**ROUTED, FUNDING: "subscription"},  # contradictory: routed via CodeMie is class codemie, funding unknown
+    ],
+)
+def test_synthetic_unknown_without_subscription_proof_and_routed_are_still_stored(env, route, extra):
+    headers = _evidence_headers(**extra)
+
+    response = env.post(route, {**headers, CONTRACT: "1"})
+
+    assert response.status_code == 200 and response.headers[CONTRACT] == "1"
+    assert len(env.engine.conn.sql("INSERT INTO session_dims")) == 1
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_a_personal_class_request_with_consent_still_stores_under_the_project_after_the_deny_rule(env, route):
+    response = env.post(route, _headers(**PERSONAL_CLASS, **{FUNDING: "subscription"}))
+
+    assert response.status_code == 200 and response.headers[DESTINATION] == "project"
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_a_bound_private_session_is_denied_again_and_its_binding_is_not_rewritten(env, route):
+    env.bound(subscription_type="personal", project_origin="personal", work_consent=None, project_name="u personal")
+    before = list(env.engine.conn.bindings)
+
+    response = env.post(route, {**_evidence_headers(**PERSONAL_CLASS), CONTRACT: "1"})
+
+    assert _reason(response, route) == "personal_storage_denied"
+    assert env.engine.conn.sql("INSERT INTO") == [] and env.engine.conn.bindings == before
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("user_type", ["external", "service_account"])
+@pytest.mark.parametrize("extra", [PERSONAL_CLASS, {**UNKNOWN_CLASS, FUNDING: "subscription"}])
+def test_an_excluded_user_type_gets_the_same_final_discard_through_the_real_gate(env, route, user_type, extra):
+    env.client.app.dependency_overrides[authenticate](SimpleNamespace(state=SimpleNamespace())).user_type = user_type
+
+    response = env.post(route, {**_evidence_headers(**extra), CONTRACT: "1"})
+
+    assert _reason(response, route) == "personal_storage_denied"
+    assert env.engine.conn.sql("INSERT INTO") == []
 
 
 @pytest.mark.parametrize("route", ROUTES)

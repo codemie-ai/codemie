@@ -151,6 +151,7 @@ REASON_PROJECT_UNAVAILABLE = "project_unavailable"
 REASON_ANALYTICS_NOT_ENABLED = "project_analytics_not_enabled"
 REASON_CONSENT_PERSONAL_PROJECT = "consent_personal_project"
 REASON_DESTINATION_UNSUPPORTED = "destination_unsupported"
+REASON_PERSONAL_STORAGE_DENIED = "personal_storage_denied"
 PERSONAL = Application.ProjectType.PERSONAL
 # Routing outcomes since this process started (spec 5, 9): `route_note:<note>` for every stored route note and
 # `default_project_unavailable:discard|retry`. Read by tests and diagnostics, like the ingestor's SESSION_DISCARDS.
@@ -428,7 +429,21 @@ class EvidenceGate:
         values = {value.lower() for value in explicit}
         if (self._header or "").strip():
             values.add((self._header or "").lower())
-        return REASON_CONTEXT_CONFLICT if len(values) > 1 else None  # the legacy rule, against the header
+        if len(values) > 1:
+            return REASON_CONTEXT_CONFLICT  # the legacy rule, against the header
+        return REASON_PERSONAL_STORAGE_DENIED if self._denied() else None
+
+    def _denied(self) -> bool:
+        """Contract 1 without work consent: Personal, or Unknown whose funding is confirmed as subscription, is never
+        stored. A final discard (200 body both CLI parsers treat as terminal), decided before any write or lookup.
+        `funding` is the client's claim (api_based / unknown / missing never deny; routed+subscription is already
+        'unknown'): Unknown stays stored unless the client itself says subscription."""
+        version, consent = self._contract
+        if not version or consent:
+            return False
+        return self._subscription_type == "personal" or (
+            self._subscription_type == "unknown" and self._funding == "subscription"
+        )
 
     async def resolve_session(
         self, bound: SessionBinding | None, legacy_project: str | None, hook_repo_remote: str | None

@@ -1,0 +1,27 @@
+{
+  "reviewed_head": "41a5a5d43b5adb5bdd14a0dd0a4dc6325e769015",
+  "decision": "approve",
+  "rationale": "All lenses ran (acceptance n/a, no spec); the 10 deduped candidates were dismissed as noise: kill-switch removal and client-asserted funding are the stated contract, the conflict-before-discard order is the legacy rule, and the discard is asserted through the real gate. No defers.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "2 subjects in range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "7 changed files; small hunks, typed new helper, no new module or concern appended; removed config flag has no remaining references outside review docs"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no logging of credentials, no input normalization before decisions; new _denied gate fails closed for Personal or subscription-Unknown without consent; no concrete security issue found"
+    }
+  ],
+  "findings": [],
+  "deferred": []
+}

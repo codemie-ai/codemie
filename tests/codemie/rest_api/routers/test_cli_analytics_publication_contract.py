@@ -109,12 +109,11 @@ def env():
     app.dependency_overrides[authenticate] = _auth
     ingestor = _Ingestor()
     storage = MagicMock(ingestor=ingestor)
-    cfg = MagicMock(ANALYTICS_INGEST_MAX_BODY_BYTES=2, CLI_ANALYTICS_PUBLICATION_CONTRACTS_ENABLED=True)
+    cfg = MagicMock(ANALYTICS_INGEST_MAX_BODY_BYTES=2)
     with (
         patch.object(router_module, "_ensure_enabled", return_value=None),
         patch.object(router_module, "get_cli_analytics_storage", return_value=storage),
         patch.object(router_module, "config", cfg),
-        patch.object(route_module, "config", cfg),
         patch.object(route_module, "corporate_organizations", return_value=["Acme"]),
     ):
         yield TestClient(app), ingestor, user, cfg
@@ -173,28 +172,8 @@ def test_wrong_content_type_still_422_first(env, route):
 
 
 @pytest.mark.parametrize("route", ROUTES)
-def test_switch_off_holds_503(env, route):
+def test_legacy_unchanged(env, route):
     client, ingestor, _, cfg = env
-    cfg.CLI_ANALYTICS_PUBLICATION_CONTRACTS_ENABLED = False
-    with patch.object(Request, "body", side_effect=AssertionError("body read")):
-        resp = _post(client, route, {C: "1"})
-    assert resp.status_code == 503
-    assert resp.json() == {"reason": "publication_contract_unavailable", "disposition": "hold"}
-    assert ingestor.calls == 0
-
-
-@pytest.mark.parametrize("route", ROUTES)
-def test_switch_off_invalid_contract_still_422(env, route):
-    client, _, _, cfg = env
-    cfg.CLI_ANALYTICS_PUBLICATION_CONTRACTS_ENABLED = False
-    assert _post(client, route, {C: "9"}).status_code == 422
-
-
-@pytest.mark.parametrize("route", ROUTES)
-@pytest.mark.parametrize("enabled", [True, False])
-def test_legacy_unchanged(env, route, enabled):
-    client, ingestor, _, cfg = env
-    cfg.CLI_ANALYTICS_PUBLICATION_CONTRACTS_ENABLED = enabled
     assert _post(client, route, {}).status_code == 413  # existing cap guard still answers
     cfg.ANALYTICS_INGEST_MAX_BODY_BYTES = 1000
     assert _post(client, route, {}, body=b'{"a":1}\n').status_code == 200
@@ -205,14 +184,16 @@ def test_legacy_unchanged(env, route, enabled):
 @pytest.mark.parametrize(
     ("user_type", "org_headers", "held"),
     [
-        ("external", {}, True),  # unknown
-        ("service_account", {"X-CodeMie-Organization": "Other"}, True),  # personal
+        ("external", {}, True),  # unknown, no subscription claim: still held (no storage for this user type)
+        ("external", {F: "api_based"}, True),  # unknown, API-based: held
+        ("external", {F: "subscription"}, False),  # unknown + subscription: the gate's final discard, not a hold
+        ("service_account", {"X-CodeMie-Organization": "Other"}, False),  # personal: the gate's final discard
         ("external", {"X-CodeMie-Organization": "Acme"}, False),  # corporate
         ("external", {"X-CodeMie-Routed-Via-CodeMie": "true"}, False),  # codemie
         ("regular", {}, False),
     ],
 )
-def test_n0_excluded_user_personal_or_unknown_held(env, route, user_type, org_headers, held):
+def test_n0_excluded_user_unknown_without_subscription_is_held(env, route, user_type, org_headers, held):
     client, _, user, cfg = env
     user.user_type = user_type
     cfg.ANALYTICS_INGEST_MAX_BODY_BYTES = 1000

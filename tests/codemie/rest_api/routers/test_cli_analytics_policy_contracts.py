@@ -14,9 +14,8 @@
 
 """Classification-policy advertisement of publication contracts (EPMCDME-16849)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -26,29 +25,18 @@ from codemie.rest_api.security.authentication import authenticate
 URL = "/v1/analytics/cli-analytics/classification-policy"
 
 
-def _get(enabled: bool) -> dict:
+def _get() -> dict:
     app = FastAPI()
     app.include_router(router_module.router)
     app.dependency_overrides[authenticate] = lambda: object()
-    cfg = MagicMock(CLI_ANALYTICS_PUBLICATION_CONTRACTS_ENABLED=enabled)
     with (
         patch.object(router_module, "_ensure_enabled", return_value=None),
         patch.object(router_module, "corporate_organizations", return_value=["Acme"]),
-        patch.object(router_module, "config", cfg),
     ):
         return TestClient(app).get(URL).json()
 
 
-def test_contracts_advertised_only_when_enabled():
-    assert _get(True)["publication_contracts"] == ["1"]
-
-
-def test_contracts_key_absent_when_disabled():
-    body = _get(False)
-    assert "publication_contracts" not in body
+def test_contracts_always_advertised():
+    body = _get()
+    assert body["publication_contracts"] == ["1"]
     assert body["organizations"] == ["Acme"]
-
-
-@pytest.mark.parametrize("enabled", [True, False])
-def test_version_unchanged_by_setting(enabled):
-    assert _get(enabled)["version"] == _get(not enabled)["version"]
