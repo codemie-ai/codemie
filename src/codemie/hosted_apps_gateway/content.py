@@ -49,7 +49,7 @@ CONTENT_CSP = (
     "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; "
     "media-src 'self' blob:; connect-src 'self'; frame-src 'none'; object-src 'none'; "
     "worker-src 'none'; manifest-src 'none'; form-action 'none'; frame-ancestors 'none'; "
-    "sandbox allow-scripts allow-same-origin"
+    "sandbox allow-scripts allow-same-origin allow-popups"
 )
 # No `webrtc 'block'`: Chromium and Firefox do not implement it and log an error on every response.
 # WebRTC egress remains a documented residual risk (docs/hosted-applications/architecture.md).
@@ -58,6 +58,9 @@ CONTENT_CSP = (
 NO_STORE = "private, no-store"
 REVALIDATE = "private, no-cache"
 REVALIDATED_STATUSES = frozenset({200, 206, 304})
+# Content may present itself: fullscreen on its own origin only, and pop-ups (a presenter window)
+# that inherit the same sandbox (no allow-popups-to-escape-sandbox). Powerful features stay denied.
+DENIED_FEATURES = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 SECURITY_HEADERS = {
     "Content-Security-Policy": CONTENT_CSP,
     "Cross-Origin-Opener-Policy": "same-origin",
@@ -65,7 +68,7 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-DNS-Prefetch-Control": "off",
     "Referrer-Policy": "no-referrer",
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), fullscreen=()",
+    "Permissions-Policy": DENIED_FEATURES + ", fullscreen=(self)",
     "Cache-Control": NO_STORE,
 }
 UNAVAILABLE = "Application unavailable"
@@ -112,12 +115,14 @@ class ContentGateway:
             # top-level Permissions-Policy response header is not enforced.
             origin = self.settings.version_origin(version_id)
             return SECURITY_HEADERS | {
+                # Fullscreen is delegated to the framed version origin only, never to other origins.
+                "Permissions-Policy": f'{DENIED_FEATURES}, fullscreen=(self "{origin}")',
                 "Content-Security-Policy": (
                     "default-src 'none'; base-uri 'none'; "
                     f"script-src 'sha256-{WRAPPER_SCRIPT_HASH}'; style-src 'unsafe-inline'; "
                     f"frame-src {origin}; frame-ancestors 'none'; form-action 'none'; "
-                    "sandbox allow-scripts allow-same-origin"
-                )
+                    "sandbox allow-scripts allow-same-origin allow-popups"
+                ),
             }
         headers = self.headers
         if version_id is None:
@@ -156,9 +161,10 @@ class ContentGateway:
             'content="width=device-width,initial-scale=1"><title>Application viewer</title>'
             '<style>html,body,iframe{margin:0;width:100%;height:100%;border:0;overflow:hidden}'
             'html,body{background:Canvas;color-scheme:light dark}</style></head><body>'
-            '<iframe title="Application content" sandbox="allow-scripts allow-same-origin" '
+            '<iframe title="Application content" sandbox="allow-scripts allow-same-origin allow-popups" '
             'allow="camera \'none\'; microphone \'none\'; geolocation \'none\'; payment \'none\'; '
-            f'usb \'none\'; fullscreen \'none\'" referrerpolicy="no-referrer" data-src="{source}"></iframe>'
+            f'usb \'none\'; fullscreen {escape(origin, quote=True)}" referrerpolicy="no-referrer" '
+            f'data-src="{source}"></iframe>'
             f'<script>{WRAPPER_SCRIPT}</script>'
             '</body></html>'
         )

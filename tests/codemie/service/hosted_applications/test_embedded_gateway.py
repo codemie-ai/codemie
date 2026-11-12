@@ -87,7 +87,12 @@ async def test_embedded_launch_has_scoped_frame_ancestors_partitioned_cookie_and
         assert content.headers['cache-control'] == 'private, no-cache'
         assert ready.headers['cache-control'] == 'private, no-store'
         assert bootstrap.headers['cache-control'] == 'private, no-store'
-        assert "sandbox allow-scripts allow-same-origin" in content.headers['content-security-policy']
+        assert content.headers['content-security-policy'].endswith(
+            "sandbox allow-scripts allow-same-origin allow-popups"
+        )
+        assert content.headers['permissions-policy'] == (
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=(), fullscreen=(self)"
+        )
         replay = await client.post(
             '/_platform/launch',
             data={'ticket': ticket['ticket']},

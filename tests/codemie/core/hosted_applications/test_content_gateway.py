@@ -212,8 +212,16 @@ async def test_standalone_navigation_preserves_isolation_and_never_serves_upload
         wrapper = await http.get(opened.headers["location"])
         assert wrapper.status_code == 200
         assert 'title="Application content"' in wrapper.text
-        assert 'sandbox="allow-scripts allow-same-origin"' in wrapper.text
-        assert "fullscreen 'none'" in wrapper.text
+        assert 'sandbox="allow-scripts allow-same-origin allow-popups"' in wrapper.text
+        assert f"fullscreen {content_origin}\"" in wrapper.text
+        assert "fullscreen 'none'" not in wrapper.text
+        assert "allow-popups-to-escape-sandbox" not in wrapper.text
+        assert wrapper.headers["permissions-policy"] == (
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=(), " f'fullscreen=(self "{content_origin}")'
+        )
+        assert wrapper.headers["content-security-policy"].endswith(
+            "sandbox allow-scripts allow-same-origin allow-popups"
+        )
         assert f'src="{content_origin}/?route=example"' in wrapper.text
         assert "Version content" not in wrapper.text
         assert "set-cookie" not in wrapper.headers
@@ -341,7 +349,7 @@ async def test_every_content_response_disables_dns_prefetch(tmp_path):
     finally:
         slot.release()
     assert rejected.status_code == 503 and rejected.headers["x-dns-prefetch-control"] == "off"
-    assert "sandbox allow-scripts allow-same-origin" in rejected.headers["content-security-policy"]
+    assert rejected.headers["content-security-policy"].endswith("sandbox allow-scripts allow-same-origin allow-popups")
 
 
 @pytest.mark.asyncio
@@ -438,7 +446,7 @@ async def test_busy_or_failing_content_hosts_tell_the_viewer_and_log_server_erro
     assert busy.status_code == 503 and busy.headers["retry-after"] == "5"
     assert "codemie-hosted-unavailable" in busy.text
     assert failed.status_code == 503 and "database detail" not in failed.text
-    assert "sandbox allow-scripts allow-same-origin" in failed.headers["content-security-policy"]
+    assert failed.headers["content-security-policy"].endswith("sandbox allow-scripts allow-same-origin allow-popups")
     # A busy host is counted by metrics; only the unexpected failure is logged.
     assert logger.error.call_count == 1
 

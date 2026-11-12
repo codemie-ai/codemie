@@ -335,7 +335,9 @@ CodeMie. Ticket redemption redirects to `w-<version-id-hex>.<content-domain>`, a
 full-window wrapper that frames only the matching `v-` version origin. Its single fixed script is
 authorized by its CSP SHA-256 hash. The uploaded
 child cannot alter this different-origin wrapper or its explicit camera, microphone, geolocation,
-payment, USB and fullscreen denials. Direct top-level navigations to an authorized `v-` document
+payment and USB denials. The wrapper delegates fullscreen to the framed `v-` origin only (iframe
+`allow` plus `Permissions-Policy: fullscreen=(self "<v- origin>")`) and adds `allow-popups` to the
+iframe sandbox, so a deck's own fullscreen and presenter-window controls work in the own tab too. Direct top-level navigations to an authorized `v-` document
 redirect through the wrapper too. This addresses WebKit's missing top-level Permissions-Policy
 header enforcement while keeping a separate `SameSite=Lax` cookie on the `v-` host; `v-` and `w-`
 share a site on the supported HTTPS deployment domain. That deployment remains to be qualified
@@ -570,8 +572,8 @@ flowchart LR
 |---|---|
 | Separate registrable content domain, checked at startup against the public suffix list, `FRONTEND_URL`, the identity provider and the other first-party URLs | `core/hosted_applications/settings.py` |
 | One origin per version; host-only `__Host-` cookies; the session is bound to the version host | `content.py`, `launch.py` |
-| CSP on every content response: `default-src 'none'`, `script-src 'self' 'unsafe-inline'` (no `unsafe-eval`), `connect-src 'self'`, `frame-ancestors` = CodeMie origins, `worker-src 'none'`, `form-action 'none'`, `sandbox allow-scripts allow-same-origin`; plus `nosniff`, `no-referrer`, COOP/CORP same-origin, `X-DNS-Prefetch-Control: off`, and a `Permissions-Policy` requesting denial of camera, microphone, geolocation, payment, USB and fullscreen; enforcement depends on browser support | `content.py` |
-| Iframe sandbox without top navigation, popups or forms; explicit iframe permission denials, including fullscreen; postMessage source and origin checks | `utils/hostedApplicationFrame.ts`, `HostedStaticCover.tsx`, `HostedApplicationViewer.tsx` |
+| CSP on every content response: `default-src 'none'`, `script-src 'self' 'unsafe-inline'` (no `unsafe-eval`), `connect-src 'self'`, `frame-ancestors` = CodeMie origins, `worker-src 'none'`, `form-action 'none'`, `sandbox allow-scripts allow-same-origin allow-popups`; plus `nosniff`, `no-referrer`, COOP/CORP same-origin, `X-DNS-Prefetch-Control: off`, and a `Permissions-Policy` requesting denial of camera, microphone, geolocation, payment and USB and allowing fullscreen for the content's own origin only (`fullscreen=(self)`); enforcement depends on browser support. See *Presentation controls* below | `content.py` |
+| Iframe sandbox without top navigation or forms; pop-ups allowed but kept inside the sandbox (no `allow-popups-to-escape-sandbox`); explicit iframe permission denials for camera, microphone, geolocation, payment and USB, with fullscreen delegated to the content origin only; postMessage source and origin checks | `utils/hostedApplicationFrame.ts`, `HostedStaticCover.tsx`, `HostedApplicationViewer.tsx` |
 | CSRF guard on every mutation (exact Origin, Sec-Fetch headers, exact content type: JSON, or the raw artifact or cover image type) and `If-Match` + `Idempotency-Key` on writes | `rest_api/security/hosted_applications.py`, routers |
 | Every query filtered by the access module's `readable` / `manageable` conditions; an unreadable application is `404`; external users are refused at the `hosted_actor` dependency | `access.py`, `catalog.py`, `repository.py` |
 | Upload limits enforced on decompressed bytes: 20 MiB HTML, 100 MiB ZIP, 500 MiB expanded, 50 MiB per file, 5000 files, ratio 100; no symlinks, devices, absolute or backslash paths, encrypted entries, nested archives or case collisions | `core/hosted_applications/validation.py` |
@@ -579,9 +581,20 @@ flowchart LR
 | Per-process content capacity: 64 requests in flight, at most 16 of them for one viewer, a 5-second queue and a 120-second request limit. No per-request counters in Redis or the database: floods from outside are the edge's job, as for every CodeMie route | `admission.py`, `content.py` |
 | Per-person limits that bound stored rows and validator work: 500 applications per creator, two validations at a time, plus the storage quota of the creator | `catalog.py`, `uploads.py` |
 
+**Presentation controls (EPMCDME-17157):** hosted decks need their own "full screen" button
+(`document.documentElement.requestFullscreen()`) and a presenter pop-up (`window.open`). Content
+responses therefore send `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(),
+usb=(), fullscreen=(self)` and end their CSP with `sandbox allow-scripts allow-same-origin
+allow-popups`; the `w-` wrapper sends the same sandbox and delegates fullscreen only to its framed
+`v-` origin. Rationale: fullscreen is limited to the content's own origin and only follows a user
+gesture, and the browser always shows its exit hint, so it grants no data access. Pop-ups inherit
+the opener's sandbox flags because `allow-popups-to-escape-sandbox` is never granted, and any
+content they load gets the same headers, so a pop-up gains nothing the frame did not already have. Camera, microphone, geolocation, payment and USB stay denied. Top navigation and
+forms stay blocked.
+
 **Browser qualification:** The own-tab implementation uses a trusted, cross-origin `w-` wrapper with explicit
-iframe permission denials and a hash-authorized route script. Genuine fullscreen gestures and
-isolation probes pass in current Chrome and Firefox. Local HTTP Safari/WebKit child authentication
+iframe permission denials and a hash-authorized route script. Isolation probes pass in current
+Chrome and Firefox. Local HTTP Safari/WebKit child authentication
 fails; supported HTTPS qualification remains open. WebKit's
 [current PermissionsPolicy implementation](https://raw.githubusercontent.com/WebKit/WebKit/main/Source/WebCore/html/PermissionsPolicy.cpp)
 does not implement the declared response policy for ownerless documents. Native Safari still
