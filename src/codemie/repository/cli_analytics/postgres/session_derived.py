@@ -35,8 +35,9 @@ logger = logging.getLogger(__name__)
 # elements only from an array, so no row can raise.
 # The kind 2 and 4 rows have a lower bound only: from one hour before `started_at` on, which lets the planner skip the
 # partitions before the session at run time (an unbounded probe would visit all of them), and an hour of margin covers
-# the hour a row is bucketed into. There is no upper bound: `started_at` and `last_event_at` are filled only by
-# dimension hooks, so a later dispatch would be lost. A NULL `started_at` bounds nothing (the coalesce).
+# the hour a row is bucketed into. There is no upper bound: `started_at` comes from dimension hooks and `last_event_at`
+# from real-work hooks only, so neither is a safe upper bound for a later dispatch. A NULL `started_at` bounds nothing
+# (the coalesce).
 _SKILLS_OBJECT = "CASE WHEN jsonb_typeof(sd.skills) = 'object' THEN sd.skills END"
 _AGENTS_OBJECT = "CASE WHEN jsonb_typeof(sd.agents) = 'object' THEN sd.agents END"
 # The expression of the classifier names per session_dims row `sd`, one for the classifier below and for the

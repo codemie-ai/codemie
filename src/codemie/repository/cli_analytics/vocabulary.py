@@ -75,8 +75,8 @@ ROLLUP_METRICS: tuple[str, ...] = LINES_METRICS + ACTIVE_TIME_METRICS
 WRITE_TOOLS: tuple[str, ...] = ("Write",)
 EDIT_TOOLS: tuple[str, ...] = ("Edit", "MultiEdit", "NotebookEdit")
 
-# The hook types that count as dimension events, and so
-# the only ones that feed session dimensions and "last active".
+# The hook types that count as dimension events: they set a session's start and its other dimensions. The end and
+# "last active" follow ACTIVITY_HOOK_TYPES below, a subset of these (plus the skill dispatch).
 DIMENSION_HOOK_TYPES: tuple[str, ...] = (
     "agent.session.start",
     "agent.session.stop",
@@ -95,6 +95,25 @@ DIMENSION_HOOK_TYPES: tuple[str, ...] = (
 
 # Hook-sourced slash-command skill dispatch (UserPromptExpansion); not a dimension type.
 SKILL_DISPATCH_EVENT = "agent.skill.dispatch"
+
+# The hooks that are real work (a prompt, a tool or a subagent call and its stop, a skill dispatch, the record that
+# closes a turn). Lifecycle hooks (session start/end/compact/env/summary, git snapshot, notification) are not among
+# them: a reopen that does nothing must leave no trace in a session's activity or its end. `agent.session.stop` and
+# `agent.turn.error` are sent when the model finishes answering or the turn fails, never by a reopen with no turn, and
+# a client with no usage request and no summary (GitHub Copilot Chat) has no other record of that end of a turn.
+ACTIVITY_HOOK_TYPES: tuple[str, ...] = (
+    "agent.prompt.submit",
+    "agent.session.stop",
+    "agent.tool.start",
+    "agent.tool.end",
+    "agent.tool.error",
+    "agent.tool.denied",
+    "agent.turn.error",
+    "agent.subagent.start",
+    "agent.subagent.stop",
+    "agent.subagent.usage",
+    SKILL_DISPATCH_EVENT,
+)
 
 # Hook fields stored in typed columns, in hook_events column order.
 HOOK_TEXT_FIELDS: tuple[str, ...] = (

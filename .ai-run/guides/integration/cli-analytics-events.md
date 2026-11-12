@@ -1,6 +1,6 @@
 # CLI Analytics Event Contract
 
-The six events CodeMie CLI (formerly the `sdlc-analytics` plugin) sends on top of OTel telemetry and the 13 activity hook events (of these, the `lines_added` / `lines_removed` of `agent.tool.end`): their JSON, where each field is stored, and the rules a sender must keep. The storage, the recalculation and the operations are in [`cli-analytics-storage.md`](cli-analytics-storage.md).
+The six events CodeMie CLI (formerly the `sdlc-analytics` plugin) sends on top of OTel telemetry and the 13 dimension hook events (of these, the `lines_added` / `lines_removed` of `agent.tool.end`): their JSON, where each field is stored, and the rules a sender must keep. The storage, the recalculation and the operations are in [`cli-analytics-storage.md`](cli-analytics-storage.md).
 
 The server accepts these events. A change to a field name, a type or a rule on this page is a change to the contract: agree it before a sender or the server implements it.
 
@@ -115,7 +115,7 @@ Additional discard reasons: `evidence_session_conflict`, `session_owner_conflict
 | `agent.git.snapshot` | `hook_events` | `session_dims` |
 
 - In `hook_events` a field named like a typed key (rule 8) goes to that column and is absent from `attrs`; every other field goes to `attrs` with its JSON type.
-- None of the six moves a session's start or end: `session_dims.started_at` and `last_event_at` come from the 13 activity hook events only. A session that sent none of those is in no dashboard window.
+- None of the six moves a session's start or end: `session_dims.started_at` comes from the 13 dimension hook events only and `last_event_at` from the 11 real-work ones (prompt, the stop or the error that closes a turn, tool, subagent start, usage and stop, skill dispatch; `ACTIVITY_HOOK_TYPES`), so a lifecycle hook alone never extends a session. A session that sent none of those is in no dashboard window.
 
 ## Common fields
 
@@ -432,7 +432,7 @@ A skill started by a slash command of the user. For a forked skill this event is
 
 ## `agent.tool.end`
 
-An activity hook event: a tool call that completed. Its line counts are the source of `lines_daily` for the session.
+A dimension hook event, and a real-work one: a tool call that completed. Its line counts are the source of `lines_daily` for the session.
 
 | Field | Type | Goes to |
 |---|---|---|
@@ -480,7 +480,7 @@ The state of the repository, sent at the end of the session.
 | Event | Identity |
 |---|---|
 | with a non-empty `event_id`, either route | `(type, session_id, event_id)` |
-| without `event_id` | the whole content, as for the 13 activity hook events |
+| without `event_id` | the whole content, as for the 13 dimension hook events |
 
 - The first stored version of an identity stays. A re-send is dropped whatever its other fields, its route or the login it arrives under. A changed event must therefore carry a new `event_id`; this is why every summary has its own.
 - Two sessions that share an `event_id` are both stored, as are two types.

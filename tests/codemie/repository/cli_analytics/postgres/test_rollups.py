@@ -36,12 +36,19 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
 )
 from codemie.repository.cli_analytics.postgres.inline_skill_attribution import _PAIRED_REQUESTS
 from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES
+from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
 from codemie.repository.cli_analytics.postgres.rollups import RECOMPUTE, RollupRefresher
 from codemie.repository.cli_analytics.postgres.session_activity import DERIVE_SQL
 from codemie.repository.cli_analytics.vocabulary import (
+    ACTIVITY_HOOK_TYPES,
+    BUILTIN_COMMAND_NAMES,
+    DIMENSION_HOOK_TYPES,
+    LINES_METRICS,
     PASTED_CONTENT_TAG_SQL,
     SENTINEL_PREFIX_RAW,
     SENTINEL_PREFIX_TRIMMED,
+    EventKind,
+    SpanKind,
 )
 
 
@@ -1656,3 +1663,45 @@ def test_session_title_is_trimmed_cut_to_200_characters_and_empty_is_null() -> N
 def test_a_blank_session_title_never_becomes_the_latest_value() -> None:
     assert "e.key IN ('session_title', 'platform')" in rollups._LATEST_VALUES
     assert "btrim(e.value #>> '{}', E' \\t\\r\\n\\u00a0') = ''" in rollups._LATEST_VALUES
+
+
+def _dims_statement() -> str:
+    return next(s for s in RECOMPUTE if "INSERT INTO session_dims AS sd" in s and "last_event_at" in s)
+
+
+def test_a_session_starts_at_its_first_dimension_hook_but_ends_at_its_last_real_activity_hook():
+    # A lifecycle hook stamped by a reopen (session start/end, notification) must not move the end of the session.
+    sql = _dims_statement()
+    dims = rollups._text_array(DIMENSION_HOOK_TYPES)
+    activity = rollups._text_array(ACTIVITY_HOOK_TYPES)
+    assert f"min(h.ts) FILTER (WHERE h.event_type = ANY({dims}))" in sql
+    assert f"max(h.ts) FILTER (WHERE h.event_type = ANY({activity}))" in sql
+    assert f"max(h.ts) FILTER (WHERE h.event_type = ANY({dims}))" not in sql
+    assert "last_event_at = GREATEST(sd.last_event_at, EXCLUDED.last_event_at)" in sql
+
+
+def test_the_fallback_range_starts_at_any_record_and_ends_at_real_activity_only():
+    # The start side counts every raw record (an api_request may precede the first hook); the end side leaves out
+    # lifecycle hooks, Claude Code's own startup records and the built-in commands a reopen types (`/exit`).
+    raw = rollups._RAW_RANGE
+    for alias, table in (
+        ("h", "hook_events"),
+        ("u", "usage_requests"),
+        ("l", "log_events"),
+        ("s", "spans"),
+        ("m", "metric_points"),
+    ):
+        assert f"(SELECT min({alias}.ts) FROM {table} {alias} WHERE {alias}.session_id = k.session_id) AS lo" in raw
+    activity = rollups._text_array(ACTIVITY_HOOK_TYPES)
+    assert f"FROM hook_events h WHERE h.session_id = k.session_id AND h.event_type = ANY({activity})) AS hi" in raw
+    assert "FROM usage_requests u WHERE u.session_id = k.session_id) AS hi" in raw
+    commands = rollups._text_array(BUILTIN_COMMAND_NAMES)
+    log_end = f"FROM log_events l WHERE l.session_id = k.session_id{real_work_filter('log_events', 'l')}) AS hi"
+    assert log_end in raw
+    assert f"AND l.event_kind <> {int(EventKind.OTHER)} AND coalesce(l.command_name, '') <> ALL({commands})" in log_end
+    span_end = f"FROM spans s WHERE s.session_id = k.session_id{real_work_filter('spans', 's')}) AS hi"
+    assert span_end in raw
+    assert f"AND s.span_kind <> {int(SpanKind.OTHER)}" in span_end
+    # Only lines of code count at the end: an active_time point is sent while a reopen is typed into.
+    metrics = rollups._text_array(LINES_METRICS)
+    assert f"FROM metric_points m WHERE m.session_id = k.session_id AND m.metric_name = ANY({metrics})) AS hi" in raw

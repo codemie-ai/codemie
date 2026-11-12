@@ -1,0 +1,88 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran against the plan as spec; the core behavior (activity-only last_event_at, real-work raw fallback and end probes, window-bounded admission arms 1 and 2) is implemented and proven by live RED/GREEN runs, but one plan requirement is unmet (Task 3 consumer list), the rollup end filter deviates from the plan and is duplicated, a NULL last_event_at now leaves the reader's later probe unbounded, the Review Focus live tests are missing, and the loss of the index-only count on the default list (R11) is an open decision, not an accepted one. Filtered as noise or deferred: 14 dismissed (refuted NOT NULL / fact-consistency / quoting claims, pre-existing usage_requests and built-in-command scope, accepted R1-R6, midnight flakiness of gated live tests, truthiness check on days[1]) and 2 deferred (get_users_last_active still reads dimension hooks, by its documented definition; R9 text overstates the retention effect because _idle also counts updated_at for owner-bound rows, a documentation fix in residual-risks.md only).",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {"kind": "story-ac", "item": "16993: duration ends at last real activity (rollup last_event_at side)", "status": "pass", "notes": "rollups.py dims upsert filters max on ACTIVITY_HOOK_TYPES, min stays on the 13 dimension hooks, GREATEST merge unchanged; live scenarios 1, 11, 12 green on PG17 and PG14."},
+    {"kind": "story-ac", "item": "16993: duration ends at last real activity (raw fallback _RAW_RANGE end side: startup records, /exit)", "status": "partial", "notes": "End side filtered and live scenarios 3, 4, 8, 10 green, but the metric filter is ROLLUP_METRICS (adds active_time) where the plan says lines metrics, and /exit rests on the unverified command_name='exit' (R5, accepted)."},
+    {"kind": "story-ac", "item": "16993: session not reported for D2 in sessions/overview/users/repositories/cost/activity (admission arms 1 and 2)", "status": "pass", "notes": "Arm 1 adds last_activity_day >= window first UTC day, arm 2 and _SESSION_ADMITTED_IN_WINDOW use _activity_from_window_start; scenario 2 red to green; SQL built from module constants and bound parameters."},
+    {"kind": "story-ac", "item": "16993 / 16496 AC4: old session with no new activity in the window stays excluded", "status": "pass", "notes": "Scenarios 1-4, 8-12 and the presets guard assert an empty D2; arms 3-5 untouched."},
+    {"kind": "story-ac", "item": "16993: required live regression test covering all six endpoints and the duration", "status": "pass", "notes": "test_live_session_reopen.py, derived and NULL-fact modes, RED recorded then 38 runs green on PG17 and PG14."},
+    {"kind": "story-ac", "item": "16993: class/project attribution unchanged", "status": "na", "notes": "Session binding deferred by the user (R1)."},
+    {"kind": "story-ac", "item": "16993 comment: D1 view keeps its cost, D2 tiles zero, tiles stay all-time", "status": "pass", "notes": "_assert_unchanged plus the all-time tile guard (scenario 7); test_reader.py:648 untouched."},
+    {"kind": "story-ac", "item": "16992: continuation reports only its own work, own Started, each request counted once (tests only)", "status": "pass", "notes": "Three characterization tests pass with no production change."},
+    {"kind": "spec", "item": "Task 2: shared ACTIVITY_HOOK_TYPES in vocabulary.py, reader alias", "status": "pass", "notes": "Eight members, exact-tuple unit test, reader aliases it."},
+    {"kind": "spec", "item": "Task 3a: last_event_at = max over activity hooks, started_at and LEAST/GREATEST unchanged", "status": "pass", "notes": "GREATEST merge asserted by a unit test; GREATEST ignores NULL so it never shrinks a stored value."},
+    {"kind": "spec", "item": "Task 3b: _RAW_RANGE end side real activity only, one shared definition with the reader, lines metrics only", "status": "partial", "notes": "Filters applied, start side and _ENDED_AT untouched, but three separate copies exist (rollups _RAW_RANGE_SOURCES, reader real_work dict, reader _RAW_ACTIVITY_SOURCES) and the rollup uses ROLLUP_METRICS."},
+    {"kind": "spec", "item": "Task 3 Step 3: list every consumer of last_event_at and fb.last_ts with intended behavior in red-results.md", "status": "fail", "notes": "red-results.md has no consumer list; effects appear only afterwards as residual R9/R10."},
+    {"kind": "spec", "item": "Task 3 Step 4 / Review Focus 1, 2, 3, 6: dedicated live tests", "status": "partial", "notes": "No dedicated tests; _END_HOOK_LAG of 60 s would pass if a session.end 20 s after the last activity were counted."},
+    {"kind": "spec", "item": "Task 4 (conditional): reader end probes real work only, gated by a failing test", "status": "pass", "notes": "Gate met (4 of 4 RED), probes changed on the end side only, get_users_last_active left because its test passes."},
+    {"kind": "spec", "item": "Task 5: bound arms 1 and 2; guards stay green; EXPLAIN before and after on 100k rows", "status": "pass", "notes": "Arm 1 keeps session_dims_active_started, arm 2 keeps session_dims_activity_pending; ids-only arm 1 loses the covering Index Only Scan (see CR-002)."},
+    {"kind": "spec", "item": "Global: five arms, no migration, started_at semantics and _ENDED_AT rule unchanged, test_reader.py:648 unchanged, baseline of 19 failures identical", "status": "pass", "notes": "Verified in the diff and in red-results.md."},
+    {"kind": "spec", "item": "Retention clock effect handled and documented", "status": "partial", "notes": "Recorded as R9/R10 in residual-risks.md only; R9 overstates the effect for owner-bound rows."},
+    {"kind": "spec", "item": "Reduced Task 7: guides, ruff, reruns, containers removed, no commit", "status": "pass", "notes": "Both guides updated, ruff and license check clean, reruns done, containers removed, nothing committed."},
+    {"kind": "spec", "item": "Out-of-scope items (binding, tiles, repair of polluted sessions, dedup, started_at semantics)", "status": "na", "notes": "Recorded as R1-R4."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "na", "notes": "Nothing is committed; the format EPMCDME-16993: <Description> applies when the user asks."},
+    {"kind": "code-quality", "status": "pass", "notes": "Ruff format and check clean over the repo, license check clean, typed signatures, no ticket IDs in the added code; changes sit in the reader/rollups modules that own the concern (Module Cohesion); the duplicated end filter is raised as CR-004."},
+    {"kind": "security", "status": "pass", "notes": "New SQL fragments come from module constants (int(EventKind.OTHER), _text_array of vocabulary tuples); the window stays bound through $start_dt and $end_dt."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "docs/superpowers/tasks/2026-11-11-epmcdme-16993-cli-analytics-reopen-redo/red-results.md",
+      "title": "Task 3 consumer list not written",
+      "problem": "Plan Task 3 Step 3 requires listing every consumer of last_event_at and fb.last_ts with its intended behavior in red-results.md; the file has no such list. The consumers (session_files_daily day window ~rollups.py:1225, get_session_cost_facts, get_users_last_active, session_purge._idle, the reader range) are only touched on afterwards as residual R9/R10.",
+      "impact": "The semantic shift of two stored columns that other code reads is not recorded against each reader, so a reviewer cannot confirm each consumer's behavior was intended; the plan marked it required.",
+      "recommendation": "Run grep -rn \"last_event_at\\|last_ts\" src/ and add a table to red-results.md: consumer, file:line, behavior before and after, intended or not. Correct R9 in residual-risks.md: session_purge._idle also counts updated_at for owner-bound rows, so only legacy rows lose the reopen refresh."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 268,
+      "title": "Default-list count loses its index-only scan",
+      "problem": "Arm 1 now filters on last_activity_day, which session_dims_active_shared_cov does not hold, so the ids-only sel and the count of arm 1 on the default Sessions list change from an Index Only Scan (63 buffers, 0 heap fetches) to a Bitmap Heap Scan on session_dims_active_started (1,586 heap blocks, 1,626 buffers) for a 7-day window of 100k sessions. It was recorded as residual R11 by the implementer, not accepted by the user, and measured only warm at 100k sessions. The storage guide still states an index-only count of arm (1) and quotes the earlier timings.",
+      "impact": "The hottest query (default Sessions list and count) reads about one heap page per 6-7 sessions in the window; at the guide's 10^6 sessions and a 30-day default window, and on a cold cache, this was the class of query that previously timed out, so the cost is unmeasured and may be material.",
+      "recommendation": "Human decision: (a) accept R11 for now, state it in the guide (fix the 'index-only count of arm (1)' sentence and the stale timings) and re-measure at scale before release; or (b) add last_activity_day to the INCLUDE list of session_dims_active_shared_cov in a migration (index rebuild on a large table, ops runbook entry); or (c) bound arm 1 without a new column read. The implementer cannot choose between (a) and (b) without knowing production volume and migration appetite."
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 563,
+      "title": "Later probe unbounded when the end is NULL",
+      "problem": "last_event_at is now NULL for a session with no real-work hook, so greatest(last_event_at, ended_at) can be NULL (ended_at also NULL when the summary lacks it and the raw fallback was not computed). The later probe then becomes ts > -infinity and ts <= infinity, so log_events and spans are scanned across all weekly partitions instead of one day.",
+      "impact": "Partition pruning is lost for the list, detail and duration queries on such sessions; the conditions are rare but introduced by this change (previously last_event_at was set by any dimension hook).",
+      "recommendation": "Bound the probes by the start when the end is NULL: use coalesce(end, start) in both bounds of later (guard sketch: ts > coalesce(coalesce(end, start), '-infinity') AND ts <= coalesce(coalesce(end, start) + interval '1 day', 'infinity')) and extend the existing probe unit test; add a live case for a session with usage rows and lifecycle hooks only."
+    },
+    {
+      "id": "CR-004",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/rollups.py",
+      "line": 1111,
+      "title": "Duplicated end filter, metrics differ from plan",
+      "problem": "The plan (Task 3b) asks for one shared real-work definition used by the rollup and the reader and for lines metrics only. The diff adds _RAW_RANGE_SOURCES here, a separate real_work dict in reader._activity_range, and leaves _RAW_ACTIVITY_SOURCES; the rollup filters metric_points with ROLLUP_METRICS (lines plus active_time) while the reader admission check uses LINES_METRICS.",
+      "impact": "An active_time metric emitted at a reopen (for example while a /exit is typed) can extend the stored end, the exact failure being fixed, and the copies can drift apart on the next edit.",
+      "recommendation": "Use LINES_METRICS in _RAW_RANGE_SOURCES (update test_the_fallback_range_starts_at_any_record_and_ends_at_real_activity_only) and move the per-table end filters (hook types, log kind and built-in commands, span kind, lines metrics) into one small helper imported by both rollups.py and reader._activity_range; document that the admission raw check intentionally differs."
+    },
+    {
+      "id": "CR-005",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/repository/cli_analytics/postgres/test_live_session_reopen.py",
+      "line": 73,
+      "title": "End tolerance too loose; Review Focus tests missing",
+      "problem": "_END_HOOK_LAG is 60 s while D1's session.end is stamped 20 s after the last request, so counting a lifecycle hook seconds after the last activity would still pass. The plan's dedicated live tests for Review Focus 1, 2, 3 and 6 (lifecycle-only non-Claude session ending at its last usage, session.end seconds after the last tool, api_request before the first hook keeping the start, provisional summary with a cancelled SessionEnd keeping the full duration) do not exist; the reopen scenarios cover only the days-later case.",
+      "impact": "A regression that again lets session.end (or a lifecycle hook) shorten or extend the end by seconds, or that moves the start for an api_request-first session, passes the live file.",
+      "recommendation": "Tighten _expected_ms to about 2 s (the end is exactly the last D1 request in every seeded case), then add the four small live tests on the existing _Reopen helper; each runs derived and NULL-fact modes. Run the file on PG17 and PG14 again."
+    }
+  ]
+}

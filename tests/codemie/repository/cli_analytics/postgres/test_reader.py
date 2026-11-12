@@ -36,8 +36,10 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import dispatch_
 from codemie.repository.cli_analytics.postgres.hook_row_sql import tool_response_agent_id
 from codemie.repository.cli_analytics.postgres.reader import (
     _C,
+    _RAW_RETENTION_DAYS,
     _ms,
     PostgresCliAnalyticsReader,
+    _text_array,
     model_token_groups,
     normalise,
     positional,
@@ -46,6 +48,7 @@ from codemie.repository.cli_analytics.postgres.reader import (
     truncate_to_ms,
     window_params,
 )
+from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
 from codemie.repository.cli_analytics.postgres.rollups import _attr_ms
 from codemie.repository.cli_analytics.postgres.session_derived import (
     CLASSIFIER_NAMES_SQL,
@@ -62,6 +65,7 @@ from codemie.repository.cli_analytics.scope import (
     sql_project_origin,
     sql_subscription_type,
 )
+from codemie.repository.cli_analytics.vocabulary import ACTIVITY_HOOK_TYPES, DIMENSION_HOOK_TYPES
 from tests.codemie.repository.cli_analytics.support.contracts import assert_implements_port, port_methods
 from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 
@@ -428,8 +432,10 @@ _LAST_WHOLE_DAY_UTC = "(($end_dt::timestamptz AT TIME ZONE 'UTC') + interval '1 
 _RAW_TABLES = ("hook_events", "usage_requests", "log_events", "spans", "metric_points")
 
 
-def _any_activity(alias: str, days: tuple[str, str] | None = None) -> str:
-    bound = f" AND ax.day >= {days[0]} AND ax.day <= {days[1]}" if days else ""
+def _any_activity(alias: str, days: tuple[str, str | None] | None = None) -> str:
+    bound = ""
+    if days:
+        bound = f" AND ax.day >= {days[0]}" + (f" AND ax.day <= {days[1]}" if days[1] else "")
     tables = ("turns_daily", "tool_facts_daily", "cost_daily", "session_usage", "lines_daily")
     clauses = " OR ".join(
         f"EXISTS (SELECT 1 FROM {t} ax WHERE ax.session_id = {alias}.session_id{bound})" for t in tables
@@ -437,15 +443,29 @@ def _any_activity(alias: str, days: tuple[str, str] | None = None) -> str:
     return f"({clauses})"
 
 
-_HAS_ANY_ACTIVITY = _any_activity("d")
+# a session that started in the window is admitted for activity from the window's first day on, not for any activity ever
+_START_DAY_BEGIN = f"({_START_DAY_UTC}::timestamp AT TIME ZONE 'UTC')"
+_AFTER_FIRST_DAY = _any_activity("d", (f"({_START_DAY_UTC} + 1)", None))
+_ON_FIRST_DAY = _any_activity("d", (_START_DAY_UTC, _START_DAY_UTC))
+# a first-day row says only the day: a window of a day or less that does not start at midnight, and not before the raw
+# retention (the raw rows may be purged), also needs a real-work record at or after the start to confirm it
+_FROM_START_OR_MIDNIGHT = (
+    f"($start_dt::timestamptz = {_START_DAY_BEGIN} "
+    "OR $end_dt::timestamptz - $start_dt::timestamptz > interval '1 day 1 second' "
+    f"OR $start_dt::timestamptz < now() - interval '{_RAW_RETENTION_DAYS} days') "
+    "OR (EXISTS (SELECT 1 FROM hook_events r WHERE"
+)
 _WHOLE_DAYS = _any_activity("d", (_FIRST_WHOLE_DAY_UTC, _LAST_WHOLE_DAY_UTC))
 _WINDOW_DAYS = _any_activity("d", (_START_DAY_UTC, _END_DAY_UTC))
 _IN_WINDOW = "d.started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
 # the five arms of the admission rule (see `_admitted_arms`): started (stored fact), started and underived (asks the
 # tables), outside and underived (the rule as is), outside and resumed, outside and all rows on one day (the last two
 # decide with `_active_in_window` on their candidates only)
-_ARM_STARTED = f"AND {_IN_WINDOW} AND d.has_activity UNION ALL"
-_ARM_UNDERIVED = f"AND {_IN_WINDOW} AND d.has_activity IS NULL AND {_HAS_ANY_ACTIVITY} UNION ALL"
+_ARM_STARTED = (
+    f"AND {_IN_WINDOW} AND d.has_activity AND d.last_activity_day >= {_START_DAY_UTC}"
+    f" AND (d.last_activity_day > {_START_DAY_UTC} OR ({_FROM_START_OR_MIDNIGHT}"
+)
+_ARM_UNDERIVED = f"AND {_IN_WINDOW} AND d.has_activity IS NULL AND ({_AFTER_FIRST_DAY} OR (("
 _ARM_OUTSIDE_UNDERIVED = (
     f"AND NOT ({_IN_WINDOW}) AND d.has_activity IS NULL AND ({_WHOLE_DAYS} OR ({_WINDOW_DAYS} AND ("
 )
@@ -453,7 +473,6 @@ _ARM_RESUMED = (
     f"AND NOT ({_IN_WINDOW}) AND d.has_activity AND d.resumed AND d.last_activity_day >= {_START_DAY_UTC} AND"
 )
 _ARM_ONE_DAY = f"AND NOT ({_IN_WINDOW}) AND d.has_activity AND NOT d.resumed AND ((d.started_at >="
-_WINDOW_PREDICATE_HEAD = f"{_ARM_STARTED}"
 
 
 @pytest.mark.parametrize(
@@ -544,13 +563,33 @@ async def test_session_queries_report_the_activity_range(method):
 
 
 @pytest.mark.asyncio
+async def test_the_latest_activity_probes_read_real_work_only_and_the_earliest_read_every_record():
+    # A reopen that does nothing leaves startup records and a built-in `/exit` after the end; they must not extend it.
+    # A startup record may still precede the first hook, so the start side keeps reading every record.
+    sql, _ = await _sql_of("get_session_durations")
+
+    latest_log = sql.split("(SELECT max(le.ts)")[1].split("(SELECT max(sp.ts)")[0]
+    latest_span = sql.split("(SELECT max(sp.ts)")[1][:600]
+    earliest_log = sql.split("(SELECT min(le.ts)")[1].split("(SELECT min(sp.ts)")[0]
+    earliest_span = sql.split("(SELECT min(sp.ts)")[1][:600]
+
+    assert "le.event_kind <> 0" in latest_log
+    assert "coalesce(le.command_name, '') <> ALL(ARRAY['model', 'exit', 'quit']::text[])" in latest_log
+    assert "sp.span_kind <> 0" in latest_span
+    assert "event_kind" not in earliest_log and "command_name" not in earliest_log
+    assert "span_kind" not in earliest_span.split("(SELECT")[0]
+
+
+@pytest.mark.asyncio
 async def test_activity_probes_are_bounded_by_a_day_around_the_hook_times():
     sql, _ = await _sql_of("get_session_durations")
 
     assert sql.count("- interval '1 day'") == 2  # the earliest log_events / spans probes
     assert sql.count("+ interval '1 day'") == 2  # the latest ones
     assert re.search(r"\.ts < coalesce\(least\(", sql)  # an event at the candidate start is not earlier
+    # A session with no stored end yet is read through every later row (as before the reopen work), not bounded.
     assert re.search(r"\.ts > coalesce\(greatest\(", sql)
+    assert re.search(r"\.ts <= coalesce\(greatest\([^;]*?, 'infinity'\)", sql)
 
 
 @pytest.mark.asyncio
@@ -559,6 +598,35 @@ async def test_users_last_active_has_no_overlap_where():
 
     assert "d.last_event_at >=" not in sql
     assert "d.started_at <=" not in sql
+
+
+@pytest.mark.asyncio
+async def test_users_last_active_reads_the_raw_hooks_of_real_work_only():
+    """The branch for a session active again after the window reads the same hooks as the stored `last_event_at`."""
+    sql, _ = await _sql_of("get_users_last_active")
+
+    assert f"h.event_type = ANY({_text_array(ACTIVITY_HOOK_TYPES)})" in sql
+    assert f"h.event_type = ANY({_text_array(DIMENSION_HOOK_TYPES)})" not in sql
+
+
+@pytest.mark.parametrize("table", _RAW_TABLES)
+def test_the_raw_admission_check_reads_the_same_real_work_as_the_end_of_a_session(table):
+    """`/exit`, startup records and lifecycle hooks admit nothing: one definition for the admission check and the end."""
+    cte = " ".join(PostgresCliAnalyticsReader._sessions_cte(_flt()).split())
+
+    assert f"FROM {table} r WHERE r.session_id = d.session_id AND r.ts >= $start_dt::timestamptz" in cte
+    assert real_work_filter(table, "r") in cte
+
+
+def test_the_raw_check_of_a_started_session_has_no_upper_bound_and_the_one_of_a_resumed_session_has_one():
+    """A session that started in the window may have worked after its end; only the first-day check is open-ended."""
+    cte = " ".join(PostgresCliAnalyticsReader._sessions_cte(_flt()).split())
+
+    open_ended = (
+        f"{_FROM_START_OR_MIDNIGHT} r.session_id = d.session_id AND r.ts >= $start_dt::timestamptz AND r.event_type"
+    )
+    assert open_ended in cte
+    assert "AND r.ts >= $start_dt::timestamptz AND r.ts <= $end_dt::timestamptz" in cte
 
 
 @pytest.mark.asyncio
@@ -810,7 +878,7 @@ def test_aggregation_merges_session_count_and_cost_across_raw_name_variants():
 async def test_session_model_costs_groups_by_session_and_model():
     sql, _ = await _sql_of("get_session_model_costs")
     assert "GROUP BY c.session_id, c.model_name" in sql
-    assert "<> ''" not in sql
+    assert "c.model_name <> ''" not in sql
     for column in (
         "input_tokens",
         "output_tokens",
@@ -1191,13 +1259,13 @@ async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(metho
     assert f"WINDOW w AS (PARTITION BY c.day, c.session_id, c.user_email, {model}, c.query_source)) c" in sql
     assert f"(array_agg({model} ORDER BY c.grain_calls DESC NULLS LAST, c.day, c.session_id" in sql
     assert "ORDER BY c.api_call_count" not in sql
-    # cost_daily is read for the grain_calls subquery, again inside sel's own activity-window checks (seven times:
-    # the any-time probe of the underived started arm, and the whole-day and window-day probes of each of the
-    # three arms that ask `_active_in_window`), and once more per `_DEVELOPER`
+    # cost_daily is read for the grain_calls subquery, again inside sel's own activity-window checks (eight times:
+    # the after-the-first-day and first-day probes of the underived started arm, and the whole-day and window-day
+    # probes of each of the three arms that ask `_active_in_window`), and once more per `_DEVELOPER`
     # occurrence for its own cost-email fallback subquery (get_users repeats {_DEVELOPER} in ORDER BY,
     # get_session_cost_facts uses it once); a plain `FROM cost_daily c` has no grain_calls column
     developer_reads = {"get_users": 2, "get_session_cost_facts": 1}.get(method, 0)
-    expected_cost_daily_reads = 1 if method == "get_session_detail_cost" else 8 + developer_reads
+    expected_cost_daily_reads = 1 if method == "get_session_detail_cost" else 9 + developer_reads
     assert sql.count("cost_daily") == expected_cost_daily_reads
     assert "(SELECT c.*, sum(c.api_call_count) OVER w AS grain_calls, " in sql
 
@@ -2238,3 +2306,14 @@ async def test_funding_rows_read_the_spend_rows_scope_without_the_spend_filter(f
     assert " ".join(f"{sql_personal_billed('s')} AS personal_billed".split()) in sql
     assert "LEFT JOIN session_dims d ON d.session_id = c.session_id" in sql
     assert "JOIN sel s ON s.session_id = c.session_id" in sql
+
+
+def test_the_raw_check_is_skipped_for_a_window_that_starts_before_the_raw_retention(monkeypatch):
+    from codemie.repository.cli_analytics.postgres import reader
+
+    monkeypatch.setattr(reader, "_RAW_RETENTION_DAYS", 7)
+    skip = reader._no_raw_check_needed()
+    assert "$start_dt::timestamptz < now() - interval '7 days'" in skip
+    # a window of a day or less is asked for a raw record unless one of the three conditions holds
+    assert skip.count(" OR ") == 2
+    assert "now() - interval '7 days'" in reader._real_work_from_window_start("d")

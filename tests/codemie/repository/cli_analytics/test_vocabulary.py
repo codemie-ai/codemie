@@ -199,3 +199,29 @@ def test_pasted_content_tag_sql_is_the_are_pattern():
         r'</?pasted_content(?:[ \t\n\r\f\v]+[A-Za-z0-9_-]+="[^"<>\n]*")*'
         r'(?:>|(?:[ \t\n\r\f\v]+(?:[A-Za-z0-9_-]+(?:=(?:"[^"<> \t\n\r\f\v]*)?)?)?)?$)'
     )
+
+
+def test_activity_hook_types_are_the_real_work_hooks_and_no_lifecycle_hook():
+    assert v.ACTIVITY_HOOK_TYPES == (
+        "agent.prompt.submit",
+        "agent.session.stop",
+        "agent.tool.start",
+        "agent.tool.end",
+        "agent.tool.error",
+        "agent.tool.denied",
+        "agent.turn.error",
+        "agent.subagent.start",
+        "agent.subagent.stop",
+        "agent.subagent.usage",
+        v.SKILL_DISPATCH_EVENT,
+    )
+    lifecycle = {
+        "agent.session.start",
+        "agent.session.end",
+        "agent.session.compact",
+        "agent.session.env",
+        "agent.session.summary",
+        "agent.git.snapshot",
+        "agent.notification",
+    }
+    assert not lifecycle & set(v.ACTIVITY_HOOK_TYPES)

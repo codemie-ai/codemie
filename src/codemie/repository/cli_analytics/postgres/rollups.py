@@ -59,6 +59,7 @@ from codemie.repository.cli_analytics.postgres.dirty import (
 from codemie.repository.cli_analytics.postgres.engine import CLIENT_TIMEOUT_MARGIN_S, AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.maintenance import TODAY_UTC_SQL
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES, MAX_PATH_BYTES
+from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
 from codemie.repository.cli_analytics.postgres.route_identity import group_model, routed_model_name
 from codemie.repository.cli_analytics.postgres.session_activity import derive_session_activity
 from codemie.repository.cli_analytics.postgres.session_derived import update_session_derived
@@ -79,6 +80,7 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
 from codemie.repository.cli_analytics.postgres.hook_row_sql import is_claude_code
 from codemie.repository.cli_analytics.vocabulary import (
     ACTIVE_TIME_METRICS,
+    ACTIVITY_HOOK_TYPES,
     BUILTIN_COMMAND_NAMES,
     CLAUDE_CODE_AUTO_PROMPT_PREFIXES,
     DIMENSION_HOOK_TYPES,
@@ -180,6 +182,7 @@ _LOG, _DIMS, _SPANS, _METRICS, _USAGE, _SESSION = (
 )
 _TOOL, _EXEC, _INTERACTION = int(SpanKind.TOOL), int(SpanKind.TOOL_EXECUTION), int(SpanKind.INTERACTION)
 _DIM_TYPES = _text_array(DIMENSION_HOOK_TYPES)
+_ACTIVITY_TYPES = _text_array(ACTIVITY_HOOK_TYPES)
 
 
 # The characters trimmed from both ends of a prompt, a session title, the session platform and the harness name
@@ -1106,12 +1109,22 @@ def _booleans(attrs: str) -> str:
 
 _ANY_SPAN_KIND = f"({_TOOL}, {_EXEC}, {_INTERACTION})"
 
-# Earliest and latest time over every raw record of the session (the fallback activity range).
+# The fallback activity range of the session: it starts at its earliest raw record of any kind (an api_request can
+# precede the first hook) and ends at its latest record of real work. Lifecycle hooks, Claude Code's own startup
+# records (event kind OTHER) and a built-in command typed at a reopen (`/exit`) do not extend the end. Each side is
+# its own scalar subselect, so the (session_id, ts) indexes still serve min and max.
+_RAW_RANGE_SOURCES = (
+    ("h", "hook_events"),
+    ("u", "usage_requests"),
+    ("l", "log_events"),
+    ("s", "spans"),
+    ("m", "metric_points"),
+)
 _RAW_RANGE = _UNION_ALL.join(
-    f"SELECT min({a}.ts) AS lo, max({a}.ts) AS hi FROM {t} {a} WHERE {a}.session_id = k.session_id"
-    for a, t in (("h", "hook_events"), ("u", "usage_requests"), ("l", "log_events"), ("s", "spans"),
-                 ("m", "metric_points"))
-)  # fmt: skip
+    f"SELECT (SELECT min({a}.ts) FROM {t} {a} WHERE {a}.session_id = k.session_id) AS lo, "
+    f"(SELECT max({a}.ts) FROM {t} {a} WHERE {a}.session_id = k.session_id{real_work_filter(t, a)}) AS hi"
+    for a, t in _RAW_RANGE_SOURCES
+)
 
 _OTEL_COMPACTIONS = f"""SELECT l.ts, 0::bigint AS seq, jsonb_strip_nulls(jsonb_build_object(
                 'trigger', {_json_text("l.attrs", "trigger")},
@@ -2067,7 +2080,8 @@ RECOMPUTE: list[str] = [
     WHERE l.event_kind = {int(EventKind.SKILL_ACTIVATED)} AND l.skill_name <> ''
     ON CONFLICT (session_id, skill_name) DO UPDATE SET updated_at = EXCLUDED.updated_at""",
     # Dimensions come from the 13 dimension hook types, identity (JWT email, developer
-    # name) from every hook event.
+    # name) from every hook event. The start is the first dimension hook; the end (last_event_at) is the last
+    # real-work hook only, so a lifecycle hook a reopen stamps (session start/end, notification) does not move it.
     # A recompute sees only the raw rows still kept, so it merges into the stored row: when it
     # starts later than the stored start, the earliest rows are gone and the stored earliest
     # values stay.
@@ -2075,7 +2089,7 @@ RECOMPUTE: list[str] = [
                                        project_name, developer_name, first_prompt, jwt_email, dev_name_max, updated_at)
     SELECT h.session_id,
            min(h.ts) FILTER (WHERE h.event_type = ANY({_DIM_TYPES})),
-           max(h.ts) FILTER (WHERE h.event_type = ANY({_DIM_TYPES})),
+           max(h.ts) FILTER (WHERE h.event_type = ANY({_ACTIVITY_TYPES})),
            {_earliest("cwd")}, {_earliest("git_branch")}, {_earliest("repo_remote")},
            {_earliest("codemie_project_name")}, {_earliest("developer_name")},
            {_earliest("prompt_body", _PROMPT_OK, value=_CLEANED)},

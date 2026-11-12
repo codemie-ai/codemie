@@ -1,0 +1,167 @@
+{
+  "decision": "approve",
+  "rationale": "All five original findings are resolved in the fix-up diff and no new high-risk issue was introduced, so the confirmation pass was not needed. CR-002 was decided by the user (accept the risk, correct the guide) and the guide sentences and R11 are updated; CR-003 and CR-004 are backed by tests that were red before the change, and the live file plus the baseline live files pass on PG17 and PG14 (63 each).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "16993: duration ends at last real activity (rollup last_event_at side)",
+      "status": "pass",
+      "notes": "rollups.py dims upsert filters max on ACTIVITY_HOOK_TYPES, min stays on the 13 dimension hooks, GREATEST merge unchanged; live scenarios 1, 11, 12 green on PG17 and PG14."
+    },
+    {
+      "kind": "story-ac",
+      "item": "16993: duration ends at last real activity (raw fallback _RAW_RANGE end side: startup records, /exit)",
+      "status": "partial",
+      "notes": "End side filtered and live scenarios 3, 4, 8, 10 green, but the metric filter is ROLLUP_METRICS (adds active_time) where the plan says lines metrics, and /exit rests on the unverified command_name='exit' (R5, accepted)."
+    },
+    {
+      "kind": "story-ac",
+      "item": "16993: session not reported for D2 in sessions/overview/users/repositories/cost/activity (admission arms 1 and 2)",
+      "status": "pass",
+      "notes": "Arm 1 adds last_activity_day >= window first UTC day, arm 2 and _SESSION_ADMITTED_IN_WINDOW use _activity_from_window_start; scenario 2 red to green; SQL built from module constants and bound parameters."
+    },
+    {
+      "kind": "story-ac",
+      "item": "16993 / 16496 AC4: old session with no new activity in the window stays excluded",
+      "status": "pass",
+      "notes": "Scenarios 1-4, 8-12 and the presets guard assert an empty D2; arms 3-5 untouched."
+    },
+    {
+      "kind": "story-ac",
+      "item": "16993: required live regression test covering all six endpoints and the duration",
+      "status": "pass",
+      "notes": "test_live_session_reopen.py, derived and NULL-fact modes, RED recorded then 38 runs green on PG17 and PG14."
+    },
+    {
+      "kind": "story-ac",
+      "item": "16993: class/project attribution unchanged",
+      "status": "na",
+      "notes": "Session binding deferred by the user (R1)."
+    },
+    {
+      "kind": "story-ac",
+      "item": "16993 comment: D1 view keeps its cost, D2 tiles zero, tiles stay all-time",
+      "status": "pass",
+      "notes": "_assert_unchanged plus the all-time tile guard (scenario 7); test_reader.py:648 untouched."
+    },
+    {
+      "kind": "story-ac",
+      "item": "16992: continuation reports only its own work, own Started, each request counted once (tests only)",
+      "status": "pass",
+      "notes": "Three characterization tests pass with no production change."
+    },
+    {
+      "kind": "spec",
+      "item": "Task 2: shared ACTIVITY_HOOK_TYPES in vocabulary.py, reader alias",
+      "status": "pass",
+      "notes": "Eight members, exact-tuple unit test, reader aliases it."
+    },
+    {
+      "kind": "spec",
+      "item": "Task 3a: last_event_at = max over activity hooks, started_at and LEAST/GREATEST unchanged",
+      "status": "pass",
+      "notes": "GREATEST merge asserted by a unit test; GREATEST ignores NULL so it never shrinks a stored value."
+    },
+    {
+      "kind": "spec",
+      "item": "Task 3b: _RAW_RANGE end side real activity only, one shared definition with the reader, lines metrics only",
+      "status": "partial",
+      "notes": "Filters applied, start side and _ENDED_AT untouched, but three separate copies exist (rollups _RAW_RANGE_SOURCES, reader real_work dict, reader _RAW_ACTIVITY_SOURCES) and the rollup uses ROLLUP_METRICS."
+    },
+    {
+      "kind": "spec",
+      "item": "Task 3 Step 3: list every consumer of last_event_at and fb.last_ts with intended behavior in red-results.md",
+      "status": "fail",
+      "notes": "red-results.md has no consumer list; effects appear only afterwards as residual R9/R10."
+    },
+    {
+      "kind": "spec",
+      "item": "Task 3 Step 4 / Review Focus 1, 2, 3, 6: dedicated live tests",
+      "status": "partial",
+      "notes": "No dedicated tests; _END_HOOK_LAG of 60 s would pass if a session.end 20 s after the last activity were counted."
+    },
+    {
+      "kind": "spec",
+      "item": "Task 4 (conditional): reader end probes real work only, gated by a failing test",
+      "status": "pass",
+      "notes": "Gate met (4 of 4 RED), probes changed on the end side only, get_users_last_active left because its test passes."
+    },
+    {
+      "kind": "spec",
+      "item": "Task 5: bound arms 1 and 2; guards stay green; EXPLAIN before and after on 100k rows",
+      "status": "pass",
+      "notes": "Arm 1 keeps session_dims_active_started, arm 2 keeps session_dims_activity_pending; ids-only arm 1 loses the covering Index Only Scan (see CR-002)."
+    },
+    {
+      "kind": "spec",
+      "item": "Global: five arms, no migration, started_at semantics and _ENDED_AT rule unchanged, test_reader.py:648 unchanged, baseline of 19 failures identical",
+      "status": "pass",
+      "notes": "Verified in the diff and in red-results.md."
+    },
+    {
+      "kind": "spec",
+      "item": "Retention clock effect handled and documented",
+      "status": "partial",
+      "notes": "Recorded as R9/R10 in residual-risks.md only; R9 overstates the effect for owner-bound rows."
+    },
+    {
+      "kind": "spec",
+      "item": "Reduced Task 7: guides, ruff, reruns, containers removed, no commit",
+      "status": "pass",
+      "notes": "Both guides updated, ruff and license check clean, reruns done, containers removed, nothing committed."
+    },
+    {
+      "kind": "spec",
+      "item": "Out-of-scope items (binding, tiles, repair of polluted sessions, dedup, started_at semantics)",
+      "status": "na",
+      "notes": "Recorded as R1-R4."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Nothing is committed; the format EPMCDME-16993: <Description> applies when the user asks."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "Ruff format and check clean over the repo, license check clean, typed signatures, no ticket IDs in the added code; changes sit in the reader/rollups modules that own the concern (Module Cohesion); the duplicated end filter is raised as CR-004."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "New SQL fragments come from module constants (int(EventKind.OTHER), _text_array of vocabulary tuples); the window stays bound through $start_dt and $end_dt."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Consumer table for last_event_at and fb.last_ts appended to red-results.md (reader range, list field, users last active, stored ended_at, session_files_daily, session_purge._idle, dims upsert); R9 corrected for owner-bound rows."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "User decision: accept the risk and fix the docs. Five index-only sentences in cli-analytics-storage.md now state the heap read since arm 1 reads last_activity_day, with the measured buffers and the re-measure/migration remedy; R11 marked accepted in residual-risks.md."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "reader._activity_range later probe bounded by coalesce(end, start); unit regex test updated and the live test with a request two days later was red (172,800,000 ms) before the change, green after."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "New postgres/real_work_sql.py is the single end-filter definition used by rollups._RAW_RANGE and the reader end probes, lines metrics only; test_real_work_sql.py (import-red first) and the updated rollup test pin it."
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "notes": "_END_HOOK_LAG 60 s to 2 s (all existing scenarios still pass) and four Review Focus live tests added (end-hook lag, lifecycle plus usage only, api_request before the first hook, stop summary with a cancelled session end) plus the no-stored-end guard; 63 passed on PG17 and PG14."
+    }
+  ]
+}

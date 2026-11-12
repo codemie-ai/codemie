@@ -1,0 +1,71 @@
+{
+  "task": "CLI analytics: a session reopened later by an idle client is no longer listed or counted for the reopen window, and its duration ends at the last real activity (shared real-work SQL filter applied in the rollup and the reader).",
+  "generated": "2026-11-11T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L",
+      "affected": "PostgresCliAnalyticsReader, rollup refresher (rollups.py), shared vocabulary constants, new real_work_sql filter module",
+      "layers": "Repository, DB-Persistence"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L",
+      "risk_factors": "Changes which rows count as activity in stored session_dims and in reader windows across sessions, overview, users, repositories, cost and activity endpoints; SQL built from vocabulary constants; stored ends of already-rolled-up sessions need recompute; harness-specific event kinds and built-in command names",
+      "mitigation": "Single shared real-work filter used by both rollup and reader; filter built only from code constants; live-Postgres reopen scenario test (derived and NULL activity facts) plus unit tests for the filter, reader, rollups and vocabulary"
+    },
+    "file_change_estimate": {
+      "score": 5,
+      "label": "XL",
+      "modified_files": 8,
+      "modified_file_list": [
+        ".ai-run/guides/integration/cli-analytics-events.md",
+        ".ai-run/guides/integration/cli-analytics-storage.md",
+        "src/codemie/repository/cli_analytics/postgres/reader.py",
+        "src/codemie/repository/cli_analytics/postgres/rollups.py",
+        "src/codemie/repository/cli_analytics/vocabulary.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_reader.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_rollups.py",
+        "tests/codemie/repository/cli_analytics/test_vocabulary.py"
+      ],
+      "new_files": 3,
+      "new_file_list": [
+        "src/codemie/repository/cli_analytics/postgres/real_work_sql.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_live_session_reopen.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_real_work_sql.py"
+      ],
+      "affected_dirs": [".ai-run", "src", "tests"]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": ["Repository", "DB-Persistence"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 11,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Reader, rollup refresher, shared vocabulary and a new shared real-work SQL module all change together so the stored session end and the reported end agree." },
+    { "dimension": "technical_risk", "reason": "Redefines what counts as session activity in analytics SQL used by many endpoints; no exact precedent, mitigated by one shared filter and a live-Postgres reopen scenario test." },
+    { "dimension": "file_change_estimate", "reason": "11 files (8 modified, 3 new) across docs, source and tests; roughly 1133 insertions, most of them tests." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

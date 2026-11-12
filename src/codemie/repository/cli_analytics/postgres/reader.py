@@ -44,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+from codemie.configs.config import config
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, ModelRates, Rows
 from codemie.repository.cli_analytics.postgres.cost_key_sql import (
@@ -80,6 +81,7 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
 from codemie.repository.cli_analytics.postgres.hook_row_sql import is_claude_code
 from codemie.repository.cli_analytics.postgres.inline_skill_attribution import INLINE_SKILL_CTES
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
+from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
 from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES_CTE, request_route
 from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms, _has_totals
 from codemie.repository.cli_analytics.postgres.route_identity import group_model, routed_predicate
@@ -105,9 +107,8 @@ from codemie.repository.cli_analytics.scope import (
     sql_subscription_type,
 )
 from codemie.repository.cli_analytics.vocabulary import (
+    ACTIVITY_HOOK_TYPES,
     BUILTIN_COMMAND_NAMES,
-    DIMENSION_HOOK_TYPES,
-    LINES_METRICS,
     SKILL_DISPATCH_EVENT,
     EventKind,
     SpanKind,
@@ -124,7 +125,6 @@ def _text_array(values: tuple[str, ...]) -> str:
     return "ARRAY[" + ", ".join(f"'{v}'" for v in values) + "]::text[]"
 
 
-_DIM_TYPES = _text_array(DIMENSION_HOOK_TYPES)
 _C = 'COLLATE "C"'
 _AND = " AND "
 # Whether the latest summary of session_dims `d` reports metric {c} validly (summary_reported, stored with it).
@@ -175,6 +175,8 @@ _STARTED_IN_WINDOW = "started_at BETWEEN $start_dt::timestamptz AND $end_dt::tim
 # `TimeZone` GUC, which `server_settings()` never pins, so it must go through UTC explicitly here.
 _START_DAY_UTC = "($start_dt::timestamptz AT TIME ZONE 'UTC')::date"
 _END_DAY_UTC = "($end_dt::timestamptz AT TIME ZONE 'UTC')::date"
+_START_DAY_BEGIN = f"({_START_DAY_UTC}::timestamp AT TIME ZONE 'UTC')"
+_AFTER_END_DAY = f"(({_END_DAY_UTC} + 1)::timestamp AT TIME ZONE 'UTC')"
 
 
 # The UTC days whose every instant is inside the window. The bounds are whole milliseconds, so a window
@@ -187,12 +189,15 @@ _LAST_WHOLE_DAY_UTC = "(($end_dt::timestamptz AT TIME ZONE 'UTC') + interval '1 
 _ACTIVITY_TABLES = ("turns_daily", "tool_facts_daily", "cost_daily", "session_usage", "lines_daily")
 
 
-def _activity_exists(alias: str, days: tuple[str, str] | None = None, fenced: bool = False) -> str:
+def _activity_exists(alias: str, days: tuple[str, str | None] | None = None, fenced: bool = False) -> str:
     """A prompt, a tool call, a cost/usage row or a line-count row for the session named by
-    `alias`.session_id, on a day from `days[0]` to `days[1]` when given, at any time otherwise.
+    `alias`.session_id, on a day from `days[0]` to `days[1]` when given (`days[1]` None: with no last day), at any
+    time otherwise.
     `fenced` ends each probe with `OFFSET 0`: PostgreSQL then keeps it a per-row index probe, where otherwise it may
     turn it into a hash of every row of the window (right for a million sessions, ruinous for a few thousand)."""
-    bound = f" AND ax.day >= {days[0]} AND ax.day <= {days[1]}" if days else ""
+    bound = ""
+    if days:
+        bound = f" AND ax.day >= {days[0]}" + (f" AND ax.day <= {days[1]}" if days[1] else "")
     fence = " OFFSET 0" if fenced else ""
     clauses = (
         f"EXISTS (SELECT 1 FROM {t} ax WHERE ax.session_id = {alias}.session_id{bound}{fence})"
@@ -202,35 +207,24 @@ def _activity_exists(alias: str, days: tuple[str, str] | None = None, fenced: bo
 
 
 # The raw records the activity tables are built from: prompts, tool and subagent calls, skill dispatches,
-# API requests and line counts. Lifecycle hooks (session start, env, end, git snapshot, summary) are not
-# among them, so a resume with nothing typed leaves no such record.
-_ACTIVITY_HOOK_TYPES = (
-    "agent.prompt.submit",
-    "agent.tool.start",
-    "agent.tool.end",
-    "agent.tool.error",
-    "agent.tool.denied",
-    "agent.subagent.start",
-    "agent.subagent.usage",
-    SKILL_DISPATCH_EVENT,
-)
-_ACTIVITY_HOOKS = _text_array(_ACTIVITY_HOOK_TYPES)
-_LINES_METRIC_NAMES = _text_array(LINES_METRICS)
-_RAW_ACTIVITY_SOURCES = (
-    ("hook_events", f" AND r.event_type = ANY({_ACTIVITY_HOOKS})"),
-    ("usage_requests", ""),
-    ("log_events", f" AND r.event_kind <> {int(EventKind.OTHER)}"),
-    ("spans", f" AND r.span_kind <> {int(SpanKind.OTHER)}"),
-    ("metric_points", f" AND r.metric_name = ANY({_LINES_METRIC_NAMES})"),
+# API requests and line counts, as `real_work_sql` defines them (the end of a session stops at the same records).
+# Lifecycle hooks (session start, env, end, git snapshot, summary), Claude Code's own startup records and a built-in
+# command such as `/exit` are not among them, so a resume with nothing typed leaves no such record.
+_ACTIVITY_HOOKS = _text_array(ACTIVITY_HOOK_TYPES)
+_RAW_ACTIVITY_SOURCES = tuple(
+    (table, real_work_filter(table, "r"))
+    for table in ("hook_events", "usage_requests", "log_events", "spans", "metric_points")
 )
 
 
-def _raw_activity_in_window(alias: str, fenced: bool = False) -> str:
-    """A raw activity record of the session named by `alias`.session_id, stamped inside the window."""
+def _raw_activity_in_window(alias: str, fenced: bool = False, open_ended: bool = False) -> str:
+    """A raw activity record of the session named by `alias`.session_id, stamped inside the window (`open_ended`: at
+    or after its start, however late)."""
     fence = " OFFSET 0" if fenced else ""
+    until = "" if open_ended else " AND r.ts <= $end_dt::timestamptz"
     clauses = (
         f"EXISTS (SELECT 1 FROM {table} r WHERE r.session_id = {alias}.session_id "
-        f"AND r.ts >= $start_dt::timestamptz AND r.ts <= $end_dt::timestamptz{kind}{fence})"
+        f"AND r.ts >= $start_dt::timestamptz{until}{kind}{fence})"
         for table, kind in _RAW_ACTIVITY_SOURCES
     )
     return "(" + " OR ".join(clauses) + ")"
@@ -252,26 +246,54 @@ def _active_in_window(alias: str, fenced: bool = False, raw_first: bool = False)
     return f"({whole_days} OR ({window_days} AND {raw}))"
 
 
-def _has_any_activity(alias: str) -> str:
-    """Whether the session named by `alias`.session_id has ever produced a prompt, tool call, cost/usage
-    or line-count row, with no day bound. Gates the unconditional `_STARTED_IN_WINDOW` admission (a
-    session that only ever got `session.start`/`session.env` hooks -- e.g. a VS Code restart reopening a
-    panel, or a Copilot session closed without a prompt -- must not be listed at all, not merely flagged
-    dead) while a session that started in the window and has produced at least one real signal keeps the
-    exact `_STARTED_IN_WINDOW` admission unconditionally, so sub-day window-boundary precision for
-    recently started, genuinely active sessions is unaffected."""
-    return _activity_exists(alias)
+# The raw records are kept for the raw retention only (read once, like every other setting).
+_RAW_RETENTION_DAYS = int(config.CLI_ANALYTICS_RAW_RETENTION_DAYS)
 
 
-_SESSION_ADMITTED_IN_WINDOW = f"(({_STARTED_IN_WINDOW} AND {_has_any_activity('d')}) OR {_active_in_window('d')})"
+def _no_raw_check_needed() -> str:
+    """A raw record is asked for only by a window of a day or less that starts in the middle of a UTC day: every instant
+    of the first day of a window that starts at midnight is inside it, and a longer window (Last 7 days, a month) keeps
+    the day-granular rule. The second of slack is for bounds that are a few milliseconds off a whole day. A window that
+    starts before the raw retention asks for none either: the raw rows it would look for may be purged, and a session
+    listed then must not vanish for that (the day rows decide, as they do for a longer window)."""
+    return (
+        f"($start_dt::timestamptz = {_START_DAY_BEGIN} "
+        "OR $end_dt::timestamptz - $start_dt::timestamptz > interval '1 day 1 second' "
+        f"OR $start_dt::timestamptz < now() - interval '{_RAW_RETENTION_DAYS} days')"
+    )
+
+
+def _real_work_from_window_start(alias: str, fenced: bool = False) -> str:
+    """The session named by `alias`.session_id has real work at or after the window's start, when the stored facts
+    say that its last activity day is the window's first day: a day row says only the day, so a window of a day or
+    less that does not start at midnight (Last hour, Last 6 hours, Last 24 hours) needs a raw record at or after the
+    start to confirm it."""
+    return f"({_no_raw_check_needed()} OR {_raw_activity_in_window(alias, fenced, open_ended=True)})"
+
+
+def _activity_from_window_start(alias: str) -> str:
+    """Whether the session named by `alias`.session_id has a prompt, tool call, cost/usage or line-count row on or
+    after the window's first UTC day and, when the only such rows are on that first day of a window of a day or less,
+    a raw record of real work at or after the window's start. Gates the `_STARTED_IN_WINDOW` admission.
+
+    A session that only ever got `session.start`/`session.env` hooks (a VS Code restart reopening a panel, a Copilot
+    session closed without a prompt) must not be listed at all. Neither must a session whose every activity lies
+    before the window and whose start was stamped into it by a later reopen, be that on an earlier day or earlier the
+    same day. A session that started in the window and has real activity from the window's first day on keeps the
+    exact `_STARTED_IN_WINDOW` admission, so sub-day window-boundary precision for recently started, genuinely active
+    sessions is unaffected (a day row says only the day, not the time)."""
+    after_first_day = _activity_exists(alias, (f"({_START_DAY_UTC} + 1)", None))
+    on_first_day = _activity_exists(alias, (_START_DAY_UTC, _START_DAY_UTC))
+    return f"({after_first_day} OR ({_real_work_from_window_start(alias)} AND {on_first_day}))"
+
+
+_SESSION_ADMITTED_IN_WINDOW = (
+    f"(({_STARTED_IN_WINDOW} AND {_activity_from_window_start('d')}) OR {_active_in_window('d')})"
+)
 
 
 def _started_in_window(alias: str) -> str:
     return f"{alias}.started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
-
-
-_START_DAY_BEGIN = f"({_START_DAY_UTC}::timestamp AT TIME ZONE 'UTC')"
-_AFTER_END_DAY = f"(({_END_DAY_UTC} + 1)::timestamp AT TIME ZONE 'UTC')"
 
 
 def _admitted_arms(alias: str, columns: str, scope: str | None = None) -> tuple[str, ...]:
@@ -281,8 +303,9 @@ def _admitted_arms(alias: str, columns: str, scope: str | None = None) -> tuple[
     not derived yet (NULL) is asked of the tables, as the rule itself does, so the result is the rule's at every
     point of the roll-out.
 
-    - started: started in the window and `has_activity`.
-    - started, underived: started in the window, `has_activity` NULL: `_has_any_activity`, as the rule says.
+    - started: started in the window and `has_activity`, the last activity day not before the window's first day and,
+      when it is that day, real work at or after the window's start (`_real_work_from_window_start`).
+    - started, underived: started in the window, `has_activity` NULL: `_activity_from_window_start`, as the rule says.
     - outside, underived: started outside the window, `has_activity` NULL: `_active_in_window`, as the rule says.
     - outside, resumed: started outside the window, `resumed`, last activity day not before the window's first day.
     - outside, one day: started outside the window, not `resumed` (all rows on its start day), and that day is the
@@ -298,8 +321,9 @@ def _admitted_arms(alias: str, columns: str, scope: str | None = None) -> tuple[
         f" OR ({a}.started_at > $end_dt::timestamptz AND {a}.started_at < {_AFTER_END_DAY}))"
     )
     return (
-        f"SELECT {columns} {base} AND {started} AND {a}.has_activity",
-        f"SELECT {columns} {base} AND {started} AND {a}.has_activity IS NULL AND {_has_any_activity(a)}",
+        f"SELECT {columns} {base} AND {started} AND {a}.has_activity AND {a}.last_activity_day >= {_START_DAY_UTC}"
+        f" AND ({a}.last_activity_day > {_START_DAY_UTC} OR {_real_work_from_window_start(a, True)})",
+        f"SELECT {columns} {base} AND {started} AND {a}.has_activity IS NULL AND {_activity_from_window_start(a)}",
         f"SELECT {columns} {base} AND NOT ({started}) AND {a}.has_activity IS NULL AND {_active_in_window(a)}",
         f"SELECT {columns} {base} AND {outside} AND {a}.resumed AND {a}.last_activity_day >= {_START_DAY_UTC}"
         f" AND {_active_in_window(a, True)}",
@@ -563,7 +587,9 @@ def _activity_range(alias: str) -> tuple[str, str]:
     can precede the first dimension hook or follow the last one. `alias` exposes session_id,
     started_at, activity_started_at, last_event_at and ended_at. Such rows are looked for only within
     a day of the column bounds, which prunes the other weekly partitions at run time; without column
-    bounds (no session_dims row) every row of the session counts.
+    bounds (no session_dims row, or no stored end yet) every row of the session counts. Only the end looks for real
+    activity alone: a startup record or a built-in command (`/exit`) after the stored end is a reopen that did nothing,
+    not work.
     """
     start = f"least({alias}.started_at, {alias}.activity_started_at)"
     end = f"greatest({alias}.last_event_at, {alias}.ended_at)"
@@ -576,13 +602,15 @@ def _activity_range(alias: str) -> tuple[str, str]:
         f" AND {{a}}.ts <= coalesce({end} + interval '1 day', 'infinity')"
     )
 
-    def probes(agg: str, bound: str) -> str:
+    def probes(agg: str, bound: str, real_work_only: bool) -> str:
         return ", ".join(
-            f"(SELECT {agg}({a}.ts) FROM {table} {a} WHERE {a}.session_id = {alias}.session_id{bound.format(a=a)})"
+            f"(SELECT {agg}({a}.ts) FROM {table} {a} "
+            f"WHERE {a}.session_id = {alias}.session_id{bound.format(a=a)}"
+            f"{real_work_filter(table, a) if real_work_only else ''})"
             for table, a in (("log_events", "le"), ("spans", "sp"))
         )
 
-    return f"least({start}, {probes('min', earlier)})", f"greatest({end}, {probes('max', later)})"
+    return f"least({start}, {probes('min', earlier, False)})", f"greatest({end}, {probes('max', later, True)})"
 
 
 # A request's second connection is only taken if the pool has one free this soon: waiting longer, while holding the
@@ -709,18 +737,21 @@ class PostgresCliAnalyticsReader:
         """Every session's dimensions (dimensions plus the session's email).
 
         Sessions admitted by `_SESSION_ADMITTED_IN_WINDOW`: started in the window and with at least
-        one activity signal ever (`_has_any_activity`), or with activity in the window per
-        `_active_in_window`. A session that started in the window but has never produced a single
-        prompt, tool call, cost/usage or line-count row is excluded entirely, not merely flagged dead.
+        one activity signal on or after the window's first day (`_activity_from_window_start`), or with activity in
+        the window per `_active_in_window`. A session that started in the window but has never produced a single
+        prompt, tool call, cost/usage or line-count row, or whose every such row lies before the window (a later
+        reopen stamped its start into it), is excluded entirely, not merely flagged dead.
         This is the only place the window is decided. Strings are never NULL in the result, so missing
         values become '' for the filters.
         `lean` leaves out the columns only the detail statements and the search read (prompt, title, activity and
         end times); `searchable` keeps the prompt and the title, the two long searched columns.
         A window-wide statement that needs just the ids, the filters and the start reads far less heap.
         `ids_only` outputs the session id alone (the viewer scope is applied inside the scan): for the unfiltered shared
-        list nothing else reads `sel`, and the planner then serves it from `session_dims_active_shared_cov` as an
-        Index Only Scan. Callers use it only when `_narrows_window` is false and nothing reads the other columns.
-        `with_start` adds `started_at` to the ids-only output (the covering index keys it, so the scan stays index-only)
+        list nothing else reads `sel`, and the planner then serves the other arms from their indexes. Arm 1 reads
+        `last_activity_day`, which the covering index `session_dims_active_shared_cov` does not hold, so it is a
+        Bitmap Heap Scan on `session_dims_active_started`, not an Index Only Scan.
+        Callers use it only when `_narrows_window` is false and nothing reads the other columns.
+        `with_start` adds `started_at` to the ids-only output (every arm index keys it, so no extra column is read)
         for the statements that order by the start or bound the invocations by it (the framework filter).
         """
         searched = """
@@ -962,7 +993,7 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_users_last_active(self, f: LocalAnalyticsFilter) -> Rows:
-        """Latest dimension hook event in the window per user.
+        """Latest real-work hook event (`ACTIVITY_HOOK_TYPES`; not a lifecycle hook) in the window per user.
 
         `session_dims.last_event_at` is already the latest such event, so raw hook events
         are read only for sessions that were active again after the window end.
@@ -976,7 +1007,7 @@ class PostgresCliAnalyticsReader:
                        AS developer_name,
                    CASE WHEN d.last_event_at <= $end_dt::timestamptz THEN d.last_event_at
                         ELSE (SELECT max(h.ts) FROM hook_events h
-                              WHERE h.session_id = s.session_id AND h.event_type = ANY({_DIM_TYPES})
+                              WHERE h.session_id = s.session_id AND h.event_type = ANY({_ACTIVITY_HOOKS})
                                 AND h.{_TS})
                    END AS last_in_window
             FROM sel s JOIN session_dims d ON d.session_id = s.session_id
