@@ -325,6 +325,7 @@ _NOT_WINDOWED = (
     "authorize_session",
     "get_session_page",
     "get_cost_page",
+    "get_project_page",
     "get_framework_page",
     "get_framework_sessions",
 )
@@ -336,6 +337,38 @@ class _PageRecorder(_SqlRecorder):
     async def fetch(self, sql, *args):
         await super().fetch(sql, *args)
         return [] if "count(*) OVER ()" in sql else [{"total": 0, "session_ids": [], "flags": "[]"}]
+
+
+class _ArgsRecorder(_SqlRecorder):
+    """Also keeps the bound arguments of each statement."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.args: list[tuple] = []
+
+    async def fetch(self, sql, *args):
+        self.args.append(args)
+        return await super().fetch(sql, *args)
+
+
+class _ProjectPageRecorder(_SqlRecorder):
+    """`get_project_page` reads the one row its aggregate always returns."""
+
+    def __init__(self, row: dict | None = None) -> None:
+        super().__init__()
+        self.args: list[tuple] = []
+        self.row = row or {
+            "total": 0,
+            "project_names": [],
+            "session_ids": [],
+            "matched_session_ids": None,
+            "flags": "[]",
+        }
+
+    async def fetch(self, sql, *args):
+        await super().fetch(sql, *args)
+        self.args.append(args)
+        return [self.row]
 
 
 _PAGE = {"page": 1, "per_page": 20}
@@ -364,6 +397,11 @@ _WINDOWED_CALLS = [
         id="get_cost_page",
     ),
     pytest.param(
+        "get_project_page",
+        {"rates": [ModelRates(model="m", input=1e-6)], "search": "a%b", **_PAGE},
+        id="get_project_page",
+    ),
+    pytest.param(
         "get_framework_page",
         {
             "sort_by": "cost_usd",
@@ -385,6 +423,8 @@ async def _call(method: str, kwargs: dict, filters: dict) -> list[str]:
     recorder = (
         _PageRecorder()
         if method in ("get_session_page", "get_cost_page")
+        else _ProjectPageRecorder()
+        if method == "get_project_page"
         else _FrameworkRecorder()
         if method == "get_framework_page"
         else _SqlRecorder()
@@ -985,6 +1025,18 @@ async def test_the_python_paged_session_facts_carry_no_limit_or_offset():
 
     assert "LIMIT" not in sql
     assert not re.search(r"OFFSET (?!0\b)", sql)  # `OFFSET 0` only fences the per-row activity probes
+
+
+@pytest.mark.asyncio
+async def test_the_repository_search_is_escaped_like_the_project_and_session_searches():
+    recorder = _ArgsRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_session_cost_facts(  # type: ignore[arg-type]
+        _flt(), search="  50%_A\\B ", include_costless=True
+    )
+    sql = " ".join(recorder.statements[0].split())
+
+    assert sql.count("ILIKE $") == 1 and sql.count("::text ESCAPE '\\'") == 1
+    assert "%50\\%\\_a\\\\b%" in recorder.args[0]  # trimmed, lower-cased, % _ and \ made literal
 
 
 @pytest.mark.asyncio
@@ -2114,6 +2166,77 @@ async def test_the_cost_page_builds_the_token_groups_once_for_the_key_and_the_fl
     assert "FROM g LEFT JOIN unnest(" in sql and "GROUP BY g.model_name" in sql
     assert sql.count("bool_or(") == 5
     assert "(SELECT count(*) FROM filtered)" in sql and f"ORDER BY sort_key DESC, session_id {_C}" in sql
+
+
+@pytest.mark.asyncio
+async def test_the_project_page_groups_orders_and_cuts_projects_in_one_statement():
+    recorder = _ProjectPageRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_project_page(_flt(), 2, 10, _RATES)  # type: ignore[arg-type]
+    sql = " ".join(recorder.statements[0].split())
+
+    assert len(recorder.statements) == 1
+    # One spend-only build of the token groups for the cost key and the flags.
+    assert sql.count("g AS MATERIALIZED (") == 1 and "normalized_model_name" not in sql
+    assert "FROM g LEFT JOIN unnest(" in sql and sql.count("bool_or(") == 5
+    assert "NOT IN (SELECT session_id FROM sel WHERE" in sql  # Personal-paid sessions add no spend
+    assert "nullif(s.project_name, '') AS project_name" in sql
+    assert "GROUP BY project_name" in sql
+    assert f"ORDER BY p.project_name IS NULL, p.cost_key DESC, p.project_name {_C}" in sql
+    assert "LIMIT $" in sql and "OFFSET $" in sql
+    assert "p.project_name IS NOT DISTINCT FROM m.project_name" in sql  # the unattributed project joins too
+    # LEFT: a session without spend has no cost key and still counts, so a project without spend stays listed.
+    assert "FROM sel s LEFT JOIN (" in sql and "coalesce(k.cost_key, 0::numeric) AS cost_key" in sql
+    assert "strpos(" not in sql and "NULL::text[] AS matched_session_ids" in sql
+    args = recorder.args[0]
+    assert ["m"] in args  # the rate models are bound, never interpolated
+    assert 10 in args and 20 in args  # limit, offset = page * per_page
+
+
+@pytest.mark.asyncio
+async def test_the_project_page_searches_project_and_repository_names_literally():
+    recorder = _ProjectPageRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_project_page(  # type: ignore[arg-type]
+        _flt(), 0, 10, _RATES, search="  A%b_ "
+    )
+    sql = " ".join(recorder.statements[0].split())
+
+    assert "strpos(lower(s.project_name), $" in sql and "strpos(lower(s.repository), $" in sql
+    assert "ILIKE" not in sql.split("matched AS")[1]  # strpos: `%` and `_` are plain characters
+    assert "array_agg(m.session_id" in sql and "AS matched_session_ids" in sql
+    assert "a%b_" in recorder.args[0]  # trimmed and lower-cased
+
+
+@pytest.mark.asyncio
+async def test_the_project_page_maps_its_row_and_reads_null_as_the_unattributed_project():
+    recorder = _ProjectPageRecorder(
+        {
+            "total": 3,
+            "project_names": ["alpha", None],
+            "session_ids": ["s1", "s2"],
+            "matched_session_ids": ["s1", "s2", "s3"],
+            "flags": '[["m", true, false, false, false, false]]',
+        }
+    )
+    result = await PostgresCliAnalyticsReader(recorder).get_project_page(  # type: ignore[arg-type]
+        _flt(), 0, 2, _RATES, search="a"
+    )
+
+    assert result.total == 3
+    assert result.project_names == ["alpha", None]
+    assert result.session_ids == ["s1", "s2"]
+    assert result.matched_session_ids == ["s1", "s2", "s3"]
+    assert result.model_flags == [("m", (True, False, False, False, False))]
+
+
+@pytest.mark.asyncio
+async def test_a_project_search_with_a_nul_matches_nothing_without_a_page_statement():
+    recorder = _SqlRecorder()
+    result = await PostgresCliAnalyticsReader(recorder).get_project_page(  # type: ignore[arg-type]
+        _flt(), 0, 10, _RATES, search="a\x00b"
+    )
+
+    assert (result.total, result.project_names, result.session_ids, result.matched_session_ids) == (0, [], [], [])
+    assert len(recorder.statements) == 1 and "project_names" not in recorder.statements[0]  # the flags read only
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,21 @@ class ModelRates:
 
 
 @dataclass(frozen=True)
+class ProjectPage:
+    """One page of the project breakdown as the database decided it (`get_project_page`).
+
+    `project_names` is the page in order (None = the unattributed project), `session_ids` the matching sessions of
+    those projects, `matched_session_ids` every matching session of the window (None without a search: all of
+    them) and `model_flags` the priced-kind flags of the window's spend models (`record_unpriced_from_flags`)."""
+
+    total: int
+    project_names: list[str | None]
+    session_ids: list[str]
+    matched_session_ids: list[str] | None
+    model_flags: list[tuple[str, tuple[bool, ...]]]
+
+
+@dataclass(frozen=True)
 class ScheduledJob:
     """Background work an adapter needs, run by the service layer's scheduler."""
 
@@ -378,6 +393,17 @@ class CliAnalyticsReader(Protocol):
         is_unattributed: bool = False,
     ) -> tuple[int, list[str], list[tuple[str, tuple[bool, ...]]]]:
         """One cost-ordered page `(total, session_ids, model_flags)`; the flags cover the whole filtered window."""
+        ...
+
+    async def get_project_page(
+        self,
+        f: LocalAnalyticsFilter,
+        page: int,
+        per_page: int,
+        rates: Sequence[ModelRates],
+        search: str | None = None,
+    ) -> ProjectPage:
+        """One spend-ordered page of projects (unattributed last); `search` matches a project or repository name."""
         ...
 
     async def get_framework_page(

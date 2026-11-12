@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 _ISO8601 = "ISO 8601 datetime string"
 _SAME_AS_DEVELOPER_NAME = "Same value as developer_name"
+_TOOL_SUCCESS_RATE_DESCRIPTION = "Percent, one decimal (0.0-100.0). Σsuccess / Σcalls, never averaged."
 
 
 class _ClassLists(BaseModel):
@@ -164,9 +165,7 @@ class LocalAnalyticsRepositoryBranchRow(_ClassLists):
     net_lines: int | None
     tool_calls: int
     tool_calls_success: int
-    tool_success_rate: float = Field(
-        ..., description="Percent, one decimal (0.0-100.0). Σsuccess / Σcalls, never averaged."
-    )
+    tool_success_rate: float = Field(..., description=_TOOL_SUCCESS_RATE_DESCRIPTION)
 
 
 class LocalAnalyticsRepositoryRow(_ClassLists, _EstimateBuckets):
@@ -182,9 +181,7 @@ class LocalAnalyticsRepositoryRow(_ClassLists, _EstimateBuckets):
     net_lines: int | None
     tool_calls: int
     tool_calls_success: int
-    tool_success_rate: float = Field(
-        ..., description="Percent, one decimal (0.0-100.0). Σsuccess / Σcalls, never averaged."
-    )
+    tool_success_rate: float = Field(..., description=_TOOL_SUCCESS_RATE_DESCRIPTION)
     project_name: str | None = None
     branches: list[LocalAnalyticsRepositoryBranchRow] | None = Field(
         None,
@@ -200,6 +197,37 @@ class LocalAnalyticsRepositoriesData(_EstimateBuckets):
 
 class LocalAnalyticsRepositoriesResponse(BaseModel):
     data: LocalAnalyticsRepositoriesData
+    metadata: LocalAnalyticsResponseMetadata
+
+
+# ── Projects ──────────────────────────────────────────────────────────────────
+
+
+class LocalAnalyticsProjectRow(_ClassLists, _EstimateBuckets):
+    project_name: str | None = Field(None, description="CodeMie project. None for sessions without a project.")
+    repository_count: int
+    session_count: int
+    turns: int
+    cost_usd: float
+    files_changed: int
+    lines_added: int | None
+    lines_removed: int | None
+    net_lines: int | None
+    tool_calls: int
+    tool_calls_success: int
+    tool_success_rate: float = Field(..., description=_TOOL_SUCCESS_RATE_DESCRIPTION)
+    repositories: list[LocalAnalyticsRepositoryRow] = Field(
+        ..., description="This project's repositories by cost, each with its branches nested."
+    )
+
+
+class LocalAnalyticsProjectsData(_EstimateBuckets):
+    rows: list[LocalAnalyticsProjectRow]
+    pagination: PaginationMetadata
+
+
+class LocalAnalyticsProjectsResponse(BaseModel):
+    data: LocalAnalyticsProjectsData
     metadata: LocalAnalyticsResponseMetadata
 
 

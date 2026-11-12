@@ -46,7 +46,7 @@ from typing import Any
 
 from codemie.configs.config import config
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, ModelRates, Rows
+from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, ModelRates, ProjectPage, Rows
 from codemie.repository.cli_analytics.postgres.cost_key_sql import (
     _RATE_COLUMNS,
     _SEL_SESSIONS,
@@ -84,6 +84,7 @@ from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
 from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES_CTE, request_route
 from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms, _has_totals
+from codemie.repository.cli_analytics.postgres.project_page_sql import project_page_sql
 from codemie.repository.cli_analytics.postgres.route_identity import group_model, routed_predicate
 from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.session_page_sql import (
@@ -1241,13 +1242,14 @@ class PostgresCliAnalyticsReader:
         columns are NULL); the default inner join keeps only sessions with cost rows."""
         having = []
         if search:
-            having.append("nullif(max(s.repository), '') ILIKE $search::text")
+            having.append("nullif(max(s.repository), '') ILIKE $search::text ESCAPE '\\'")
         if is_unattributed:
             having.append("nullif(max(s.repository), '') IS NULL")
         having_sql = ("\n        HAVING " + _AND.join(having)) if having else ""
         params = window_params(f)
         if search:
-            params["search"] = f"%{search.strip().lower()}%"
+            # `%` and `_` in the term are literal, as in the project and session searches.
+            params["search"] = "%" + _escape_like(search.strip().lower()) + "%"
         group_col = session_col = "s.session_id" if include_costless else "c.session_id"
         return await self._q(
             f"""
@@ -1477,6 +1479,40 @@ class PostgresCliAnalyticsReader:
             int(row["total"]),
             list(row["session_ids"]),
             [(entry[0], tuple(bool(v) for v in entry[1:])) for entry in flags],
+        )
+
+    async def get_project_page(
+        self,
+        f: LocalAnalyticsFilter,
+        page: int,
+        per_page: int,
+        rates: Sequence[ModelRates],
+        search: str | None = None,
+    ) -> ProjectPage:
+        """One page of the project breakdown, decided in SQL (`project_page_sql`): the sessions of `sel` whose
+        project or repository contains `search` (case-insensitive) are grouped by project ('' reads NULL, the
+        unattributed project) and ordered by their spend priced with `rates`, highest first, the unattributed
+        project last, then by name. `matched_session_ids` is None without a search (every session of the window)."""
+        search = search.strip().lower() if search and search.strip() else None
+        if search and "\x00" in search:
+            # PostgreSQL text cannot hold a NUL, so no session matches; the driver would reject it.
+            return ProjectPage(0, [], [], [], await self.get_window_model_flags(f))
+        params = window_params(f)
+        params.update(rates_params(rates))
+        params["limit"] = per_page
+        params["offset"] = min(page * per_page, _MAX_PAGE_OFFSET)
+        if search:
+            params["search"] = search
+        rows = await self._q(project_page_sql(self._sessions_cte(f, lean=True), searched=bool(search)), params)
+        row = rows[0]
+        flags = json.loads(row["flags"]) if isinstance(row["flags"], str) else row["flags"]
+        matched = row["matched_session_ids"]
+        return ProjectPage(
+            total=int(row["total"]),
+            project_names=[name or None for name in row["project_names"]],
+            session_ids=list(row["session_ids"]),
+            matched_session_ids=None if matched is None else list(matched),
+            model_flags=[(entry[0], tuple(bool(v) for v in entry[1:])) for entry in flags],
         )
 
     async def get_framework_page(

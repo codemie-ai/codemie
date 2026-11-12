@@ -81,6 +81,7 @@ from codemie.rest_api.models.cli_analytics import (
     LocalAnalyticsEfficiencyResponse,
     LocalAnalyticsFrameworksResponse,
     LocalAnalyticsOverviewResponse,
+    LocalAnalyticsProjectsResponse,
     LocalAnalyticsRepositoriesResponse,
     LocalAnalyticsSessionDetailResponse,
     LocalAnalyticsSessionsResponse,
@@ -644,6 +645,29 @@ async def get_repositories(
     data, pricer = await _handler().get_repositories(f, resolved_page, resolved_per_page, include_branches, search)
     metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsRepositoriesResponse)
+
+
+@router.get(
+    "/projects",
+    response_model=LocalAnalyticsProjectsResponse,
+    summary="Local analytics project breakdown",
+    dependencies=[Depends(_admin_gate)],
+)
+@handle_errors("local analytics projects")
+async def get_projects(
+    user: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection
+    filters: FilterParams = Depends(FilterParams),  # noqa: B008 - FastAPI dependency injection
+    page: int = Query(DEFAULT_PAGE, ge=0),
+    per_page: int = Query(DEFAULT_PER_PAGE, ge=1, le=MAX_PER_PAGE),
+    search: str | None = Query(None, description="Filter by project or repository name"),
+) -> JSONResponse:
+    """One page of projects sorted by cost, each with its repositories and their branches nested."""
+    _ensure_enabled()
+    start_ns = time.monotonic_ns()
+    f = await filters.resolve(user)
+    data, pricer = await _handler().get_projects(f, page, per_page, search)
+    metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
+    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsProjectsResponse)
 
 
 @router.get(

@@ -32,6 +32,7 @@ import asyncio
 import logging
 import math
 from datetime import date, datetime, timezone
+from collections.abc import Callable, Hashable
 from typing import Any
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
@@ -333,47 +334,58 @@ _REPO_SUM_FIELDS = (
 _NULLABLE_SUM_FIELDS = frozenset({"lines_added", "lines_removed"})
 
 
-def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
-    """Rolls finalized per-branch rows up into (project, repository) groups: sums raw counts
-    first and calls _pct once per group, so a branch's percentage is never averaged into the
-    repository's (EPMCDME-15585) -- a zero-call branch contributes 0/0 to the sums, not a 0%
-    vote weighted by session count."""
-    repos: dict[tuple, dict] = {}
-    for row in branch_rows:
-        key = (row["project_name"], row["repository"])
-        repo = repos.setdefault(
-            key,
-            {
-                "repository": row["repository"],
-                "project_name": row["project_name"],
-                "session_count": 0,
-                "turns": 0,
+def _roll_up(
+    rows: list[dict],
+    key_of: Callable[[dict], Hashable],
+    new_group: Callable[[dict], dict],
+    children: str,
+    child_of: Callable[[dict], dict],
+) -> list[dict]:
+    """Rolls rows up into one group per `key_of`, each row nested under `children` as `child_of` shapes it. Sums the
+    raw counts first and calls _pct once per group, so a row's percentage is never averaged into the group's
+    (EPMCDME-15585) -- a zero-call row contributes 0/0 to the sums, not a 0% vote weighted by session count. The one
+    rollup of both levels (branches into repositories, repositories into projects): a summed field goes here."""
+    groups: dict[Hashable, dict] = {}
+    for row in rows:
+        key = key_of(row)
+        group = groups.get(key)
+        if group is None:
+            group = groups[key] = {
+                **new_group(row),
+                **{field: None if field in _NULLABLE_SUM_FIELDS else 0 for field in _REPO_SUM_FIELDS},
                 "cost_usd": 0.0,
-                "files_changed": 0,
-                "lines_added": None,
-                "lines_removed": None,
-                "tool_calls": 0,
-                "tool_calls_success": 0,
-                "branches": [],
+                children: [],
                 "subscription_types": [],
                 "project_origins": [],
                 "_sids": set(),
-            },
-        )
-        repo["_sids"] |= row["_sids"]
+            }
+        group["_sids"] |= row["_sids"]
         for field in _REPO_SUM_FIELDS:
             if field in _NULLABLE_SUM_FIELDS:
-                repo[field] = _nsum(repo[field], row[field])
+                group[field] = _nsum(group[field], row[field])
             else:
-                repo[field] += row[field]
+                group[field] += row[field]
         for field in ("subscription_types", "project_origins"):
-            repo[field] = sorted({*repo[field], *row[field]})
-        repo["branches"].append({field: row[field] for field in _BRANCH_ROW_FIELDS})
+            group[field] = sorted({*group[field], *row[field]})
+        group[children].append(child_of(row))
 
-    out = list(repos.values())
+    out = list(groups.values())
+    for group in out:
+        group["net_lines"] = _nnet(group["lines_added"], group["lines_removed"])
+        group["tool_success_rate"] = _pct(group["tool_calls_success"], group["tool_calls"])
+    return out
+
+
+def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
+    """Rolls finalized per-branch rows up into (project, repository) groups (see `_roll_up`)."""
+    out = _roll_up(
+        branch_rows,
+        key_of=lambda row: (row["project_name"], row["repository"]),
+        new_group=lambda row: {"repository": row["repository"], "project_name": row["project_name"]},
+        children="branches",
+        child_of=lambda row: {field: row[field] for field in _BRANCH_ROW_FIELDS},
+    )
     for repo in out:
-        repo["net_lines"] = _nnet(repo["lines_added"], repo["lines_removed"])
-        repo["tool_success_rate"] = _pct(repo["tool_calls_success"], repo["tool_calls"])
         repo["branches"].sort(key=lambda b: b["branch"] or "")
     out.sort(key=lambda r: (r["repository"] or "", r["project_name"] or ""))
     out.sort(key=lambda r: (r["session_count"], _float_sort_key(r["cost_usd"])), reverse=True)
@@ -426,6 +438,35 @@ def _build_repository_rows(
     rows.sort(key=lambda r: (r["repository"] or "", r["project_name"] or ""))
     rows.sort(key=lambda r: (r["session_count"], _float_sort_key(r["cost_usd"])), reverse=True)
     return rows
+
+
+def _group_repositories_into_projects(repo_rows: list[dict], project_order: list[str | None]) -> list[dict]:
+    """Rolls (project, repository) rows with nested branches up into one row per project (see `_roll_up`), each with
+    its repositories nested by cost. Which sessions belong in the rows (the search) and the order of the projects
+    (`project_order`, by spend with the unattributed project last) were decided by the database
+    (`get_project_page`)."""
+    out = _roll_up(
+        repo_rows,
+        key_of=lambda repo: repo["project_name"],
+        new_group=lambda repo: {"project_name": repo["project_name"]},
+        children="repositories",
+        child_of=lambda repo: repo,
+    )
+    for project in out:
+        project["repository_count"] = len(project["repositories"])
+        project["repositories"].sort(key=lambda r: (-_float_sort_key(r["cost_usd"]), r["repository"] or ""))
+    position = {name: index for index, name in enumerate(project_order)}
+    out.sort(key=lambda p: position.get(p["project_name"], len(position)))
+    return out
+
+
+def _pagination(page: int, per_page: int, total: int) -> dict[str, Any]:
+    return {"page": page, "per_page": per_page, "total_count": total, "has_more": (page + 1) * per_page < total}
+
+
+def _page(rows: list[dict], page: int, per_page: int) -> tuple[list[dict], dict[str, Any]]:
+    offset = page * per_page
+    return rows[offset : offset + per_page], _pagination(page, per_page, len(rows))
 
 
 def _count_dispatch_subtypes(rows: list[dict]) -> dict[str, int]:
@@ -765,14 +806,11 @@ class LocalAnalyticsHandler:
 
     # ── Repositories ─────────────────────────────────────────────────────────
 
-    async def get_repositories(
-        self,
-        f: LocalAnalyticsFilter,
-        page: int,
-        per_page: int,
-        include_branches: bool,
-        search: str | None = None,
-    ) -> tuple[dict[str, Any], CatalogPricer]:
+    async def _repository_rows(
+        self, f: LocalAnalyticsFilter, include_branches: bool, search: str | None
+    ) -> tuple[list[dict], set[str], CatalogPricer]:
+        """Repository rows (with `_sids` still attached), the selected session ids and the pricer. Shared by the
+        repository and project breakdowns; the funding rows are read by the caller over the scope it reports."""
         (
             cost_facts,
             turns_rows,
@@ -790,7 +828,6 @@ class LocalAnalyticsHandler:
         )
         returned = {_s(r.get("session_id")) for r in cost_facts}
         money = price_session_models([r for r in session_model_rows if _s(r.get("session_id")) in returned])
-        priced = price_bucket_rows(await self._repo.get_session_funding_costs(f))
 
         # cost_facts already includes repository/branch/project_name via LEFT JOIN with
         # v_session_dimensions (NULL for plugin-less sessions that have no dimensions row).
@@ -810,29 +847,65 @@ class LocalAnalyticsHandler:
             lines_by_session,
             include_branches,
         )
-        total_count = len(rows)
+        return rows, returned, money.pricer
+
+    async def get_repositories(
+        self,
+        f: LocalAnalyticsFilter,
+        page: int,
+        per_page: int,
+        include_branches: bool,
+        search: str | None = None,
+    ) -> tuple[dict[str, Any], CatalogPricer]:
+        rows, returned, pricer = await self._repository_rows(f, include_branches, search)
+        priced = price_bucket_rows(await self._repo.get_session_funding_costs(f))
 
         if include_branches:
             page_rows = rows
             pagination = {
                 "page": 0,
                 "per_page": len(rows),
-                "total_count": total_count,
+                "total_count": len(rows),
                 "has_more": False,
             }
         else:
-            offset = page * per_page
-            page_rows = rows[offset : offset + per_page]
-            pagination = {
-                "page": page,
-                "per_page": per_page,
-                "total_count": total_count,
-                "has_more": (page + 1) * per_page < total_count,
-            }
+            page_rows, pagination = _page(rows, page, per_page)
 
         for row in page_rows:
             row.update(buckets(priced, row.pop("_sids")))
-        return {"rows": page_rows, "pagination": pagination, **buckets(priced, returned)}, money.pricer
+        return {"rows": page_rows, "pagination": pagination, **buckets(priced, returned)}, pricer
+
+    async def get_projects(
+        self, f: LocalAnalyticsFilter, page: int, per_page: int, search: str | None = None
+    ) -> tuple[dict[str, Any], CatalogPricer]:
+        """One page of projects by spend, each with its repositories and their branches nested.
+
+        The database matches the search (a project or repository name), groups the sessions by project, orders and
+        cuts the page (`get_project_page`, priced with the catalog rates of the window's models); only the page's
+        sessions are then read in detail and priced here, so the response cost is the catalog price, as everywhere."""
+        search = search.strip() if search and search.strip() else None
+        rates = [model_rates_for(model) for model in await self._repo.get_cost_models(f)]
+        result = await self._repo.get_project_page(f, page, per_page, rates, search)
+        # The window buckets cover every matching session: the whole window without a search.
+        window = f if result.matched_session_ids is None else f.restricted_to(result.matched_session_ids)
+        rows: list[dict] = []
+        pricer = CatalogPricer()
+        if result.session_ids:
+            rows, _, pricer = await self._repository_rows(
+                f.restricted_to(result.session_ids), include_branches=True, search=None
+            )
+        # metadata.unpriced_models covers the window's spend models, not only the page's.
+        pricer.record_unpriced_from_flags(result.model_flags)
+        priced = price_bucket_rows(await self._repo.get_session_funding_costs(window))
+
+        page_rows = _group_repositories_into_projects(rows, result.project_names)
+        for project in page_rows:
+            project.update(buckets(priced, project.pop("_sids")))
+            # Not `repo`: that name is the reader yielded by `bounded()` (test_ports).
+            for repo_row in project["repositories"]:
+                repo_row.update(buckets(priced, repo_row.pop("_sids")))
+        pagination = _pagination(page, per_page, result.total)
+        return {"rows": page_rows, "pagination": pagination, **buckets(priced, result.matched_session_ids)}, pricer
 
     # ── Sessions ─────────────────────────────────────────────────────────────
 

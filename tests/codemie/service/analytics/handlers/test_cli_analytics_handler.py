@@ -22,11 +22,12 @@ from tests.codemie.repository.cli_analytics.support.bounded import bounded_to_it
 from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, ModelRates
+from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, ModelRates, ProjectPage
 from codemie.repository.cli_analytics.scope import ViewerScope
 from codemie.service.analytics.handlers.cli_analytics_handler import (
     LocalAnalyticsHandler,
     _count_dispatch_subtypes,
+    _group_repositories_into_projects,
     _iso,
 )
 
@@ -765,6 +766,142 @@ async def test_repositories_zero_call_branch_does_not_drag_rate_down():
     assert repo_y["tool_success_rate"] == 100.0
     branches = {b["branch"]: b for b in repo_y["branches"]}
     assert branches["no-calls"]["tool_success_rate"] == 0.0  # denominator-guarded display, not a vote
+
+
+def _project_facts():
+    """The facts of the page's sessions, as the restricted detail reads return them."""
+    return [
+        {**BASE_COST_FACT, "session_id": "a1", "repository": "repo-a", "branch": "main", "project_name": "alpha"},
+        {**BASE_COST_FACT, "session_id": "a2", "repository": "repo-b", "branch": "dev", "project_name": "alpha"},
+        {**BASE_COST_FACT, "session_id": "n1", "repository": "repo-d", "branch": "main", "project_name": None},
+    ]
+
+
+def _project_page(**overrides) -> ProjectPage:
+    fields = {
+        "total": 4,
+        "project_names": ["alpha", None],
+        "session_ids": ["a1", "a2", "n1"],
+        "matched_session_ids": None,
+        "model_flags": [],
+    }
+    return ProjectPage(**{**fields, **overrides})
+
+
+def _project_handler(page: ProjectPage | None = None, facts: list[dict] | None = None):
+    handler = make_repo_handler(_project_facts() if facts is None else facts)
+    repo = handler._repo
+    repo.get_cost_models = AsyncMock(return_value=["m"])
+    repo.get_project_page = AsyncMock(return_value=page or _project_page())
+    repo.get_tool_success_by_session = AsyncMock(
+        return_value=[
+            {"session_id": "a1", "tool_calls": 1, "tool_calls_success": 0},
+            {"session_id": "a2", "tool_calls": 3, "tool_calls_success": 3},
+        ]
+    )
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_projects_sum_repositories_and_compute_success_from_counts():
+    handler = _project_handler()
+    data, _ = await handler.get_projects(make_filter(), page=0, per_page=10)
+    alpha = next(p for p in data["rows"] if p["project_name"] == "alpha")
+    assert (alpha["session_count"], alpha["repository_count"]) == (2, 2)
+    assert (alpha["tool_calls"], alpha["tool_calls_success"]) == (4, 3)
+    assert alpha["tool_success_rate"] == 75.0  # 3/4, not the average of 0% and 100%
+    assert {r["repository"] for r in alpha["repositories"]} == {"repo-a", "repo-b"}
+    assert all(r["branches"] for r in alpha["repositories"])
+    assert "_sids" not in alpha and all("_sids" not in r for r in alpha["repositories"])
+    assert alpha["net_lines"] is None  # no lines reported anywhere
+
+
+@pytest.mark.asyncio
+async def test_projects_keep_the_database_order_and_total():
+    # The database put the unattributed project last and counted 4 projects; the page is not re-sorted here.
+    handler = _project_handler(_project_page(project_names=[None, "alpha"], total=7))
+    data, _ = await handler.get_projects(make_filter(), page=1, per_page=2)
+    assert [p["project_name"] for p in data["rows"]] == [None, "alpha"]
+    assert data["pagination"] == {"page": 1, "per_page": 2, "total_count": 7, "has_more": True}
+
+
+@pytest.mark.asyncio
+async def test_projects_page_is_decided_by_the_database_with_the_window_rates():
+    handler = _project_handler()
+    f = make_filter()
+    await handler.get_projects(f, page=3, per_page=5, search="  Alpha ")
+    repo = handler._repo
+    repo.get_cost_models.assert_awaited_once_with(f)
+    (_, page, per_page, rates, search), _ = repo.get_project_page.await_args
+    assert (page, per_page, search) == (3, 5, "Alpha")
+    assert [r.model for r in rates] == ["m"]
+
+
+@pytest.mark.asyncio
+async def test_projects_detail_reads_are_restricted_to_the_page_sessions():
+    handler = _project_handler()
+    await handler.get_projects(make_filter(), page=0, per_page=10)
+    detail_filter = handler._repo.get_session_cost_facts.await_args.args[0]
+    assert detail_filter.session_ids == ["a1", "a2", "n1"]
+
+
+@pytest.mark.asyncio
+async def test_projects_window_buckets_read_the_whole_window_without_a_search():
+    handler = _project_handler()
+    f = make_filter()
+    await handler.get_projects(f, page=0, per_page=10)
+    assert handler._repo.get_session_funding_costs.await_args.args[0].session_ids is None
+
+
+@pytest.mark.asyncio
+async def test_projects_window_buckets_read_only_the_matching_sessions_with_a_search():
+    handler = _project_handler(_project_page(matched_session_ids=["a1", "a2", "x9"]))
+    await handler.get_projects(make_filter(), page=0, per_page=10, search="alpha")
+    assert handler._repo.get_session_funding_costs.await_args.args[0].session_ids == ["a1", "a2", "x9"]
+
+
+@pytest.mark.asyncio
+async def test_projects_blank_search_is_no_search():
+    handler = _project_handler()
+    await handler.get_projects(make_filter(), page=0, per_page=10, search="   ")
+    assert handler._repo.get_project_page.await_args.args[4] is None
+
+
+@pytest.mark.asyncio
+async def test_projects_empty_page_reads_no_details_but_reports_the_window_unpriced_models():
+    page = _project_page(total=2, project_names=[], session_ids=[], model_flags=[("uncatalogued-model", (True,) * 5)])
+    handler = _project_handler(page, facts=[])
+    data, pricer = await handler.get_projects(make_filter(), page=5, per_page=10)
+    assert data["rows"] == []
+    assert data["pagination"] == {"page": 5, "per_page": 10, "total_count": 2, "has_more": False}
+    handler._repo.get_session_cost_facts.assert_not_awaited()
+    assert "uncatalogued-model" in pricer.unpriced
+    assert "funding" in data and "personal_billed" in data
+
+
+def test_projects_sort_repositories_by_cost_and_follow_the_given_project_order():
+    def repo(project, name, cost):
+        return {
+            "project_name": project,
+            "repository": name,
+            "session_count": 1,
+            "turns": 1,
+            "cost_usd": cost,
+            "files_changed": 0,
+            "lines_added": None,
+            "lines_removed": None,
+            "tool_calls": 0,
+            "tool_calls_success": 0,
+            "subscription_types": [],
+            "project_origins": [],
+            "_sids": {f"{project}-{name}"},
+        }
+
+    rows = [repo(None, "r0", 99.0), repo("cheap", "r1", 1.0), repo("big", "r2", 5.0), repo("big", "r3", 7.0)]
+    projects = _group_repositories_into_projects(rows, ["big", "cheap", None])
+    assert [p["project_name"] for p in projects] == ["big", "cheap", None]
+    assert projects[0]["cost_usd"] == 12.0
+    assert [r["repository"] for r in projects[0]["repositories"]] == ["r3", "r2"]
 
 
 @pytest.mark.parametrize(
