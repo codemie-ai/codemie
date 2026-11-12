@@ -41,11 +41,12 @@ from codemie.repository.cli_analytics.ports import (
 )
 from codemie.repository.cli_analytics.postgres import ingestor as ingestor_module
 from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
-from codemie.repository.cli_analytics.postgres.otlp import HookRow
+from codemie.repository.cli_analytics.postgres.otlp import HookRow, UsageRow
 from tests.codemie.repository.cli_analytics.postgres.test_engine import SETTINGS
 from tests.codemie.repository.cli_analytics.support import hook_event_builders as hb
 from tests.codemie.repository.cli_analytics.support import otlp_builders as b
 from tests.codemie.repository.cli_analytics.support.contracts import assert_implements_port
+from tests.codemie.repository.cli_analytics.support.cowork_session import cowork_session
 
 T = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
 RESOURCE = {"service.name": "claude-code", "host.arch": "arm64"}
@@ -1002,6 +1003,46 @@ async def test_hook_events_are_stored_under_the_project_the_gate_accepted_them_f
     (hook_args,) = engine.conn.sql("INSERT INTO hook_events")
     assert hook_args[PROJECT_COLUMN] == ["qa_case_check"] * 4
     assert result.accepted == 4
+
+
+class LinesConnection(RecordingConnection):
+    """Also answers the lines-source lookups of agent.tool.end rows carrying lines: nothing stored before."""
+
+    async def fetch(self, sql: str, *args: object) -> list[object]:
+        if "AS s\nWHERE EXISTS" in sql or "FROM lines_daily" in sql:
+            self.statements.append((sql, args))
+            return []
+        return await super().fetch(sql, *args)
+
+
+@pytest.mark.asyncio
+async def test_a_cowork_session_is_stored_under_the_sender_and_the_accepted_project_once():
+    engine = FakeEngine(LinesConnection())
+    events = cowork_session("cowork-unit", "qa_case_check", T)
+    ingest = lambda: _ingestor(engine).ingest_hook_events(  # noqa: E731
+        events, "dev@example.com", 0, gate=_gate(None, canonical_project="qa_case_check")
+    )
+
+    result = await ingest()
+
+    hook = dict(zip(HookRow._fields[2:], engine.conn.sql("INSERT INTO hook_events")[0], strict=True))
+    usage = dict(zip(UsageRow._fields[2:], engine.conn.sql("INSERT INTO usage_requests")[0], strict=True))
+    assert result.accepted == 16
+    assert len(hook["event_type"]) == 14
+    assert len(usage["session_id"]) == 2
+    assert hook["user_email"] == ["dev@example.com"] * 14
+    assert usage["user_email"] == ["dev@example.com"] * 2
+    assert hook["codemie_project_name"] == ["qa_case_check"] * 14
+    start_attrs = json.loads(hook["attrs"][hook["event_type"].index("agent.session.start")])
+    assert (start_attrs["platform"], start_attrs["entrypoint"]) == ("claude-code", "local-agent")
+    assert usage["model"] == ["bedrock/eu.anthropic.claude-opus-5-5", "claude-opus-5-5"]
+    assert usage["model_raw"] == ["claude-opus-5-5"] * 2
+
+    first = len(engine.conn.statements)
+    again = await ingest()
+
+    assert again.accepted == 0
+    assert not [sql for sql, _ in engine.conn.statements[first:] if re.search(r"INSERT INTO (hook_events|usage)", sql)]
 
 
 @pytest.mark.asyncio

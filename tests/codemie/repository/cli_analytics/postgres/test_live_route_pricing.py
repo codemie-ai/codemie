@@ -51,6 +51,8 @@ from codemie.repository.cli_analytics.vocabulary import EventKind
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
 from codemie.service.analytics.handlers.coding_agent_pricing import normalize_model
 from codemie.service.llm_service.llm_service import llm_service
+from tests.codemie.repository.cli_analytics.postgres.test_ingestor import _gate
+from tests.codemie.repository.cli_analytics.support.cowork_session import cowork_session
 from tests.codemie.repository.cli_analytics.support.live_rollup_lock import live_rollup_lock
 from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 
@@ -843,3 +845,77 @@ async def test_live_dispatches_on_a_routed_session_are_priced_by_the_route_their
     assert detail["cost_usd"] == pytest.approx(0.0231, abs=1e-12)
     commands = [d["cost_usd"] for d in detail["dispatches"] if d["kind"] == "command"]
     assert sum(commands) == pytest.approx(detail["cost_usd"], abs=1e-12)
+
+
+_OPUS_55 = "claude-opus-5-5"
+_OPUS_55_ROUTE = "bedrock/eu.anthropic.claude-opus-5-5"
+_OPUS_55_RATES = (5e-6, 25e-6, 0.5e-6, 6.25e-6, 6.25e-6)
+_OPUS_55_ROUTE_RATES = (3e-6, 15e-6, 0.3e-6, 3.75e-6, 3.75e-6)
+
+
+async def _cowork_figures(
+    engine: AnalyticsPgEngine, sid: str
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], set[str]]:
+    """The session's listed row, its detail, its session_dims row and its cost_daily model names."""
+    day = _TODAY.replace(hour=0)
+    window = LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=day, end_dt=day + timedelta(days=1)).restricted_to(
+        [sid]
+    )
+    with _catalog([_entry(_OPUS_55, _OPUS_55_RATES)], {_OPUS_55_ROUTE: _cost(_OPUS_55_ROUTE_RATES)}):
+        handler = LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine))
+        sessions, _, _ = await handler.get_sessions(window, 0, 10, "start_time", None)
+        detail, _, _ = await handler.get_session_detail(sid, scope=DETAIL_SCOPE)
+    (row,) = [s for s in sessions["sessions"] if s["trace_id"] == sid]
+    assert detail is not None
+    async with engine.acquire() as conn:
+        dims = await conn.fetchrow(
+            "SELECT project_name, platform, entrypoint, started_at FROM session_dims WHERE session_id = $1", sid
+        )
+    return row, detail, dict(dims), set(await _model_names(engine, sid))
+
+
+@pytest.mark.asyncio
+async def test_live_a_cowork_session_is_listed_under_its_sender_and_project_and_a_resend_adds_nothing() -> None:
+    """A Claude Desktop Cowork session sends only plugin events, with no email in the payload: it is listed under
+    the sender, with its turns (the auto prompt not counted), tools, lines, subagent, tokens and the cost of a
+    request on a LiteLLM route and a plain one; the same events delivered again change none of it."""
+    # The ingest ledger keeps every record's identity: a fresh session per run keeps a re-run from being a re-send.
+    sid = f"cowork-{uuid.uuid4().hex[:8]}"
+    events = cowork_session(sid, "cowork_project", _TODAY)
+    engine = await _engine()
+    try:
+        ingestor = PostgresTelemetryIngestor(engine, clock=lambda: _TODAY.date())
+        gate = _gate(None, canonical_project="cowork_project")
+        first = await ingestor.ingest_hook_events(events, "cowork.user@example.com", 0, gate=gate)
+        await _refresh(engine, _TODAY.date())
+        before = await _cowork_figures(engine, sid)
+        again = await ingestor.ingest_hook_events(events, "cowork.user@example.com", 0, gate=gate)
+        await _refresh(engine, _TODAY.date())
+        after = await _cowork_figures(engine, sid)
+    finally:
+        await _cleanup(engine, [sid])
+        await engine.close()
+
+    assert (first.accepted, again.accepted) == (16, 0)
+    for row, detail, dims, models in (before, after):
+        assert row["user_email"] == "cowork.user@example.com"
+        assert datetime.fromisoformat(row["start_time"]).date() == _TODAY.date()
+        assert row["turns"] == 2
+        assert row["tool_calls_total"] == 3
+        assert row["api_call_count"] == 2
+        assert (row["input_tokens"], row["output_tokens"]) == (110, 70)
+        assert (row["cache_read_tokens"], row["cache_creation_tokens"]) == (1300, 200)
+        assert row["net_lines"] == 4
+        assert row["cost_available"] is True
+        assert row["cost_usd"] == _money(0.0028)  # route 0.0021 + plain 0.0007
+        assert detail["agent_count"] == 1
+        assert detail["tool_calls_success"] == 3
+        assert detail["harness_name"] == "Claude Code"
+        assert len(_requests(detail)) == 2
+        assert (dims["project_name"], dims["platform"], dims["entrypoint"]) == (
+            "cowork_project",
+            "claude-code",
+            "local-agent",
+        )
+        assert dims["started_at"] is not None
+        assert models == {_OPUS_55_ROUTE, _OPUS_55}

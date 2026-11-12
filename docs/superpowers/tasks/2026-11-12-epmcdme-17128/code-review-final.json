@@ -1,0 +1,215 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Approved after the check round: every finding resolved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Fix-ups requested after the final round: type annotations of the new test helpers and the fixture's account in the MR description"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Approved after the check round: every finding resolved"
+    }
+  ],
+  "reviewed_head": "cb9f13cad65a6b5ce6b7e1502e656a929eda27e2",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All 4 prior blocking findings are resolved: CR-001 and CR-002 checked in the source at HEAD cb9f13cad6, CR-003 checked against the updated spec.md, and CR-004 resolved by a recorded decision that puts AC1, AC5 and AC7 in the codemie-code change. Confidence is medium because that change in codemie-code cannot be checked from this repository. The business and standards rows come from the final round unchanged, so they still show the pre-fix state (AC5 fail, code-quality partial).",
+  "confidence": "low",
+  "check_confidence": "medium",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 4,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/repository/cli_analytics/postgres/test_ingestor.py",
+      "line": 954,
+      "title": "LinesConnection.fetch lacks parameter/return types",
+      "problem": "code-quality.md Types And Imports requires explicit parameter and return types in new code. The new LinesConnection.fetch(self, sql: str, *args) leaves *args unannotated and declares no return type.",
+      "impact": "Breaks a documented blocking standard for new code. Ruff's selected rules have no ANN check, so no automated gate catches it.",
+      "recommendation": "Conform to code-quality.md Types And Imports: annotate `*args: object` and add a return type that matches what `RecordingConnection.fetch` returns (e.g. `-> list[Any]`).",
+      "status": "resolved",
+      "check_notes": "test_ingestor.py is in changed_files; at HEAD line 954 reads `async def fetch(self, sql: str, *args: object) -> list[object]`"
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/repository/cli_analytics/postgres/test_live_route_pricing.py",
+      "line": 856,
+      "title": "_cowork_figures uses bare dict annotations",
+      "problem": "code-quality.md Types And Imports says to avoid bare dict annotations. _cowork_figures is annotated -> tuple[dict, dict, dict, set[str]].",
+      "impact": "Breaks a documented blocking standard for new code. No automated gate catches it.",
+      "recommendation": "Conform to code-quality.md Types And Imports: annotate the return as `tuple[dict[str, Any], dict[str, Any], dict[str, Any], set[str]]`. `Any` is already imported at line 34.",
+      "status": "resolved",
+      "check_notes": "test_live_route_pricing.py is in changed_files; at HEAD lines 856-858 return `tuple[dict[str, Any], dict[str, Any], dict[str, Any], set[str]]`"
+    },
+    {
+      "id": "CR-003",
+      "kind": "evidence",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/repository/cli_analytics/support/cowork_session.py",
+      "line": 47,
+      "title": "MR description misstates fixture contents",
+      "problem": "The spec (MR description) says the fixture has one typed prompt and three tool calls, one of them with changed lines. The fixture has two typed prompts (u1, u3) and two lines-changing tool calls: Write 3/0 (tu1) and Edit 2/1 (tu3). The fixture's own docstring and the test assertions (net_lines 4, turns 2) agree with the fixture.",
+      "impact": "A partial spec requirement. Reviewers and later maintainers get a wrong account of what the regression fixture covers. The tests themselves stay consistent.",
+      "recommendation": "Change the MR description to match the fixture: two prompts the user typed (u1, u3) plus one auto prompt, and three tool calls of which two change lines (Write 3/0 and Edit 2/1). The fixture docstring and the test assertions (net_lines 4, turns 2) already agree with the fixture. Change the fixture only if one lines-changing call was the intent.",
+      "status": "resolved",
+      "check_notes": "mapped artifact spec.md is non-empty; line 88 now says two typed prompts plus an auto prompt and three tool calls, two with changed lines, which matches the fixture; mapped command exit_code 0"
+    },
+    {
+      "id": "CR-004",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "unknown",
+      "title": "Story AC5 unmet, AC1/AC7 partial here",
+      "problem": "Story AC5 (delivery continues after Claude Desktop restarts and does not fail silently) has no implementation or test in this diff. AC1 (collection and delivery) and AC7 (tests for collection, delivery, ingestion and attribution) are evidenced only for the backend ingest leg. The original task scopes this MR to backend regression tests, and the daemon side lives in codemie-code.",
+      "impact": "If no other change covers these criteria, the story ships with restart reliability and delivery untested. The criteria cannot be judged from this repository alone.",
+      "recommendation": "A human must confirm that the codemie-code CLI Desktop daemon change covers collection, delivery, restart survival and non-silent failure (AC1, AC5, AC7), and link it from this MR. If nothing covers it, add those tests in that repository before the story closes. This backend MR cannot meet those criteria alone.",
+      "status": "resolved",
+      "check_notes": "mapped decision has an outcome and a rationale: AC1/AC5/AC7 are covered by codemie-code commit b8181b12 and linked from the MR; not verifiable from this repo"
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1 Telemetry delivery: Cowork sessions collected and delivered to CLI Analytics",
+      "status": "partial",
+      "notes": "backend ingest of the Cowork event shape is tested; daemon-side collection/forwarding lives in codemie-code, not in this diff"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2 Session visibility: correct user, project and time range without duplicates",
+      "status": "pending-stage-7",
+      "notes": "unit and live tests assert sender, project, day and resend idempotency; the tests still have to be run"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3 Usage metrics: model, tokens, estimated cost, API calls",
+      "status": "pending-stage-7",
+      "notes": "live test asserts api_call_count 2, tokens, cost 0.0028 and both model names; the tests still have to be run"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4 Activity reporting: tool activity and session metrics",
+      "status": "pending-stage-7",
+      "notes": "live test asserts turns 2 (auto prompt excluded), tool calls 3/3, net_lines 4, agent_count 1, harness_name"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5 Reliability: delivery continues after Claude Desktop restarts, no silent failure",
+      "status": "fail",
+      "notes": "not implemented or tested in this diff; only resend idempotency is covered"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6 Regression safety: existing CLI and Claude Code analytics unaffected",
+      "status": "pass",
+      "notes": "tests-only diff; no src/ change"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7 Automated coverage: collection, delivery, ingestion and attribution tests",
+      "status": "partial",
+      "notes": "ingestion and attribution are covered; no collection or delivery tests in this diff"
+    },
+    {
+      "kind": "spec",
+      "item": "No production code changes",
+      "status": "pass",
+      "notes": "all changed paths are under tests/"
+    },
+    {
+      "kind": "spec",
+      "item": "Fixture: 16 plugin events, legacy mode, platform claude-code, entrypoint local-agent, no email/developer name",
+      "status": "pass",
+      "notes": "cowork_session returns 16 events; _NOT_SENT strips identity fields"
+    },
+    {
+      "kind": "spec",
+      "item": "Fixture: typed and auto prompt, three tool calls (one with changed lines), subagent, two usage requests, summary, end",
+      "status": "partial",
+      "notes": "fixture has two typed prompts and two lines-changing tool calls; MR description says one of each"
+    },
+    {
+      "kind": "spec",
+      "item": "Unit test: stored under sender and gate-accepted project; second delivery stores nothing",
+      "status": "pass",
+      "notes": "test_ingestor.py asserts user_email, project, accepted 0 and no second INSERT"
+    },
+    {
+      "kind": "spec",
+      "item": "Live test: ingest -> rollup -> reader/handler figures and detail; resend changes nothing",
+      "status": "pass",
+      "notes": "test_live_route_pricing.py asserts each listed figure before and after the resend"
+    },
+    {
+      "kind": "spec",
+      "item": "Live test runs on PostgreSQL 17 and 14",
+      "status": "pending-stage-7",
+      "notes": "execution evidence only"
+    },
+    {
+      "kind": "spec",
+      "item": "Live test skips without TEST_LOCAL_PG_URL",
+      "status": "pass",
+      "notes": "module-level pytestmark skipif"
+    },
+    {
+      "kind": "spec",
+      "item": "/sanity requested if dependencies, Dockerfile or security-relevant code touched",
+      "status": "na",
+      "notes": "tests-only diff; trigger does not apply"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "1 commit subject in range matches the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "new fixture module conforms; bare dict return annotation in test_live_route_pricing.py:856 and untyped LinesConnection.fetch in test_ingestor.py:954 violate Types And Imports"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "test-only change; no auth, credentials or sensitive logging; emails are example.com placeholders"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "All four lenses and the standards audit ran; story AC5 (restart reliability) fails and AC1/AC7 are only partly met because collection/delivery lives in the codemie-code daemon, left as a decision_needed item, plus an MR-description/fixture mismatch and two code-quality.md typing violations. 0 deferred; 10 lens candidates dismissed after reading the source (e.g. re/json already imported, _TODAY already on the hour, gate-project override covered by an existing test, SQL-match miss fails loudly).",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}
