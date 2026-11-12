@@ -188,7 +188,7 @@ make install-hooks
 
 Hook toggle:
 - `pre-commit` and `commit-msg` run on every commit — no toggle, always active.
-- `pre-push`: the Alembic migration heads check always runs and blocks a push whose migration history has more than one head (the same check runs in the MR pipeline for MRs targeting `main`; run it by hand with `make check-alembic`). The heavy part is opt-in (disabled by default to avoid blocking pushes while pre-existing test failures exist on main):
+- `pre-push`: the Alembic migration heads check always runs and blocks a push whose migration history has more than one head (the same check runs first in the KRCI review pipeline, task `alembic-heads`, and stops the run when the MR merged with its target branch has more than one head; run it by hand with `make check-alembic`). The heavy part is opt-in (disabled by default to avoid blocking pushes while pre-existing test failures exist on main):
   - `CODEMIE_PREPUSH_ENABLED=false` (default) — pre-push hook is skipped
   - `CODEMIE_PREPUSH_ENABLED=true` — enables full pytest + sonar before every push
   - Add to `.env` (or `.env.local` for personal preference) or export in shell: `export CODEMIE_PREPUSH_ENABLED=true`
