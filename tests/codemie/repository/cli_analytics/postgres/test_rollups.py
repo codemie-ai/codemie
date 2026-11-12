@@ -28,7 +28,12 @@ import pytest
 
 from codemie.repository.cli_analytics.postgres import dirty, rollups, session_derived
 from codemie.repository.cli_analytics.postgres.dirty import RollupFamily
-from codemie.repository.cli_analytics.postgres.fork_attribution import executed_tool_span, executed_tool_start
+from codemie.repository.cli_analytics.postgres.agent_call_attribution import AGENT_CALL_TOOLS, carried_agent_ids
+from codemie.repository.cli_analytics.postgres.fork_attribution import (
+    executed_agent_call_span,
+    executed_tool_span,
+    executed_tool_start,
+)
 from codemie.repository.cli_analytics.postgres.inline_skill_attribution import _PAIRED_REQUESTS
 from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES
 from codemie.repository.cli_analytics.postgres.rollups import RECOMPUTE, RollupRefresher
@@ -1060,9 +1065,9 @@ def test_mark_range_yields_the_ingest_bits_per_source() -> None:
     assert len(span_next) == 1 and "AND span_kind = 1 AND skill_name <> ''" in span_next[0]
     assert f"SELECT {neighbour_day}, session_id, {rollups._SPANS} FROM spans" in span_next[0]
     # a finished Agent or Skill call of any client on the range's days or the day after queues the day before it
-    assert rollups._FINISHED_DISPATCH_HOOK == (
-        "(event_type IN ('agent.tool.end', 'agent.tool.error') AND tool_name IN ('Agent', 'Skill'))"
-    )
+    names = ", ".join(f"'{name}'" for name in (*AGENT_CALL_TOOLS, "Skill"))
+    expected_hook = f"(event_type IN ('agent.tool.end', 'agent.tool.error') AND tool_name IN ({names}))"
+    assert expected_hook == rollups._FINISHED_DISPATCH_HOOK
     hook_before = [b for b in by_table["hook_events"] if rollups._FINISHED_DISPATCH_HOOK in b and "::date - 1," in b]
     assert len(hook_before) == 1
     assert " ".join(hook_before[0].split()) == (
@@ -1094,6 +1099,57 @@ def test_mark_range_yields_the_ingest_bits_per_source() -> None:
     assert "AND session_id <> '' AND event_type = 'agent.prompt.submit'" in hook_turn
     # clamped to raw retention ($4, NULL without it) and to years 1-9999; a row far from midnight queues no neighbour
     assert "WHERE raw.day BETWEEN '0001-01-01' AND '9999-12-31' AND ($4::date IS NULL OR raw.day >= $4::date)" in sql
+
+
+def test_mark_range_names_the_started_agents_of_an_agent_call_by_the_shared_rule() -> None:
+    """The range twin of the ingest marking (AGENT_CALL_DAYS_SQL): the calls with a start, end, error or stop row
+    on the range are found once, the call rows of their sessions are read once, every id any of them carries (the
+    shared `carried_agent_ids`) is joined to the calls through MATERIALIZED sets, so hook_events, indexed on
+    (session_id, ts) only, is never probed per call or per id, and the starts of those ids are queued. The start is
+    there so a start landing on the range after an already-ingested stop or end (out of order) still requeues the
+    call it resolves, as agent_call_keys does at ingest; on its own a start still names no agent. A Skill end keeps
+    its own rule."""
+    sql = " ".join(rollups._MARK_RANGE.split())
+    head, tail = sql.split(" INSERT INTO rollup_dirty ", 1)
+    calls, rest = head.split(", call_rows AS MATERIALIZED ")
+    call_rows, rest = rest.split(", named AS MATERIALIZED ")
+    named, starts = rest.split(", named_starts AS MATERIALIZED ")
+    # the calls: Claude Code rows of AGENT_CALL_TOOLS (start, end or error) or a stop, with a tool_use_id, on range
+    assert calls.startswith(
+        "WITH calls AS MATERIALIZED ( SELECT DISTINCT session_id AS s, tool_use_id AS t FROM hook_events"
+    )
+    assert rollups._RANGE in calls and "tool_use_id <> ''" in calls
+    assert "coalesce(attrs->>'platform', 'claude-code') = 'claude-code'" in calls
+    assert (
+        "event_type IN ('agent.tool.start', 'agent.tool.end', 'agent.tool.error') AND tool_name IN ('Agent')" in calls
+    )
+    assert "OR event_type = 'agent.subagent.stop'" in calls
+    # the call rows: every source of the shared rule, the rows of any day, read once by the sessions found; no
+    # tool_use_id lookup (an array built from a CTE is no constant, so it is no hashed lookup: 40 s for 12 000 calls)
+    assert carried_agent_ids("c") in call_rows
+    assert "c.session_id = ANY(ARRAY(SELECT DISTINCT s FROM calls))" in call_rows
+    assert "c.tool_use_id = ANY" not in call_rows and "calls" not in call_rows.replace("FROM calls", "")
+    # the ids are joined to the calls between two MATERIALIZED sets: a probe of hook_events per call scanned the
+    # whole session each time (4 s for a session of 11 000 rows and 200 calls)
+    assert "FROM call_rows r CROSS JOIN LATERAL unnest(r.ids) AS a(id)" in named
+    assert "EXISTS (SELECT 1 FROM calls WHERE calls.s = r.s AND calls.t = r.t)" in named
+    assert "hook_events" not in named
+    # the starts of the sessions are read once, then matched to the ids, never probed per id
+    assert (
+        "FROM hook_events f WHERE f.session_id = ANY(ARRAY(SELECT DISTINCT s FROM named)) "
+        "AND f.event_type = 'agent.subagent.start'" in starts
+    )
+    assert (
+        "FROM named_starts f WHERE EXISTS (SELECT 1 FROM named WHERE named.s = f.session_id "
+        "AND named.id = f.agent_id)" in tail
+    )
+    assert "FROM hook_events f WHERE f.session_id = ANY" not in tail
+    # the old rule read an Agent end's tool_response alone: gone. The Skill end keeps its rule on its own branch
+    assert "AND e.tool_name = 'Skill' UNION ALL" in tail
+    assert "e.tool_name IN ('Skill', 'Agent')" not in tail
+    assert not hasattr(rollups, "_NAMED_SUBAGENT_ID")
+    # no 'Agent' literal outside the one rule's own tool list: the agent-call tools are AGENT_CALL_TOOLS
+    assert "tool_name = 'Agent'" not in sql
 
 
 @pytest.mark.asyncio
@@ -1512,10 +1568,10 @@ def test_agent_and_skill_counts_need_run_evidence_in_tool_facts_and_invocation_r
     # A Claude Code TOOL span of an Agent or Skill call with no execution span and no agent.tool.end/.error of that
     # tool with the same tool_use_id is a denied call: it must not add to tool_facts_daily or invocations_hourly.
     tool_facts = " ".join(" ".join(s.split()) for s in RECOMPUTE if "INSERT INTO tool_facts_daily" in s)
-    assert f"count(*) FILTER (WHERE s.subagent_type <> '' AND {executed_tool_span('s', 'Agent')})" in tool_facts
+    assert f"count(*) FILTER (WHERE s.subagent_type <> '' AND {executed_agent_call_span('s')})" in tool_facts
     assert f"count(*) FILTER (WHERE s.skill_name <> '' AND {executed_tool_span('s', 'Skill')})" in tool_facts
     invocations = " ".join(" ".join(s.split()) for s in RECOMPUTE if "INSERT INTO invocations_hourly" in s)
-    assert f"AND t.subagent_type <> '' AND {executed_tool_span('t', 'Agent')}" in invocations
+    assert f"AND t.subagent_type <> '' AND {executed_agent_call_span('t')}" in invocations
     assert f"AND t.skill_name <> '' AND {executed_tool_span('t', 'Skill')}" in invocations
     # both pieces of evidence are looked for from 1 hour before the call to 1 day after it, the end of that tool only,
     # and only a Claude Code span is gated

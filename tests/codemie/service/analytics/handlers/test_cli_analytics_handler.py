@@ -1243,9 +1243,10 @@ async def test_get_session_detail_prices_each_dispatch_from_its_per_model_sums()
             _models_row(model_name="claude-opus-5-5", input_tokens=1_000),
             _models_row(model_name="claude-haiku-4-5", input_tokens=1_000),
         ],
-        "ties": None,
     }
-    shared = {"models": [_models_row(model_name="claude-opus-5-5", input_tokens=1_000)], "ties": 2}
+    # the repository already splits a shared fallback window's tokens by request_share before they reach here
+    # (get_session_detail_dispatches), so a two-way split shows up as half the tokens, not a separate divisor
+    shared = {"models": [_models_row(model_name="claude-opus-5-5", input_tokens=500)]}
     tied = [
         _dispatch_row(skill_name="lint", offset_s=20) | shared,
         _dispatch_row(skill_name="test", offset_s=20) | shared,
@@ -1274,7 +1275,7 @@ async def test_get_session_detail_edge_events_and_a_dispatch_without_requests():
         "cache_creation_1h_tokens": None,
     }
     no_model = unsplit | {"model_name": "", "cache_creation_tokens": 0, "output_tokens": 5}
-    idle = _dispatch_row(subagent_type="Plan", offset_s=5) | {"subagent_duration_ms": 1000, "models": [], "ties": None}
+    idle = _dispatch_row(subagent_type="Plan", offset_s=5) | {"subagent_duration_ms": 1000, "models": []}
     handler = _priced_detail_handler([], events=[unsplit, no_model], dispatches=[idle])
 
     detail, unpriced, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))

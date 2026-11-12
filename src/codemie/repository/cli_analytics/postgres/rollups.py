@@ -62,16 +62,21 @@ from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES, MAX_PA
 from codemie.repository.cli_analytics.postgres.route_identity import group_model, routed_model_name
 from codemie.repository.cli_analytics.postgres.session_activity import derive_session_activity
 from codemie.repository.cli_analytics.postgres.session_derived import update_session_derived
+from codemie.repository.cli_analytics.postgres.agent_call_attribution import (
+    AGENT_CALL_TOOLS,
+    agent_call_tool,
+    carried_agent_ids,
+)
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
+    executed_agent_call_span,
     executed_tool_span,
     executed_tool_start,
     first_subagent_start,
     fork_of_counted_call,
     fork_of_dispatch,
-    is_claude_code,
     skill_end_agent_id,
-    tool_response_agent_id,
 )
+from codemie.repository.cli_analytics.postgres.hook_row_sql import is_claude_code
 from codemie.repository.cli_analytics.vocabulary import (
     ACTIVE_TIME_METRICS,
     BUILTIN_COMMAND_NAMES,
@@ -1911,7 +1916,7 @@ RECOMPUTE: list[str] = [
         FROM (
         SELECT k.day, k.session_id,
                count(*) FILTER (WHERE s.tool_name <> '') AS tool_calls,
-               count(*) FILTER (WHERE s.subagent_type <> '' AND {executed_tool_span("s", "Agent")}) AS agent_count,
+               count(*) FILTER (WHERE s.subagent_type <> '' AND {executed_agent_call_span("s")}) AS agent_count,
                count(*) FILTER (WHERE s.skill_name <> '' AND {executed_tool_span("s", "Skill")}) AS skill_count
         {_in_day("s", "spans")}
         WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> '' AND s.span_kind = {_TOOL}
@@ -2032,7 +2037,7 @@ RECOMPUTE: list[str] = [
     SELECT date_trunc('hour', t.ts, 'UTC'), k.session_id, 3, t.subagent_type, count(*), 0
     {_in_day("t", "spans")}
     WHERE k.kinds & {_SPANS} <> 0 AND t.span_kind = {_TOOL} AND t.subagent_type <> ''
-      AND {executed_tool_span("t", "Agent")}
+      AND {executed_agent_call_span("t")}
     GROUP BY 1, 2, 4
     UNION ALL
     -- A fork of a skill (skill-tagged, started by a Skill call or paired with a slash command) is a skill,
@@ -2181,11 +2186,12 @@ _SKILL_INITIATOR_HOOK = (
     f"(event_type = {_literal(SKILL_DISPATCH_EVENT)} "
     f"OR (event_type IN ({_literal(_TOOL_START)}, {_literal(_TOOL_END)}) AND tool_name = 'Skill'))"
 )
-# A finished Agent or Skill call of any client, and a TOOL_EXECUTION span, mark the day before at any time of
-# day, as at ingest: the denied-call gate's evidence lies up to 1 day after the call, a fork's Skill initiator up
-# to 1 day after the fork.
+# A finished agent call (AGENT_CALL_TOOLS) or Skill call of any client, and a TOOL_EXECUTION span, mark the day
+# before at any time of day, as at ingest: the denied-call gate's evidence lies up to 1 day after the call, a
+# fork's Skill initiator up to 1 day after the fork.
 _FINISHED_DISPATCH_HOOK = (
-    f"(event_type IN ({_literal(_TOOL_END)}, {_literal(_TOOL_ERROR)}) AND tool_name IN ('Agent', 'Skill'))"
+    f"(event_type IN ({_literal(_TOOL_END)}, {_literal(_TOOL_ERROR)}) "
+    f"AND tool_name IN ({', '.join(_literal(name) for name in (*AGENT_CALL_TOOLS, 'Skill'))}))"
 )
 # A TOOL_EXECUTION span and a finished Agent or Skill call within 1 h before midnight mark the next day too, as at
 # ingest: the denied-call gate's evidence lies up to 1 h before the call.
@@ -2202,13 +2208,41 @@ _USAGE_ROW_BITS = f"{_LOG} | {_USAGE} | {_SESSION_IF_ANY}"
 _TURN_LOG_KINDS_SQL = f"({', '.join(str(int(k)) for k in sorted(_TURN_LOG_KINDS))})"
 # The neighbouring days are queued with the bits of the row's own day, and no day older than $4
 # (today - raw retention; NULL without raw retention), like the days of the range itself.
-# The subagent a Skill or Agent agent.tool.end names, as ingest reads it: its day is queued again wherever it lies.
-_E_TOOL_RESPONSE = "e.attrs->>'tool_response'"
-_NAMED_SUBAGENT_ID = (
-    f"CASE WHEN e.tool_name = 'Skill' THEN {skill_end_agent_id('e')} "
-    f"ELSE {tool_response_agent_id(_E_TOOL_RESPONSE)} END"
-)
+# The subagents the calls on the range name, as ingest reads them: the day of each start is queued again wherever it
+# lies. A Skill agent.tool.end names its fork through `skill_end_agent_id`. An agent call (AGENT_CALL_TOOLS) is a
+# (session, tool_use_id): when any of its start, end, error or stop rows lies on the range, every agent id ANY row of
+# that call carries (`carried_agent_ids`, the rows of other days included) is a name, as AGENT_CALL_DAYS_SQL marks it
+# at ingest. The start is there for the same reason it is in agent_call_keys: on its own it names no agent, but a
+# start landing on the range after an already-ingested stop or end (out of order, from an earlier day's row or a
+# later batch) is what turns that call from unknown into resolved, and only requeuing its own tool_use_id's day makes
+# that show up. The shape is plan-proof, as there: hook_events has an index on (session_id, ts) only, so each table
+# is read once, by the sessions found (`= ANY`), into MATERIALIZED sets (the call rows, the starts) that the calls
+# and the ids are joined to, never probed per call or per id: a probe scans the whole session each time, and the
+# planner, which cannot size a CTE, picked it (4 s for a session of 11 000 rows and 200 calls, linear in the calls
+# times the rows). The calls are matched by a semi join, not by a second `= ANY` over their tool_use_ids: an array
+# built from a CTE is no constant, so it is no hashed lookup, and a linear scan of it per row took 40 s for 12 000
+# calls.
 _MARK_RANGE = f"""
+WITH calls AS MATERIALIZED (
+    SELECT DISTINCT session_id AS s, tool_use_id AS t FROM hook_events
+    WHERE {_RANGE} AND session_id <> '' AND tool_use_id <> '' AND {is_claude_code()}
+        AND ((event_type IN ({_literal(_TOOL_START)}, {_literal(_TOOL_END)}, {_literal(_TOOL_ERROR)})
+              AND {agent_call_tool("tool_name")})
+             OR event_type = {_literal(_SUBAGENT_STOP)})
+), call_rows AS MATERIALIZED (
+    SELECT c.session_id AS s, c.tool_use_id AS t, {carried_agent_ids("c")} AS ids
+    FROM hook_events c
+    WHERE c.session_id = ANY(ARRAY(SELECT DISTINCT s FROM calls)) AND c.tool_use_id <> '' AND {is_claude_code("c")}
+        AND ((c.event_type = {_literal(_TOOL_END)} AND {agent_call_tool("c.tool_name")})
+             OR c.event_type = {_literal(_SUBAGENT_STOP)})
+), named AS MATERIALIZED (
+    SELECT DISTINCT r.s, a.id
+    FROM call_rows r CROSS JOIN LATERAL unnest(r.ids) AS a(id)
+    WHERE a.id IS NOT NULL AND EXISTS (SELECT 1 FROM calls WHERE calls.s = r.s AND calls.t = r.t)
+), named_starts AS MATERIALIZED (
+    SELECT f.ts, f.session_id, f.agent_id FROM hook_events f
+    WHERE f.session_id = ANY(ARRAY(SELECT DISTINCT s FROM named)) AND f.event_type = {_literal(_SUBAGENT_START)}
+)
 INSERT INTO rollup_dirty AS r (day, session_id, kinds)
 SELECT day, session_id, bit_or(kinds) & $3 FROM (
     SELECT {_DAY_OF_TS} AS day, session_id, {_USAGE_ROW_BITS} AS kinds FROM usage_requests
@@ -2249,9 +2283,13 @@ SELECT day, session_id, bit_or(kinds) & $3 FROM (
     UNION ALL
     SELECT (f.ts AT TIME ZONE 'UTC')::date, f.session_id, {_SPANS}
     FROM hook_events e JOIN hook_events f ON f.session_id = e.session_id
-        AND f.event_type = {_literal(_SUBAGENT_START)} AND f.agent_id = {_NAMED_SUBAGENT_ID}
+        AND f.event_type = {_literal(_SUBAGENT_START)} AND f.agent_id = {skill_end_agent_id("e")}
     WHERE {_RANGE.replace("ts ", "e.ts ")} AND e.session_id <> '' AND e.event_type = {_literal(_TOOL_END)}
-      AND e.tool_name IN ('Skill', 'Agent')
+      AND e.tool_name = 'Skill'
+    UNION ALL
+    SELECT (f.ts AT TIME ZONE 'UTC')::date, f.session_id, {_SPANS}
+    FROM named_starts f
+    WHERE EXISTS (SELECT 1 FROM named WHERE named.s = f.session_id AND named.id = f.agent_id)
     UNION ALL
     SELECT (f.ts AT TIME ZONE 'UTC')::date, f.session_id, {_SPANS}
     FROM hook_events e JOIN hook_events f ON f.session_id = e.session_id

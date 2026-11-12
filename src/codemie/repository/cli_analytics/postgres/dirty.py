@@ -24,6 +24,7 @@ import json
 from datetime import date, datetime, time, timedelta, timezone
 from enum import IntFlag
 
+from codemie.repository.cli_analytics.postgres.agent_call_attribution import AGENT_CALL_TOOLS
 from codemie.repository.cli_analytics.postgres.otlp import DecodedBatch, HookRow, LogRow, MetricRow, SpanRow, UsageRow
 from codemie.repository.cli_analytics.vocabulary import ROLLUP_METRICS, SKILL_DISPATCH_EVENT, EventKind, SpanKind
 
@@ -151,10 +152,10 @@ def _is_skill_initiator(hook: HookRow) -> bool:
 
 
 def _is_finished_dispatch(hook: HookRow) -> bool:
-    """A finished Agent or Skill call of any client: the denied-call gate's evidence lies up to 1 day after the
-    call, and a fork's Skill initiator up to 1 day after the fork, so the call's or fork's day may be the
-    day before, at any time of day."""
-    return hook.event_type in (_TOOL_END, "agent.tool.error") and hook.tool_name in ("Agent", "Skill")
+    """A finished agent-call (AGENT_CALL_TOOLS) or Skill call of any client: the denied-call gate's evidence lies up to
+    1 day after the call, and a fork's Skill initiator up to 1 day after the fork, so the call's or fork's day may
+    be the day before, at any time of day."""
+    return hook.event_type in (_TOOL_END, "agent.tool.error") and hook.tool_name in (*AGENT_CALL_TOOLS, "Skill")
 
 
 def _mark_span_hook(keys: DirtyKeys, hook: HookRow) -> None:

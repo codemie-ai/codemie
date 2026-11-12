@@ -59,6 +59,7 @@ from codemie.repository.cli_analytics.ports import (
     gate_resolver,
     gate_validator,
 )
+from codemie.repository.cli_analytics.postgres.agent_call_attribution import AGENT_CALL_DAYS_SQL, agent_call_keys
 from codemie.repository.cli_analytics.postgres.dirty import RollupFamily, carries_lines, dirty_keys
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
@@ -365,10 +366,14 @@ async def _switching_sessions(conn: asyncpg.Connection, lines_sessions: list[str
     return [s for s in lines_sessions if s not in on_hooks]
 
 
-async def _mark_subagent_days(conn: asyncpg.Connection, marks: dict[tuple, int], forks, starts) -> None:
+async def _mark_subagent_days(conn: asyncpg.Connection, marks: dict[tuple, int], forks, starts, calls) -> None:
     if forks:
         columns = [s for s, _ in forks], [a for _, a in forks]
         await _mark_days(conn, marks, RollupFamily.SPAN_FACTS, FORK_DAYS_SQL, *columns)
+    if calls:
+        # After the insert, so the batch's own rows are read with the call's earlier ones.
+        columns = [s for s, _ in calls], [t for _, t in calls]
+        await _mark_days(conn, marks, RollupFamily.SPAN_FACTS, AGENT_CALL_DAYS_SQL, *columns)
     if starts:
         columns = [s for s, _, _ in starts], [a for _, a, _ in starts], [t for _, _, t in starts]
         await _mark_days(conn, marks, RollupFamily.SPAN_FACTS, LATER_START_DAYS_SQL, *columns)
@@ -594,7 +599,8 @@ class PostgresTelemetryIngestor:
             marks = dirty_keys(stored)
             forks = named_subagent_ids(stored.hooks)
             starts = keyed_subagent_starts(stored.hooks)
-            await _mark_subagent_days(conn, marks, forks, starts)
+            calls = agent_call_keys(stored.hooks)
+            await _mark_subagent_days(conn, marks, forks, starts, calls)
             await self._mark_lines_days(conn, stored, marks, switching, today)
             await _write_dirty(conn, marks)
         self._remember((rid for rid, *_ in new_resources), today)

@@ -28,10 +28,12 @@ logger = logging.getLogger(__name__)
 
 
 def _i(value: Any) -> int:
+    """`value` to the nearest int, not truncated: a fallback dispatch's token sums are `request_share` fractions
+    (reader.py's request_shares), and int() truncating them toward zero would drop up to one token per field."""
     if value is None:
         return 0
     try:
-        return int(value)
+        return round(float(value))
     except (TypeError, ValueError):
         return 0
 
@@ -85,10 +87,10 @@ def priced_session_ids(rows: list[dict[str, Any]], pricer: CatalogPricer) -> set
 
 
 def dispatch_money(pricer: CatalogPricer, row: dict[str, Any]) -> float:
-    """A dispatch's money: its per-model token sums priced, a parent-window share divided among its ties."""
-    money = sum(pricer.price(_s(m.get("model_name")), token_counts(m)) for m in row.get("models") or [])
-    # ties is NULL for a dispatch that takes its own requests whole
-    return money / (_i(row.get("ties")) or 1)
+    """A dispatch's money: its per-model token sums priced. A parent-window fallback's sums are already its
+    request_share of every sibling window a request falls in (get_session_detail_dispatches), so no further
+    split is needed here."""
+    return sum(pricer.price(_s(m.get("model_name")), token_counts(m)) for m in row.get("models") or [])
 
 
 def price_session_models(rows: list[dict[str, Any]], pricer: CatalogPricer | None = None) -> SessionMoney:

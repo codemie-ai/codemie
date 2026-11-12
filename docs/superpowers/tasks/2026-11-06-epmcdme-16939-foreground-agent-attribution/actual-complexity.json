@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "generated": "2026-11-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 27,
+  "size": "XL",
+  "band_range": "27-31",
+  "files_changed": 26,
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two codebases joined by a shared contract: the CLI OTLP plugin (tool-fields.ts, claude-code-otlp.plugin.ts) stamps the dedicated fork_agent_id field that the API-side agent-call rule reads. On the API side a new shared abstraction (agent_call_attribution.py, with hook_row_sql.py extracted to break an import cycle) is consumed by the reader (Timeline, parent-request fallback), rollups (counts), ingestor (marking), dirty (range marking) and fork_attribution (slash-command pairing). Scored 5 on the API side alone and bumped to 6 because the event field is a cross-repo contract." },
+    { "dimension": "requirements_clarity", "reason": "The attribution rule has many open edge decisions that are visible in the code: source precedence (field, then subagent.stop correlated by tool_use_id, then complete tool_response text id), ambiguous multiple stop ids blocking the text fallback, one-call-per-agent tie-breaking (source, first row, tool_use_id), and the parent-usage fallback bounded at the call's end with Task/no-tool_use_id rows out of scope." },
+    { "dimension": "technical_risk", "reason": "No exact precedent for a single resolution rule shared by forward, reverse and CTE forms across five SQL consumers. Counts and Timeline attribution are correctness-sensitive, and the code records a performance concern (a quadratic per-call session scan, 37 s for 200 calls among 11 000 rows) that forced a MATERIALIZED single-pass CTE and a plan-proof marking query. A cut or ambiguous agentId must never become a key, and a row read incorrectly mis-attributes or drops usage. The diff adds parameterized edge-case coverage: live-dispatch gate, live foreground-agent attribution and run tests, and a 1261-line captured fixture." },
+    { "dimension": "file_change_estimate", "reason": "26 files: API 13 modified (5 source, 7 tests, 1 guide) plus 2 new source modules and 3 new tests/fixture; CLI 5 modified (2 source, 2 tests, 1 architecture doc) plus 2 new fixtures. Well above the 16-file XXL threshold, though roughly half are tests and fixtures." },
+    { "dimension": "affected_layers", "reason": "The producer (CLI hook/plugin event fields), the API repository/service layer and the SQL persistence reads and writes (reader, rollups, ingest day-marking) across two codebases. No schema migration and no new infrastructure, so held at XL rather than XXL." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped to XXL (6): the borderline total (26) with Component Scope at XL leans higher, and the fork_agent_id field is a contract between two codebases.",
+    "Technical Risk held at XL (5): performance-critical SQL (quadratic-scan fix) and attribution-correctness sensitivity.",
+    "Technical Risk edge-case auto-bump considered: enumerated edge cases (ambiguous stops, cut agentId, lost id to another call, never-ended call) are covered by new parameterized and live tests, so no extra bump beyond XL."
+  ],
+  "split_recommendation": "Actual size XL (27) is borderline with the top of L (26) and was reached by leaning higher; roughly half of the 26 files are tests and fixtures. If re-planned, split by component (one repo per child), CLI first: (1) codemie-code: emit the dedicated fork_agent_id field and its fixtures/docs; (2) codemie: the shared agent-call attribution fragment consumed by reader, rollups, ingestor, dirty and fork_attribution, with the end-bounded parent-usage fallback. Do not split the API slice further: it is one coupled capability."
+}

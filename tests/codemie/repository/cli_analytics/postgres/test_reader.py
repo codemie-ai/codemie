@@ -26,9 +26,17 @@ import pytest
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, CliAnalyticsReader, ModelRates
 from codemie.repository.cli_analytics.postgres import session_derived
-from codemie.repository.cli_analytics.postgres.fork_attribution import executed_tool_span, tool_response_agent_id
+from codemie.repository.cli_analytics.postgres.agent_call_attribution import (
+    agent_call_ids_cte,
+    agent_call_scope,
+    agent_call_span_end,
+    takes_parent,
+)
+from codemie.repository.cli_analytics.postgres.fork_attribution import dispatch_fork_candidate, executed_tool_span
+from codemie.repository.cli_analytics.postgres.hook_row_sql import tool_response_agent_id
 from codemie.repository.cli_analytics.postgres.reader import (
     _C,
+    _ms,
     PostgresCliAnalyticsReader,
     model_token_groups,
     normalise,
@@ -38,6 +46,7 @@ from codemie.repository.cli_analytics.postgres.reader import (
     truncate_to_ms,
     window_params,
 )
+from codemie.repository.cli_analytics.postgres.rollups import _attr_ms
 from codemie.repository.cli_analytics.postgres.session_derived import (
     CLASSIFIER_NAMES_SQL,
     classifier_names_by_session_sql,
@@ -1620,15 +1629,33 @@ async def _dispatches_sql() -> str:
 
 @pytest.mark.asyncio
 async def test_agent_id_is_read_from_the_agent_tool_call_hook_event():
-    # The agentId a subagent reports back with is named in its own Agent tool call's hook event, a Skill call's
-    # fork in the Skill call's. Matched by identity (the tool_use_id), never by position or timing.
+    # The agentId an Agent call started comes from the agent-call rule (the end's field, the call's stop, the complete
+    # result text), keyed on the call's tool_use_id: the end row keeps only its time, since a foreground result is
+    # cut before its agentId. A Skill call's fork is named by the Skill call's end. Matched by identity (the
+    # tool_use_id), never by position or timing.
     sql = await _dispatches_sql()
-    agent_id = tool_response_agent_id("attrs->>'tool_response'")
+    call_ids = " ".join(agent_call_ids_cte("$1::text").split())
 
+    # an error closes a call like an end does: a call that errored and a stop names still gets its agent id
     assert (
-        f"tool_use_id, ts, {agent_id} AS agent_id FROM hook_events WHERE session_id = $1::text "
-        "AND event_type = 'agent.tool.end' AND tool_name = 'Agent'" in sql
+        "SELECT DISTINCT ON (tool_use_id) tool_use_id, ts FROM hook_events WHERE session_id = $1::text "
+        "AND event_type IN ('agent.tool.end', 'agent.tool.error') AND tool_name IN ('Agent') "
+        "AND tool_use_id <> ''" in sql
     )
+    assert "AND event_type = 'agent.tool.start' AND tool_name IN ('Agent') AND tool_use_id <> ''" in sql
+    # every call is resolved once for the session (call_ids), not once per call: a correlated lookup scanned the
+    # whole session per call and took 37 s on a session of 200 calls
+    assert f", {call_ids}, launched AS (" in sql
+    assert (
+        "FROM (SELECT x.tool_use_id, ci.agent_id, ci.claimed_id "
+        "FROM (SELECT tool_use_id FROM agent_end UNION SELECT tool_use_id FROM agent_start) x "
+        "LEFT JOIN call_ids ci ON ci.tool_use_id = x.tool_use_id) c" in sql
+    )
+    assert "WHERE e.tool_use_id IS NOT NULL OR c.agent_id IS NOT NULL" in sql
+    assert "acf_" not in sql and "acl_" not in sql and "LATERAL (SELECT DISTINCT acf" not in sql
+    # the slash-command pairing reads the agents the calls named from the same set
+    assert dispatch_fork_candidate("f", "call_ids") in sql
+    assert "tool_name = 'Agent' AND tool_use_id <> ''" not in sql
     in_response = tool_response_agent_id("hook_events.attrs->>'tool_response'")
     skill_agent_id = f"coalesce(nullif(hook_events.attrs->>'fork_agent_id', ''), {in_response})"
     assert (
@@ -1671,7 +1698,7 @@ async def test_agent_run_time_runs_from_its_subagent_start_to_its_subagent_stop_
         "AND event_type = 'agent.subagent.start' AND agent_id <> '' GROUP BY agent_id" in sql
     )
     assert "coalesce(f.ts, s.ts, e.ts) AS launch_ts" in sql
-    assert "LEFT JOIN forked f ON f.agent_id = e.agent_id" in sql
+    assert "LEFT JOIN forked f ON f.agent_id = c.agent_id" in sql
     assert "async_launched" not in sql
     assert "event_type = 'agent.subagent.stop'" in sql
     assert "LEFT JOIN stopped st ON st.agent_id = coalesce(la.agent_id, sf.agent_id)" in sql
@@ -1680,6 +1707,24 @@ async def test_agent_run_time_runs_from_its_subagent_start_to_its_subagent_stop_
         "THEN (extract(epoch FROM st.ended_at - fs.ts) * 1000)::bigint END" in sql
     )
     assert "subagent_duration_ms" in sql
+    # the latest stop's own duration_ms (not a sum over every stop: the CLI's own value already covers every
+    # earlier run and the idle between them) less the idle time is the agent row's duration; the stop's
+    # timestamp minus the start is the fallback; a forked skill (no agent id of its own call) never reads it
+    duration = _attr_ms("x", "duration_ms")
+    idle_ms = _ms("i.idle")
+    assert f"SELECT DISTINCT ON (x.agent_id) x.agent_id, x.ts, {duration} AS duration_ms" in sql
+    assert (
+        f"CASE WHEN last.duration_ms IS NOT NULL THEN last.duration_ms - coalesce({idle_ms}, 0) "
+        "END AS stop_duration_ms" in sql
+    )
+    assert sql.count("AS stop_duration_ms") == 1
+    assert (
+        "CASE WHEN la.agent_id IS NOT NULL AND st.stop_duration_ms IS NOT NULL THEN st.stop_duration_ms "
+        "WHEN st.ended_at >= la.launch_ts "
+        "THEN (extract(epoch FROM st.ended_at - la.launch_ts) * 1000)::bigint END AS subagent_duration_ms" in sql
+    )
+    # 2 in subagent_duration_ms's own CASE, 2 more in dispatch_start's matching CASE (see the bar-anchoring test)
+    assert sql.count("st.stop_duration_ms") == 4
 
 
 @pytest.mark.asyncio
@@ -1692,15 +1737,17 @@ async def test_an_agent_dispatch_falls_back_to_its_parent_span_only_when_it_has_
     sql = await _dispatches_sql()
 
     assert "coalesce(au.cost_usd, pu.cost_usd)::float8 AS cost_usd" in sql
-    assert (
-        "LEFT JOIN parent_usage pu ON pu.fallback_id = t.span_id AND la.agent_id IS NULL AND sf.agent_id IS NULL" in sql
-    )
+    # parent_usage lists only the rows that take the parent's requests (takes_parent), so the join needs no more
+    assert "LEFT JOIN parent_usage pu ON pu.fallback_id = t.span_id" in sql
+    assert "WHERE w.takes_parent GROUP BY w.fallback_id" in sql
     assert "DISTINCT ON (tool_use_id)" in sql
     # the full even-split/time-window mechanism (row_number dispatch_id,
     # per-event active_n division, an unconditional sibling_count divisor) must still never come back —
     # only the narrower, next-sibling-start-bounded split below, scoped to the no-agentId fallback alone
-    # (the request_routes and paired_requests CTEs run the rollups' request pairing, which is no cost split)
+    # (the request_routes and paired_requests CTEs run the rollups' request pairing, which is no cost split;
+    # call_ids ranks the Agent calls that name one agent, which is no cost split either)
     dispatch_sql = sql.split("request_routes AS MATERIALIZED")[0] + sql.split("inline_window AS")[1]
+    dispatch_sql = dispatch_sql.replace(" ".join(agent_call_ids_cte("$1::text").split()), "")
     for removed in ("windows AS", "matches AS", "active_n", "sibling_count", "row_number() OVER"):
         assert removed not in dispatch_sql
 
@@ -1709,32 +1756,83 @@ async def test_an_agent_dispatch_falls_back_to_its_parent_span_only_when_it_has_
 async def test_the_no_agent_id_fallback_splits_cost_at_the_next_sibling_s_start():
     """Two dispatches with no resolvable agentId sharing one parent must not each take the parent's
     whole API-request sum: each reads only its own slice, from its own start to the next strictly later
-    sibling start under the same parent, unbounded for the last one, split equally among the dispatches
-    that start together (otherwise two such dispatches each show the same $1.00 against a $1.00 session)."""
+    sibling start under the same parent, unbounded for the last one, each request in it split by
+    `request_share` among every sibling window it falls in (otherwise two such dispatches each show the
+    same $1.00 against a $1.00 session)."""
     sql = await _dispatches_sql()
 
     assert "fallback_id, parent_span_id, start_ts" in sql
     assert (
         "min(start_ts) OVER (PARTITION BY parent_span_id ORDER BY start_ts "
-        "RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING EXCLUDE GROUP) AS next_start, "
-        "count(*) FILTER (WHERE takes_parent) OVER (PARTITION BY parent_span_id, start_ts) AS ties" in sql
+        "RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING EXCLUDE GROUP) AS next_start" in sql
     )
     # only the dispatches that take the parent's requests share a slice; a dispatch with an agentId takes its own
-    assert "(la.agent_id IS NULL AND sf.agent_id IS NULL) AS takes_parent" in sql
-    assert "sum(coalesce(l.cost_usd, 0))::numeric / w.ties AS cost_usd" in sql
-    assert "sum(coalesce(l.input_tokens, 0))::numeric / w.ties AS input_tokens" in sql
+    taker = " ".join(takes_parent("t.in_scope", "t.bound_ts", "la.agent_id", "la.claimed_id", "sf.agent_id").split())
+    assert f"t.bound_ts, {taker} AS takes_parent" in sql
+    # a request is split by its precomputed share (request_shares): 1 over how many takes_parent siblings' own
+    # windows hold its timestamp too, not a flat per-group ties count, so siblings tied on start but not on end
+    # never together claim more of an overlapping request than the request itself; computed once per distinct
+    # (parent, ts) in request_shares, not once per dispatch or per summed column, so a fallback-heavy session
+    # with many overlapping siblings prices in one pass over its own requests
+    assert (
+        "(SELECT count(*) FROM sibling_window w2 WHERE w2.parent_span_id = l.span_id AND w2.takes_parent "
+        "AND l.ts >= w2.start_ts AND (w2.window_end IS NULL OR l.ts < w2.window_end)) AS siblings" in sql
+    )
+    assert "GROUP BY l.span_id, l.ts" in sql
+    assert "sum(coalesce(l.cost_usd, 0)::numeric / rs.siblings) AS cost_usd" in sql
+    assert "sum(coalesce(l.input_tokens, 0)::numeric / rs.siblings) AS input_tokens" in sql
+    assert "(1.0 / rs2.siblings)" in sql
+    assert "JOIN request_shares rs2 ON rs2.parent_span_id = r.span_id AND rs2.ts = r.ts" in sql
     assert "FROM sibling_window w" in sql
-    assert "l.ts >= w.start_ts AND (w.next_start IS NULL OR l.ts < w.next_start)" in sql
-    assert "WHERE w.ties > 0 GROUP BY w.fallback_id, w.ties" in sql
+    assert "l.ts >= w.start_ts AND (w.window_end IS NULL OR l.ts < w.window_end)" in sql
+    assert "JOIN request_shares rs ON rs.parent_span_id = l.span_id AND rs.ts = l.ts" in sql
+    assert "WHERE w.takes_parent GROUP BY w.fallback_id" in sql
+    assert "w.ties" not in sql
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_window_ends_at_the_call_s_end_and_a_call_that_takes_no_parent_requests_is_no_share():
+    """The window of a Claude Code Agent call ends at the end of its call (agent.tool.end or .error, read by
+    call_end_ts), or at the next sibling's start if that comes first (least() skips a NULL bound, so a row outside
+    the scope keeps the next sibling's start). A call in scope that never ended, or lost its agent id, is
+    takes_parent = false: it has no window of its own and is never one of the siblings request_shares counts."""
+    sql = await _dispatches_sql()
+
+    assert " ".join(agent_call_scope("s").split()) in sql
+    assert " ".join(agent_call_span_end("s").split()) in sql
+    assert "THEN CASE s.tool_name WHEN 'Agent' THEN (SELECT max(s_r.ts) FROM hook_events s_r" in sql
+    assert "s_r.event_type IN ('agent.tool.end', 'agent.tool.error')" in sql
+    assert "least(next_start, bound_ts) AS window_end" in sql
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_window_of_a_claude_code_call_never_starts_at_its_own_end():
+    """A call with no start hook and no SubagentStart has only its end for a launch time (launch_ts), which is also
+    the bound of its window: starting there leaves the window empty. begin_ts, the launch without the end, starts
+    the window inside the scope (the span when it is NULL); outside it the window starts where the bar does."""
+    sql = await _dispatches_sql()
+
+    assert "coalesce(f.ts, s.ts, e.ts) AS launch_ts, coalesce(f.ts, s.ts) AS begin_ts" in sql
+    assert (
+        "coalesce(CASE WHEN t.subagent_type <> '' THEN CASE WHEN t.in_scope THEN la.begin_ts ELSE la.launch_ts END END, "
+        "t.span_start) AS start_ts" in sql
+    )
 
 
 @pytest.mark.asyncio
 async def test_an_agent_row_starts_at_its_run_start_a_skill_row_at_its_tool_span_in_start_order():
     # An agent's bar starts when its run began (launched: its SubagentStart, else its call start), the same
-    # instant its run time is measured from. Only agents take that anchor: a skill's bar stays at its tool span.
+    # instant its run time is measured from, UNLESS subagent_duration_ms reads the stop's own duration_ms: then
+    # the bar starts that many ms before the stop, so the bar's drawn end always lands on the stop it is
+    # anchored to instead of drifting from the launch-to-stop timestamp gap. Only agents take that anchor: a
+    # skill's bar stays at its tool span.
     sql = await _dispatches_sql()
 
-    assert "coalesce(CASE WHEN t.subagent_type <> '' THEN la.launch_ts END, t.span_start) AS dispatch_start" in sql
+    assert (
+        "coalesce(CASE WHEN t.subagent_type <> '' THEN CASE WHEN la.agent_id IS NOT NULL "
+        "AND st.stop_duration_ms IS NOT NULL THEN st.ended_at - (st.stop_duration_ms * interval '1 millisecond') "
+        "ELSE la.launch_ts END END, t.span_start) AS dispatch_start" in sql
+    )
     assert "ORDER BY dispatch_start" in sql
 
 

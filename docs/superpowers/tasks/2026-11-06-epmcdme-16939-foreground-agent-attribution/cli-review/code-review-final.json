@@ -1,0 +1,57 @@
+{
+  "decision": "request-changes",
+  "rationale": "All four lenses and the standards audit ran; the CLI half meets A1/A2, but two decision_needed items remain (background Agent launch stamping, Agent JSON-text tolerance dropped versus the spec Approach) and an unrelated .codemie profile/codeMieProject edit lacks security sign-off. 10 candidates were filtered as noise, none deferred; the B/C/D backend and UI criteria were out of this diff and not graded. Fix pack written to code-review-fix-pack.local.md.",
+  "confidence": "low",
+  "risk_flags": ["data-contract"],
+  "business_review": [
+    { "kind": "spec", "item": "A1: Agent result with agentId after a long prompt produces fork_agent_id on agent.tool.end", "status": "pass", "notes": "resolveForkAgentFields reads the uncut top-level agentId; plugin test asserts the id with tool_response cut to 300 chars." },
+    { "kind": "spec", "item": "A2: no id stamped when result has none; Skill unchanged; Agent only, not Task", "status": "pass", "notes": "Denial, text, absent, failure, PreToolUse and Task cases produce nothing; Skill branch keeps JSON-text parsing." },
+    { "kind": "spec", "item": "CLI reads agentId as top-level key of uncut tool_response; JSON text tolerance", "status": "partial", "notes": "Top-level read done; JSON text deliberately not read for Agent, though spec Approach still states the tolerance (CR-003)." },
+    { "kind": "spec", "item": "Docs: docs/ARCHITECTURE-OTLP-PLUGIN.md updated", "status": "pass", "notes": "Updated in the event-fields row and the buildEvent paragraph. cli-analytics-events.md lives in the backend repo and is outside this diff." },
+    { "kind": "spec", "item": "B1-B5, C1, D1-D4: backend and UI criteria", "status": "na", "notes": "Outside the CLI half under review per dispatch; not implemented in this diff and not graded here." }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "git log diff_base..HEAD is empty: HEAD equals diff_base and the change is uncommitted, so there are no commit subjects to check. Not a coverage gap; the guide was read." },
+    { "kind": "code-quality", "status": "pass", "notes": "code-quality.md read in full. Exported resolveForkAgentFields has an explicit return type and JSDoc, imports keep .js, no console.log, rename applied consistently in plugin, tests and docs." },
+    { "kind": "security", "status": "partial", "notes": "resolveForkAgentFields reads only agentId (identifier, masking-skipped, cut to 300) and fixtures are placeholders. Unmet: .codemie/codemie-cli.config.json changes codeMieProject epm-cdme to epm-cdme-cp with no recorded security-review sign-off." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": ".codemie/codemie-cli.config.json",
+      "line": 3,
+      "title": "Project attribution profile changed without sign-off",
+      "problem": "activeProfile, the profile name and codeMieProject were rewritten from epm-cdme to epm-cdme-cp (lines 3, 13, 57). codeMieProject feeds X-CodeMie-Project attribution, which security-practices.md and git-workflow.md treat as a change needing recorded security-review sign-off. The edit is unrelated to the EPMCDME-16939 Agent fork_agent_id change.",
+      "impact": "A silent project-value change can misattribute analytics and usage across projects and breaks the one-logical-change rule. Whether the file is tracked was not confirmed: .codemie is listed in .gitignore, so the edit may be local-only.",
+      "recommendation": "Revert .codemie/codemie-cli.config.json to its base content if the edit is an accidental local-profile change. If intended, split it into its own change and record the security-review sign-off."
+    },
+    {
+      "id": "CR-002",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/agents/plugins/claude-code-otlp/event-fields/tool-fields.ts",
+      "line": 77,
+      "title": "Agent background launch result is stamped",
+      "problem": "resolveForkAgentFields stamps fork_agent_id whenever an Agent result has a string agentId. A background call (run_in_background: true) returns an immediate launch result that already carries agentId, and an error result could echo one. Tests, title and comments say foreground, and no test shows whether such results are intended or excluded.",
+      "impact": "The launch-time agent.tool.end may be paired with the whole background run or mispaired by the backend. Backend pairing behaviour and the real launch result shape were not confirmed, so reachability and consequence are unverified.",
+      "recommendation": "Decide whether an Agent result that is a launch acknowledgement or has a status other than completed should carry fork_agent_id. If not, gate the Agent branch on the completed status; if so, pin it with a test and state it in docs/ARCHITECTURE-OTLP-PLUGIN.md."
+    },
+    {
+      "id": "CR-003",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/agents/plugins/claude-code-otlp/event-fields/tool-fields.ts",
+      "line": 77,
+      "title": "Agent JSON-text result is not read",
+      "problem": "For Agent, agentId is read only from an object tool_response, while Skill accepts JSON text via parseJsonObject. The spec Approach and Decisions still state a JSON-text tolerance; the plan notes allow dropping it. A test pins that JSON text yields nothing. The only evidence for the object shape is one captured run.",
+      "impact": "If a Claude Code version or transport delivers the Agent result serialized or wrapped, fork_agent_id is dropped with no log and rows fall back to the parent-window estimate. Whether such a delivery exists was not confirmed.",
+      "recommendation": "Decide whether an Agent tool_response delivered as JSON text should be read. Either parse it with parseJsonObject as the spec Approach states, or update the spec Approach/Decisions and the architecture doc to say objects only, and keep the pinned test."
+    }
+  ],
+  "deferred": []
+}

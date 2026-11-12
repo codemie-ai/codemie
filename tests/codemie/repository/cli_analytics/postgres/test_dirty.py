@@ -20,7 +20,9 @@ from datetime import date, datetime, time, timezone
 
 import pytest
 
+from codemie.repository.cli_analytics.postgres import dirty as dirty_module
 from codemie.repository.cli_analytics.postgres.dirty import RollupFamily, carries_lines, dirty_keys
+from codemie.repository.cli_analytics.postgres.agent_call_attribution import AGENT_CALL_TOOLS
 from codemie.repository.cli_analytics.postgres.otlp import DecodedBatch, decode_hook_events, decode_otlp
 from tests.codemie.repository.cli_analytics.support import hook_event_builders as hb
 from tests.codemie.repository.cli_analytics.support import otlp_builders as b
@@ -450,6 +452,23 @@ def test_a_finished_agent_or_skill_call_at_any_time_also_marks_the_day_before(ev
     batch = _hooks({**hb.minimal(event_type, "s1", _at(15, 0, 0).isoformat()), "tool_name": tool_name})
 
     assert dirty_keys(batch) == {(PREVIOUS, "s1"): 4, (D, "s1"): 38}  # SPAN_FACTS only; 2 + 4 + 32
+
+
+@pytest.mark.parametrize("event_type", ["agent.tool.end", "agent.tool.error"])
+@pytest.mark.parametrize("tool_name", AGENT_CALL_TOOLS)
+def test_a_finished_call_of_every_agent_call_tool_also_marks_the_day_before(event_type: str, tool_name: str) -> None:
+    batch = _hooks({**hb.minimal(event_type, "s1", _at(15, 0, 0).isoformat()), "tool_name": tool_name})
+
+    assert dirty_keys(batch) == {(PREVIOUS, "s1"): 4, (D, "s1"): 38}  # SPAN_FACTS only; 2 + 4 + 32
+
+
+def test_the_finished_call_rule_follows_the_agent_call_tools_not_a_name_of_its_own(monkeypatch) -> None:
+    monkeypatch.setattr(dirty_module, "AGENT_CALL_TOOLS", ("Delegate",))
+    delegate = _hooks({**hb.minimal("agent.tool.end", "s1", _at(15, 0, 0).isoformat()), "tool_name": "Delegate"})
+    agent = _hooks({**hb.minimal("agent.tool.end", "s1", _at(15, 0, 0).isoformat()), "tool_name": "Agent"})
+
+    assert dirty_keys(delegate) == {(PREVIOUS, "s1"): 4, (D, "s1"): 38}
+    assert dirty_keys(agent) == {(D, "s1"): 38}  # no longer an agent call tool
 
 
 def test_a_finished_read_call_marks_only_its_day() -> None:

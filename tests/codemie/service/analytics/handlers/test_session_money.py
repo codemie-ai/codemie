@@ -13,11 +13,12 @@
 # limitations under the License.
 from __future__ import annotations
 
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 from codemie.configs.llm_config import CostConfig
 from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer
-from codemie.service.analytics.handlers.session_money import has_priced_model, priced_session_ids
+from codemie.service.analytics.handlers.session_money import has_priced_model, priced_session_ids, token_counts
 
 _CATALOG = "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.get_all_llm_model_info"
 
@@ -71,3 +72,21 @@ def test_priced_session_ids_keeps_a_session_with_any_priced_model_only():
     ]
     with patch(_CATALOG, return_value=_catalog()):
         assert priced_session_ids(rows, CatalogPricer()) == {"s1"}
+
+
+def test_token_counts_rounds_a_fractional_split_share_instead_of_truncating():
+    """A fallback dispatch's token sums are request_share fractions (reader.py's request_shares CTE), delivered
+    as numeric (Decimal) or float values; truncating them toward zero (the old int()) would drop up to one token
+    per field. round() keeps the nearest whole token instead."""
+    counts = token_counts(
+        {
+            "input_tokens": 2.9,
+            "output_tokens": Decimal("1.6"),
+            "cache_read_tokens": Decimal("3.8"),
+            "cache_creation_tokens": 5.9,
+            "cache_creation_5m_tokens": 2.9,
+            "cache_creation_1h_tokens": None,
+        }
+    )
+    assert (counts.input, counts.output, counts.cache_read, counts.cache_creation) == (3, 2, 4, 6)
+    assert (counts.cache_5m, counts.cache_1h) == (3, None)

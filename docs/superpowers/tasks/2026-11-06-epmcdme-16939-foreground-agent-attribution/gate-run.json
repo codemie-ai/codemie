@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16939_foreground-agent-attribution",
+  "head": "API a9e4d4c66e5e92b0e334639e06297dede8b75f47 (working tree uncommitted); CLI d001dc18c586c9523ec86e1c0678797e082e5bbb (working tree uncommitted)",
+  "runner": "custom (API: Docker only; CLI: npm)",
+  "started_at": "2026-11-07T10:55:00Z",
+  "completed_at": "2026-11-07T11:50:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "api_gates": [
+    {"id": "api-ruff-check", "source": "guide", "status": "PASS", "command": "docker exec -w /app codemie /tmp/devdeps/bin/ruff check <16 changed py files>", "exit_code": 0, "notes": "Check-only (not make ruff, which rewrites files); scoped to the 16 changed Python files."},
+    {"id": "api-ruff-format", "source": "guide", "status": "PASS", "command": "docker exec -w /app codemie /tmp/devdeps/bin/ruff format --check <16 changed py files>", "exit_code": 0, "notes": "16 files already formatted."},
+    {"id": "api-license-check", "source": "guide", "status": "PASS", "command": "check_license_headers.py --check --quiet <16 changed py files> (script copied to /tmp in the codemie container, scripts/ is not mounted)", "exit_code": 0, "notes": "Checked 16 files, 0 missing headers. Scoped to changed files, not the whole repo."},
+    {"id": "api-gitleaks", "source": "guide", "status": "PASS", "command": "docker run ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --redact --config=/workspace/.gitleaks.toml /workspace", "exit_code": 0, "notes": "no leaks found (full working tree, same as make gitleaks)."},
+    {"id": "api-unit", "source": "guide", "status": "PASS", "command": "docker exec -w /app -e PYTHONPATH=/tmp/devdeps codemie /venv/bin/pytest -q -n 0 tests/codemie/repository/cli_analytics -k 'not live' -p no:cacheprovider -rs", "exit_code": 0, "notes": "1859 passed, 22 skipped. All 22 skips are tests/codemie/repository/cli_analytics/postgres/test_rollups_request_pairing_pg.py ('local Postgres is not reachable'): it needs the compose Postgres with the analytics schema on 127.0.0.1:5432 and has no 'live' in its name, so the live run did not cover it. Those 22 did not run; to run them point TEST_LOCAL_PG_URL at the compose database (the test copies tables into a scratch schema and rolls back)."},
+    {"id": "api-live-pg17", "source": "guide", "status": "PASS", "command": "pytest -q -n 0 tests/codemie/repository/cli_analytics/postgres -k live -rfs --tb=no on throwaway postgres:17 (runner container shares its network namespace)", "exit_code": 1, "notes": "Pass per user constraint (only NEW failures count): 39 failed, 427 passed, 0 skipped; the 39 failing ids are identical to live-baseline.local.txt (0 new, 0 fixed). Strictly by the guide's Pass criterion (every live test passes) this is a FAIL; the 39 are pre-existing stale call sites missing keyword-only scope. Log: qa-live17.local.log"},
+    {"id": "api-live-pg14", "source": "guide", "status": "PASS", "command": "same on throwaway postgres:14", "exit_code": 1, "notes": "39 failed, 427 passed, 0 skipped; failing ids identical to live-baseline.local.txt (0 new). Same strict-guide caveat as pg17. Log: qa-live14.local.log"},
+    {"id": "api-build", "source": "guide", "status": "SKIPPED", "command": "make build", "notes": "Needs host poetry (no local Python). pyproject.toml and poetry.lock are not part of this change."},
+    {"id": "api-test-full", "source": "guide", "status": "N/A", "command": "make test", "notes": "Scope was the affected tests plus live SQL; the full suite was not requested."},
+    {"id": "api-sonar-local", "source": "guide", "status": "SKIPPED", "command": "make sonar-local", "notes": "Needs a Sonar token/server and coverage; also run by the opt-in pre-push hook (CODEMIE_PREPUSH_ENABLED=true). Not run, still owed."},
+    {"id": "api-test-harness", "source": "guide", "status": "N/A", "command": "make test-harness", "notes": "Only needed when opening an MR."},
+    {"id": "api-ci", "source": "ci", "status": "N/A", "notes": ".gitlab-ci.yml only runs pre-ci-guard wait jobs on merge requests; it executes no lint or test commands."},
+    {"id": "api-hook-precommit", "source": "hook", "status": "N/A", "notes": "scripts/git-hooks/pre_commit.sh runs ruff on staged files (nothing is staged, by user rule) and a whole-repo ruff check plus license check. Equivalent checks were run scoped to the changed files (api-ruff-*, api-license-check); the whole-repo ruff check was not run."}
+  ],
+  "cli_gates": [
+    {"id": "cli-vitest-touched", "source": "guide", "status": "PASS", "command": "npx vitest run --project unit src/agents/plugins/claude-code-otlp/event-fields/__tests__/tool-fields.test.ts src/agents/plugins/claude-code-otlp/__tests__/claude-code-otlp.plugin.test.ts src/agents/core/__tests__/OtlpAgentAdapter.test.ts", "exit_code": 0, "notes": "3 files, 315 tests passed. OtlpAgentAdapter.test.ts is not modified in the working tree."},
+    {"id": "cli-lint", "source": "guide", "status": "PASS", "command": "npm run lint", "exit_code": 0, "notes": "eslint --max-warnings=0, clean."},
+    {"id": "cli-typecheck", "source": "guide", "status": "PASS", "command": "npm run typecheck", "exit_code": 0},
+    {"id": "cli-license-check", "source": "ci", "status": "PASS", "command": "npm run license-check", "exit_code": 0},
+    {"id": "cli-build", "source": "ci", "status": "PASS", "command": "npm run build", "exit_code": 0, "notes": "Writes git-ignored dist/."},
+    {"id": "cli-gitleaks", "source": "ci", "status": "PASS", "command": "gitleaks v8.30.1 dir over the CLI working tree with its .gitleaks.toml", "exit_code": 0, "notes": "no leaks found. The husky validate:secrets hook scans only the staged diff and was not run (nothing staged)."},
+    {"id": "cli-unit-all", "source": "ci", "status": "FAIL", "command": "npx vitest run --project unit", "exit_code": 1, "notes": "11 tests in 6 files failed of 8948 (CI runs this project on ubuntu and windows). A rerun of just those 6 files failed 7 tests, so the set varies. None of the failing files is among the changed files. Causes seen: Windows EPERM on symlink creation (stale-session-reconciliation), timing budgets (hook.session-delivery: expected 10157 to be less than 4000), URL environment mismatch (launch-identity: localhost vs example host). No HEAD baseline was run (stash and worktree are forbidden), so pre-existing on this machine is likely but not proven. Failing files: launch-identity, stale-session-reconciliation, opencode.run-session, hook.session-delivery, otlp.plugin.credentials-refresh, system-proxy-dispatcher. Logs: qa-cli-unit-all.local.log, qa-cli-unit-rerun.local.log"},
+    {"id": "cli-integration", "source": "ci", "status": "N/A", "command": "npx vitest run --project cli", "notes": "Not requested; CI also runs it."}
+  ],
+  "failures": {
+    "cli-unit-all": "See qa-cli-unit-all.local.log (first run, 11 failed) and qa-cli-unit-rerun.local.log (rerun of the 6 files, 7 failed): EPERM symlink in stale-session-reconciliation; 'expected 10157 to be less than 4000' and 'expected [] to deeply equal [ses_ok]' in hook.session-delivery and opencode.run-session; 'expected http://localhost:60938 to be https://codemie.example.com' in launch-identity. All in files this change does not touch."
+  }
+}

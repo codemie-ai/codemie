@@ -61,6 +61,7 @@ class RecordingConnection:
         self.transactions = 0
         self.fork_days: list[dict] = []  # what the fork-day lookup answers
         self.later_start_days: list[dict] = []  # what the later-start lookup answers
+        self.agent_call_days: list[dict] = []  # what the Agent-call marking answers
         self.bindings: list[dict] = []  # what the session binding lookup answers
 
     @asynccontextmanager
@@ -87,6 +88,8 @@ class RecordingConnection:
             return self.bindings
         if "AND f.ts > u.t" in sql:
             return self.later_start_days
+        if "AS u(s, t)" in sql and "agent.subagent.start" in sql:
+            return self.agent_call_days
         if "JOIN hook_events f" in sql:
             return self.fork_days
         fresh = [k for k in zip(*args, strict=True) if k not in self.ledger]
@@ -483,6 +486,60 @@ async def test_a_batch_without_a_skill_or_agent_call_end_makes_no_fork_day_looku
     await _ingestor(engine).ingest_hook_events(events, "dev@example.com", 0)
 
     assert engine.conn.sql("JOIN hook_events f") == []
+    assert engine.conn.sql("AS u(s, t)") == []
+
+
+def _agent_row(event_type: str, tool_use_id: str, **fields) -> dict:
+    return {"type": event_type, "session_id": "s1", "timestamp": T.isoformat(), "tool_use_id": tool_use_id, **fields}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [_agent_row("agent.tool.end", "toolu_1", tool_name="Agent", fork_agent_id="a1")],
+        [_agent_row("agent.tool.error", "toolu_1", tool_name="Agent")],
+        [_agent_row("agent.subagent.stop", "toolu_1", agent_id="a1")],
+        [
+            _agent_row("agent.tool.end", "toolu_1", tool_name="Agent", fork_agent_id="a1"),
+            _agent_row("agent.subagent.stop", "toolu_1", agent_id="a1"),
+        ],
+    ],
+    ids=["end", "error", "stop", "end-and-stop"],
+)
+async def test_an_agent_call_row_queues_the_day_of_every_start_its_call_names_after_the_insert(rows):
+    """Any row of an Agent call (end, error, stop), whichever batch brings it, runs one statement keyed on the
+    call's (session_id, tool_use_id), after the rows are inserted and in the same transaction; the days it answers
+    are queued with SPAN_FACTS beside the batch's own keys, in one rollup_dirty insert."""
+    engine = FakeEngine()
+    start_day = date(2026, 1, 1)
+    engine.conn.agent_call_days = [{"day": start_day, "session_id": "s1"}]
+
+    await _ingestor(engine).ingest_hook_events(rows, "dev@example.com", 0)
+
+    (lookup_args,) = engine.conn.sql("AS u(s, t)")
+    assert lookup_args == (["s1"], ["toolu_1"])  # one key, however many rows carry it
+    statements = [sql for sql, _ in engine.conn.statements]
+    inserted = next(i for i, sql in enumerate(statements) if "INSERT INTO hook_events" in sql)
+    lookup = next(i for i, sql in enumerate(statements) if "AS u(s, t)" in sql)
+    queued = next(i for i, sql in enumerate(statements) if "INSERT INTO rollup_dirty" in sql)
+    assert inserted < lookup < queued < statements.index("COMMIT")
+    (dirty_args,) = engine.conn.sql("INSERT INTO rollup_dirty")
+    marks = dict(zip(zip(dirty_args[0], dirty_args[1], strict=True), dirty_args[2], strict=True))
+    assert marks[(start_day, "s1")] == 4  # SPAN_FACTS
+    assert (T.date(), "s1") in marks  # the batch's own keys
+
+
+@pytest.mark.asyncio
+async def test_an_agent_call_end_no_longer_looks_its_agent_up_through_the_fork_lookup():
+    """The Skill-only mirror leaves an Agent end to the (session_id, tool_use_id) statement."""
+    engine = FakeEngine()
+    row = _agent_row("agent.tool.end", "toolu_1", tool_name="Agent", tool_response='{"agentId":"a1"}')
+
+    await _ingestor(engine).ingest_hook_events([row], "dev@example.com", 0)
+
+    assert engine.conn.sql("AS u(s, a)") == []  # FORK_DAYS_SQL
+    assert len(engine.conn.sql("AS u(s, t)")) == 1
 
 
 @pytest.mark.asyncio

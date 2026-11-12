@@ -13,7 +13,8 @@
 # limitations under the License.
 
 """SQL fragments that tie a forked skill or a subagent to the call that started it, shared by the rollups (counts)
-and the reader (timeline, scalars), so both twins read one rule."""
+and the reader (timeline, scalars), so both twins read one rule. The rule that names the agent an Agent call started
+is `agent_call_attribution`."""
 
 from __future__ import annotations
 
@@ -22,15 +23,10 @@ import re
 from collections.abc import Sequence
 from datetime import datetime
 
+from codemie.repository.cli_analytics.postgres.agent_call_attribution import AGENT_CALL_TOOLS, agent_call_of
+from codemie.repository.cli_analytics.postgres.hook_row_sql import call_end_row, is_claude_code, tool_response_agent_id
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES, HookRow
 from codemie.repository.cli_analytics.vocabulary import SKILL_DISPATCH_EVENT, SpanKind
-
-
-def tool_response_agent_id(expr: str) -> str:
-    """SQL: the `agentId` named in a tool_response text (`expr`), else NULL. Only an id followed by its
-    closing quote is taken: the CLI cuts tool_response to 300 chars, and a cut id is no key."""
-    return f"""substring({expr} from '"agentId":\\s*"([A-Za-z0-9_-]+)"')"""
-
 
 _AGENT_ID = re.compile(r'"agentId":\s*"([A-Za-z0-9_-]+)"')
 
@@ -43,12 +39,12 @@ def _json_text(value: object) -> str | None:
 
 
 def _named_agent_id(hook: HookRow) -> str | None:
-    """The subagent a Skill or Agent agent.tool.end names: a Skill end's `fork_agent_id`, else the complete
-    `agentId` in its `tool_response`; None when it names none."""
+    """The subagent a Skill agent.tool.end names: its `fork_agent_id`, else the complete `agentId` in its
+    `tool_response`; None when it names none."""
     attrs = json.loads(hook.attrs)
     if not isinstance(attrs, dict):
         return None
-    agent_id = _json_text(attrs.get("fork_agent_id")) if hook.tool_name == "Skill" else None
+    agent_id = _json_text(attrs.get("fork_agent_id"))
     response = _json_text(attrs.get("tool_response"))
     if not agent_id and response is not None:
         match = _AGENT_ID.search(response)
@@ -57,16 +53,12 @@ def _named_agent_id(hook: HookRow) -> str | None:
 
 
 def named_subagent_ids(hooks: Sequence[HookRow]) -> list[tuple[str, str]]:
-    """(session_id, agent_id) of every subagent a Skill or Agent agent.tool.end names, as the SQL reads it: a
-    Skill end's `fork_agent_id`, else the complete `agentId` in the end's `tool_response`."""
+    """(session_id, agent_id) of every subagent a Skill agent.tool.end names, as the SQL reads it: its
+    `fork_agent_id`, else the complete `agentId` in the end's `tool_response`. An Agent call is named by the rule
+    of `AGENT_CALL_DAYS_SQL` instead, which also reads its stops and rows of other batches (`agent_call_keys`)."""
     forks = set()
     for hook in hooks:
-        if (
-            hook.event_type != "agent.tool.end"
-            or hook.tool_name not in ("Skill", "Agent")
-            or not hook.session_id
-            or not hook.attrs
-        ):
+        if hook.event_type != "agent.tool.end" or hook.tool_name != "Skill" or not hook.session_id or not hook.attrs:
             continue
         agent_id = _named_agent_id(hook)
         if agent_id:
@@ -74,9 +66,9 @@ def named_subagent_ids(hooks: Sequence[HookRow]) -> list[tuple[str, str]]:
     return sorted(forks)
 
 
-# A call's agent.tool.end may arrive days after the subagent it names (a foreground fork's or agent's comes at the
-# end of its run), and the fork rules read it: the subagent's own day is then queued again by its agent_id, wherever
-# it lies.
+# A Skill call's agent.tool.end may arrive days after the fork it names (a foreground fork's comes at the end of its
+# run), and the fork rules read it: the fork's own day is then queued again by its agent_id, wherever it lies. An
+# Agent call's rows are marked by AGENT_CALL_DAYS_SQL.
 FORK_DAYS_SQL = """
 SELECT DISTINCT (f.ts AT TIME ZONE 'UTC')::date AS day, f.session_id
 FROM unnest($1::text[], $2::text[]) AS u(s, a)
@@ -116,13 +108,6 @@ def first_subagent_start(start: str) -> str:
     )
 
 
-def is_claude_code(alias: str = "") -> str:
-    """SQL: the event of `alias` (unqualified `attrs` without one) is Claude Code's; an event without
-    `platform` is Claude Code's. The fork rules rest on Claude Code's events."""
-    attrs = f"{alias}.attrs" if alias else "attrs"
-    return f"coalesce({attrs}->>'platform', 'claude-code') = 'claude-code'"
-
-
 def skill_end_agent_id(alias: str) -> str:
     """SQL: the fork a Skill call's agent.tool.end (`alias`) names: its `fork_agent_id`, which the CLI reads out
     of tool_response before it cuts it, else the agentId in tool_response. Never the typed agent_id: on a call
@@ -131,12 +116,18 @@ def skill_end_agent_id(alias: str) -> str:
     return f"coalesce(nullif({alias}.attrs->>'fork_agent_id', ''), {in_response})"
 
 
-def _named_by_end(fork: str, tool_name: str) -> str:
-    """SQL: a Claude Code agent.tool.end of `tool_name` in the session of `fork` names its agent_id."""
+def _named_by_end(fork: str, tool_name: str, call_ids: str | None = None) -> str:
+    """SQL: a Claude Code call of `tool_name` in the session of `fork` names its agent_id: for a Skill, its
+    agent.tool.end (`skill_end_agent_id`); for an Agent call, the reverse form of the agent-call rule, which also
+    reads the stops and the end's `fork_agent_id` and holds on a day with no tool spans. With `call_ids`, the name
+    of a CTE of `agent_call_ids_cte` over the same session, the Agent call is a lookup in it instead (the same
+    answer, without a scan of the session per start)."""
+    if tool_name != "Skill":
+        if call_ids is not None:
+            return f"EXISTS (SELECT 1 FROM {call_ids} {fork}_k WHERE {fork}_k.agent_id = {fork}.agent_id)"
+        return f"({agent_call_of(f'{fork}.session_id', f'{fork}.agent_id', f'{fork}_a')} IS NOT NULL)"
     end = f"{fork}_{tool_name[0].lower()}"
-    agent_id = (
-        skill_end_agent_id(end) if tool_name == "Skill" else tool_response_agent_id(f"{end}.attrs->>'tool_response'")
-    )
+    agent_id = skill_end_agent_id(end)
     return (
         f"EXISTS (SELECT 1 FROM hook_events {end} WHERE {end}.session_id = {fork}.session_id "
         f"AND {end}.event_type = 'agent.tool.end' AND {end}.tool_name = '{tool_name}' AND {is_claude_code(end)} "
@@ -144,14 +135,16 @@ def _named_by_end(fork: str, tool_name: str) -> str:
     )
 
 
-def dispatch_fork_candidate(fork: str) -> str:
+def dispatch_fork_candidate(fork: str, call_ids: str | None = None) -> str:
     """SQL: `fork` may be the fork of a slash command: the first start of its agent_id (a SendMessage continuation
     starts again under the new turn's prompt_id), a Claude Code agent.subagent.start no Skill call names; one
-    without a skill name also named by no Agent call (an ordinary subagent of the same turn)."""
+    without a skill name also named by no Agent call (an ordinary subagent of the same turn). `call_ids` is the name
+    of a session-wide `agent_call_ids_cte` the Agent-call test reads (see _named_by_end); the Timeline passes it, the
+    rollups run the per-row form."""
     return (
         f"({fork}.event_type = 'agent.subagent.start' AND {is_claude_code(fork)} AND {first_subagent_start(fork)} "
         f"AND NOT {_named_by_end(fork, 'Skill')} "
-        f"AND (coalesce({fork}.skill_name, '') <> '' OR NOT {_named_by_end(fork, 'Agent')}))"
+        f"AND (coalesce({fork}.skill_name, '') <> '' OR NOT {_named_by_end(fork, 'Agent', call_ids)}))"
     )
 
 
@@ -195,16 +188,9 @@ def fork_of_dispatch(fork: str) -> str:
 
 
 def _ended_call(call: str, tool_name: str) -> str:
-    """SQL: an agent.tool.end/.error of `tool_name` with the tool_use_id of `call` lies in `call`'s window. A denied
-    call only ever gets agent.tool.denied."""
+    """SQL: `call` has an end or error row (`call_end_row`)."""
     end = f"{call}_r"
-    return (
-        f"EXISTS (SELECT 1 FROM hook_events {end} "
-        f"WHERE {end}.session_id = {call}.session_id "
-        f"AND {end}.event_type IN ('agent.tool.end', 'agent.tool.error') "
-        f"AND {end}.tool_name = '{tool_name}' AND {end}.tool_use_id = {call}.tool_use_id "
-        f"AND {end}.ts >= {call}.ts - interval '1 hour' AND {end}.ts < {call}.ts + interval '1 day')"
-    )
+    return f"EXISTS (SELECT 1 FROM hook_events {end} WHERE {call_end_row(end, call, tool_name)})"
 
 
 def executed_tool_span(alias: str, tool_name: str) -> str:
@@ -220,6 +206,13 @@ def executed_tool_span(alias: str, tool_name: str) -> str:
         f"AND x.ts >= {alias}.ts - interval '1 hour' AND x.ts < {alias}.ts + interval '1 day') "
         f"OR {_ended_call(alias, tool_name)})"
     )
+
+
+def executed_agent_call_span(alias: str) -> str:
+    """SQL: the TOOL span `alias` of an agent call (any of AGENT_CALL_TOOLS) has evidence its call ran: the
+    executed_tool_span of each tool name, parenthesised when there are several to sit under an AND."""
+    gates = " OR ".join(executed_tool_span(alias, name) for name in AGENT_CALL_TOOLS)
+    return f"({gates})" if len(AGENT_CALL_TOOLS) > 1 else gates
 
 
 def executed_tool_start(alias: str, tool_name: str) -> str:

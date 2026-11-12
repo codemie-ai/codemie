@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "task": "Fix EPMCDME-16939: resolve the foreground Agent dispatch's agentId (CLI dedicated field plus agent.subagent.stop correlation by tool_use_id) across reader, rollups, ingestor and fork_attribution, and bound the parent-usage fallback.",
+  "generated": "2026-11-06T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two repos and 4+ components: CLI OtlpAgentAdapter/tool-fields/plugin, plus backend reader agent_end/launched/parent_usage CTEs, the shared fork_attribution fragments (named_subagent_ids, _named_by_end), rollups._NAMED_SUBAGENT_ID and ingestor dirty marking. The three readers of the Agent end's agentId must stay in step. Touches a shared utility, so scored XL; the CLI-to-backend telemetry contract is not a new service boundary, so not XXL." },
+    { "dimension": "requirements_clarity", "reason": "The ticket's Required Fix is explicit, but the foreground tool_response shape is unverified locally (only async_launched data exists), the field name is undecided, the 'fix existing data' claim depends on how many stored stop rows carry tool_use_id (5 of 141 locally), duration semantics (stop duration_ms vs timestamps) are ambiguous, and the integration AC names a CLI-to-backend harness that does not exist. These gaps carry rework risk." },
+    { "dimension": "technical_risk", "reason": "Closest precedent is the Skill fork_agent_id path (CLI 1da8b85, BE 2b75e017b). It does not cover the stop-event correlation by tool_use_id or the bounded parent-window fallback, and a test pins that Agent ends ignore fork_agent_id. Long shared SQL is pinned by SQL-text assertions and a 2.8k-line live test file, and attribution errors are silent. The AC lists specific edge cases (failed, interrupted, cancelled, parallel, concurrent sessions) that existing live tests only partly cover, so Technical Risk is bumped. The change is read-time and reversible, with no security surface." },
+    { "dimension": "file_change_estimate", "reason": "CLI: OtlpAgentAdapter.ts, tool-fields.ts, claude-code-otlp.plugin.ts, plus their 3 tests. Backend: reader.py, fork_attribution.py, rollups.py, ingestor.py, possibly cli_analytics_handler.py, 2 guides, and tests (test_reader, test_fork_attribution, test_ingestor, live dispatch tests). Roughly 15+ files across two repos and several directories; mostly modifications and a few new test cases." },
+    { "dimension": "affected_layers", "reason": "CLI hook adapter (infrastructure/telemetry), backend ingest and dirty marking (service), reader SQL over hook_events/spans/log_events (persistence), and handler/API output. No schema migration is implied, and the UI needs at most a type nit." }
+  ],
+  "red_flags_applied": [
+    "Component Scope held at XL: touches shared utilities (fork_attribution.py used by rollups and reader)",
+    "Technical Risk bumped to L: AC enumerates edge and variant cases (failed, interrupted, cancelled, parallel, concurrent) not fully covered by existing test templates",
+    "Requirements Clarity at L: foreground tool_response shape unverified and the integration harness named in the AC does not exist"
+  ],
+  "split_recommendation": null
+}
