@@ -25,9 +25,7 @@ from datetime import UTC, datetime, timezone
 
 from sqlmodel import Session, select
 
-from codemie.configs import config
 from codemie.configs.logger import logger
-from codemie.core.constants import Environment
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.repository.user_project_repository import user_project_repository
@@ -251,19 +249,12 @@ class ProjectAssignmentService:
 
     @staticmethod
     def _validate_user_id_format(user_id: str) -> None:
-        """Validate user_id is a valid UUID format"""
-        from uuid import UUID
-
-        if Environment.LOCAL.value == config.ENV:
-            return
-
-        try:
-            UUID(user_id)
-        except ValueError:
+        """Validate user_id is a non-blank string (ids are not always UUIDs, e.g. remapped ones)"""
+        if not user_id or not user_id.strip():
             raise ExtendedHTTPException(
                 code=400,
                 message="Invalid user_id format",
-                details="user_id must be a valid UUID",
+                details="user_id must not be empty",
             )
 
     @staticmethod

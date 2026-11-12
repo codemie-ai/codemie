@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17141-user-remap-bugs",
+  "head": "8e96d99d26bc612d7527c71de0bbfb5c50c34523",
+  "runner": "poetry",
+  "started_at": "2026-11-11T23:09:58.663523+02:00",
+  "completed_at": "2026-11-11T23:23:58.663523+02:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "No working-tree changes by ruff."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 131000,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "31 findings, all in gitignored codemie-storage/dev-codemie-user/ (Test cases P1.csv, llama.py). A gitleaks scan of tracked+untracked-non-ignored files with the same config and image found no leaks, so CI checkout would likely be clean; local clutter only."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 215000,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "33137 passed, 382 skipped, 5 xfailed."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 191000,
+      "command": "make sonar-local",
+      "exit_code": 2,
+      "notes": "[sonar-local] sonar-scanner was not found. Install the official SonarScanner CLI or set SONAR_SCANNER_PATH. (tests inside the target passed). Install SonarScanner CLI to run locally."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "ci",
+      "status": "FAIL",
+      "duration_ms": 3000,
+      "command": "make check-alembic",
+      "exit_code": 2,
+      "notes": "Enforced by .gitlab-ci.yml check-alembic-heads and pre-push hook; not in guide. Merging with origin/main yields 2 heads."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make coverage",
+      "notes": "Not requested."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "Not opening an MR in this run; needs docker stack and credentials."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "N/A",
+      "command": "scripts/git-hooks/validate_secrets.sh",
+      "notes": "Staged-diff scan; nothing staged. Covered by make gitleaks."
+    }
+  ],
+  "failures": {
+    "gitleaks": "RuleID:      generic-api-key\nEntropy:     4.734184\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        1901\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:1901\n\nFinding:     ..._id \u2013 s3-user\\n * aws_secret_access_key:REDACTED\\nand save\\n\\nRestart ...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.734184\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        1905\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:1905\n\nFinding:     ...IAXZT7RRAUQ7LKSR6Y\\nSecret access key: REDACTED\\nBucket: algtestbucke...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.753056\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2176\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:2176\n\nFinding:     ...:\\n\\nAccess key ID: REDACTED\\nSecret access key:...\nSecret:      REDACTED\nRuleID:      aws-access-token\nEntropy:     3.646439\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2176\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:aws-access-token:2176\n\nFinding:     nAccount_key: REDACTED\\n\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     5.335638\nTags:        [decoded:unicode decode-depth:1]\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2191\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:2191\n\nFinding:     ... s3-user\\n - Insert Secret Key: REDACTED\\n - Insert Bucket Nam...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.734184\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2194\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:2194\n\n9:15PM INF scanned ~354397217 bytes (354.40 MB) in 2m11s\n9:15PM WRN leaks found: 31\nmake: *** [gitleaks] Error 1\n",
+    "alembic-heads": "python scripts/check_alembic_heads.py --merge-with origin/main\n.claude/worktrees/EPMCDME-16560-cr-followup/src/external/alembic/versions: 202 version file(s), OK\n.claude/worktrees/EPMCDME-16560-cr-followup/src/external/alembic_cli_analytics/versions: 3 version file(s), OK\n.claude/worktrees/proj-ownership-owned-by-field/src/external/alembic/versions: 192 version file(s), OK\n.claude/worktrees/proj-ownership-owned-by-field/src/external/alembic_cli_analytics/versions: 2 version file(s), OK\nsrc/external/alembic/versions: 212 version file(s), 1 problem(s)\n  - expected exactly one head, found 2: aad1456a4f17 (aad1456a4f17_add_run_attributes.py); bbba81be075b (bbba81be075b_add_user_model_overrides_table.py). Set the down_revision of the newer migration(s) to the head of main and keep one head\nsrc/external/alembic_cli_analytics/versions: 6 version file(s), OK\nmake: *** [check-alembic] Error 1\n"
+  }
+}

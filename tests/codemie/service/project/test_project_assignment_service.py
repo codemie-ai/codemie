@@ -30,7 +30,7 @@ from codemie.service.project.project_assignment_service import ProjectAssignment
 
 
 class TestProjectAssignmentServiceValidation:
-    """Test suite for ProjectAssignmentService - UUID validation"""
+    """Test suite for ProjectAssignmentService - user_id format validation"""
 
     def test_validate_user_id_valid_uuid(self):
         """Test that _validate_user_id_format accepts valid UUID"""
@@ -41,19 +41,23 @@ class TestProjectAssignmentServiceValidation:
         # Should not raise exception
         ProjectAssignmentService._validate_user_id_format(valid_uuid)
 
-    @patch("codemie.service.project.project_assignment_service.config.ENV", "production")
-    def test_validate_user_id_invalid_format(self):
-        """Test that _validate_user_id_format rejects invalid UUID format"""
-        # Arrange
-        invalid_uuid = "not-a-valid-uuid"
+    @patch("codemie.configs.config.config.ENV", "production")
+    def test_validate_user_id_accepts_non_uuid(self):
+        """Test that _validate_user_id_format accepts a non-UUID id, such as a remapped user id"""
+        # Act & Assert
+        ProjectAssignmentService._validate_user_id_format("autotest-remap-adc036d3ea7e")
 
+    @pytest.mark.parametrize("blank_user_id", ["", "   "])
+    @patch("codemie.configs.config.config.ENV", "production")
+    def test_validate_user_id_rejects_blank(self, blank_user_id):
+        """Test that _validate_user_id_format rejects empty or blank ids"""
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            ProjectAssignmentService._validate_user_id_format(invalid_uuid)
+            ProjectAssignmentService._validate_user_id_format(blank_user_id)
 
         assert exc_info.value.code == 400
         assert "Invalid user_id format" in exc_info.value.message
-        assert "must be a valid UUID" in exc_info.value.details
+        assert "must not be empty" in exc_info.value.details
 
 
 class TestRejectIfCreator:

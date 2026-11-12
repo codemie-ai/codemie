@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-11-12",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "ProjectAssignmentService._validate_user_id_format was relaxed from a UUID check to a non-blank check, which loosens input validation on the assign, update-role, bulk-assign, bulk-remove and remove paths (security-adjacent, covered by existing require_active_user and DB existence checks). WorkflowService.save_workflow_schema now issues a targeted sa_update of schema_url through get_session instead of a full model update(), which bypasses the ORM model path. Both changes are small and reversible, with close precedent in the same files."
+    },
+    { "dimension": "file_change_estimate", "reason": "4 files changed (112 insertions, 37 deletions): two service modules and their two test modules. This maps to M under the 4-6 file mapping, although the production diff is small." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

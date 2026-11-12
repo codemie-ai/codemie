@@ -18,6 +18,7 @@ from uuid import UUID
 from datetime import timezone
 
 import pytest
+from sqlmodel import Session, SQLModel
 from typing import Union
 from yaml import parser
 
@@ -45,6 +46,7 @@ from codemie_tools.base.file_object import FileObject
 from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
 from codemie.rest_api.security.user import User
 from codemie.service.workflow_service import WorkflowService
+from tests.codemie.sqlite_harness import constrained_sqlite_engine
 
 EXAMPLE_PROJECT = "example_project"
 
@@ -1352,6 +1354,40 @@ def _save_schema(
         mock_factory.return_value.get_current_repository.return_value = files_repo
         workflow_service.save_workflow_schema(workflow_config, schema)
     return mock_repo, files_repo
+
+
+def test_save_workflow_schema_keeps_owner_changed_after_config_was_loaded(workflow_service: WorkflowService) -> None:
+    """The remap commits while the diagram renders; the late schema save must not hand the workflow back."""
+    engine = constrained_sqlite_engine()
+    SQLModel.metadata.create_all(engine, tables=[WorkflowConfig.__table__])
+    old_owner = UserEntity(user_id="old-id", username="user", name="User")
+    new_owner = UserEntity(user_id="new-id", username="user", name="User")
+
+    with patch.object(WorkflowConfig, "get_engine", return_value=engine):
+        WorkflowConfig(
+            id="wf_1",
+            name="Workflow",
+            description="d",
+            project="demo",
+            yaml_config="",
+            created_by=old_owner,
+            updated_by=old_owner,
+        ).save()
+        stale = WorkflowConfig.find_by_id("wf_1")
+
+        with Session(engine) as session:
+            session.get(WorkflowConfig, "wf_1").created_by = new_owner
+            session.commit()
+
+        with patch("codemie.service.workflow_service.FileRepositoryFactory") as mock_factory:
+            mock_factory.return_value.get_current_repository.return_value = _schema_files_repo()
+            workflow_service.save_workflow_schema(stale, b"<svg/>")
+
+        persisted = WorkflowConfig.find_by_id("wf_1")
+
+    assert persisted.created_by.user_id == "new-id"
+    assert persisted.schema_url == "https://example.com/wf.svg"
+    engine.dispose()
 
 
 def test_save_workflow_schema_persists_via_targeted_write(
