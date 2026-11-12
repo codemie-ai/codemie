@@ -1,0 +1,17 @@
+{
+  "decision": "approve",
+  "rationale": "Targeted check at HEAD 9efa1cca78: both prior blocking findings are resolved, verified against current source. CR-001: the Identity Providers rule now covers tokens verified by the gateway in front of EnterpriseIdpWrapper, and it cites dependencies.py:62 and the idp_snapshot_trust startup warning at :164, which is called at :210. CR-002: the guide now pins ADMIN_USER_ID and ADMIN_ROLE_NAME for the user-management-off mode, matching resolve_is_admin at user.py:150-155. Business and standards rows carried forward unchanged; 0 deferred findings, none re-checked.",
+  "confidence": "high",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of the compact profile for this round." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of the compact profile for this round." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of the compact profile for this round." }
+  ],
+  "findings": [],
+  "finding_status": [
+    { "id": "CR-001", "status": "resolved", "notes": "security-patterns.md:40,47 now names gateway verification for EnterpriseIdpWrapper and cites dependencies.py:62/:164; matches the code comment and the warning." },
+    { "id": "CR-002", "status": "resolved", "notes": "testing-patterns.md:39,43 now pins ADMIN_USER_ID/ADMIN_ROLE_NAME when user management is off; matches user.py:152-155." }
+  ]
+}

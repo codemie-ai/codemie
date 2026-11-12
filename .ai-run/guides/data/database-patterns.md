@@ -19,5 +19,6 @@ Use Alembic for schema changes and keep migration files under the existing exter
 |---|---|
 | Runtime schema creation for persistent tables | Alembic migration in `src/external/alembic/versions/` |
 | Hand-editing migration history without checking heads | Inspect Alembic state before changing migration chains |
+| Adding a table model that `env.py` never imports | Import the model in `src/external/alembic/env.py` so `SQLModel.metadata` sees it |
 
-Evidence: README directs migrations through `src/external/alembic` at `README.md:90`.
+Evidence: README directs migrations through `src/external/alembic` at `README.md:90`; model imports feed `target_metadata` at `src/external/alembic/env.py:94` and `src/external/alembic/env.py:130`.

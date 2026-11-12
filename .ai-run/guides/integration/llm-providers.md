@@ -19,8 +19,9 @@ Treat LiteLLM proxy behavior as provider-backed enterprise functionality.
 |---|---|
 | Importing enterprise implementation everywhere | Use service/provider registry boundaries |
 | Assuming LiteLLM is always enabled | Gate behavior with `is_litellm_enabled` and `config` |
+| Choosing the paying project or budget at a call site | Pass the asset to `set_llm_context` and let the attribution resolver decide; rules in `.ai-run/guides/integration/budget-attribution.md` |
 
-Evidence: app startup registers LiteLLM providers conditionally at `src/codemie/rest_api/main.py:265`.
+Evidence: app startup registers LiteLLM providers conditionally at `src/codemie/rest_api/main.py:265`; `set_llm_context` at `src/codemie/service/llm_service/utils.py:269`.
 
 ### Output Token Limit (`max_tokens`)
 

@@ -34,3 +34,14 @@ never actually sent.
 | Guessing what a malformed payload meant | Reject it explicitly (error or `None`) |
 
 Evidence: strict UTF-8 decode with explicit rejection at `src/codemie/triggers/bindings/gitlab_webhook_security.py:68`.
+
+## Identity Providers
+
+An IdP declares `validates_token = True` only when its tokens are verified before they reach it: by its own signature check (`JwksValidatingIdp`), or by the gateway in front of it (`EnterpriseIdpWrapper`, which logs `idp_snapshot_trust` at startup when IDP-claims mode runs without JWKS validation). Only such sign-ins store the IDP-claims snapshot that scheduled and webhook runs later replay as the owner's memberships, so a provider that trusts a header nothing verified must keep the default `False`.
+
+| Avoid | Prefer |
+|---|---|
+| Setting `validates_token = True` on a provider that reads identity from a header (`LocalIdp`) | Leave the base default; wrap it with JWKS validation if its tokens must be trusted |
+| Writing or reading the claims snapshot from a new call site | Write only on the token-validated sign-in path; read only through `service/user/user_by_id_loader.py` |
+
+Evidence: default at `src/codemie/rest_api/security/idp/base.py:27`; JWKS wrapper at `src/codemie/rest_api/security/idp/jwks_validating.py:57`; enterprise wrapper and its startup warning at `src/codemie/enterprise/idp/dependencies.py:62` and `src/codemie/enterprise/idp/dependencies.py:164`; snapshot write gated at `src/codemie/rest_api/security/user_providers/legacy_jwt.py:65`. Trust window and retention: `.ai-run/guides/integration/budget-attribution.md`.

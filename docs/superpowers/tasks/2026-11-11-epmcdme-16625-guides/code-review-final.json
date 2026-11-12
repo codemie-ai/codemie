@@ -1,0 +1,39 @@
+{
+  "decision": "request-changes",
+  "rationale": "Compact profile: only the edge-case lens ran (blind and verification-gap not in the profile, no standards audit expected), and acceptance did not run because there is no spec, so confidence is low. Two blocking guide inaccuracies: the new Identity Providers rule contradicts EnterpriseIdpWrapper (validates_token=True with signature verification left to the deployment), and the is_admin pinning advice is not enough when user management is off; 0 deferred. 2 candidates dismissed as noise: Ruff ignores all rules under src/external/* so F401 cannot strip env.py imports, and the is_maintainer override is below the emission floor. Fix pack written to code-review-fix-pack.local.md.",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of the compact profile for this round." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of the compact profile for this round." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of the compact profile for this round." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": ".ai-run/guides/development/security-patterns.md",
+      "line": 40,
+      "title": "IdP validates_token rule contradicts enterprise wrapper",
+      "problem": "The new Identity Providers section says an IdP declares validates_token = True only when its own authenticate() verifies the token signature. But EnterpriseIdpWrapper (src/codemie/enterprise/idp/dependencies.py:62) declares validates_token = True and passes the request headers to the enterprise provider. Its own comment says the deployment must verify the signature (JWKS validation or a validating gateway), which budget-attribution.md:39 also says. The section's Evidence line leaves the enterprise wrapper out.",
+      "impact": "The rule this guide states as an invariant is false for one of the three providers in the code. A reader who follows the guide could set the enterprise flag to False, which silently stops claim snapshots for enterprise sign-ins and breaks scheduled and webhook budget attribution. A reader could also assume any provider with the flag set is verified by the application, and misjudge the deployment's JWKS or gateway requirement.",
+      "recommendation": "Reword the rule so it matches the code: an IdP declares validates_token = True when its tokens are signature-verified, either by its own authenticate() (JwksValidatingIdp) or, for EnterpriseIdpWrapper, by the deployment (JWKS_VALIDATION_ENABLED or a validating gateway). Add the enterprise wrapper (src/codemie/enterprise/idp/dependencies.py:62) to the Evidence line and keep the header-trusting LocalIdp example as the case that must stay False."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": ".ai-run/guides/testing/testing-patterns.md",
+      "line": 39,
+      "title": "is_admin pinning advice incomplete with user management off",
+      "problem": "The Config-Derived User Flags section says a test that depends on is_admin must pin ENV and ENABLE_USER_MANAGEMENT, or it depends on what an earlier test left in config. With ENABLE_USER_MANAGEMENT pinned to False, resolve_is_admin (src/codemie/rest_api/security/user.py:152-155) still reads config.ADMIN_USER_ID and config.ADMIN_ROLE_NAME, and the guide does not tell the test to pin them. The cited fixture (test_cli_attribution_chain.py:86-87) avoids this only because it pins ENABLE_USER_MANAGEMENT=True.",
+      "impact": "Pinning both named settings, as the guide says, still leaves is_admin depending on config in the user-management-off branch that the guide itself describes. Tests written from the guide can stay order-dependent and flaky.",
+      "recommendation": "State that pinning ENV and ENABLE_USER_MANAGEMENT=True makes is_admin come from the value passed in. If a test pins ENABLE_USER_MANAGEMENT=False, it must also monkeypatch ADMIN_USER_ID and ADMIN_ROLE_NAME, because resolve_is_admin reads them in that branch. Optionally note that is_maintainer=True always forces is_admin=True."
+    }
+  ],
+  "deferred": []
+}

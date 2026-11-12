@@ -70,6 +70,7 @@ Detailed project guidance lives under `.ai-run/guides/`, which is the source of 
 | Security | auth, permissions, validation, secrets | auth bug; sanitize input; secret handling | `.ai-run/guides/development/security-patterns.md` | `.ai-run/guides/development/configuration-patterns.md` |
 | Vulnerability Remediation | a scanner or CVE ticket names this repo | fix CVE-XXXX; bump vulnerable package; patch base image; rescan container | `.ai-run/guides/security/README.md` | `.ai-run/guides/quality-gates.md` |
 | Integrations | cloud, Jira, Confluence, X-ray, GDocs, MCP | add integration; fix provider call | `.ai-run/guides/integration/external-services.md` | `.ai-run/guides/integration/llm-providers.md` |
+| Budget Attribution | which project or personal budget pays for an LLM request | wrong project charged; budget fallback; trigger or workflow billing; LiteLLM customer id | `.ai-run/guides/integration/budget-attribution.md` | `.ai-run/guides/integration/llm-providers.md` |
 | Testing | only when user explicitly asks tests | write tests; run tests; fix failing test | `.ai-run/guides/testing/testing-patterns.md` | `.ai-run/guides/testing/testing-api-patterns.md` |
 | Git | only when user explicitly asks git ops | commit; push; create MR | `.ai-run/guides/standards/git-workflow.md` | `.ai-run/guides/quality-gates.md` |
 | Workflows | LangGraph workflows and execution | workflow node; transition; interrupt | `.ai-run/guides/workflows/langgraph-workflows.md` | `.ai-run/guides/architecture/service-layer-patterns.md` |
