@@ -43,6 +43,7 @@ from codemie.core.workflow_models import (
 from codemie.core.workflow_models.workflow_config import WorkflowConfigBase
 from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
 from codemie.repository.repository_factory import FileRepositoryFactory
+from codemie.repository.workflow_config_repository import WorkflowConfigRepository
 from codemie.rest_api.models.conversation import GeneratedMessage
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.default_applications import ensure_application_exists
@@ -60,6 +61,7 @@ MAX_ITEMS_PER_PAGE = 10_000
 _EXECUTION_ID_KEYWORD = "execution_id.keyword"
 
 _marketplace_service = WorkflowMarketplaceService()
+_workflow_config_repository = WorkflowConfigRepository()
 
 
 async def _composed_per_workflow(
@@ -801,18 +803,25 @@ class WorkflowService:
 
     def save_workflow_schema(self, workflow_config: WorkflowConfig, workflow_schema: bytes):
         try:
-            if workflow_schema:
-                files_repo = FileRepositoryFactory().get_current_repository()
-                result = files_repo.write_file(
-                    name=f"workflows/{workflow_config.id}.svg",
-                    content=workflow_schema,
-                    owner=config.CODEMIE_STORAGE_BUCKET_NAME,
-                    mime_type=MermaidMimeType.SVG,
-                )
-                logger.debug(f"Saving workflow schema for workflow_id: {result}")
+            if not workflow_schema:
+                return
 
-                workflow_config.schema_url = result.to_encoded_url()
-                workflow_config.update()
+            exists, stored_yaml = _workflow_config_repository.get_yaml_config(workflow_config.id)
+            if not exists or stored_yaml != workflow_config.yaml_config:
+                logger.info(f"Skipping stale workflow schema for workflow_id: {workflow_config.id}")
+                return
+
+            files_repo = FileRepositoryFactory().get_current_repository()
+            result = files_repo.write_file(
+                name=f"workflows/{workflow_config.id}.svg",
+                content=workflow_schema,
+                owner=config.CODEMIE_STORAGE_BUCKET_NAME,
+                mime_type=MermaidMimeType.SVG,
+            )
+            logger.debug(f"Saving workflow schema for workflow_id: {result}")
+
+            workflow_config.schema_url = result.to_encoded_url()
+            _workflow_config_repository.set_schema_url(workflow_config.id, workflow_config.schema_url)
         except Exception as e:
             logger.error(f"Failed to save workflow schema: {str(e)}")
 

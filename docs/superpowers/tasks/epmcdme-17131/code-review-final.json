@@ -1,0 +1,61 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved; compact review, 0 findings"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved; compact review, 0 findings"
+    }
+  ],
+  "reviewed_head": "14bca33c10e75b172245ae77ead72553660c85f6",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No blocking issues: the change writes only schema_url and skips stale or deleted-workflow jobs, as the implementation brief specifies. No story/spec existed so acceptance was not audited (confidence low); 3 edge-case candidates dismissed (accepted check-then-write window affecting only the diagram, brief-mandated silent no-op on missing row, unused in-memory schema_url), 0 deferred.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards audit not run for the compact profile."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards audit not run for the compact profile."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards audit not run for the compact profile."
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "No blocking issues: the change writes only schema_url and skips stale or deleted-workflow jobs, as the implementation brief specifies. No story/spec existed so acceptance was not audited (confidence low); 3 edge-case candidates dismissed (accepted check-then-write window affecting only the diagram, brief-mandated silent no-op on missing row, unused in-memory schema_url), 0 deferred.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

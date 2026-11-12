@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17131",
+  "head": "14bca33c10e75b172245ae77ead72553660c85f6",
+  "runner": "poetry",
+  "started_at": "2026-11-11T16:25:09Z",
+  "completed_at": "2026-11-11T16:35:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 10000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 34000,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 183000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "81 failed, 24 errors in unrelated areas (codemie_tools/git, enterprise/mcp_auth, permission, openapi snapshot, etc.); none in changed files. Changed-file tests (test_workflow_service.py, test_workflow_config_repository.py) pass: 124 passed, 1 skipped."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 1000,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Run as SONAR_SKIP_TESTS=1 make sonar-local to avoid re-running tests. Output: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN (env or .env.local) to enable."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "CI job check-alembic-heads and pre-push hook; guide does not list it. 'make check-alembic' fails locally only because 'python' is not on PATH (exit 2), so python3 was used. Hook-only gates not run: codemie-gitleaks (staged scan; covered by make gitleaks on full tree), codemie-commit-msg (no commit made), pre-push pytest/sonar opt-in (covered above). make test-harness: N/A, needs docker stack and not opening an MR."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Requires running docker stack, fixtures and MR context; not opening an MR."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[None-missing_www_authenticate]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[Bearer error=\"invalid_request\"-unsupported_bearer_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_detects_configured_discovered_identity_conflict\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_non_oauth_config_without_oauth_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[bearer-Bearer fresh-access-None]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[Basic-None-refresh_result_invalid]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context0-missing_user_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context1-missing_auth_config_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_discovered_oauth2_identity_when_no_configured_id\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rejects_env_delivered_oauth2_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_omits_initiate_url_for_workflow_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_live_discovered_snapshot_for_reauth_initiate_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rebuilds_discovered_snapshot_from_exact_flow_config\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_discovered_snapshot_missing_without_exact_config_is_non_resumable\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\nERROR tests/enterprise/mcp_auth/test_discovery_cimd_disabled.py\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\n= 81 failed, 33543 passed, 413 skipped, 5 xfailed, 638 warnings, 24 errors in 177.32s (0:02:57) =\nmake: *** [test] Error 1"
+  }
+}

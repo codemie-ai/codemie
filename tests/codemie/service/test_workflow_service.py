@@ -1328,22 +1328,154 @@ class TestYamlContentChanged:
         assert WorkflowService._yaml_content_changed("{bad yaml", "{different bad") is True
 
 
-def test_save_workflow_schema_persists_via_update(
+def _schema_files_repo(url: str = "https://example.com/wf.svg") -> MagicMock:
+    mock_file_result = MagicMock()
+    mock_file_result.to_encoded_url.return_value = url
+    mock_files_repo = MagicMock()
+    mock_files_repo.write_file.return_value = mock_file_result
+    return mock_files_repo
+
+
+def _save_schema(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+    stored: tuple[bool, Union[str, None]],
+    schema: Union[bytes, None] = b"<svg/>",
+    files_repo: Union[MagicMock, None] = None,
+) -> tuple[MagicMock, MagicMock]:
+    files_repo = files_repo or _schema_files_repo()
+    with (
+        patch("codemie.service.workflow_service._workflow_config_repository") as mock_repo,
+        patch("codemie.service.workflow_service.FileRepositoryFactory") as mock_factory,
+    ):
+        mock_repo.get_yaml_config.return_value = stored
+        mock_factory.return_value.get_current_repository.return_value = files_repo
+        workflow_service.save_workflow_schema(workflow_config, schema)
+    return mock_repo, files_repo
+
+
+def test_save_workflow_schema_persists_via_targeted_write(
     workflow_service: WorkflowService,
     workflow_config: WorkflowConfig,
 ) -> None:
-    mock_file_result = MagicMock()
-    mock_file_result.to_encoded_url.return_value = "https://example.com/wf.svg"
-    mock_files_repo = MagicMock()
-    mock_files_repo.write_file.return_value = mock_file_result
     mock_update = _stub_update(workflow_config)
 
-    with patch("codemie.service.workflow_service.FileRepositoryFactory") as mock_factory:
-        mock_factory.return_value.get_current_repository.return_value = mock_files_repo
-        workflow_service.save_workflow_schema(workflow_config, b"<svg/>")
+    mock_repo, _ = _save_schema(workflow_service, workflow_config, (True, workflow_config.yaml_config))
 
     assert workflow_config.schema_url == "https://example.com/wf.svg"
-    mock_update.assert_called_once_with()
+    mock_repo.set_schema_url.assert_called_once_with("workflow_123", "https://example.com/wf.svg")
+    mock_update.assert_not_called()
+
+
+def test_save_workflow_schema_stale_job_writes_nothing(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+) -> None:
+    workflow_config.yaml_config = "A"
+    workflow_config.schema_url = None
+    mock_update = _stub_update(workflow_config)
+
+    mock_repo, files_repo = _save_schema(workflow_service, workflow_config, (True, "B"))
+
+    files_repo.write_file.assert_not_called()
+    mock_repo.set_schema_url.assert_not_called()
+    mock_update.assert_not_called()
+    assert workflow_config.schema_url is None
+
+
+def test_save_workflow_schema_current_job_writes_diagram(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+) -> None:
+    workflow_config.yaml_config = "A"
+    _stub_update(workflow_config)
+
+    mock_repo, files_repo = _save_schema(workflow_service, workflow_config, (True, "A"))
+
+    files_repo.write_file.assert_called_once()
+    mock_repo.set_schema_url.assert_called_once_with("workflow_123", "https://example.com/wf.svg")
+
+
+def test_save_workflow_schema_workflow_deleted_mid_job(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+) -> None:
+    mock_update = _stub_update(workflow_config)
+
+    mock_repo, files_repo = _save_schema(workflow_service, workflow_config, (False, None))
+
+    files_repo.write_file.assert_not_called()
+    mock_repo.set_schema_url.assert_not_called()
+    mock_update.assert_not_called()
+
+
+@pytest.mark.parametrize("schema", [None, b""])
+def test_save_workflow_schema_no_diagram_skips_db(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+    schema: Union[bytes, None],
+) -> None:
+    mock_repo, files_repo = _save_schema(workflow_service, workflow_config, (True, ""), schema=schema)
+
+    mock_repo.get_yaml_config.assert_not_called()
+    mock_repo.set_schema_url.assert_not_called()
+    files_repo.write_file.assert_not_called()
+
+
+@pytest.mark.parametrize("stored", [(True, "A"), (True, "B")])
+def test_save_workflow_schema_never_calls_update(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+    stored: tuple[bool, str],
+) -> None:
+    workflow_config.yaml_config = "A"
+    mock_update = _stub_update(workflow_config)
+
+    with patch.object(WorkflowConfig, "update") as class_update:
+        _save_schema(workflow_service, workflow_config, stored)
+
+    mock_update.assert_not_called()
+    class_update.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("copy_yaml", "stored", "written"),
+    [
+        (None, (True, None), True),
+        ("", (True, ""), True),
+        (None, (True, ""), False),
+    ],
+)
+def test_save_workflow_schema_yaml_none_and_empty_handling(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+    copy_yaml: Union[str, None],
+    stored: tuple[bool, Union[str, None]],
+    written: bool,
+) -> None:
+    workflow_config.yaml_config = copy_yaml
+
+    mock_repo, files_repo = _save_schema(workflow_service, workflow_config, stored)
+
+    assert files_repo.write_file.called is written
+    assert mock_repo.set_schema_url.called is written
+
+
+def test_save_workflow_schema_swallows_repository_error(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+) -> None:
+    files_repo = _schema_files_repo()
+    with (
+        patch("codemie.service.workflow_service._workflow_config_repository") as mock_repo,
+        patch("codemie.service.workflow_service.FileRepositoryFactory") as mock_factory,
+    ):
+        mock_repo.get_yaml_config.side_effect = Exception("db down")
+        mock_factory.return_value.get_current_repository.return_value = files_repo
+        workflow_service.save_workflow_schema(workflow_config, b"<svg/>")
+
+    files_repo.write_file.assert_not_called()
+    mock_repo.set_schema_url.assert_not_called()
 
 
 def test_update_workflow_yaml_change_prepends_history(
@@ -1498,17 +1630,17 @@ def test_update_then_save_schema_preserves_history(
     assert len(workflow_config.yaml_config_history) >= 1
 
     mock_update.reset_mock()
-    mock_files_repo = MagicMock()
-    mock_file_result = MagicMock()
-    mock_file_result.to_encoded_url.return_value = "https://example.com/schema.svg"
-    mock_files_repo.write_file.return_value = mock_file_result
 
-    with patch("codemie.service.workflow_service.FileRepositoryFactory") as mock_factory:
-        mock_factory.return_value.get_current_repository.return_value = mock_files_repo
-        workflow_service.save_workflow_schema(workflow_config, b"<svg/>")
+    mock_repo, _ = _save_schema(
+        workflow_service,
+        workflow_config,
+        (True, workflow_config.yaml_config),
+        files_repo=_schema_files_repo("https://example.com/schema.svg"),
+    )
 
     assert workflow_config.schema_url == "https://example.com/schema.svg"
-    mock_update.assert_called_once_with()
+    mock_repo.set_schema_url.assert_called_once_with("workflow_123", "https://example.com/schema.svg")
+    mock_update.assert_not_called()
     assert len(workflow_config.yaml_config_history) >= 1
 
 
@@ -1518,7 +1650,7 @@ def test_update_then_save_schema_prepends_history_then_persists_schema(
     workflow_service: WorkflowService,
     user: User,
 ) -> None:
-    """YAML change prepends history via update(); schema persist uses update() without an explicit history list."""
+    """YAML change prepends history via update(); schema persist writes only schema_url via the repository."""
     prior = YamlConfigHistory(yaml_config="prior-yaml", date=datetime(2026, 1, 1, tzinfo=timezone.utc))
     stored = WorkflowConfig(
         id="wf_1",
@@ -1536,24 +1668,53 @@ def test_update_then_save_schema_prepends_history_then_persists_schema(
         yaml_config="old: changed",
     )
 
-    mock_file_result = MagicMock()
-    mock_file_result.to_encoded_url.return_value = "https://example.com/wf.svg"
-    mock_files_repo = MagicMock()
-    mock_files_repo.write_file.return_value = mock_file_result
-
-    with patch("codemie.service.workflow_service.FileRepositoryFactory") as mock_factory:
-        mock_factory.return_value.get_current_repository.return_value = mock_files_repo
+    with (
+        patch("codemie.service.workflow_service._workflow_config_repository") as mock_repo,
+        patch("codemie.service.workflow_service.FileRepositoryFactory") as mock_factory,
+    ):
+        mock_repo.get_yaml_config.return_value = (True, "old: changed")
+        mock_factory.return_value.get_current_repository.return_value = _schema_files_repo()
         workflow_service._update_workflow_values(stored, updated, user)
         workflow_service.save_workflow_schema(stored, b"<svg/>")
 
     assert stored.yaml_config == "old: changed"
     assert stored.schema_url == "https://example.com/wf.svg"
-    assert mock_update.call_count == 2
+    assert mock_update.call_count == 1
     history = mock_update.call_args_list[0].kwargs["yaml_config_history"]
     assert [entry.yaml_config for entry in history] == ["old: yaml", "prior-yaml"]
-    assert mock_update.call_args_list[1].args == ()
-    assert mock_update.call_args_list[1].kwargs == {}
+    mock_repo.set_schema_url.assert_called_once_with("wf_1", "https://example.com/wf.svg")
     mock_metric.assert_called_once()
+
+
+@patch("codemie.service.workflow_service.WorkflowMonitoringService.send_update_workflow_metric")
+def test_history_sequence_with_late_schema_jobs(
+    mock_metric: MagicMock,
+    workflow_service: WorkflowService,
+    user: User,
+) -> None:
+    stored = WorkflowConfig(
+        id="wf_1",
+        name="Name",
+        description="d",
+        yaml_config="v0: 0",
+        project="demo",
+        yaml_config_history=[],
+    )
+    mock_update = _stub_update(stored)
+    mock_update.side_effect = lambda **kwargs: object.__setattr__(
+        stored, "yaml_config_history", kwargs["yaml_config_history"]
+    )
+    versions = ["v1: 1", "v2: 2", "v3: 3"]
+    stale_copy = WorkflowConfig(id="wf_1", name="Name", description="d", yaml_config="v0: 0", project="demo")
+
+    for version in versions:
+        updated = WorkflowConfig(name="Name", description="d", project="demo", yaml_config=version)
+        workflow_service._update_workflow_values(stored, updated, user)
+        _save_schema(workflow_service, stale_copy, (True, version))
+
+    assert mock_update.call_count == len(versions)
+    final_history = mock_update.call_args_list[-1].kwargs["yaml_config_history"]
+    assert [entry.yaml_config for entry in final_history] == ["v2: 2", "v1: 1", "v0: 0"]
 
 
 def test_create_workflow_request_rejects_more_than_3_categories():

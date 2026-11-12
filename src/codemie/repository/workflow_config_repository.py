@@ -44,6 +44,26 @@ class WorkflowConfigRepository:
         if result.rowcount == 0:
             raise NotFoundException(f"Workflow '{workflow_id}' not found")
 
+    def get_yaml_config(self, workflow_id: str) -> tuple[bool, str | None]:
+        """Return (row_exists, yaml_config) reading only the yaml_config column."""
+        with WorkflowConfig.get_engine().connect() as conn:
+            row = conn.execute(
+                text("SELECT yaml_config FROM workflows WHERE id = :wf_id").bindparams(wf_id=workflow_id)
+            ).first()
+        if row is None:
+            return False, None
+        return True, row[0]
+
+    def set_schema_url(self, workflow_id: str, schema_url: str) -> None:
+        """Update only schema_url when it differs, leaving every other column and update_date untouched."""
+        with WorkflowConfig.get_engine().begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE workflows SET schema_url = :schema_url"
+                    " WHERE id = :wf_id AND schema_url IS DISTINCT FROM :schema_url"
+                ).bindparams(wf_id=workflow_id, schema_url=schema_url)
+            )
+
     def recompute_unique_users_count(self, workflow_id: str) -> None:
         """Recompute unique_users_count from workflow_executions in a single atomic UPDATE."""
         with WorkflowConfig.get_engine().begin() as conn:
