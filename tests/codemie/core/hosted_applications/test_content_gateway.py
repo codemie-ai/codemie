@@ -130,11 +130,13 @@ async def build_site(tmp_path, files=None, adapter=filesystem_adapter):
     return storage, version, {"prefix": prefix}, entries
 
 
-def mount(gateway, version_id, root_path=""):
+def mount(gateway, version_id, root_path="", viewer=False):
     app = gateway.app()
 
     async def tree(scope, receive, send):
         scope.setdefault("state", {})["hosted_version_id"] = version_id
+        if viewer:
+            scope["state"]["hosted_viewer_host"] = True
         if root_path:
             # Mirror uvicorn --root-path: the prefix is prepended to path and raw_path.
             scope = {**scope, "root_path": root_path, "path": root_path + scope["path"]}
@@ -179,6 +181,24 @@ def test_root_path_is_stripped_on_a_segment_boundary():
     assert strip_root_path(b"/prefixed/index.html", "/prefix") == b"/prefixed/index.html"
     assert strip_root_path(b"/index.html", "") == b"/index.html"
     assert strip_root_path(b"/a%20b/x.js", "/a b") == b"/a%20b/x.js"
+
+
+ROOT_PATHS = ("", "/code-assistant-api", "/code-assistant-api/", "/")
+REQUEST_PATHS = ("/", "/index.js", "/assets/index-x.js", "/_platform/view")
+
+
+def test_root_path_ending_in_a_slash_leaves_exactly_one_leading_slash():
+    # uvicorn --root-path builds raw_path as root_path + raw_path, so a slash-ended root doubles the slash.
+    for root in ROOT_PATHS:
+        for path in REQUEST_PATHS:
+            assert strip_root_path(root.encode() + path.encode(), root) == path.encode(), (root, path)
+    # A raw path the server did not prefix stays unchanged, also for a slash-ended root.
+    assert strip_root_path(b"/index.js", "/code-assistant-api/") == b"/index.js"
+    assert strip_root_path(b"/index.js", "/") == b"/index.js"
+    assert strip_root_path(b"/code-assistant-apix//index.js", "/code-assistant-api/") == (
+        b"/code-assistant-apix//index.js"
+    )
+    assert strip_root_path("/é//x.js".encode(), "/é/") == "/é//x.js".encode()
 
 
 @pytest.mark.asyncio
@@ -313,6 +333,57 @@ async def test_content_is_served_under_a_server_root_path(tmp_path):
         assert (await http.get("/", headers=cookie)).text == INDEX.decode()
         assert (await http.get("/style.css", headers=cookie)).status_code == 200
         assert (await http.get("/missing.css", headers=cookie)).status_code == 404
+
+
+ROOT_PATH_SITE = {
+    "index.html": INDEX,
+    "index.js": b"console.log('root')",
+    "assets/index-x.js": b"console.log('asset')",
+}
+
+
+@pytest.mark.asyncio
+async def test_content_host_serves_every_path_under_any_server_root_path(tmp_path):
+    storage, version, attempt, _ = await build_site(tmp_path, ROOT_PATH_SITE)
+    gateway = ContentGateway(Launch(version, attempt), storage)
+    cookie = {"cookie": gateway.cookie_name + "=" + VIEWER}
+    for root in ROOT_PATHS:
+        async with client(mount(gateway, version["id"], root_path=root)) as http:
+            for path in REQUEST_PATHS:
+                response = await http.get(path, headers=cookie)
+                assert response.status_code == 200, (root, path)
+                expected = ROOT_PATH_SITE.get(path[1:] or "index.html")
+                if expected is not None:
+                    assert response.content == expected, (root, path)
+                else:
+                    assert "Opening application" in response.text, (root, path)
+
+
+@pytest.mark.asyncio
+async def test_viewer_host_wraps_every_path_under_any_server_root_path(tmp_path):
+    storage, version, attempt, _ = await build_site(tmp_path, ROOT_PATH_SITE)
+    gateway = ContentGateway(Launch(version, attempt), storage)
+    content_origin = f"http://v-{version['id'].hex}.apps.localhost:8081"
+    for root in ROOT_PATHS:
+        async with client(mount(gateway, version["id"], root_path=root, viewer=True)) as http:
+            for path in REQUEST_PATHS[:-1]:
+                response = await http.get(path)
+                assert response.status_code == 200, (root, path)
+                assert f'data-src="{content_origin}{path}"' in response.text, (root, path)
+            # Platform paths are never wrapped on the viewer host, whatever the root path.
+            assert (await http.get("/_platform/view")).status_code == 404, root
+
+
+@pytest.mark.asyncio
+async def test_missing_content_is_reported_as_plain_text(tmp_path):
+    storage, version, attempt, _ = await build_site(tmp_path)
+    gateway = ContentGateway(Launch(version, attempt), storage)
+    cookie = {"cookie": gateway.cookie_name + "=" + VIEWER}
+    async with client(mount(gateway, version["id"])) as http:
+        for method in ("GET", "HEAD"):
+            response = await http.request(method, "/assets/missing.js", headers=cookie)
+            assert response.status_code == 404
+            assert response.headers["content-type"] == "text/plain; charset=utf-8"
 
 
 @pytest.mark.asyncio

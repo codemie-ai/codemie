@@ -46,20 +46,21 @@ def canonical_artifact_path(value: str) -> str:
 def strip_root_path(raw_path: bytes, root_path: str) -> bytes:
     """Remove the ASGI mount prefix that servers prepend to ``raw_path`` (uvicorn ``--root-path``).
 
-    Only a whole leading segment is removed; a ``raw_path`` without the prefix is returned
-    unchanged because some servers do not prepend it. Non-ASCII roots cannot match a raw path.
+    Mirrors ``starlette.routing.get_route_path``: the root is removed only when a slash follows it,
+    so a slash-ended root (``/api/`` or ``/``), which uvicorn joins as ``/api//x``, leaves ``/x``.
+    A ``raw_path`` without the prefix is returned unchanged because some servers do not prepend it.
+    Non-ASCII roots cannot match a raw path.
     """
-    prefix = root_path.rstrip("/")
-    if not prefix:
+    if not root_path:
         return raw_path
     try:
-        encoded = prefix.encode("ascii")
+        prefix = root_path.encode("ascii")
     except UnicodeError:
         return raw_path
-    if raw_path == encoded:
+    if raw_path == prefix:
         return b"/"
-    if raw_path.startswith(encoded + b"/"):
-        return raw_path[len(encoded) :]
+    if raw_path.startswith(prefix) and raw_path[len(prefix) : len(prefix) + 1] == b"/":
+        return raw_path[len(prefix) :]
     return raw_path
 
 

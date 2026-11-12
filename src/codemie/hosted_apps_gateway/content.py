@@ -382,7 +382,12 @@ class ContentGateway:
                 + '</body></html>'
             )
             return HTMLResponse(html, status_code=401, headers=headers)
-        return Response(UNAVAILABLE if request.method != "HEAD" else b"", status_code=exc.status, headers=headers)
+        return Response(
+            UNAVAILABLE if request.method != "HEAD" else b"",
+            status_code=exc.status,
+            headers=headers,
+            media_type="text/plain",
+        )
 
     async def timed_out(self, request, exc):
         return await self.failure(
