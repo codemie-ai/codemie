@@ -1102,6 +1102,7 @@ PRE_EXISTING_SHIPPED_COMPONENT_IDS: tuple[str, ...] = (
     "aiChampionsLeaderboard",
     "vendorIntegrationAWS",
     "features:cliAnalytics",
+    "features:katas",
     "features:routingAnalytics",
     "features:schedulersView",
     "features:webSearch",
@@ -1173,6 +1174,30 @@ class TestShippedWorkspaceScriptToolCalls(unittest.TestCase):
                 "features:hostedApplications",
             ],
         )
+
+
+class TestShippedKatasFlag(unittest.TestCase):
+    """features:katas ships disabled; FEATURE_KATAS opts in."""
+
+    def _load(self, path=SHIPPED_CUSTOMER_CONFIG, env=None) -> CustomerConfig:
+        with patch.dict("os.environ"):
+            os.environ.pop("FEATURE_KATAS", None)
+            if env is not None:
+                os.environ["FEATURE_KATAS"] = env
+            return CustomerConfig(config_path=path)
+
+    def test_component_present_and_disabled(self) -> None:
+        cfg = self._load()
+        component = next((c for c in cfg.components if c.id == "features:katas"), None)
+        assert component is not None
+        self.assertFalse(component.settings.enabled)
+        self.assertFalse(cfg.is_feature_enabled("katas"))
+
+    def test_env_override_enables(self) -> None:
+        self.assertTrue(self._load(env="true").is_feature_enabled("katas"))
+
+    def test_missing_component_is_off(self) -> None:
+        self.assertFalse(_make_config("").is_feature_enabled("katas"))
 
 
 class TestCapabilityHidingFlags(unittest.TestCase):

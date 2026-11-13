@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16850_turn-katas-off-by-default",
+  "head": "a1537cc4e5a16b59910389a3ea47a31d5239d40e",
+  "runner": "poetry",
+  "started_at": "2026-11-04T16:30:00Z",
+  "completed_at": "2026-11-04T16:50:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2892,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8989,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1609,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 99100,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Re-run after .env.standalone was cleaned: no leaks found"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 609330,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "Run locally by user (make test): 29236 passed, 746 skipped in 609.33s. Earlier sandbox runs failed on RLIMIT_NPROC and 2 environment-dependent tests."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "notes": "pre-push hook gate; needs Sonar token/network, not run locally"
+    },
+    {
+      "id": "test-cli-analytics-live",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "notes": "diff does not touch CLI analytics SQL"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Run locally by user: 196 passed, 4 skipped, 1 rerun in 470.62s"
+    }
+  ],
+  "failures": {}
+}

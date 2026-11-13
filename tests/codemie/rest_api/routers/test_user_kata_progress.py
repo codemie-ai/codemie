@@ -31,6 +31,13 @@ from codemie.rest_api.models.user_kata_progress import (
 from codemie.rest_api.security.user import User
 
 
+@pytest.fixture(autouse=True)
+def _katas_enabled():
+    """Katas ship disabled; these tests exercise the enabled feature."""
+    with patch("codemie.configs.customer_config.CustomerConfig.is_feature_enabled", return_value=True):
+        yield
+
+
 @pytest.fixture
 def regular_user():
     """Regular user fixture."""

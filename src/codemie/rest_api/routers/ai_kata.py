@@ -22,6 +22,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field as PydanticField, ValidationError
 
+from codemie.configs.customer_config import customer_config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.ai_kata import (
     AIKataRequest,
@@ -68,10 +69,20 @@ class KataFilters(BaseModel):
     progress_status: Optional[KataProgressStatus] = None
 
 
+def _ensure_katas_enabled() -> None:
+    if not customer_config.is_feature_enabled("katas"):
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message="Katas feature is not available",
+            details="The katas feature flag is disabled on this instance.",
+            help="Contact your administrator to enable the Katas feature.",
+        )
+
+
 router = APIRouter(
     tags=["AI Katas"],
     prefix="/v1",
-    dependencies=[Depends(authenticate)],
+    dependencies=[Depends(authenticate), Depends(_ensure_katas_enabled)],
 )
 
 kata_service = AIKataService()

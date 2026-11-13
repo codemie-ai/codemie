@@ -25,6 +25,7 @@ from codemie.rest_api.models.user_kata_progress import (
     UserLeaderboardEntry,
     KataProgressStatus,
 )
+from codemie.rest_api.routers.ai_kata import _ensure_katas_enabled
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.user_kata_progress_service import UserKataProgressService
@@ -34,7 +35,7 @@ from codemie.service.monitoring.metrics_constants import MetricsAttributes, KATA
 router = APIRouter(
     tags=["Kata Progress"],
     prefix="/v1/katas",
-    dependencies=[Depends(authenticate)],
+    dependencies=[Depends(authenticate), Depends(_ensure_katas_enabled)],
 )
 
 progress_service = UserKataProgressService()

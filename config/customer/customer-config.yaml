@@ -137,6 +137,12 @@ components:
           - regex: "^speckit\\."
             label: "Spec Kit"
         fallbackLabel: "Pure chat"
+  - id: "features:katas"
+    settings:
+      enabled: false
+      name: "Katas"
+      description: "AI katas learning feature: guided exercises, progress tracking and leaderboard"
+      availableForExternal: false
   - id: "features:routingAnalytics"
     settings:
       enabled: false

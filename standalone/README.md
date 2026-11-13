@@ -252,6 +252,13 @@ Check the volume names with `docker volume ls` (they are prefixed with the Compo
 The external customer configuration directory is mounted read-only, so its
 `customer-config.yaml` only has to be readable by uid 1001.
 
+## Katas (off by default)
+
+AI Katas are turned off by default: on upgrade the kata API returns 404 until the feature is enabled.
+To enable them, set `FEATURE_KATAS=true` when running with the shipped customer configuration, or add a
+`features:katas` entry with `enabled: true` to your own customer configuration. The `FEATURE_KATAS`
+override does not apply to a custom configuration that lacks the `features:katas` entry.
+
 ## CLI Analytics (optional)
 
 CLI Analytics needs no extra service: the backend receives telemetry directly and stores it in the

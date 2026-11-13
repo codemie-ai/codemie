@@ -1,0 +1,123 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Approved by user; CR-001 accepted (MR release text delivered at handoff)"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Approved by user; CR-001 accepted (MR release text delivered at handoff)"
+    }
+  ],
+  "reviewed_head": "a1537cc4e5a16b59910389a3ea47a31d5239d40e",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "AC7 (release note on upgrade behavior and how to enable) is partial: README paragraph exists but the MR release-note text is outside the diff and unverified. 1 edge-case candidate (gate raising on config load) dismissed: it matches the existing is_feature_enabled gate pattern used by other routers. 0 deferred, 1 dismissed.",
+  "confidence": "high",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "evidence",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "README.md",
+      "title": "Release note for katas default-off unverified",
+      "problem": "AC7 requires a release note covering upgrade behavior and how to enable katas. A README paragraph exists, but the MR-description release note cannot be verified from the diff.",
+      "impact": "Operators upgrading may lose katas without notice or instructions to re-enable via env override or customer config.",
+      "recommendation": "Ensure the MR description release note states katas are off by default after upgrade and how to enable (env override or features:katas customer config entry); supply it as fix evidence.",
+      "status": "fixed",
+      "disposition": {
+        "rationale": "Release note (katas off on upgrade; enable via FEATURE_KATAS=true on the shipped config or a features:katas entry in a customer config) added to MR !4729 under Rollout / config; README paragraph already in the diff.",
+        "source": "hitl"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1 features:katas shipped disabled",
+      "status": "pass",
+      "notes": "Yaml entry and env override test added"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2 served from components with enabled false",
+      "status": "pass",
+      "notes": "Entry present with enabled false"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3 every kata endpoint 404 when off",
+      "status": "pass",
+      "notes": "Router-level dependency on both routers; parametrized gate test"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4 startup seed unchanged",
+      "status": "pass",
+      "notes": "Seeding untouched; test asserts import_preconfigured_katas called"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5 existing router tests keep working",
+      "status": "pass",
+      "notes": "Autouse enable fixtures added"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6 missing katas entry reads as off",
+      "status": "pass",
+      "notes": "test_missing_component_is_off"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7 release note on upgrade and enabling",
+      "status": "pass",
+      "notes": "README paragraph in diff; release note added to MR !4729 (Rollout / config)"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards audit not run for compact profile"
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards audit not run for compact profile"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards audit not run for compact profile"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "AC7 (release note on upgrade behavior and how to enable) is partial: README paragraph exists but the MR release-note text is outside the diff and unverified. 1 edge-case candidate (gate raising on config load) dismissed: it matches the existing is_feature_enabled gate pattern used by other routers. 0 deferred, 1 dismissed.",
+    "confidence": "high",
+    "risk_flags": []
+  },
+  "original_decision": "request-changes",
+  "resolution": "CR-001 closed after the review: the release note was added to the MR description (!4729) alongside the README paragraph. No source changes followed the review; reviewed_head is unchanged for code."
+}
