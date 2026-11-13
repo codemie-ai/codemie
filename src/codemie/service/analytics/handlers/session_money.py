@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
 
-from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
+from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts, kind_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -72,18 +72,28 @@ def token_counts(row: dict[str, Any]) -> TokenCounts:
     )
 
 
-def has_priced_model(models: Iterable[str], pricer: CatalogPricer) -> bool:
-    """True when at least one model name has a catalog price: the one rule behind `cost_available`, so a session
-    whose models are all missing from the catalog is not read as free."""
-    return any(pricer.is_priced(_s(model)) for model in models)
+def _has_usage(row: dict[str, Any]) -> bool:
+    """True when the row carries a positive token count of any priced kind: the same zero-token test
+    `CatalogPricer.price` applies, so a row it skips is no usage here either."""
+    return any(tokens > 0 for tokens in kind_tokens(token_counts(row)))
 
 
-def priced_session_ids(rows: list[dict[str, Any]], pricer: CatalogPricer) -> set[str]:
-    """Sessions with at least one (session, model) row whose model has a catalog price."""
-    models_by_session: dict[str, list[str]] = {}
+def cost_available(rows: Iterable[dict[str, Any]], pricer: CatalogPricer) -> bool:
+    """The one rule behind `cost_available`. Zero-token rows are no usage; a session with no usage is a known
+    $0.00 cost (EPMCDME-17138). Otherwise the cost is known when at least one usage row's model has a catalog
+    price, so a session whose models are all missing from the catalog is not read as free. A model priced for only
+    some of the token kinds it used (no cache-read rate, say) still counts as priced: the session keeps
+    `cost_available: true`, the model is listed in `unpriced_models` and the cost is understated (the UI marks it)."""
+    usage = [row for row in rows if _has_usage(row)]
+    return not usage or any(pricer.is_priced(_s(row.get("model_name"))) for row in usage)
+
+
+def unpriced_session_ids(rows: list[dict[str, Any]], pricer: CatalogPricer) -> set[str]:
+    """Sessions of the (session, model) rows whose cost is not available: usage, none of it priced."""
+    rows_by_session: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        models_by_session.setdefault(_s(row.get("session_id")), []).append(_s(row.get("model_name")))
-    return {sid for sid, models in models_by_session.items() if has_priced_model(models, pricer)}
+        rows_by_session.setdefault(_s(row.get("session_id")), []).append(row)
+    return {sid for sid, session_rows in rows_by_session.items() if not cost_available(session_rows, pricer)}
 
 
 def dispatch_money(pricer: CatalogPricer, row: dict[str, Any]) -> float:

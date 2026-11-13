@@ -91,11 +91,11 @@ from codemie.service.analytics.handlers.funding_buckets import (
     price_bucket_rows,
 )
 from codemie.service.analytics.handlers.session_money import (
+    cost_available,
     dispatch_money,
-    has_priced_model,
     price_session_models,
-    priced_session_ids,
     token_counts,
+    unpriced_session_ids,
 )
 
 _DEPTH_BUCKETS = ("1", "2-5", "6-10", "11-25", "26-50", "50+")
@@ -1406,18 +1406,10 @@ class LocalAnalyticsHandler:
     # ── Sessions ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _log_unavailable_cost(
-        session_ids: list[str], model_rows_by_session: dict[str, list[dict]], priced_sessions: set[str]
-    ) -> None:
-        no_token_rows = sum(1 for sid in session_ids if sid not in model_rows_by_session)
-        unpriced_models = sum(1 for sid in session_ids if sid in model_rows_by_session and sid not in priced_sessions)
-        if no_token_rows or unpriced_models:
-            logger.info(
-                "cli_analytics: %d sessions listed with cost_available=false: no_token_rows=%d unpriced_models=%d",
-                no_token_rows + unpriced_models,
-                no_token_rows,
-                unpriced_models,
-            )
+    def _log_unavailable_cost(session_ids: list[str], unpriced_sessions: set[str]) -> None:
+        unpriced_models = sum(1 for sid in session_ids if sid in unpriced_sessions)
+        if unpriced_models:
+            logger.info("cli_analytics: %d sessions listed with cost_available=false: unpriced models", unpriced_models)
 
     @staticmethod
     def _session_row(
@@ -1573,7 +1565,7 @@ class LocalAnalyticsHandler:
         success_by_session = {_s(r.get("session_id")): r for r in success_rows}
         lines_by_session = {_s(r.get("session_id")): r for r in lines_rows}
         model_rows_by_session = self._group_by_session(session_model_rows)
-        priced_sessions = priced_session_ids(session_model_rows, pricer)
+        unpriced_sessions = unpriced_session_ids(session_model_rows, pricer)
 
         rows_by_session = {_s(r.get("session_id")): r for r in cost_facts}
         # The page order is the response order; a page id without a fact row is not listed.
@@ -1594,9 +1586,9 @@ class LocalAnalyticsHandler:
         money = price_session_models([r for r in session_model_rows if _s(r.get("session_id")) in listed], pricer)
         for s in page_rows:
             s["cost_usd"] = money.by_session.get(s["trace_id"], 0.0)
-            s["cost_available"] = s["trace_id"] in priced_sessions
+            s["cost_available"] = s["trace_id"] not in unpriced_sessions
             s["bloat_pct"] = _pct(money.cache_read_by_session.get(s["trace_id"], 0.0), s["cost_usd"])
-        self._log_unavailable_cost([s["trace_id"] for s in page_rows], model_rows_by_session, priced_sessions)
+        self._log_unavailable_cost([s["trace_id"] for s in page_rows], unpriced_sessions)
 
         data_as_of = max((s["start_time"] for s in page_rows), default=None)
         return {"sessions": page_rows, "page": page, "per_page": per_page, "total": total}, money.pricer, data_as_of
@@ -1697,7 +1689,7 @@ class LocalAnalyticsHandler:
             "cache_read_tokens": cache_read,
             "cache_creation_tokens": cache_creation,
             "cost_usd": cost_usd,
-            "cost_available": has_priced_model((_s(row.get("model_name")) for row in model_cost_rows), pricer),
+            "cost_available": cost_available(model_cost_rows, pricer),
             "net_lines": _nnet(lines_added, lines_removed),
             "bloat_pct": _pct(crc, cost_usd),
             "events": events,

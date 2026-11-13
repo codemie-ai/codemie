@@ -1,0 +1,77 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Fix-up of two doc nits approved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Fix two doc nits: stale reader.py:2947 comment and pre-existing zero-rate sentence in cli-analytics-storage.md:354"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Fix-up of two doc nits approved"
+    }
+  ],
+  "reviewed_head": "a7cbc2e9b5d91c8092a88948eb08185546299f94",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No blocking findings: the acceptance lens did not run (no spec), so confidence is low; blind, edge-case and verification-gap ran, standards had no coverage gap, and 2.3 verified every candidate. 1 deferred to code-review-deferred.local.md (the guide's pre-existing sentence that a free/zero-rate catalog model counts as priced, which contradicts is_priced). 9 dismissed: row-key mismatch and the dead model_rows_by_session claim disproved in source, the fractional-share case does not reach session rows, no-usage => $0/log/API semantics follow the user's decision, and the stale reader.py:2947 comment is a below-floor doc nit.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": ".ai-run/guides/integration/cli-analytics-storage.md",
+      "line": 354,
+      "title": "Guide says zero-rate catalog model counts as priced",
+      "problem": "The guide says a free model with a catalog entry counts as priced, but CatalogPricer.is_priced and test_cost_available_false_for_a_zero_rate_catalog_entry treat a zero-rate entry as unpriced (EPMCDME-16522).",
+      "preexisting": "The sentence predates this change verbatim; the EPMCDME-17138 paragraph rewrite carried it over unchanged."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "both commit subjects in the review range follow the documented EPMCDME-####: Description format from git-workflow.md"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "changed source (session_money.py, cli_analytics_handler.py) keeps the license header, from __future__ annotations, explicit parameter/return types and X | None / parameterized generics; the new usage rule lives in the dedicated session_money module and the large handler shrinks rather than gaining a new concern, consistent with Module Cohesion"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": ".ai-run/guides/security/security-practices.md is absent and no security ref was passed; no concrete security issue seen in the changed hunks (logging emits only a session count)"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "No blocking findings: the acceptance lens did not run (no spec), so confidence is low; blind, edge-case and verification-gap ran, standards had no coverage gap, and 2.3 verified every candidate. 1 deferred to code-review-deferred.local.md (the guide's pre-existing sentence that a free/zero-rate catalog model counts as priced, which contradicts is_priced). 9 dismissed: row-key mismatch and the dead model_rows_by_session claim disproved in source, the fractional-share case does not reach session rows, no-usage => $0/log/API semantics follow the user's decision, and the stale reader.py:2947 comment is a below-floor doc nit.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from codemie.configs.llm_config import CostConfig
 from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer
-from codemie.service.analytics.handlers.session_money import has_priced_model, priced_session_ids, token_counts
+from codemie.service.analytics.handlers.session_money import cost_available, token_counts, unpriced_session_ids
 
 _CATALOG = "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.get_all_llm_model_info"
 
@@ -38,40 +38,75 @@ def _catalog() -> list[MagicMock]:
     ]
 
 
-def test_has_priced_model_true_when_one_model_has_a_catalog_price():
+def test_cost_available_true_when_one_usage_model_has_a_catalog_price():
+    rows = [{"model_name": "no-such-model", "input_tokens": 1}, {"model_name": "priced-model", "input_tokens": 1}]
     with patch(_CATALOG, return_value=_catalog()):
-        assert has_priced_model(["no-such-model", "priced-model"], CatalogPricer()) is True
+        assert cost_available(rows, CatalogPricer()) is True
 
 
-def test_has_priced_model_false_when_no_model_has_a_catalog_price():
+def test_cost_available_false_when_no_usage_model_has_a_catalog_price():
     with patch(_CATALOG, return_value=_catalog()):
-        assert has_priced_model(["no-such-model"], CatalogPricer()) is False
+        assert cost_available([{"model_name": "no-such-model", "input_tokens": 1}], CatalogPricer()) is False
 
 
-def test_has_priced_model_false_for_an_empty_model_name():
+def test_cost_available_false_for_usage_under_an_empty_model_name():
     with patch(_CATALOG, return_value=_catalog()):
-        assert has_priced_model([""], CatalogPricer()) is False
+        assert cost_available([{"model_name": "", "output_tokens": 3}], CatalogPricer()) is False
 
 
-def test_has_priced_model_false_for_a_zero_rate_catalog_entry():
+def test_cost_available_false_for_a_zero_rate_catalog_entry():
     """A zero-rate entry is no price, not a free model (EPMCDME-16522)."""
     with patch(_CATALOG, return_value=_catalog()):
-        assert has_priced_model(["free-model"], CatalogPricer()) is False
+        assert cost_available([{"model_name": "free-model", "input_tokens": 1}], CatalogPricer()) is False
 
 
-def test_has_priced_model_false_for_an_empty_iterable():
+def test_cost_available_stays_true_for_a_model_priced_for_only_some_token_kinds():
+    """A catalogued model with no cache-read rate is priced: the session keeps `cost_available: true`, the cache-read
+    tokens cost 0 and the model is flagged unpriced, so the cost is understated and marked, not unknown
+    (EPMCDME-17138 review CR-002: current behaviour kept and pinned)."""
+    row = {"session_id": "s1", "model_name": "no-cache-rate-model", "input_tokens": 1000, "cache_read_tokens": 5000}
+    catalog = [_catalog_model("no-cache-rate-model", CostConfig(input=0.000003, output=0.000015))]
+    with patch(_CATALOG, return_value=catalog):
+        pricer = CatalogPricer()
+        assert cost_available([row], pricer) is True
+        assert unpriced_session_ids([row], pricer) == set()
+        cost, missing = pricer.price_flagged("no-cache-rate-model", token_counts(row))
+    assert missing is True
+    assert cost == 1000 * 0.000003  # the cache-read tokens add nothing
+    assert pricer.unpriced == ["no-cache-rate-model"]
+
+
+def test_cost_available_true_without_rows():
+    """No model usage is a known $0.00 cost (EPMCDME-17138)."""
     with patch(_CATALOG, return_value=_catalog()):
-        assert has_priced_model([], CatalogPricer()) is False
+        assert cost_available([], CatalogPricer()) is True
 
 
-def test_priced_session_ids_keeps_a_session_with_any_priced_model_only():
+def test_cost_available_ignores_zero_and_negative_token_rows():
     rows = [
-        {"session_id": "s1", "model_name": "no-such-model"},
-        {"session_id": "s1", "model_name": "priced-model"},
-        {"session_id": "s2", "model_name": "no-such-model"},
+        {"model_name": "no-such-model"},
+        {"model_name": "no-such-model", "input_tokens": -5},
+        {"model_name": "no-such-model", "cache_read_tokens": 0.4},
     ]
     with patch(_CATALOG, return_value=_catalog()):
-        assert priced_session_ids(rows, CatalogPricer()) == {"s1"}
+        assert cost_available(rows, CatalogPricer()) is True
+
+
+def test_cost_available_counts_a_cache_creation_only_row_as_usage():
+    rows = [{"model_name": "no-such-model", "cache_creation_tokens": 10}]
+    with patch(_CATALOG, return_value=_catalog()):
+        assert cost_available(rows, CatalogPricer()) is False
+
+
+def test_unpriced_session_ids_names_only_sessions_with_unpriced_usage():
+    rows = [
+        {"session_id": "s1", "model_name": "no-such-model", "input_tokens": 1},
+        {"session_id": "s1", "model_name": "priced-model", "input_tokens": 1},
+        {"session_id": "s2", "model_name": "no-such-model", "input_tokens": 1},
+        {"session_id": "s3", "model_name": "no-such-model"},
+    ]
+    with patch(_CATALOG, return_value=_catalog()):
+        assert unpriced_session_ids(rows, CatalogPricer()) == {"s2"}
 
 
 def test_token_counts_rounds_a_fractional_split_share_instead_of_truncating():

@@ -1,0 +1,132 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17138_cli-analytics-no-usage-cost-state",
+  "head": "a7cbc2e9b5d91c8092a88948eb08185546299f94",
+  "runner": "custom",
+  "started_at": "2026-11-13T08:55:24Z",
+  "completed_at": "2026-11-13T09:04:56Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "command": "make ruff",
+      "status": "PASS",
+      "duration_ms": 2179,
+      "exit_code": 0,
+      "notes": "Also covers pre-commit hook steps (_ruff_staged.sh, ruff check). Working tree unchanged after auto-format/fix."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "command": "make build",
+      "status": "PASS",
+      "duration_ms": 5120,
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "command": "make license-check",
+      "status": "PASS",
+      "duration_ms": 1749,
+      "exit_code": 0,
+      "notes": "Also covers pre-commit hook license check step."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "command": "make gitleaks",
+      "status": "FAIL",
+      "duration_ms": 146521,
+      "exit_code": 2,
+      "notes": "leaks found: 21, all in gitignored, untracked local files (.kube/docker-desktop-config.yaml, scripts/cli_analytics_bench/results/17051-*/explain.json, docs/superpowers/tasks/2026-11-10-epmcdme-17051-users-cost-sql/code-review.local.diff); none in tracked files or the branch diff. Pass/Fail criteria are applied literally; the caller decides."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "command": "make test",
+      "status": "FAIL",
+      "duration_ms": 357552,
+      "exit_code": 2,
+      "notes": "64 failed, 34271 passed, 631 skipped, 5 xfailed, 1 error in 351s. Failures are in tests/enterprise/mcp_auth/* (54 incl. 1 error), tests/codemie/service/usage_attribution/test_analysis_service.py (9), tests/codemie/service/spend/test_attribution.py (1), tests/codemie/rest_api/router_guards/test_openapi_snapshot.py (1); none in the branch's changed test files. Pre-push hook pytest (opt-in, CODEMIE_PREPUSH_ENABLED) is covered by this gate."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "command": "make coverage",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "exit_code": null,
+      "notes": "Skip if: the user did not request coverage."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "command": "make sonar-local",
+      "status": "SKIPPED",
+      "duration_ms": 118,
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable by exporting SONAR_TOKEN (or setting it in .env.local). Also covers the pre-push hook sonar step (opt-in via CODEMIE_PREPUSH_ENABLED=true)."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "command": "make verify",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "exit_code": null,
+      "notes": "Composite of ruff, license, gitleaks, test, each run individually in this pass; 'license' target uses --fix (mutating). Task scope did not call for full verification."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "command": "make test-harness",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "exit_code": null,
+      "notes": "Skip if: not opening a merge request. Needs docker compose stack, superadmin fixtures, ~/.codemie/test-harness.json; required in MR description '## Test harness' section before opening the MR."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "status": "SKIPPED",
+      "duration_ms": 49,
+      "exit_code": 0,
+      "notes": "Self-skip: 'codemie-gitleaks: skipped (CODEMIE_PRECOMMIT_ENABLED=false)' (env var set in this shell). Nothing is staged, so the staged scan would be empty; the full-tree scan is the gitleaks gate."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "command": "for c in $(git rev-list 4a6a085160..HEAD); do git log -1 --format=%B $c > msg; bash scripts/git-hooks/commit_msg.sh msg; done",
+      "status": "PASS",
+      "duration_ms": 511,
+      "exit_code": 0,
+      "notes": "All 3 commit subjects in merge_base..HEAD match ^EPMCDME-[0-9]+:."
+    },
+    {
+      "id": "check-alembic",
+      "source": "hook",
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "status": "PASS",
+      "duration_ms": 728,
+      "exit_code": 0,
+      "notes": "Pre-push hook step that always runs. Both alembic trees single-head."
+    },
+    {
+      "id": "gitlab-ci-pre-ci-guard",
+      "source": "ci",
+      "command": "wait-ci-init (remote template epm-cdme/codemie-gitlab-templates@0.1.2; contexts ci-pipeline, compliance-report)",
+      "status": "N/A",
+      "duration_ms": 0,
+      "exit_code": null,
+      "notes": "External pipeline (remote template, contexts ci-pipeline and compliance-report) cannot be run locally; only CI can settle it. Guide states no pipeline config exists, but .gitlab-ci.yml is present - mismatch. Makefile targets check-deps and ruff-changed are not referenced by guide or hooks and were not run."
+    }
+  ],
+  "failures": {
+    "gitleaks": "Secret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.836592\nFile:        /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-fu-c-wm128/explain.json\nLine:        3240\nFingerprint: /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-fu-c-wm128/explain.json:generic-api-key:3240\n\nFinding:     ...              Group Key: \u001b[1;3;mREDACTED\u001b[0m\"\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.836592\nFile:        /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-index-cov/explain.json\nLine:        3214\nFingerprint: /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-index-cov/explain.json:generic-api-key:3214\n\nFinding:     ...              Group Key: \u001b[1;3;mREDACTED\u001b[0m\"\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.836592\nFile:        /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-fu-c-wm256/explain.json\nLine:        3213\nFingerprint: /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-fu-c-wm256/explain.json:generic-api-key:3213\n\nFinding:     ...              Group Key: \u001b[1;3;mREDACTED\u001b[0m\"\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.836592\nFile:        /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-fu-a/explain.json\nLine:        3700\nFingerprint: /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-fu-a/explain.json:generic-api-key:3700\n\nFinding:     ...              Group Key: \u001b[1;3;mREDACTED\u001b[0m\"\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.836592\nFile:        /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-stored/explain.json\nLine:        3348\nFingerprint: /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-stored/explain.json:generic-api-key:3348\n\nFinding:     ...              Group Key: \u001b[1;3;mREDACTED\u001b[0m\"\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.836592\nFile:        /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-fu-c-analyzed/explain.json\nLine:        3260\nFingerprint: /workspace/scripts/cli_analytics_bench/results/17051-explain-600k-fu-c-analyzed/explain.json:generic-api-key:3260\n\n\u001b[90m8:58AM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~1366670702 bytes (1.37 GB) in 2m23s\u001b[0m\n\u001b[90m8:58AM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 21\u001b[0m\nmake: *** [gitleaks] Error 1",
+    "test": "FAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_timeout-attempted_mechanisms1]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_unavailable-attempted_mechanisms2]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovery_probe_bridge_does_not_await_async_db_engine_in_worker_loop\nFAILED tests/enterprise/mcp_auth/test_insufficient_scope_recovery_bridge.py::test_bridge_maps_real_assistant_recovery_payload_snapshot\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[False-authentication_required]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[True-authenticated]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_returns_config_error_snapshot\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_oauth2_initiate_response_passes_canonical_resource_to_enterprise_builder\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_raise_client_error_logs_warning_with_sanitized_details_before_raising\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[Basic-None-refresh_result_invalid]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context0-missing_user_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context1-missing_auth_config_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_discovered_oauth2_identity_when_no_configured_id\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rejects_env_delivered_oauth2_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_omits_initiate_url_for_workflow_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_live_discovered_snapshot_for_reauth_initiate_url\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_info_log_never_contains_full_state\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rebuilds_discovered_snapshot_from_exact_flow_config\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_discovered_snapshot_missing_without_exact_config_is_non_resumable\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_saml_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_saml_initiate_passes_mcp_config_id_as_required_param\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_initiate_survives_malformed_authorize_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_returns_retry_header_after_successful_force_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_retry_401_and_does_not_force_refresh_twice\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_oauth2_callback_bridge.py::test_callback_entry_log_state_prefix_joins_to_initiate\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[None-missing_www_authenticate]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[Bearer error=\"invalid_request\"-unsupported_bearer_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_detects_configured_discovered_identity_conflict\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_non_oauth_config_without_oauth_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[bearer-Bearer fresh-access-None]\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_initiate_route_recovery_attempt_three_returns_auth_required_envelope\nERROR tests/enterprise/mcp_auth/test_discovery_cimd_disabled.py\n= 64 failed, 34271 passed, 631 skipped, 5 xfailed, 635 warnings, 1 error in 351.02s (0:05:51) =\nmake: *** [test] Error 1"
+  }
+}

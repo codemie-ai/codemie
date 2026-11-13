@@ -2957,8 +2957,8 @@ class PostgresCliAnalyticsReader:
         return await self._q(
             f"""
         WITH c AS (
-                 -- a session with dimension events but no cost row is listed with cost_available false, so its
-                 -- detail must resolve too
+                 -- a session with dimension events but no cost row is listed as a known $0.00 (cost_available
+                 -- true, EPMCDME-17138), so its detail must resolve too
                  SELECT session_id FROM cost_daily WHERE session_id = $sid::text
                  UNION
                  SELECT session_id FROM session_dims WHERE session_id = $sid::text AND started_at IS NOT NULL

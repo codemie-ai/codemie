@@ -919,3 +919,31 @@ async def test_live_a_cowork_session_is_listed_under_its_sender_and_project_and_
         )
         assert dims["started_at"] is not None
         assert models == {_OPUS_55_ROUTE, _OPUS_55}
+
+
+@pytest.mark.asyncio
+async def test_live_a_session_without_model_usage_is_a_known_zero_cost_on_list_and_detail() -> None:
+    """A session that only started and took a prompt has no cost_daily row: list and detail report it as a known
+    $0.00 cost, cost_available true (EPMCDME-17138), through the real reader SQL."""
+    # The ingest ledger keeps every record's identity: a fresh session per run keeps a re-run from being a re-send.
+    sid = f"no-usage-{uuid.uuid4().hex[:8]}"
+    no_usage = {"agent.session.start", "agent.prompt.submit"}
+    events = [e for e in cowork_session(sid, "cowork_project", _TODAY) if e["type"] in no_usage][:2]
+    engine = await _engine()
+    try:
+        ingestor = PostgresTelemetryIngestor(engine, clock=lambda: _TODAY.date())
+        await ingestor.ingest_hook_events(
+            events, "no.usage@example.com", 0, gate=_gate(None, canonical_project="cowork_project")
+        )
+        await _refresh(engine, _TODAY.date())
+        row, detail, _, models = await _cowork_figures(engine, sid)
+    finally:
+        await _cleanup(engine, [sid])
+        await engine.close()
+
+    assert [e["type"] for e in events] == ["agent.session.start", "agent.prompt.submit"]
+    assert models == set()
+    assert row["cost_available"] is True
+    assert row["cost_usd"] == 0.0
+    assert detail["cost_available"] is True
+    assert detail["cost_usd"] == 0.0

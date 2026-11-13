@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-11-13T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 7,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "Diffstat reports 7 files changed (L under the actual-mode mapping 7-10), but 3 are tests and 1 is a guide; only 3 source files change, with 143 insertions and 64 deletions in total." },
+    { "dimension": "component_scope", "reason": "Three components across two layers: the session_money cost_available rule (zero-token rows count as no usage, so a session with no usage is a known $0.00), the cli_analytics_handler that consumes it for the sessions list and detail, and the Postgres reader that supplies the per-model token rows." },
+    { "dimension": "technical_risk", "reason": "Small change to an existing CatalogPricer-based pricing pattern. It reuses kind_tokens, the same zero-token test the pricer already applies. Tests are covered by the existing unit and live-Postgres regression templates. No security, performance or schema impact, and rollback is trivial." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

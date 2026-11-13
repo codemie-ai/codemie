@@ -145,12 +145,13 @@ COSTLESS_ROW = {
 
 
 @pytest.mark.asyncio
-async def test_costless_session_is_listed_with_zero_cost_and_cost_available_false():
+async def test_costless_session_is_listed_with_zero_cost_and_cost_available_true():
+    """No model usage is a known $0.00 cost, not an unknown one (EPMCDME-17138)."""
     handler = make_handler(cost_facts=[COSTLESS_ROW])
     data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
     session = data["sessions"][0]
     assert session["cost_usd"] == 0.0
-    assert session["cost_available"] is False
+    assert session["cost_available"] is True
     assert session["input_tokens"] == 0
     assert handler._repo.get_session_cost_facts.call_args.kwargs["include_costless"] is True
 
@@ -164,6 +165,25 @@ async def test_priced_session_has_cost_available_true():
     with _two_model_catalog():
         data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
     assert data["sessions"][0]["cost_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_session_with_only_zero_token_rows_is_listed_cost_available_true():
+    """Zero-token (session, model) rows are no usage: the session is a known $0.00 and no model is unpriced."""
+    handler = make_handler(cost_facts=[BASE_COST_ROW])
+    handler._repo.get_session_model_costs = AsyncMock(
+        return_value=[
+            {"session_id": "s1", "model_name": ""},
+            {"session_id": "s1", "model_name": "zero-token-model-xyz", "input_tokens": -5},
+        ]
+    )
+    with _two_model_catalog():
+        data, pricer, _ = await handler.get_sessions(
+            make_filter(), page=0, per_page=20, sort_by="start_time", search=None
+        )
+    assert data["sessions"][0]["cost_available"] is True
+    assert data["sessions"][0]["cost_usd"] == 0.0
+    assert pricer.unpriced == []
 
 
 def _zero_rate_catalog():
@@ -494,20 +514,18 @@ async def test_unpriced_models_come_from_the_viewers_own_sessions_under_own_only
 
 
 @pytest.mark.asyncio
-async def test_costless_sessions_are_logged_as_a_count_only():
+async def test_costless_sessions_are_not_logged_as_cost_unavailable():
+    """No-usage sessions are a known $0.00 (EPMCDME-17138): nothing to log."""
     handler = make_handler(cost_facts=[COSTLESS_ROW, {**COSTLESS_ROW, "session_id": "s3"}])
     with patch("codemie.service.analytics.handlers.cli_analytics_handler.logger") as log:
         await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
-    message, listed, no_token_rows, unpriced_models = log.info.call_args.args
-    assert (listed, no_token_rows, unpriced_models) == (2, 2, 0)
-    assert "cost_available=false" in message
-    assert "s2" not in str(log.info.call_args) and "dev" not in str(log.info.call_args.args[1:])
+    assert not any("cost_available=false" in str(c.args[0]) for c in log.info.call_args_list)
 
 
 @pytest.mark.parametrize(("sort_by", "framework"), [("cost_usd", None), ("start_time", "Pure chat")])
 @pytest.mark.asyncio
-async def test_costless_log_counts_only_the_listed_page(sort_by, framework):
-    """Three sessions match the window but one is listed: the log says 1, not 3."""
+async def test_costless_sessions_off_and_on_the_page_are_not_logged(sort_by, framework):
+    """Three no-usage sessions match the window and one is listed: none is logged as cost-unavailable."""
     rows = [{**COSTLESS_ROW, "session_id": f"s{n}"} for n in range(3)]
     handler = make_handler(cost_facts=rows[:1])
     handler._repo.get_session_page = AsyncMock(return_value=(3, ["s0"]))
@@ -518,12 +536,12 @@ async def test_costless_log_counts_only_the_listed_page(sort_by, framework):
             make_filter(), page=0, per_page=1, sort_by=sort_by, search=None, framework=framework
         )
     assert (len(data["sessions"]), data["total"]) == (1, 3)
-    assert log.info.call_args.args[1:] == (1, 1, 0)
+    assert not any("cost_available=false" in str(c.args[0]) for c in log.info.call_args_list)
 
 
 @pytest.mark.asyncio
-async def test_totals_only_session_is_not_counted_as_costless_in_the_log():
-    """A session with no cost_daily row but subagent totals rows ends with cost_available=true: not counted."""
+async def test_totals_only_and_no_usage_sessions_are_both_cost_available_and_not_logged():
+    """A session with no cost_daily row but subagent totals rows, and one with no usage: both available."""
     totals_only = {**COSTLESS_ROW, "session_id": "s4"}
     handler = make_handler(cost_facts=[COSTLESS_ROW, totals_only])
     handler._repo.get_session_model_costs = AsyncMock(
@@ -531,8 +549,8 @@ async def test_totals_only_session_is_not_counted_as_costless_in_the_log():
     )
     with patch("codemie.service.analytics.handlers.cli_analytics_handler.logger") as log, _two_model_catalog():
         data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
-    assert {s["trace_id"]: s["cost_available"] for s in data["sessions"]} == {"s2": False, "s4": True}
-    assert log.info.call_args.args[1:] == (1, 1, 0)
+    assert {s["trace_id"]: s["cost_available"] for s in data["sessions"]} == {"s2": True, "s4": True}
+    assert not any("cost_available=false" in str(c.args[0]) for c in log.info.call_args_list)
 
 
 @pytest.mark.asyncio
@@ -553,7 +571,10 @@ async def test_unpriced_only_session_is_listed_cost_available_false_with_zero_co
     assert by_id["s5"]["cost_usd"] == 0.0
     assert by_id["s1"]["cost_available"] is True
     assert by_id["s1"]["cost_usd"] == pytest.approx(1.0)
-    assert log.info.call_args.args[1:] == (1, 0, 1)
+    message, unpriced_count = log.info.call_args.args
+    assert "cost_available=false" in message
+    assert unpriced_count == 1
+    assert "s5" not in str(log.info.call_args) and "dev" not in str(log.info.call_args.args[1:])
 
 
 @pytest.mark.asyncio
@@ -1299,13 +1320,24 @@ async def test_get_session_detail_tokens_include_totals_only_subagent_rows():
 
 
 @pytest.mark.asyncio
-async def test_get_session_detail_without_model_rows_reports_cost_available_false():
+async def test_get_session_detail_without_model_rows_reports_cost_available_true():
     handler = _priced_detail_handler([])
 
     detail, _, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
 
     assert detail["cost_usd"] == 0.0
-    assert detail["cost_available"] is False
+    assert detail["cost_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_session_detail_with_only_zero_token_rows_reports_cost_available_true():
+    handler = _priced_detail_handler([{"model_name": ""}, {"model_name": "zero-token-model-xyz", "input_tokens": -5}])
+
+    detail, unpriced, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
+
+    assert detail["cost_usd"] == 0.0
+    assert detail["cost_available"] is True
+    assert unpriced == []
 
 
 @pytest.mark.asyncio
