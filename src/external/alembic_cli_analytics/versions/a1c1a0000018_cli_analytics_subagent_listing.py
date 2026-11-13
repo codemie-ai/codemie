@@ -127,6 +127,9 @@ def upgrade() -> None:
     try:
         _build_index(bind)
     finally:
+        # Even under AUTOCOMMIT the statements above autobegan a SQLAlchemy Transaction object; it must end before the
+        # isolation level may change (a no-op at the server: every statement is already committed).
+        bind.commit()
         bind.execution_options(isolation_level=bind.default_isolation_level)
     # Imported here: the runner imports Alembic, not the reverse.
     from codemie.repository.cli_analytics.postgres.migrations import LOCK_TIMEOUT

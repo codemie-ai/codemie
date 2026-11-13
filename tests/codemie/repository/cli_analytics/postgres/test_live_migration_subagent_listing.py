@@ -83,6 +83,9 @@ def _version(connection, schema: str) -> str:
 
 def _seed(connection, schema: str) -> None:
     connection.execute(text(f'SET search_path TO "{schema}"'))
+    # The chain creates hook_events partitioned and empty (the maintenance job adds partitions); a DEFAULT partition
+    # takes the start events, and makes the revision build its index per partition, as on a live database.
+    connection.execute(text("CREATE TABLE IF NOT EXISTS hook_events_default PARTITION OF hook_events DEFAULT"))
     for session_id in (_COPILOT_CHILD, _COPILOT_DESKTOP_CHILD, _CLAUDE_CHILD, _PLAIN, _SELF_NAMED):
         connection.execute(
             text("INSERT INTO session_dims (session_id, started_at) VALUES (:s, now())"), {"s": session_id}

@@ -24,6 +24,7 @@ from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import InvalidRequestError
 
 from codemie.repository.cli_analytics.postgres import ingestor, migrations, rollups
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
@@ -258,7 +259,10 @@ def test_the_subagent_backfill_applies_the_rule_of_the_start_event_the_code_appl
 
 
 class _RecordingConnection:
-    """A connection that records what a revision does to it, in order, and answers the index build's catalog probes."""
+    """A connection that records what a revision does to it, in order, and answers the index build's catalog probes.
+
+    Like SQLAlchemy's Connection, a statement autobegins a Transaction object, also under AUTOCOMMIT, and the
+    isolation level may not change while one is open (InvalidRequestError)."""
 
     def __init__(self, partitions: list[list[tuple[str, str]]] | None = None, flagged: list[int] | None = None) -> None:
         self.log: list[str] = []
@@ -266,10 +270,12 @@ class _RecordingConnection:
         self._partitions = partitions
         self._passes = 0
         self.default_isolation_level = "READ COMMITTED"
+        self._in_transaction = True  # the runner hands the revision a connection with a transaction open
 
     def execute(self, statement, *args):
         sql = _normalized(str(statement))
         self.log.append(sql)
+        self._in_transaction = True
         result = MagicMock()
         if sql == _normalized(SUBAGENT_LISTING.BACKFILL):
             result.rowcount = self._flagged.pop(0)
@@ -284,8 +290,13 @@ class _RecordingConnection:
 
     def commit(self) -> None:
         self.log.append("COMMIT")
+        self._in_transaction = False
 
     def execution_options(self, **options):
+        if self._in_transaction:
+            raise InvalidRequestError(
+                "isolation_level may not be altered unless rollback() or commit() is called first"
+            )
         self.log.append(f"ISOLATION {options['isolation_level']}")
         return self
 
@@ -309,6 +320,7 @@ def test_the_subagent_revision_commits_the_column_before_the_slow_steps_without_
         "ISOLATION AUTOCOMMIT",
         _normalized(SUBAGENT_LISTING.PARTITION_COUNT),
         _normalized(SUBAGENT_LISTING.PLAIN_INDEX),
+        "COMMIT",  # ends the Transaction object the autocommit statements autobegan, so the level may change
         "ISOLATION READ COMMITTED",
         f"SET LOCAL lock_timeout = '{migrations.LOCK_TIMEOUT}'",
         _normalized(SUBAGENT_LISTING.BACKFILL),
