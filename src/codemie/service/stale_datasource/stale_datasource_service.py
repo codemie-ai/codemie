@@ -25,7 +25,6 @@ import asyncio
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta, UTC
-from typing import Optional
 
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +37,7 @@ from codemie.repository.metrics_elastic_repository import MetricsElasticReposito
 from codemie.rest_api.models.index import IndexInfo, LifecycleState
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.monitoring.agent_monitoring_service import AgentMonitoringService
+from codemie.service.stale_datasource.index_group_ordering import order_index_groups
 
 
 _DATASOURCE_LIFECYCLE_METRICS: list[str] = MetricName.to_list(
@@ -72,6 +72,8 @@ _CODE_TOOL_PREFIXES: list[str] = [
 ]
 
 _KB_TOOL_PREFIX = "search_kb"
+
+_RECHECK_BOUND_FACTOR = 5
 
 
 def _legacy_adapt_tool_name(prefix: str, repo: str) -> str:
@@ -160,21 +162,12 @@ class StaleDatasourceService:
             logger.info(f"Evaluating {len(candidates)} candidate datasources")
 
             # Fetch all available activity signals from Elasticsearch
-            lifecycle_map = await self._fetch_lifecycle_metrics(candidates)
-            tool_map = await self._fetch_tool_usage_metrics(candidates)
+            lifecycle_map, tool_map = await self._fetch_activity_signals(candidates)
 
             # Evaluate each datasource and mark if stale
             for datasource in candidates:
                 try:
-                    lifecycle_ts = lifecycle_map.get(datasource.id)
-                    tool_ts = tool_map.get(datasource.id)
-                    update_ts = datasource.update_date
-                    if update_ts and update_ts.tzinfo is not None:
-                        update_ts = update_ts.replace(tzinfo=None)
-                    last_activity = max(filter(None, [lifecycle_ts, tool_ts, update_ts]), default=None)
-                    is_stale = self._is_datasource_stale(datasource, last_activity)
-
-                    if is_stale:
+                    if self._evaluate_staleness(datasource, lifecycle_map, tool_map):
                         self._mark_as_stale(datasource)
                         stats["newly_marked_stale"] += 1
                         logger.info(
@@ -253,7 +246,7 @@ class StaleDatasourceService:
         update_date fallback and risks being mass-marked stale during an outage.
         """
         buckets: list[dict] = []
-        after_key: Optional[dict] = None
+        after_key: dict | None = None
         while True:
             composite: dict = {"size": config.STALE_DATASOURCE_BATCH_SIZE, "sources": sources}
             if after_key:
@@ -272,7 +265,7 @@ class StaleDatasourceService:
                 break
         return buckets
 
-    async def _fetch_lifecycle_metrics(self, datasources: list[IndexInfo]) -> dict[str, Optional[datetime]]:
+    async def _fetch_lifecycle_metrics(self, datasources: list[IndexInfo]) -> dict[str, datetime | None]:
         """Latest lifecycle-event timestamp per datasource id.
 
         Aggregates all datasource lifecycle metric names (index, reindex, config
@@ -297,7 +290,7 @@ class StaleDatasourceService:
             sub_aggs={"last_seen": {"max": {"field": "@timestamp"}}},
         )
 
-        usage_map: dict[str, Optional[datetime]] = {}
+        usage_map: dict[str, datetime | None] = {}
         for bucket in buckets:
             key = bucket["key"]
             ds_id = lookup.get((key.get("project", ""), key.get("repo_name", ""), key.get("datasource_type", "")))
@@ -309,7 +302,7 @@ class StaleDatasourceService:
 
         return usage_map
 
-    async def _fetch_tool_usage_metrics(self, datasources: list[IndexInfo]) -> dict[str, Optional[datetime]]:
+    async def _fetch_tool_usage_metrics(self, datasources: list[IndexInfo]) -> dict[str, datetime | None]:
         """Latest tool-invocation timestamp per datasource id.
 
         Aggregates tool-usage metrics by (base_tool_name, project) and matches
@@ -354,7 +347,29 @@ class StaleDatasourceService:
 
         return {ds_id: same_project.get(ds_id, any_ts) for ds_id, any_ts in any_project.items()}
 
-    def _is_datasource_stale(self, datasource: IndexInfo, last_activity: Optional[datetime]) -> bool:
+    async def _fetch_activity_signals(
+        self, datasources: list[IndexInfo]
+    ) -> tuple[dict[str, datetime | None], dict[str, datetime | None]]:
+        lifecycle_map = await self._fetch_lifecycle_metrics(datasources)
+        tool_map = await self._fetch_tool_usage_metrics(datasources)
+        return lifecycle_map, tool_map
+
+    def _evaluate_staleness(
+        self,
+        datasource: IndexInfo,
+        lifecycle_map: dict[str, datetime | None],
+        tool_map: dict[str, datetime | None],
+    ) -> bool:
+        update_ts = datasource.update_date
+        if update_ts and update_ts.tzinfo is not None:
+            update_ts = update_ts.replace(tzinfo=None)
+        last_activity = max(
+            filter(None, [lifecycle_map.get(datasource.id), tool_map.get(datasource.id), update_ts]),
+            default=None,
+        )
+        return self._is_datasource_stale(datasource, last_activity)
+
+    def _is_datasource_stale(self, datasource: IndexInfo, last_activity: datetime | None) -> bool:
         """Return True if the datasource should be marked stale.
 
         last_activity is the most recent timestamp across all available signals
@@ -381,24 +396,9 @@ class StaleDatasourceService:
         datasource.marked_stale_at = datetime.now(UTC).replace(tzinfo=None)
         self.session.add(datasource)
 
-    async def _delete_stale_indexes(self) -> dict:
-        """Delete ES indexes for STALE datasources and advance them to ARCHIVED.
-
-        Write ordering is crash-safe: ES delete first (ignore_unavailable=True),
-        PG UPDATE to ARCHIVED second, committed once at sweep end.
-        Rows that fail ES deletion stay STALE and are retried the next night.
-        """
-        stats = {
-            "stale_rows_swept": 0,
-            "indexes_deleted": 0,
-            "datasources_archived": 0,
-            "skipped_shared_index": 0,
-            "deletion_errors": 0,
-            "deletion_capped": False,
-        }
-
-        # 1. Collect all idle STALE rows (exclude rows mid-reindex or in error state)
-        stale_stmt = (
+    @staticmethod
+    def _idle_stale_stmt(ids: list[str] | None = None):
+        statement = (
             select(IndexInfo)
             .where(IndexInfo.lifecycle_state == LifecycleState.STALE)
             .where(IndexInfo.completed == True)  # noqa: E712
@@ -421,19 +421,40 @@ class StaleDatasourceService:
                 )
             )
         )
-        stale_result = await self.session.execute(stale_stmt)
+        if ids is not None:
+            statement = statement.where(IndexInfo.id.in_(ids))
+        return statement
+
+    async def _delete_stale_indexes(self) -> dict:
+        """Delete ES indexes of idle STALE datasources, oldest group first, re-checking each group.
+
+        Groups are walked lazily: right before a group's index would be deleted its rows are
+        re-selected and re-checked against the activity signals. Recently active rows return to
+        ACTIVE and keep the index; a group whose rows are all inactive has its index deleted and
+        its rows archived. One commit per group that wrote anything.
+        """
+        stats = {
+            "stale_rows_swept": 0,
+            "indexes_deleted": 0,
+            "datasources_archived": 0,
+            "skipped_shared_index": 0,
+            "deletion_errors": 0,
+            "deletion_capped": False,
+            "reactivated": 0,
+            "recheck_errors": 0,
+        }
+
+        stale_result = await self.session.execute(self._idle_stale_stmt())
         stale_rows = list(stale_result.scalars().all())
         stats["stale_rows_swept"] = len(stale_rows)
 
         if not stale_rows:
             return stats
 
-        # 2. Build shared-index guard: index names still used by ACTIVE datasources
         active_stmt = select(IndexInfo).where(IndexInfo.lifecycle_state == LifecycleState.ACTIVE)
         active_result = await self.session.execute(active_stmt)
         active_index_names = {row.get_index_identifier() for row in active_result.scalars().all()}
 
-        # 3. Group stale rows by ES index name, skipping shared indexes
         candidates: dict[str, list[IndexInfo]] = defaultdict(list)
         for row in stale_rows:
             index_name = row.get_index_identifier()
@@ -446,68 +467,112 @@ class StaleDatasourceService:
                 continue
             candidates[index_name].append(row)
 
-        # 4. Cap: process at most STALE_DATASOURCE_MAX_DELETIONS_PER_RUN indexes per run;
-        # excess candidates are deferred to the next nightly run.
-        if len(candidates) > config.STALE_DATASOURCE_MAX_DELETIONS_PER_RUN:
-            stats["deletion_capped"] = True
-            logger.warning(
-                f"Stale datasource deletion capped: {len(candidates)} candidate indexes, "
-                f"processing first {config.STALE_DATASOURCE_MAX_DELETIONS_PER_RUN}. "
-                f"Remainder will be processed in subsequent runs."
-            )
-            candidates = dict(list(candidates.items())[: config.STALE_DATASOURCE_MAX_DELETIONS_PER_RUN])
+        if not candidates:
+            return stats
 
-        # 5. Delete ES indexes; collect row IDs and pending metrics for the archive batch.
-        # Metrics are emitted only after the PG commit to avoid double-counting on commit failure.
-        # Note: there is a narrow TOCTOU window between the stale snapshot (step 1) and ES deletion
-        # where a concurrent reindex could queue a row we captured as idle. The archive UPDATE's
-        # WHERE lifecycle_state = STALE guard (step 6) prevents clobbering a row that transitioned
-        # to ACTIVE via complete_progress(); a queued-but-still-STALE row is self-healed by
-        # complete_progress() once the reindex succeeds.
+        groups = order_index_groups(candidates)
+        remaining_rows = [row for rows in candidates.values() for row in rows]
+        lifecycle_map, tool_map = await self._fetch_activity_signals(remaining_rows)
+
         es_client = ElasticSearchClient.get_client()
-        rows_to_archive: list[str] = []
-        pending_metrics: list[dict] = []
+        limit = config.STALE_DATASOURCE_MAX_DELETIONS_PER_RUN
 
-        for index_name, rows in candidates.items():
-            try:
-                await asyncio.to_thread(es_client.indices.delete, index=index_name, ignore_unavailable=True)
-                stats["indexes_deleted"] += 1
-                stats["datasources_archived"] += len(rows)
-                rows_to_archive.extend(row.id for row in rows)
-                for row in rows:
-                    pending_metrics.append(
-                        {
-                            "name": MetricName.STALE_DATASOURCE_INDEX_DELETED.value,
-                            "attributes": {
-                                "project": row.project_name,
-                                "repo_name": row.repo_name,
-                                "datasource_type": row.index_type,
-                            },
-                        }
-                    )
-                logger.info(
-                    f"Deleted ES index '{index_name}' for datasource(s) "
-                    f"{[row.id for row in rows]} ({rows[0].project_name}/{rows[0].repo_name})"
-                )
-            except Exception as e:
-                stats["deletion_errors"] += 1
-                logger.error(
-                    f"Failed to delete ES index '{index_name}': {e}",
-                    exc_info=True,
-                )
+        bound = _RECHECK_BOUND_FACTOR * limit
 
-        # 6. Single commit: archive all successfully deleted rows.
-        # WHERE lifecycle_state = STALE guards against clobbering a row that transitioned to
-        # ACTIVE via complete_progress() between ES deletion and this commit.
-        if rows_to_archive:
-            await self.session.execute(
-                sa_update(IndexInfo)
-                .where(IndexInfo.id.in_(rows_to_archive))
-                .where(IndexInfo.lifecycle_state == LifecycleState.STALE)
-                .values(lifecycle_state=LifecycleState.ARCHIVED)
-            )
-            await self.session.commit()
-            for metric in pending_metrics:
-                AgentMonitoringService.send_count_metric(**metric)
+        for visited, (index_name, row_ids) in enumerate(groups):
+            if stats["indexes_deleted"] >= limit or visited >= bound:
+                stats["deletion_capped"] = True
+                logger.warning(
+                    f"Stale datasource deletion capped after {stats['indexes_deleted']} deleted indexes "
+                    f"and {visited} visited groups. Remainder will be processed in subsequent runs."
+                )
+                break
+            await self._process_stale_group(index_name, row_ids, (lifecycle_map, tool_map), es_client, stats)
 
         return stats
+
+    def _recheck_rows(
+        self,
+        rows: list[IndexInfo],
+        lifecycle_map: dict[str, datetime | None],
+        tool_map: dict[str, datetime | None],
+        stats: dict,
+    ) -> tuple[list[str], bool]:
+        active_ids: list[str] = []
+        errored = False
+        for row in rows:
+            try:
+                if not self._evaluate_staleness(row, lifecycle_map, tool_map):
+                    active_ids.append(row.id)
+            except Exception as e:
+                errored = True
+                stats["recheck_errors"] += 1
+                logger.error(f"Error re-checking datasource {row.id}: {e}", exc_info=True)
+        return active_ids, errored
+
+    async def _process_stale_group(
+        self,
+        index_name: str,
+        row_ids: list[str],
+        signals: tuple[dict[str, datetime | None], dict[str, datetime | None]],
+        es_client,
+        stats: dict,
+    ) -> None:
+        lifecycle_map, tool_map = signals
+        result = await self.session.execute(self._idle_stale_stmt(row_ids))
+        rows = list(result.scalars().all())
+
+        if len(rows) < len(row_ids):
+            logger.warning(
+                f"Stale datasource group for ES index '{index_name}' changed during the run "
+                f"({len(rows)} of {len(row_ids)} rows still idle STALE), keeping the index"
+            )
+            return
+
+        active_ids, errored = self._recheck_rows(rows, lifecycle_map, tool_map, stats)
+        archive_ids = [row.id for row in rows]
+        metric_attributes = [
+            {"project": row.project_name, "repo_name": row.repo_name, "datasource_type": row.index_type} for row in rows
+        ]
+        label = f"{rows[0].project_name}/{rows[0].repo_name}"
+
+        if active_ids:
+            reactivated = await self.session.execute(
+                sa_update(IndexInfo)
+                .where(IndexInfo.id.in_(active_ids))
+                .where(IndexInfo.lifecycle_state == LifecycleState.STALE)
+                .values(lifecycle_state=LifecycleState.ACTIVE, marked_stale_at=None)
+            )
+            stats["reactivated"] += reactivated.rowcount
+            await self.session.commit()
+            logger.info(
+                f"Reactivated recently active datasource(s) {active_ids}; keeping ES index '{index_name}' ({label})"
+            )
+            return
+
+        if errored:
+            logger.warning(f"Keeping ES index '{index_name}' ({label}): a datasource failed its re-check")
+            return
+
+        try:
+            await asyncio.to_thread(es_client.indices.delete, index=index_name, ignore_unavailable=True)
+        except Exception as e:
+            stats["deletion_errors"] += 1
+            logger.error(f"Failed to delete ES index '{index_name}': {e}", exc_info=True)
+            return
+
+        await self.session.execute(
+            sa_update(IndexInfo)
+            .where(IndexInfo.id.in_(archive_ids))
+            .where(IndexInfo.lifecycle_state == LifecycleState.STALE)
+            .values(lifecycle_state=LifecycleState.ARCHIVED)
+        )
+        stats["indexes_deleted"] += 1
+        stats["datasources_archived"] += len(archive_ids)
+        await self.session.commit()
+        for attributes in metric_attributes:
+            AgentMonitoringService.send_count_metric(
+                name=MetricName.STALE_DATASOURCE_INDEX_DELETED.value,
+                attributes=attributes,
+            )
+        logger.info(f"Deleted ES index '{index_name}' for datasource(s) {archive_ids} ({label})")

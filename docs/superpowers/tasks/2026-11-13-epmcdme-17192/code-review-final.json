@@ -1,0 +1,266 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Requester approved the check round; CR-001..CR-005 resolved, DF-001/DF-002 deferred pre-existing"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Fix CR-001..CR-005 in one fix-up round"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Requester approved the check round; CR-001..CR-005 resolved, DF-001/DF-002 deferred pre-existing"
+    }
+  ],
+  "reviewed_head": "3c821dfa2dc3f4651f829dc77051ff6b058d901d",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All five prior blocking findings (CR-001..CR-005) are resolved against current source: ordering helpers moved to index_group_ordering.py with annotations and tests, Optional replaced by X | None, and the archive, reactivation and re-select statements now have compiled-SQL assertions. Deferred DF-001 and DF-002 were not re-checked; no new findings are discovered on this round.",
+  "confidence": "high",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 5,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/stale_datasource/stale_datasource_service.py",
+      "line": 109,
+      "title": "Group-ordering helpers appended to oversized module",
+      "problem": "code-quality.md Module Cohesion says not to append a new concern to a module of about 500 lines or more. The file was 513 lines and is now 603. _naive_utc, _none_first, _row_order_key and _order_index_groups are standalone pure functions added at module level.",
+      "impact": "Documented standard is broken by newly written code and further inflates a module the guide wants split.",
+      "recommendation": "Move the group-ordering helpers into their own module next to the service, import them from stale_datasource_service.py, and move their tests with them.",
+      "status": "resolved",
+      "check_notes": "Helpers moved to index_group_ordering.py (order_index_groups); service module now 578 lines; tests moved to test_index_group_ordering.py",
+      "fix": {
+        "change": "Moved group-ordering helpers into new index_group_ordering.py (public order_index_groups); service imports it",
+        "test": "tests/codemie/service/stale_datasource/test_index_group_ordering.py (moved TestOrderIndexGroups)"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/stale_datasource/stale_datasource_service.py",
+      "line": 120,
+      "title": "_none_first lacks type annotations",
+      "problem": "code-quality.md requires explicit parameter and return types in new code. _none_first(value) has neither.",
+      "impact": "Documented standard is broken by newly written code.",
+      "recommendation": "Annotate it, e.g. def _none_first(value: datetime | None) -> tuple[int, datetime | None], matching its actual return.",
+      "status": "resolved",
+      "check_notes": "_none_first annotated (date | None) -> tuple[int, date | None]; _row_order_key also annotated",
+      "fix": {
+        "change": "Annotated _none_first as (date | None) -> tuple[int, date | None], and _row_order_key return type",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/stale_datasource/stale_datasource_service.py",
+      "title": "New signatures use Optional instead of X | None",
+      "problem": "code-quality.md prefers X | None over typing.Optional[X]. The signatures this change added or rewrote (_fetch_activity_signals, _evaluate_staleness, _idle_stale_stmt, _recheck_rows, _process_stale_group) use Optional[datetime] and Optional[list[str]]. The module already has from __future__ import annotations.",
+      "impact": "Documented standard is broken by newly written code.",
+      "recommendation": "Replace Optional[X] with X | None in the signatures this change added or rewrote.",
+      "status": "resolved",
+      "check_notes": "typing.Optional import removed; no Optional remains in the service module; signatures use X | None",
+      "fix": {
+        "change": "Replaced Optional[X] with X | None across the service module and dropped the typing import",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/stale_datasource/test_stale_datasource_service.py",
+      "title": "Archive and reactivation UPDATE targets untested",
+      "problem": "The reactivation and archive UPDATEs run against a mocked session.execute. The reactivation test only checks that the substrings 'marked_stale_at' and 'lifecycle_state' appear in str(statement), and lifecycle_state is also in the WHERE clause. The archive UPDATE is never compiled. No test in tests/codemie/service/stale_datasource asserts the ACTIVE or ARCHIVED value or the lifecycle_state == STALE guard.",
+      "impact": "A regression that reactivates rows into the wrong state, archives rows as the wrong state, or drops the STALE guard protecting rows moved to ACTIVE by complete_progress() would pass the suite.",
+      "recommendation": "In the reactivation test, compile the UPDATE and assert it sets lifecycle_state=ACTIVE and marked_stale_at=None with the STALE guard and the group's ids. In the happy-path test, compile the last execute call and assert lifecycle_state=ARCHIVED, the group's ids and the STALE guard.",
+      "status": "resolved",
+      "check_notes": "Archive and reactivation tests compile the UPDATE and assert ARCHIVED/ACTIVE values, marked_stale_at None, ids and STALE guard; match source sa_update calls",
+      "fix": {
+        "change": "Reactivation and archive tests now compile the UPDATE and assert target state, ids and STALE guard",
+        "test": "test_recently_active_row_reactivated_index_kept_no_slot, test_happy_path_single_stale_row_deleted_and_archived"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/stale_datasource/test_stale_datasource_service.py",
+      "title": "Per-group re-select statement untested",
+      "problem": "_idle_stale_stmt(ids) is the per-group re-select behind the len(rows) < len(row_ids) guard. It is only exercised through a mocked session.execute that returns hand-picked rows, so the id IN filter and the completed, is_fetching, is_queued and error predicates are never observed. Nothing in the tests references _idle_stale_stmt.",
+      "impact": "If the ids filter or an idle predicate were dropped, the re-select could return rows mid-reindex or in error state, or the whole STALE table, and the walk would delete indexes the old query excluded, with every test still green.",
+      "recommendation": "Compile StaleDatasourceService._idle_stale_stmt(['a','b']) and assert the id IN param plus the STALE, completed, is_fetching, is_queued and error predicates. Assert that _idle_stale_stmt() without ids has no id filter.",
+      "status": "resolved",
+      "check_notes": "TestIdleStaleStmt compiles _idle_stale_stmt and asserts STALE, completed, is_fetching, is_queued, error predicates and id IN filter, plus no-ids case",
+      "fix": {
+        "change": "Added TestIdleStaleStmt compiling _idle_stale_stmt with and without ids",
+        "test": "TestIdleStaleStmt in test_stale_datasource_service.py"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/service/stale_datasource/stale_datasource_service.py",
+      "line": 479,
+      "title": "Shared-index guard snapshot is never refreshed",
+      "problem": "active_index_names is computed once, so an ACTIVE datasource that adopts a candidate index mid-walk is not noticed and the index is deleted. The longer walk with per-group commits widens the window.",
+      "preexisting": "The one-time ACTIVE snapshot guard predates this change and was left unchanged."
+    },
+    {
+      "id": "DF-002",
+      "severity": "major",
+      "file": "src/codemie/service/stale_datasource/stale_datasource_service.py",
+      "line": 589,
+      "title": "Archive counts and metrics ignore UPDATE rowcount",
+      "problem": "indexes_deleted, datasources_archived and the metrics use len(archive_ids), not the STALE-guarded UPDATE's rowcount, so a row flipped to ACTIVE by complete_progress() is still counted after the ES delete.",
+      "preexisting": "The old sweep also counted from row lists after the ES delete and did not read the UPDATE rowcount."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC1: groups walked by stale-mark day asc, then last update asc; NULL first; group positioned by earliest row",
+      "status": "pass",
+      "notes": "_order_index_groups covered by TestOrderIndexGroups"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: shared-index guard runs before limit and before any re-check",
+      "status": "pass",
+      "notes": "Guard precedes grouping; skipped rows never re-checked"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: group rows re-checked before index deletion with detection signals and threshold",
+      "status": "pass",
+      "notes": "Signals fetched once before walk; shared staleness fold reused"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: recently active rows reactivated, marked_stale_at cleared, index kept, no limit slot",
+      "status": "pass",
+      "notes": "Guarded UPDATE then return; mixed-group test present"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: all-inactive group deleted, archived, counted against limit; capped flag set",
+      "status": "pass",
+      "notes": "indexes_deleted incremented only after ES delete and archive"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: row with no signal is inactive",
+      "status": "pass",
+      "notes": "_is_datasource_stale returns True when no signal"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: metrics fetch failure leaves nothing deleted or reactivated",
+      "status": "pass",
+      "notes": "Fetch precedes any write or ES call and propagates"
+    },
+    {
+      "kind": "spec",
+      "item": "AC8: per-row error leaves row STALE and counted; index kept, no slot",
+      "status": "pass",
+      "notes": "recheck_errors counted; group returns before ES delete"
+    },
+    {
+      "kind": "spec",
+      "item": "AC9: group whose row set changed is skipped, index kept, no slot",
+      "status": "pass",
+      "notes": "Re-select length check returns without writes"
+    },
+    {
+      "kind": "spec",
+      "item": "AC10: walk visits at most 5x limit groups; capped flag if groups remain",
+      "status": "pass",
+      "notes": "_RECHECK_BOUND_FACTOR=5 bound enforced in loop"
+    },
+    {
+      "kind": "spec",
+      "item": "AC11: no row read after commit; one commit per writing group; metrics after commit",
+      "status": "pass",
+      "notes": "Walk state is ids; verified with a simulated expiring session only"
+    },
+    {
+      "kind": "spec",
+      "item": "AC12: reactivation and archive UPDATEs guarded by STALE; reactivated counts rowcount",
+      "status": "pass",
+      "notes": "Both UPDATEs filter on STALE; see CR-004 for test gap"
+    },
+    {
+      "kind": "spec",
+      "item": "AC13: run summary logs reactivated and recheck_errors",
+      "status": "pass",
+      "notes": "scheduler.py prints both; early-return stats carry both keys"
+    },
+    {
+      "kind": "spec",
+      "item": "AC14: detection results unchanged by the extraction",
+      "status": "pass",
+      "notes": "Same fetchers and fold reproduced in _evaluate_staleness"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals: no complete_progress, schema change, new bound setting, deletion_capped print",
+      "status": "pass",
+      "notes": "Reactivation is a guarded sa_update; no model or migration changes"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "5 commit subjects in the review range all match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "New code uses Optional[...] instead of X | None, _none_first has no annotations, and ~90 lines of ordering helpers were appended to a module that grew from 513 to 603 lines."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No auth, secret, untrusted-input or logging-of-sensitive-value issues found in the changed source; logs carry index names and datasource ids only"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Source behaves as specced and all 14 criteria pass, but two documented code-quality standards are broken (annotations, module cohesion) and the new UPDATE and re-select statements have no asserting tests. 2 deferred (stale shared-index snapshot, archive counts from ids not rowcount; see code-review-deferred.local.md); about 9 lens claims filtered as noise or by-design (single up-front signal fetch per AC3, tz handling kept from detection, test brittleness).",
+    "confidence": "high",
+    "risk_flags": []
+  }
+}

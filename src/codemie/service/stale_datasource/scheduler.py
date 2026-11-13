@@ -82,7 +82,9 @@ class StaleDatasourceScheduler:
                             f"deleted={stats['indexes_deleted']}, "
                             f"archived={stats['datasources_archived']}, "
                             f"skipped_shared={stats['skipped_shared_index']}, "
-                            f"deletion_errors={stats['deletion_errors']}"
+                            f"deletion_errors={stats['deletion_errors']}, "
+                            f"reactivated={stats['reactivated']}, "
+                            f"recheck_errors={stats['recheck_errors']}"
                         )
                     logger.info(
                         f"Stale datasource detection completed: "
