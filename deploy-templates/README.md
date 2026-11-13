@@ -51,6 +51,28 @@ A Helm chart for AI/Run API
 | dsPool.pdb.minAvailable | int | `1` | Minimum number of pods that must remain available during a disruption. Mutually exclusive with maxUnavailable; set only one. |
 | dsPool.replicaCount | int | `1` | Number of ds-pool pods to run |
 | dsPool.resources | object | `{"limits":{"cpu":2,"memory":"2048Mi"},"requests":{"cpu":"100m","memory":"1024Mi"}}` | Resource limits and requests for ds-pool pods |
+| dsPool.routes.app.enabled | bool | `false` |  |
+| dsPool.routes.app.extensionPolicy.name | string | `"rewrite-authorization-header"` | EnvoyExtensionPolicy name |
+| dsPool.routes.app.extensionPolicy.namespace | string | `""` | Namespace name where EnvoyExtensionPolicy deployed to create ReferenceGrant. Default - current namespace. |
+| dsPool.routes.app.rewriteRules[0].pattern | string | `"^/code-assistant-api/v1/application/(.*)/index(.*)$"` |  |
+| dsPool.routes.app.rewriteRules[0].substitution | string | `"/v1/application/\\1/index/\\2"` |  |
+| dsPool.routes.app.rules | list | `[{"matches":[{"path":{"type":"RegularExpression","value":"^/code-assistant-api/v1/application/(.*)/index(.*)$"}}],"timeouts":{"backendRequest":"600s","request":"605s"}}]` | Rules to direct traffic to this route |
+| dsPool.routes.app.rules[0].timeouts.backendRequest | string | `"600s"` | Timeout for waiting response from backend |
+| dsPool.routes.app.rules[0].timeouts.request | string | `"605s"` | Timeout for request in total |
+| dsPool.routes.app.securityPolicy.name | string | `"codemie-oidc"` | SecurityPolicy name |
+| dsPool.routes.app.securityPolicy.namespace | string | `"security"` | Namespace name where SecurityPolicy deployed to create ReferenceGrant |
+| dsPool.routes.app.trafficPolicy | object | `{"requestSize":900}` | Traffic Policy settings to apply to route |
+| dsPool.routes.app.trafficPolicy.requestSize | int | `900` | Request size limit in Mi (value * 1024 * 1024) |
+| dsPool.routes.main.enabled | bool | `false` |  |
+| dsPool.routes.main.extensionPolicy.name | string | `"rewrite-authorization-header"` | EnvoyExtensionPolicy name |
+| dsPool.routes.main.extensionPolicy.namespace | string | `""` | Namespace name where EnvoyExtensionPolicy deployed to create ReferenceGrant. Default - current namespace. |
+| dsPool.routes.main.rules | list | `[{"filters":[{"type":"URLRewrite","urlRewrite":{"path":{"replacePrefixMatch":"/v1/index/","type":"ReplacePrefixMatch"}}}],"matches":[{"path":{"type":"PathPrefix","value":"/code-assistant-api/v1/index/"}}],"timeouts":{"backendRequest":"600s","request":"605s"}}]` | Rules to direct traffic to this route |
+| dsPool.routes.main.rules[0].timeouts.backendRequest | string | `"600s"` | Timeout for waiting response from backend |
+| dsPool.routes.main.rules[0].timeouts.request | string | `"605s"` | Timeout for request in total |
+| dsPool.routes.main.securityPolicy.name | string | `"codemie-oidc"` | SecurityPolicy name |
+| dsPool.routes.main.securityPolicy.namespace | string | `"security"` | Namespace name where SecurityPolicy deployed to create ReferenceGrant |
+| dsPool.routes.main.trafficPolicy | object | `{"requestSize":900}` | Traffic Policy settings to apply to route |
+| dsPool.routes.main.trafficPolicy.requestSize | int | `900` | Request size limit in Mi (value * 1024 * 1024) |
 | dsPool.service.annotations | object | `{}` | ds-pool service annotations |
 | dsPool.service.port | int | `8080` | ds-pool service port |
 | dsPool.service.type | string | `"ClusterIP"` | ds-pool service type |
@@ -112,6 +134,51 @@ A Helm chart for AI/Run API
 | features.tools.hosted-apps.validator.volumeMounts | list | `[{"mountPath":"/work","name":"work"}]` | Extra volume mounts for the validator container |
 | features.tools.hosted-apps.validator.volumes | list | `[{"emptyDir":{"sizeLimit":"2Gi"},"name":"work"}]` | Extra volumes for the validator pod |
 | fullnameOverride | string | `""` |  |
+| gatewayAPI.enabled | bool | `false` | Enable Gateway API usage |
+| gatewayAPI.gateway | object | `{"name":"codemie","namespace":"envoy-gateway-system","sectionName":"https"}` | Gateway to attach HTTPRoute to by default |
+| gatewayAPI.gateway.name | string | `"codemie"` | Gateway name |
+| gatewayAPI.gateway.namespace | string | `"envoy-gateway-system"` | Gateway namespace |
+| gatewayAPI.gateway.sectionName | string | `"https"` | Section name of the gateway listener |
+| gatewayAPI.hostnames | list | `[]` | The list of hostnames to serve requests for by HTTPRoute by default |
+| gatewayAPI.routes.callbacks-index.enabled | bool | `true` |  |
+| gatewayAPI.routes.callbacks-index.rules[0].filters[0].type | string | `"URLRewrite"` |  |
+| gatewayAPI.routes.callbacks-index.rules[0].filters[0].urlRewrite.path.replacePrefixMatch | string | `"/v1/callbacks/index/"` |  |
+| gatewayAPI.routes.callbacks-index.rules[0].filters[0].urlRewrite.path.type | string | `"ReplacePrefixMatch"` |  |
+| gatewayAPI.routes.callbacks-index.rules[0].matches[0].path.type | string | `"PathPrefix"` |  |
+| gatewayAPI.routes.callbacks-index.rules[0].matches[0].path.value | string | `"/code-assistant-api/v1/callbacks/index/"` |  |
+| gatewayAPI.routes.main | object | `{"annotations":{},"enabled":true,"extensionPolicy":{"name":"rewrite-authorization-header","namespace":""},"gateway":{},"hostnames":[],"labels":{},"rules":[{"filters":[{"type":"URLRewrite","urlRewrite":{"path":{"replacePrefixMatch":"/","type":"ReplacePrefixMatch"}}}],"matches":[{"path":{"type":"PathPrefix","value":"/code-assistant-api/"}}],"timeouts":{"backendRequest":"600s","request":"605s"}}],"securityPolicy":{"name":"codemie-oidc","namespace":"security"},"trafficPolicy":{"requestSize":900}}` | AI/Run API main route |
+| gatewayAPI.routes.main.annotations | object | `{}` | HTTPRoute annotations |
+| gatewayAPI.routes.main.extensionPolicy.name | string | `"rewrite-authorization-header"` | EnvoyExtensionPolicy name |
+| gatewayAPI.routes.main.extensionPolicy.namespace | string | `""` | Namespace name where EnvoyExtensionPolicy deployed to create ReferenceGrant. Default - current namespace. |
+| gatewayAPI.routes.main.gateway | object | `{}` | Gateway reference. Default gateway if not set |
+| gatewayAPI.routes.main.hostnames | list | `[]` | The list of hostnames to serve requests for by HTTPRoute. Default list if not set. |
+| gatewayAPI.routes.main.labels | object | `{}` | Additional labels to assign to route |
+| gatewayAPI.routes.main.rules | list | `[{"filters":[{"type":"URLRewrite","urlRewrite":{"path":{"replacePrefixMatch":"/","type":"ReplacePrefixMatch"}}}],"matches":[{"path":{"type":"PathPrefix","value":"/code-assistant-api/"}}],"timeouts":{"backendRequest":"600s","request":"605s"}}]` | rules for HTTPRoute |
+| gatewayAPI.routes.main.rules[0].timeouts.backendRequest | string | `"600s"` | Timeout for waiting response from backend |
+| gatewayAPI.routes.main.rules[0].timeouts.request | string | `"605s"` | Timeout for request in total |
+| gatewayAPI.routes.main.securityPolicy | object | `{"name":"codemie-oidc","namespace":"security"}` | SecurityPolicy to use for route protection |
+| gatewayAPI.routes.main.securityPolicy.name | string | `"codemie-oidc"` | SecurityPolicy name |
+| gatewayAPI.routes.main.securityPolicy.namespace | string | `"security"` | Namespace name where SecurityPolicy deployed to create ReferenceGrant |
+| gatewayAPI.routes.main.trafficPolicy | object | `{"requestSize":900}` | Traffic Policy settings to apply to route |
+| gatewayAPI.routes.main.trafficPolicy.requestSize | int | `900` | Request size limit in Mi (value * 1024 * 1024) |
+| gatewayAPI.routes.oauth-metadata.enabled | bool | `true` |  |
+| gatewayAPI.routes.oauth-metadata.rules[0].filters[0].type | string | `"URLRewrite"` |  |
+| gatewayAPI.routes.oauth-metadata.rules[0].filters[0].urlRewrite.path.replaceFullPath | string | `"/oauth/client-metadata.json"` |  |
+| gatewayAPI.routes.oauth-metadata.rules[0].filters[0].urlRewrite.path.type | string | `"ReplaceFullPath"` |  |
+| gatewayAPI.routes.oauth-metadata.rules[0].matches[0].path.type | string | `"Exact"` |  |
+| gatewayAPI.routes.oauth-metadata.rules[0].matches[0].path.value | string | `"/code-assistant-api/oauth/client-metadata.json"` |  |
+| gatewayAPI.routes.swagger.enabled | bool | `true` |  |
+| gatewayAPI.routes.swagger.rules[0].filters[0].type | string | `"URLRewrite"` |  |
+| gatewayAPI.routes.swagger.rules[0].filters[0].urlRewrite.path.replaceFullPath | string | `"/openapi.json"` |  |
+| gatewayAPI.routes.swagger.rules[0].filters[0].urlRewrite.path.type | string | `"ReplaceFullPath"` |  |
+| gatewayAPI.routes.swagger.rules[0].matches[0].path.type | string | `"Exact"` |  |
+| gatewayAPI.routes.swagger.rules[0].matches[0].path.value | string | `"/code-assistant-api/openapi.json"` |  |
+| gatewayAPI.routes.webhooks.enabled | bool | `true` |  |
+| gatewayAPI.routes.webhooks.rules[0].filters[0].type | string | `"URLRewrite"` |  |
+| gatewayAPI.routes.webhooks.rules[0].filters[0].urlRewrite.path.replacePrefixMatch | string | `"/v1/webhooks/"` |  |
+| gatewayAPI.routes.webhooks.rules[0].filters[0].urlRewrite.path.type | string | `"ReplacePrefixMatch"` |  |
+| gatewayAPI.routes.webhooks.rules[0].matches[0].path.type | string | `"PathPrefix"` |  |
+| gatewayAPI.routes.webhooks.rules[0].matches[0].path.value | string | `"/code-assistant-api/v1/webhooks/"` |  |
 | hostAliases | list | `[]` | Mapping between IP and hostnames that will be injected as entries in the pod's hosts files |
 | hpa.enabled | bool | `false` | Enable the HorizontalPodAutoscaler for the codemie-api rollout/deployment |
 | hpa.maxReplicas | int | `2` | Maximum number of codemie-api pods |
@@ -187,6 +254,64 @@ A Helm chart for AI/Run API
 | proxyPool.pdb.minAvailable | int | `1` | Minimum number of pods that must remain available during a disruption. Mutually exclusive with maxUnavailable; set only one. |
 | proxyPool.replicaCount | int | `1` | Number of proxy-pool pods to run |
 | proxyPool.resources | object | `{"limits":{"cpu":2,"memory":"2048Mi"},"requests":{"cpu":"100m","memory":"1024Mi"}}` | Resource limits and requests for proxy-pool pods |
+| proxyPool.routes.main.enabled | bool | `false` |  |
+| proxyPool.routes.main.extensionPolicy.name | string | `"rewrite-authorization-header"` | EnvoyExtensionPolicy name |
+| proxyPool.routes.main.extensionPolicy.namespace | string | `""` | Namespace name where EnvoyExtensionPolicy deployed to create ReferenceGrant. Default - current namespace. |
+| proxyPool.routes.main.rules[0].matches[0].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[0].path.value | string | `"/v1/chat/completions"` |  |
+| proxyPool.routes.main.rules[0].matches[10].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[10].path.value | string | `"/v1/embeddings"` |  |
+| proxyPool.routes.main.rules[0].matches[11].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[11].path.value | string | `"/embeddings"` |  |
+| proxyPool.routes.main.rules[0].matches[12].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[12].path.value | string | `"/v1/health"` |  |
+| proxyPool.routes.main.rules[0].matches[13].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[13].path.value | string | `"/health"` |  |
+| proxyPool.routes.main.rules[0].matches[14].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[14].path.value | string | `"/v1/models"` |  |
+| proxyPool.routes.main.rules[0].matches[15].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[15].path.value | string | `"/models"` |  |
+| proxyPool.routes.main.rules[0].matches[16].path.type | string | `"RegularExpression"` |  |
+| proxyPool.routes.main.rules[0].matches[16].path.value | string | `"/v1/models/(.*):generateContent"` |  |
+| proxyPool.routes.main.rules[0].matches[17].path.type | string | `"RegularExpression"` |  |
+| proxyPool.routes.main.rules[0].matches[17].path.value | string | `"/models/(.*):generateContent"` |  |
+| proxyPool.routes.main.rules[0].matches[18].path.type | string | `"RegularExpression"` |  |
+| proxyPool.routes.main.rules[0].matches[18].path.value | string | `"/v1/models/(.*):streamGenerateContent"` |  |
+| proxyPool.routes.main.rules[0].matches[19].path.type | string | `"RegularExpression"` |  |
+| proxyPool.routes.main.rules[0].matches[19].path.value | string | `"/models/(.*):streamGenerateContent"` |  |
+| proxyPool.routes.main.rules[0].matches[1].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[1].path.value | string | `"/chat/completions"` |  |
+| proxyPool.routes.main.rules[0].matches[20].path.type | string | `"RegularExpression"` |  |
+| proxyPool.routes.main.rules[0].matches[20].path.value | string | `"/v1/models/(.*):countTokens"` |  |
+| proxyPool.routes.main.rules[0].matches[21].path.type | string | `"RegularExpression"` |  |
+| proxyPool.routes.main.rules[0].matches[21].path.value | string | `"/models/(.*):countTokens"` |  |
+| proxyPool.routes.main.rules[0].matches[22].path.type | string | `"RegularExpression"` |  |
+| proxyPool.routes.main.rules[0].matches[22].path.value | string | `"/v1beta/models/(.*):generateContent"` |  |
+| proxyPool.routes.main.rules[0].matches[23].path.type | string | `"RegularExpression"` |  |
+| proxyPool.routes.main.rules[0].matches[23].path.value | string | `"/v1beta/models/(.*):streamGenerateContent"` |  |
+| proxyPool.routes.main.rules[0].matches[2].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[2].path.value | string | `"/v1/completions"` |  |
+| proxyPool.routes.main.rules[0].matches[3].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[3].path.value | string | `"/completions"` |  |
+| proxyPool.routes.main.rules[0].matches[4].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[4].path.value | string | `"/v1/messages"` |  |
+| proxyPool.routes.main.rules[0].matches[5].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[5].path.value | string | `"/messages"` |  |
+| proxyPool.routes.main.rules[0].matches[6].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[6].path.value | string | `"/v1/messages/count_tokens"` |  |
+| proxyPool.routes.main.rules[0].matches[7].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[7].path.value | string | `"/messages/count_tokens"` |  |
+| proxyPool.routes.main.rules[0].matches[8].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[8].path.value | string | `"/v1/responses"` |  |
+| proxyPool.routes.main.rules[0].matches[9].path.type | string | `"Exact"` |  |
+| proxyPool.routes.main.rules[0].matches[9].path.value | string | `"/responses"` |  |
+| proxyPool.routes.main.rules[0].timeouts.backendRequest | string | `"600s"` | Timeout for waiting response from backend |
+| proxyPool.routes.main.rules[0].timeouts.request | string | `"605s"` | Timeout for request in total |
+| proxyPool.routes.main.securityPolicy | object | `{"name":"codemie-oidc","namespace":"security"}` | Enable default SecurityPolicy for route by default |
+| proxyPool.routes.main.securityPolicy.name | string | `"codemie-oidc"` | SecurityPolicy name |
+| proxyPool.routes.main.securityPolicy.namespace | string | `"security"` | Namespace name where SecurityPolicy deployed to create ReferenceGrant |
+| proxyPool.routes.main.trafficPolicy | object | `{"requestSize":900}` | Traffic Policy settings to apply to route |
+| proxyPool.routes.main.trafficPolicy.requestSize | int | `900` | Request size limit in Mi (value * 1024 * 1024) |
 | proxyPool.service.annotations | object | `{}` | proxy-pool service annotations |
 | proxyPool.service.port | int | `8080` | proxy-pool service port |
 | proxyPool.service.type | string | `"ClusterIP"` | proxy-pool service type |

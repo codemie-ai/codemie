@@ -517,6 +517,125 @@ metrics:
   # -- The port the metrics server listens on
   port: 9091
 
+gatewayAPI:
+  # -- Enable Gateway API usage
+  enabled: false
+  # -- The list of hostnames to serve requests for by HTTPRoute by default
+  hostnames: []
+  # -- Gateway to attach HTTPRoute to by default
+  gateway:
+    # -- Gateway name
+    name: codemie
+    # -- Gateway namespace
+    namespace: envoy-gateway-system
+    # -- Section name of the gateway listener
+    sectionName: https
+
+  routes:
+    # -- AI/Run API main route
+    main:
+      enabled: true
+      # -- The list of hostnames to serve requests for by HTTPRoute. Default list if not set.
+      hostnames: []
+      # -- Gateway reference. Default gateway if not set
+      gateway: {}
+      # -- Additional labels to assign to route
+      labels: {}
+      # -- HTTPRoute annotations
+      annotations: {}
+      # -- SecurityPolicy to use for route protection
+      securityPolicy:
+        # -- SecurityPolicy name
+        name: codemie-oidc
+        # -- Namespace name where SecurityPolicy deployed to create ReferenceGrant
+        namespace: security
+      extensionPolicy:
+        # -- EnvoyExtensionPolicy name
+        name: "rewrite-authorization-header"
+        # -- Namespace name where EnvoyExtensionPolicy deployed to create ReferenceGrant. Default - current namespace.
+        namespace: ""
+      # -- Traffic Policy settings to apply to route
+      trafficPolicy:
+        # -- Request size limit in Mi (value * 1024 * 1024)
+        requestSize: 900
+      # -- rules for HTTPRoute
+      rules:
+        - matches:
+            - path:
+                type: PathPrefix
+                value: "/code-assistant-api/"
+          filters:
+            - type: URLRewrite
+              urlRewrite:
+                path:
+                  type: ReplacePrefixMatch
+                  replacePrefixMatch: "/"
+          timeouts:
+            # -- Timeout for request in total
+            request: 605s
+            # -- Timeout for waiting response from backend
+            backendRequest: 600s
+
+    ## AI/Run API HTTPRoute configuration for Swagger
+    swagger:
+      enabled: true
+      rules:
+        - matches:
+            - path:
+                type: Exact
+                value: "/code-assistant-api/openapi.json"
+          filters:
+            - type: URLRewrite
+              urlRewrite:
+                path:
+                  type: ReplaceFullPath
+                  replaceFullPath: "/openapi.json"
+
+    ## AI/Run API HTTPRoute configuration for Webhooks
+    webhooks:
+      enabled: true
+      rules:
+        - matches:
+            - path:
+                type: PathPrefix
+                value: "/code-assistant-api/v1/webhooks/"
+          filters:
+            - type: URLRewrite
+              urlRewrite:
+                path:
+                  type: ReplacePrefixMatch
+                  replacePrefixMatch: "/v1/webhooks/"
+
+    ## AI/Run API HTTPRoute configuration for Callbacks index
+    callbacks-index:
+      enabled: true
+      rules:
+        - matches:
+            - path:
+                type: PathPrefix
+                value: "/code-assistant-api/v1/callbacks/index/"
+          filters:
+            - type: URLRewrite
+              urlRewrite:
+                path:
+                  type: ReplacePrefixMatch
+                  replacePrefixMatch: "/v1/callbacks/index/"
+
+    ## AI/Run API HTTPRoute configuration for OAuth Metadata
+    oauth-metadata:
+      enabled: true
+      rules:
+        - matches:
+            - path:
+                type: Exact
+                value: "/code-assistant-api/oauth/client-metadata.json"
+          filters:
+            - type: URLRewrite
+              urlRewrite:
+                path:
+                  type: ReplaceFullPath
+                  replaceFullPath: "/oauth/client-metadata.json"
+
 ## AI/Run API ingress configuration
 ingress:
   # -- Enable an ingress resource for the AI/Run API
@@ -640,6 +759,71 @@ dsPool:
     # -- Path routed to the ds-pool service (/v1/application/*/index* endpoints)
     path: "/code-assistant-api/v1/application/(.*)/index(.*)"
 
+  routes:
+    main:
+      enabled: false
+      securityPolicy:
+        # -- SecurityPolicy name
+        name: codemie-oidc
+        # -- Namespace name where SecurityPolicy deployed to create ReferenceGrant
+        namespace: security
+      extensionPolicy:
+        # -- EnvoyExtensionPolicy name
+        name: "rewrite-authorization-header"
+        # -- Namespace name where EnvoyExtensionPolicy deployed to create ReferenceGrant. Default - current namespace.
+        namespace: ""
+      # -- Traffic Policy settings to apply to route
+      trafficPolicy:
+        # -- Request size limit in Mi (value * 1024 * 1024)
+        requestSize: 900
+      # -- Rules to direct traffic to this route
+      rules:
+        - matches:
+            - path:
+                type: PathPrefix
+                value: "/code-assistant-api/v1/index/"
+          filters:
+            - type: URLRewrite
+              urlRewrite:
+                path:
+                  type: ReplacePrefixMatch
+                  replacePrefixMatch: "/v1/index/"
+          timeouts:
+            # -- Timeout for request in total
+            request: 605s
+            # -- Timeout for waiting response from backend
+            backendRequest: 600s
+    app:
+      enabled: false
+      securityPolicy:
+        # -- SecurityPolicy name
+        name: codemie-oidc
+        # -- Namespace name where SecurityPolicy deployed to create ReferenceGrant
+        namespace: security
+      extensionPolicy:
+        # -- EnvoyExtensionPolicy name
+        name: "rewrite-authorization-header"
+        # -- Namespace name where EnvoyExtensionPolicy deployed to create ReferenceGrant. Default - current namespace.
+        namespace: ""
+      # -- Traffic Policy settings to apply to route
+      trafficPolicy:
+        # -- Request size limit in Mi (value * 1024 * 1024)
+        requestSize: 900
+      # -- Rules to direct traffic to this route
+      rules:
+        - matches:
+            - path:
+                type: RegularExpression
+                value: '^/code-assistant-api/v1/application/(.*)/index(.*)$'
+          timeouts:
+            # -- Timeout for request in total
+            request: 605s
+            # -- Timeout for waiting response from backend
+            backendRequest: 600s
+      rewriteRules:
+        - pattern: '^/code-assistant-api/v1/application/(.*)/index(.*)$'
+          substitution: '/v1/application/\1/index/\2'
+
   ## HPA for the ds-pool workload
   hpa:
     # -- Enable the HorizontalPodAutoscaler for the ds-pool rollout/deployment
@@ -753,6 +937,111 @@ proxyPool:
       # v1beta Gemini endpoints
       - path: "/v1beta/models/(.*):generateContent"
       - path: "/v1beta/models/(.*):streamGenerateContent"
+
+  routes:
+    main:
+      enabled: false
+      # -- Enable default SecurityPolicy for route by default
+      securityPolicy:
+        # -- SecurityPolicy name
+        name: codemie-oidc
+        # -- Namespace name where SecurityPolicy deployed to create ReferenceGrant
+        namespace: security
+      extensionPolicy:
+        # -- EnvoyExtensionPolicy name
+        name: "rewrite-authorization-header"
+        # -- Namespace name where EnvoyExtensionPolicy deployed to create ReferenceGrant. Default - current namespace.
+        namespace: ""
+      # -- Traffic Policy settings to apply to route
+      trafficPolicy:
+        # -- Request size limit in Mi (value * 1024 * 1024)
+        requestSize: 900
+      rules:
+        - matches:
+            # Chat & Completions (OpenAI-compatible)
+            - path:
+                type: Exact
+                value: "/v1/chat/completions"
+            - path:
+                type: Exact
+                value: "/chat/completions"
+            - path:
+                type: Exact
+                value: "/v1/completions"
+            - path:
+                type: Exact
+                value: "/completions"
+            # Messages (Claude/Anthropic API)
+            - path:
+                type: Exact
+                value: "/v1/messages"
+            - path:
+                type: Exact
+                value: "/messages"
+            - path:
+                type: Exact
+                value: "/v1/messages/count_tokens"
+            - path:
+                type: Exact
+                value: "/messages/count_tokens"
+            # Responses (Codex CLI)
+            - path:
+                type: Exact
+                value: "/v1/responses"
+            - path:
+                type: Exact
+                value: "/responses"
+            # Embeddings
+            - path:
+                type: Exact
+                value: "/v1/embeddings"
+            - path:
+                type: Exact
+                value: "/embeddings"
+            # Health & Models
+            - path:
+                type: Exact
+                value: "/v1/health"
+            - path:
+                type: Exact
+                value: "/health"
+            - path:
+                type: Exact
+                value: "/v1/models"
+            - path:
+                type: Exact
+                value: "/models"
+            # Google/Gemini API endpoints
+            - path:
+                type: RegularExpression
+                value: "/v1/models/(.*):generateContent"
+            - path:
+                type: RegularExpression
+                value: "/models/(.*):generateContent"
+            - path:
+                type: RegularExpression
+                value: "/v1/models/(.*):streamGenerateContent"
+            - path:
+                type: RegularExpression
+                value: "/models/(.*):streamGenerateContent"
+            - path:
+                type: RegularExpression
+                value: "/v1/models/(.*):countTokens"
+            - path:
+                type: RegularExpression
+                value: "/models/(.*):countTokens"
+            # v1beta Gemini endpoints
+            - path:
+                type: RegularExpression
+                value: "/v1beta/models/(.*):generateContent"
+            - path:
+                type: RegularExpression
+                value: "/v1beta/models/(.*):streamGenerateContent"
+          timeouts:
+            # -- Timeout for request in total
+            request: 605s
+            # -- Timeout for waiting response from backend
+            backendRequest: 600s
 
   ## HPA for the proxy-pool workload
   hpa:
