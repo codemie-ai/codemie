@@ -473,6 +473,36 @@ async def test_get_active_member_rows_by_budget_id_returns_rows():
 
 
 @pytest.mark.asyncio
+async def test_get_active_by_budget_id_default_does_not_populate_existing():
+    repo = ProjectMemberBudgetAssignmentRepository()
+    session = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=result_mock)
+
+    await repo.get_active_by_budget_id(session, "budget-1")
+
+    stmt = session.execute.await_args.args[0]
+    assert not stmt.get_execution_options().get("populate_existing")
+
+
+@pytest.mark.asyncio
+async def test_get_active_by_budget_id_populate_existing_sets_execution_option():
+    repo = ProjectMemberBudgetAssignmentRepository()
+    session = AsyncMock()
+    rows = [SimpleNamespace(user_id="user-1")]
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = rows
+    session.execute = AsyncMock(return_value=result_mock)
+
+    result = await repo.get_active_by_budget_id(session, "budget-1", populate_existing=True)
+
+    stmt = session.execute.await_args.args[0]
+    assert stmt.get_execution_options().get("populate_existing") is True
+    assert result == rows
+
+
+@pytest.mark.asyncio
 async def test_update_provider_metadata_updates_row_and_budget_reset_at():
     repo = ProjectMemberBudgetAssignmentRepository()
     session = AsyncMock()

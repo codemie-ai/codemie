@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-10-26T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 10,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Router endpoint, request/response models, a new BulkMemberOverrideRunner (4 phases: check, write, recheck, rebalance), ProjectBudgetService wiring and a repository change; reuses existing private service helpers (_validate_member_amounts, _equal_amounts_with_fixed_overrides, _ensure_override_child_budget, rebalance_project_budget), so no new cross-system abstraction." },
+    { "dimension": "technical_risk", "reason": "Multi-budget transactional write with an in-transaction recheck (populate_existing refresh) and one rebalance per touched budget, which reaches the LiteLLM-backed budget path; per-item partial-failure semantics (400/404 results) and ordering are subtle. A single-member override exists as precedent but does not cover batching. Authorization reuses the existing maintainer_access_only guard, so no auth change." },
+    { "dimension": "file_change_estimate", "reason": "10 files changed (5 source, 4 test, 1 OpenAPI baseline) across src/ and tests/ in several subdirectories; 1 new source file and 1 new test file." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

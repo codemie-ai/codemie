@@ -15,9 +15,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, SerializerFunctionWrapHandler, model_serializer
 
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory
 
@@ -110,6 +110,39 @@ class OverrideMemberAllocationRequest(BaseModel):
     allocated_max_budget: float = Field(ge=0)
     allocated_soft_budget: float = Field(ge=0)
     override_reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class BulkMemberOverrideItem(BaseModel):
+    budget_id: str
+    user_id: str
+    allocated_max_budget: float = Field(ge=0)
+    allocated_soft_budget: float = Field(ge=0)
+    override_reason: str | None = Field(default=None, max_length=500)
+
+
+class BulkMemberOverrideRequest(BaseModel):
+    items: list[BulkMemberOverrideItem] = Field(min_length=1, max_length=1000)
+
+
+class BulkMemberOverrideResult(BaseModel):
+    budget_id: str
+    user_id: str
+    status: Literal["ok", "failed"]
+    code: int | None = None
+    message: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_failure_fields(self, handler: SerializerFunctionWrapHandler):
+        data = handler(self)
+        for key in ("code", "message"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
+
+
+class BulkMemberOverrideResponse(BaseModel):
+    results: list[BulkMemberOverrideResult]
+    budgets: list[ProjectBudgetResponse]
 
 
 class ProjectBudgetMembersResponse(BaseModel):

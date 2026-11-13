@@ -30,6 +30,9 @@ from fastapi.testclient import TestClient
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.main import extended_http_exception_handler
 from codemie.rest_api.models.project_budget import (
+    BulkMemberOverrideItem,
+    BulkMemberOverrideRequest,
+    BulkMemberOverrideResult,
     OverrideMemberAllocationRequest,
     ProjectBudgetResponse,
 )
@@ -39,6 +42,7 @@ from codemie.rest_api.routers.project_budget_router import (
     _build_project_budget_response,
     _can_manage_project_budget_members,
     _ensure_can_manage_project_budget_members,
+    bulk_override_member_allocations,
     clear_member_override,
     group_router,
     list_project_budgets,
@@ -1160,3 +1164,245 @@ def test_router_endpoint_requires_auth_before_budget_management_check(budget_man
         response = client.get("/v1/admin/project-budgets")
 
     assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# bulk member override
+# ---------------------------------------------------------------------------
+
+_BULK_PATH = "/v1/admin/project-budgets/member-overrides/bulk"
+
+
+def _bulk_item(budget_id="b-1", user_id="u-1", max_budget=10.0, soft_budget=5.0):
+    return BulkMemberOverrideItem(
+        budget_id=budget_id,
+        user_id=user_id,
+        allocated_max_budget=max_budget,
+        allocated_soft_budget=soft_budget,
+    )
+
+
+def _bulk_ok(item):
+    return BulkMemberOverrideResult(budget_id=item.budget_id, user_id=item.user_id, status="ok")
+
+
+def _bulk_failed(item, code=400, message="bad"):
+    return BulkMemberOverrideResult(
+        budget_id=item.budget_id, user_id=item.user_id, status="failed", code=code, message=message
+    )
+
+
+def _bulk_budget_lookup() -> AsyncMock:
+    async def _lookup(session, budget_id):
+        budget = SimpleNamespace(
+            budget_id=budget_id,
+            budget_category="cli",
+            budget_type="project",
+            name="CLI Budget",
+            description=None,
+            soft_budget=20.0,
+            max_budget=25.0,
+            budget_duration="30d",
+            budget_reset_at=None,
+            is_active=True,
+            provider_metadata={},
+            created_by="admin-1",
+            created_at=datetime(2026, 4, 23, tzinfo=UTC),
+            updated_at=None,
+        )
+        return budget, SimpleNamespace(project_name="P", allocation_mode="equal"), []
+
+    return AsyncMock(side_effect=_lookup)
+
+
+def _bulk_project_lookup(mapping: dict[str, str | Exception] | None = None) -> AsyncMock:
+    mapping = mapping or {}
+
+    async def _lookup(session, budget_id):
+        value = mapping.get(budget_id, "P")
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    return AsyncMock(side_effect=_lookup)
+
+
+def _patch_bulk(session, service_mock, project_lookup=None, budget_lookup=None):
+    stack = ExitStack()
+    stack.enter_context(patch(f"{_ROUTER_PATH}.get_async_session", side_effect=lambda: mock_session_ctx(session)))
+    stack.enter_context(
+        patch(f"{_SERVICE_PATH}.get_project_budget_project_name", new=project_lookup or _bulk_project_lookup())
+    )
+    stack.enter_context(patch(f"{_SERVICE_PATH}.bulk_override_member_allocations", new=service_mock))
+    stack.enter_context(patch(f"{_SERVICE_PATH}.get_project_budget", new=budget_lookup or _bulk_budget_lookup()))
+    stack.enter_context(patch(f"{_ROUTER_PATH}.SettingsService.get_enforce_member_spend_limits", return_value=True))
+    return stack
+
+
+@pytest.mark.asyncio
+async def test_bulk_returns_results_in_input_order_and_touched_budgets():
+    items = [_bulk_item("b-1", "u-1"), _bulk_item("b-3", "u-9"), _bulk_item("b-2", "u-2"), _bulk_item("b-1", "u-3")]
+    service_mock = AsyncMock(
+        return_value={0: _bulk_ok(items[0]), 1: _bulk_failed(items[1]), 2: _bulk_ok(items[2]), 3: _bulk_ok(items[3])}
+    )
+    budget_lookup = _bulk_budget_lookup()
+
+    with _patch_bulk(AsyncMock(), service_mock, budget_lookup=budget_lookup):
+        response = await bulk_override_member_allocations(BulkMemberOverrideRequest(items=items), maintainer_user())
+
+    assert [(r.budget_id, r.user_id, r.status) for r in response.results] == [
+        ("b-1", "u-1", "ok"),
+        ("b-3", "u-9", "failed"),
+        ("b-2", "u-2", "ok"),
+        ("b-1", "u-3", "ok"),
+    ]
+    assert [b.budget_id for b in response.budgets] == ["b-1", "b-2"]
+    assert [call.args[1] for call in budget_lookup.await_args_list] == ["b-1", "b-2"]
+    pairs = service_mock.await_args.args[1]
+    assert [(index, item.user_id) for index, item in pairs] == [(0, "u-1"), (1, "u-9"), (2, "u-2"), (3, "u-3")]
+    assert service_mock.await_args.args[2] == maintainer_user().id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_code", [400, 404])
+async def test_bulk_budgets_follow_first_appearance_when_first_item_fails(failure_code):
+    items = [_bulk_item("b-1", "u-1"), _bulk_item("b-2", "u-2"), _bulk_item("b-1", "u-3"), _bulk_item("b-3", "u-4")]
+    service_mock = AsyncMock(
+        return_value={
+            0: _bulk_failed(items[0], code=failure_code),
+            1: _bulk_ok(items[1]),
+            2: _bulk_ok(items[2]),
+            3: _bulk_failed(items[3]),
+        }
+    )
+    budget_lookup = _bulk_budget_lookup()
+
+    with _patch_bulk(AsyncMock(), service_mock, budget_lookup=budget_lookup):
+        response = await bulk_override_member_allocations(BulkMemberOverrideRequest(items=items), maintainer_user())
+
+    assert [(r.budget_id, r.user_id, r.status) for r in response.results] == [
+        ("b-1", "u-1", "failed"),
+        ("b-2", "u-2", "ok"),
+        ("b-1", "u-3", "ok"),
+        ("b-3", "u-4", "failed"),
+    ]
+    assert response.results[0].code == failure_code
+    assert [b.budget_id for b in response.budgets] == ["b-1", "b-2"]
+    assert [call.args[1] for call in budget_lookup.await_args_list] == ["b-1", "b-2"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_permission_denied_returns_403_and_service_not_called():
+    items = [_bulk_item("b-1", "u-1"), _bulk_item("b-2", "u-2")]
+    service_mock = AsyncMock()
+    session = AsyncMock()
+    project_lookup = _bulk_project_lookup({"b-1": "P", "b-2": "Q"})
+
+    with _patch_bulk(session, service_mock, project_lookup=project_lookup):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await bulk_override_member_allocations(BulkMemberOverrideRequest(items=items), project_admin_user(["P"]))
+
+    assert exc_info.value.code == 403
+    service_mock.assert_not_awaited()
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bulk_missing_budget_items_failed_404_others_processed():
+    items = [_bulk_item("gone", "u-1"), _bulk_item("b-1", "u-2"), _bulk_item("gone", "u-3")]
+    service_mock = AsyncMock(return_value={1: _bulk_ok(items[1])})
+    project_lookup = _bulk_project_lookup(
+        {"gone": ExtendedHTTPException(code=404, message="Project budget not found: gone")}
+    )
+
+    with _patch_bulk(AsyncMock(), service_mock, project_lookup=project_lookup):
+        response = await bulk_override_member_allocations(BulkMemberOverrideRequest(items=items), maintainer_user())
+
+    assert [(r.user_id, r.status, r.code) for r in response.results] == [
+        ("u-1", "failed", 404),
+        ("u-2", "ok", None),
+        ("u-3", "failed", 404),
+    ]
+    assert response.results[0].message == "Project budget not found: gone"
+    pairs = service_mock.await_args.args[1]
+    assert [(index, item.user_id) for index, item in pairs] == [(1, "u-2")]
+    assert [b.budget_id for b in response.budgets] == ["b-1"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_all_failed_returns_200_empty_budgets():
+    items = [_bulk_item("b-1", "u-1"), _bulk_item("b-1", "u-2")]
+    service_mock = AsyncMock(return_value={0: _bulk_failed(items[0]), 1: _bulk_failed(items[1], 404, "missing")})
+    budget_lookup = _bulk_budget_lookup()
+
+    with _patch_bulk(AsyncMock(), service_mock, budget_lookup=budget_lookup):
+        response = await bulk_override_member_allocations(BulkMemberOverrideRequest(items=items), maintainer_user())
+
+    assert [r.status for r in response.results] == ["failed", "failed"]
+    assert response.budgets == []
+    budget_lookup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bulk_commits_once():
+    items = [_bulk_item("b-1", "u-1"), _bulk_item("b-2", "u-2")]
+    service_mock = AsyncMock(return_value={0: _bulk_ok(items[0]), 1: _bulk_ok(items[1])})
+    session = AsyncMock()
+
+    with _patch_bulk(session, service_mock):
+        await bulk_override_member_allocations(BulkMemberOverrideRequest(items=items), maintainer_user())
+
+    session.commit.assert_awaited_once()
+    session.rollback.assert_not_awaited()
+
+
+@pytest.fixture
+def send_bulk_request():
+    app = FastAPI()
+    app.include_router(router)
+    app.add_exception_handler(ExtendedHTTPException, extended_http_exception_handler)
+    client = TestClient(app)
+
+    def send(body: dict, user: User | None = None):
+        app.dependency_overrides[authenticate] = lambda: user or maintainer_user()
+        return client.post(_BULK_PATH, json=body)
+
+    return send
+
+
+def _bulk_body(count: int = 1, **overrides) -> dict:
+    item = {"budget_id": "b-1", "user_id": "u-1", "allocated_max_budget": 10.0, "allocated_soft_budget": 5.0}
+    item.update(overrides)
+    return {"items": [{**item, "user_id": f"u-{i}"} for i in range(count)]}
+
+
+def test_bulk_http_returns_results_and_budgets(send_bulk_request):
+    item = _bulk_item("b-1", "u-0")
+    service_mock = AsyncMock(return_value={0: _bulk_ok(item)})
+
+    with _patch_bulk(AsyncMock(), service_mock):
+        response = send_bulk_request(_bulk_body())
+
+    assert response.status_code == 200
+    assert response.json()["results"] == [{"budget_id": "b-1", "user_id": "u-0", "status": "ok"}]
+    assert [b["budget_id"] for b in response.json()["budgets"]] == ["b-1"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"items": []},
+        _bulk_body(1001),
+        _bulk_body(1, allocated_max_budget=-1.0),
+        _bulk_body(1, allocated_soft_budget=-1.0),
+    ],
+    ids=["zero-items", "over-1000-items", "negative-max", "negative-soft"],
+)
+def test_bulk_422_for_zero_items_over_1000_and_negative_amounts(send_bulk_request, body):
+    service_mock = AsyncMock()
+
+    with _patch_bulk(AsyncMock(), service_mock):
+        response = send_bulk_request(body)
+
+    assert response.status_code == 422
+    service_mock.assert_not_awaited()

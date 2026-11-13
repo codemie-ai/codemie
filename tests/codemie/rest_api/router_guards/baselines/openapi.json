@@ -5376,6 +5376,139 @@
         "title": "BulkAssignmentUserItem",
         "type": "object"
       },
+      "BulkMemberOverrideItem": {
+        "properties": {
+          "allocated_max_budget": {
+            "minimum": 0.0,
+            "title": "Allocated Max Budget",
+            "type": "number"
+          },
+          "allocated_soft_budget": {
+            "minimum": 0.0,
+            "title": "Allocated Soft Budget",
+            "type": "number"
+          },
+          "budget_id": {
+            "title": "Budget Id",
+            "type": "string"
+          },
+          "override_reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Reason"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "budget_id",
+          "user_id",
+          "allocated_max_budget",
+          "allocated_soft_budget"
+        ],
+        "title": "BulkMemberOverrideItem",
+        "type": "object"
+      },
+      "BulkMemberOverrideRequest": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BulkMemberOverrideItem"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "BulkMemberOverrideRequest",
+        "type": "object"
+      },
+      "BulkMemberOverrideResponse": {
+        "properties": {
+          "budgets": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectBudgetResponse"
+            },
+            "title": "Budgets",
+            "type": "array"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/BulkMemberOverrideResult"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results",
+          "budgets"
+        ],
+        "title": "BulkMemberOverrideResponse",
+        "type": "object"
+      },
+      "BulkMemberOverrideResult": {
+        "properties": {
+          "budget_id": {
+            "title": "Budget Id",
+            "type": "string"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "budget_id",
+          "user_id",
+          "status"
+        ],
+        "title": "BulkMemberOverrideResult",
+        "type": "object"
+      },
       "BulkUserBudgetSetRequest": {
         "description": "Request body for bulk-setting budget assignments on multiple users.\n\nMirrors UserBudgetAssignRequest but for N users at once.\nPass null as the budget_id value to clear a category assignment.",
         "properties": {
@@ -41343,6 +41476,56 @@
           }
         ],
         "summary": "Create Project Budget",
+        "tags": [
+          "Project Budgets"
+        ]
+      }
+    },
+    "/v1/admin/project-budgets/member-overrides/bulk": {
+      "post": {
+        "description": "Apply many member allocation overrides, rebalancing each touched budget once.",
+        "operationId": "bulk_override_member_allocations_v1_admin_project_budgets_member_overrides_bulk_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkMemberOverrideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkMemberOverrideResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Bulk Override Member Allocations",
         "tags": [
           "Project Budgets"
         ]

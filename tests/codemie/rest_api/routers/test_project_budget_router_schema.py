@@ -14,7 +14,14 @@
 
 """Schema validation tests for project budget router models."""
 
+import pytest
+from pydantic import ValidationError
+
 from codemie.rest_api.models.project_budget import (
+    BulkMemberOverrideItem,
+    BulkMemberOverrideRequest,
+    BulkMemberOverrideResponse,
+    BulkMemberOverrideResult,
     CategoryBudgetSpec,
     CategoryBudgetSpecUpdate,
 )
@@ -51,3 +58,73 @@ class TestCategoryBudgetSpecUpdateValidation:
         """CategoryBudgetSpecUpdate already accepts pct=0 (no change needed)."""
         spec = CategoryBudgetSpecUpdate(pct=0.0, soft_budget=None)
         assert spec.pct == 0.0
+
+
+def _bulk_item(**overrides):
+    data = {"budget_id": "b-1", "user_id": "u-1", "allocated_max_budget": 10.0, "allocated_soft_budget": 5.0}
+    data.update(overrides)
+    return data
+
+
+class TestBulkMemberOverrideRequestValidation:
+    def test_bulk_request_rejects_empty_items(self):
+        with pytest.raises(ValidationError):
+            BulkMemberOverrideRequest(items=[])
+
+    def test_bulk_request_rejects_1001_items(self):
+        with pytest.raises(ValidationError):
+            BulkMemberOverrideRequest(items=[_bulk_item(user_id=f"u-{i}") for i in range(1001)])
+
+    def test_bulk_request_rejects_negative_amounts(self):
+        with pytest.raises(ValidationError):
+            BulkMemberOverrideRequest(items=[_bulk_item(allocated_max_budget=-1.0)])
+        with pytest.raises(ValidationError):
+            BulkMemberOverrideRequest(items=[_bulk_item(allocated_soft_budget=-0.5)])
+
+    def test_bulk_request_rejects_override_reason_over_500_chars(self):
+        with pytest.raises(ValidationError):
+            BulkMemberOverrideRequest(items=[_bulk_item(override_reason="x" * 501)])
+
+    def test_bulk_request_accepts_1000_items_with_null_reason(self):
+        request = BulkMemberOverrideRequest(items=[_bulk_item(user_id=f"u-{i}") for i in range(1000)])
+
+        assert len(request.items) == 1000
+        assert all(isinstance(item, BulkMemberOverrideItem) for item in request.items)
+        assert request.items[0].override_reason is None
+
+
+class TestBulkMemberOverrideResponseModels:
+    def test_result_defaults_code_and_message_to_none(self):
+        result = BulkMemberOverrideResult(budget_id="b-1", user_id="u-1", status="ok")
+
+        assert result.code is None
+        assert result.message is None
+
+    def test_ok_result_serializes_without_code_and_message(self):
+        result = BulkMemberOverrideResult(budget_id="b-1", user_id="u-1", status="ok")
+
+        assert result.model_dump(mode="json") == {"budget_id": "b-1", "user_id": "u-1", "status": "ok"}
+
+    def test_failed_result_serializes_code_and_message(self):
+        result = BulkMemberOverrideResult(budget_id="b-1", user_id="u-1", status="failed", code=404, message="gone")
+
+        assert result.model_dump(mode="json") == {
+            "budget_id": "b-1",
+            "user_id": "u-1",
+            "status": "failed",
+            "code": 404,
+            "message": "gone",
+        }
+
+    def test_result_rejects_unknown_status(self):
+        with pytest.raises(ValidationError):
+            BulkMemberOverrideResult(budget_id="b-1", user_id="u-1", status="maybe")
+
+    def test_response_holds_results_and_budgets(self):
+        response = BulkMemberOverrideResponse(
+            results=[BulkMemberOverrideResult(budget_id="b-1", user_id="u-1", status="failed", code=404)],
+            budgets=[],
+        )
+
+        assert response.results[0].code == 404
+        assert response.budgets == []

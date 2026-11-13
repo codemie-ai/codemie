@@ -609,12 +609,15 @@ class ProjectMemberBudgetAssignmentRepository:
         self,
         session: AsyncSession,
         budget_id: str,
+        populate_existing: bool = False,
     ) -> list[ProjectMemberBudgetAssignment]:
         """Return all active member allocations for the given project_budget_id."""
         stmt = select(ProjectMemberBudgetAssignment).where(
             ProjectMemberBudgetAssignment.project_budget_id == budget_id,
             ProjectMemberBudgetAssignment.deleted_at.is_(None),
         )
+        if populate_existing:
+            stmt = stmt.execution_options(populate_existing=True)
         result = await session.execute(stmt)
         return list(result.scalars().all())
 

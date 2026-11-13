@@ -70,6 +70,7 @@ from codemie.service.activity.activity_models import (
     BudgetManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.service.budget.bulk_member_override import BulkMemberOverrideRunner
 from codemie.service.budget.provider import (
     BudgetEnforcementProvider,
     BudgetProviderMemberState,
@@ -80,6 +81,8 @@ from codemie.service.budget.provider_registry import get_active_provider, is_syn
 
 if TYPE_CHECKING:
     from codemie.rest_api.models.project_budget import (
+        BulkMemberOverrideItem,
+        BulkMemberOverrideResult,
         CategoryBudgetSpec,
         CategoryBudgetSpecUpdate,
         ProjectBudgetCreateRequest,
@@ -1798,6 +1801,15 @@ class ProjectBudgetService:
             f"actor_id={actor_id!r} domain=budget_management"
         )
         return allocation
+
+    async def bulk_override_member_allocations(
+        self,
+        session: AsyncSession,
+        items: list[tuple[int, BulkMemberOverrideItem]],
+        actor_id: str,
+    ) -> dict[int, BulkMemberOverrideResult]:
+        """Apply member overrides across budgets with one rebalance per touched budget."""
+        return await BulkMemberOverrideRunner(self).run(session, items, actor_id)
 
     async def clear_member_override(
         self,

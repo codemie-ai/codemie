@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any, NoReturn, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codemie.clients.postgres import get_async_session
@@ -27,6 +27,9 @@ from codemie.repository.project_budget_repository import (
     project_member_budget_assignment_repository,
 )
 from codemie.rest_api.models.project_budget import (
+    BulkMemberOverrideRequest,
+    BulkMemberOverrideResponse,
+    BulkMemberOverrideResult,
     CategoryBudgetDetailResponse,
     OverrideMemberAllocationRequest,
     PaginatedProjectBudgetGroupListResponse,
@@ -285,6 +288,58 @@ async def list_project_budgets(
         )
         items = [await _load_and_build_response(session, b) for b in budgets]
     return PaginatedProjectBudgetListResponse(items=items, total=total, page=page, per_page=per_page)
+
+
+@router.post("/member-overrides/bulk", response_model=BulkMemberOverrideResponse)
+async def bulk_override_member_allocations(
+    payload: BulkMemberOverrideRequest,
+    user: User = Depends(authenticate),
+) -> BulkMemberOverrideResponse:
+    """Apply many member allocation overrides, rebalancing each touched budget once."""
+    _require_budgeting_enabled()
+    items = payload.items
+    async with get_async_session() as session:
+        missing: dict[str, str] = {}
+        for budget_id in dict.fromkeys(item.budget_id for item in items):
+            try:
+                project_name = await project_budget_service.get_project_budget_project_name(session, budget_id)
+            except ExtendedHTTPException as exc:
+                if exc.code != status.HTTP_404_NOT_FOUND:
+                    raise
+                missing[budget_id] = exc.message
+                continue
+            _ensure_can_manage_project_budget_members(user, project_name, budget_id)
+
+        results: dict[int, BulkMemberOverrideResult] = {}
+        pending = []
+        for index, item in enumerate(items):
+            if item.budget_id in missing:
+                results[index] = BulkMemberOverrideResult(
+                    budget_id=item.budget_id,
+                    user_id=item.user_id,
+                    status="failed",
+                    code=404,
+                    message=missing[item.budget_id],
+                )
+            else:
+                pending.append((index, item))
+
+        if pending:
+            results.update(await project_budget_service.bulk_override_member_allocations(session, pending, user.id))
+        await session.commit()
+
+        ordered = [results[index] for index in range(len(items))]
+        successful_budget_ids = {r.budget_id for r in ordered if r.status == "ok"}
+        touched = [
+            budget_id
+            for budget_id in dict.fromkeys(item.budget_id for item in items)
+            if budget_id in successful_budget_ids
+        ]
+        budgets = []
+        for budget_id in touched:
+            budget, assignment, allocations = await project_budget_service.get_project_budget(session, budget_id)
+            budgets.append(_build_project_budget_response(budget, assignment, allocations))
+    return BulkMemberOverrideResponse(results=ordered, budgets=budgets)
 
 
 @router.get("/{budget_id}", response_model=ProjectBudgetResponse)
@@ -621,7 +676,7 @@ async def reset_project_budget_group(
 @group_router.post('/{group_id}/rebalance', response_model=ProjectBudgetGroupResponse)
 async def rebalance_project_budget_group(
     group_id: str,
-    user: User = Depends(authenticate),
+    user: User = Depends(authenticate),  # noqa: B008 - FastAPI DI idiom, used throughout this router
     _: None = Depends(maintainer_access_only),
 ):
     """Rebalance member allocations for all category budgets in a group."""
