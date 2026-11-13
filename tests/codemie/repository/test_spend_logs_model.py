@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The 31-column shape is a published contract, so it is guarded mechanically.
+"""The 34-column shape is a published contract, so it is guarded mechanically.
 
-Another team writes this table against contract v2.1. A column renamed, retyped, dropped or
+Another team writes this table against contract v2.1 and its later columns. A column renamed, retyped, dropped or
 made nullable here is a contract break that no other test in this repository would notice, so
 the whole shape is asserted literally rather than derived from the model - a test that derives
 its expectation from the thing under test proves only that the thing agrees with itself.
@@ -61,6 +61,9 @@ CONTRACT: tuple[tuple[str, str, bool], ...] = (
     ("codemie_run_id", "TEXT", True),
     ("codemie_workflow_id", "TEXT", True),
     ("codemie_origin", "TEXT", True),
+    ("codemie_repository", "TEXT", True),
+    ("codemie_branch", "TEXT", True),
+    ("codemie_client", "TEXT", True),
     ("attr_source", "TEXT", False),
     ("attr_form", "TEXT", False),
     ("attr_project", "TEXT", True),
@@ -80,9 +83,9 @@ class TestTheContractShape:
         assert SPEND_LOGS_TABLE == "litellm_spend_logs"
         assert TABLE.name == "litellm_spend_logs"
 
-    def test_there_are_exactly_31_columns(self):
-        assert len(TABLE.columns) == 31
-        assert len(CONTRACT) == 31
+    def test_there_are_exactly_34_columns(self):
+        assert len(TABLE.columns) == 34
+        assert len(CONTRACT) == 34
 
     def test_every_column_matches_the_contract_exactly(self):
         actual = tuple((c.name, str(c.type.compile(dialect=PG)).upper(), c.nullable) for c in TABLE.columns)
@@ -311,6 +314,12 @@ class TestTheHourlyProjectionMirrorsItsMigration:
     def test_the_projected_dimensions_are_the_migrations(self):
         """Projected reads group by these names; one the migration lacks is a column that does not exist."""
         assert PROJECTED_DIMENSIONS == _hourly_migration().DIMENSIONS
+
+    def test_repository_branch_and_client_are_not_projected(self):
+        """Branch names would multiply the hourly buckets; reads by location or client go to raw rows."""
+        assert "codemie_repository" not in PROJECTED_DIMENSIONS
+        assert "codemie_branch" not in PROJECTED_DIMENSIONS
+        assert "codemie_client" not in PROJECTED_DIMENSIONS
 
     def test_only_the_key_index_is_unique(self):
         """A unique read index would reject legitimate buckets, e.g. two categories of one user in one hour."""

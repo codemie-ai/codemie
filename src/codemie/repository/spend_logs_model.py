@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The `litellm_spend_logs` table model - 31 columns, a published contract.
+"""The `litellm_spend_logs` table model - 34 columns, a published contract.
 
-**The logical schema is not this module's to change.** These 31 columns, their types and their
-nullability are contract v2.1 plus the two cache-token columns of migration a8f23cf09c37, handed to
-the team that writes the table and already being built against. A column added, renamed, retyped or
-made nullable here is a contract break, not a refactor - `codemie_origin` is here because the
-contract was bumped to carry it, not because this module grew a column.
+**The logical schema is not this module's to change.** These 34 columns, their types and their
+nullability are contract v2.1 plus the two cache-token columns of migration a8f23cf09c37 and the
+three location and client columns of migration c6dee3b8b5f2, handed to the team that writes the
+table and already being built against. A column added, renamed, retyped or made nullable here is a
+contract break, not a refactor - `codemie_origin` and the location and client columns are here
+because the contract was bumped to carry them, not because this module grew a column.
 
 **Two places this deliberately departs from the surrounding code, both for reasons that would
 otherwise corrupt money:**
@@ -145,6 +146,17 @@ class LiteLLMSpendLog(SQLModel, table=True):
     #: verbatim rather than validating it, so the vocabulary can grow without a contract bump and
     #: an unknown value stays visible as a defect instead of being mapped into a known one.
     codemie_origin: str | None = Field(default=None, sa_column=Column(Text))
+
+    #: Where a proxied request was made: the decoded `X-CodeMie-Repository` and `X-CodeMie-Branch`
+    #: headers, as the client reported them. The CLI sends them; a column is NULL when the request
+    #: sent that header empty or not at all, which includes every backend call and every row before
+    #: the stamping release. Evidence, not identity: a modified client can report anything here
+    #: without changing which budget paid. Not a CLI marker - classify CLI traffic by `codemie_origin`.
+    codemie_repository: str | None = Field(default=None, sa_column=Column(Text))
+    codemie_branch: str | None = Field(default=None, sa_column=Column(Text))
+    #: The CLI client that made a proxied request (`X-CodeMie-Client`, e.g. `codemie-claude`), as it
+    #: reported itself. NULL when none was reported, including a client that called itself `unknown`.
+    codemie_client: str | None = Field(default=None, sa_column=Column(Text))
 
     # --- attribution ---------------------------------------------------------------
     #: Provenance: `explicit` | `parsed` | `none`. A consumer never branches on

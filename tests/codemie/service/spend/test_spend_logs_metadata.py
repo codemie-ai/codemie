@@ -177,6 +177,74 @@ class TestTheOriginKeyIsValidatedOnItsOwn:
         assert payload["codemie_origin"] == "cli"
 
 
+class TestTheLocationKeysAreValidatedOnTheirOwn:
+    """The fifth group: where a CLI request was made. Client-reported, so stored as sent or not at all."""
+
+    def test_both_are_carried_verbatim(self):
+        payload = build_spend_logs_metadata(**ALL_SIX, repository="Acme/API", branch="feature/ABC-123")
+        assert payload["codemie_repository"] == "Acme/API"
+        assert payload["codemie_branch"] == "feature/ABC-123"
+
+    @pytest.mark.parametrize("absent", [None, ""])
+    def test_an_absent_value_sends_no_key(self, absent):
+        payload = build_spend_logs_metadata(**ALL_SIX, repository=absent, branch=absent)
+        assert payload == build_spend_logs_metadata(**ALL_SIX)
+
+    def test_a_branch_travels_without_a_repository(self):
+        payload = build_spend_logs_metadata(**ALL_SIX, branch="main")
+        assert payload["codemie_branch"] == "main"
+        assert "codemie_repository" not in payload
+
+    def test_a_repository_travels_without_a_branch(self):
+        payload = build_spend_logs_metadata(**ALL_SIX, repository="acme/api")
+        assert payload["codemie_repository"] == "acme/api"
+        assert "codemie_branch" not in payload
+
+    def test_a_non_ascii_branch_is_escaped_and_survives_the_parse(self):
+        header = spend_logs_metadata_header(**ALL_SIX, branch="feature/ünïcode")
+        assert header[SPEND_LOGS_METADATA_HEADER].isascii()
+        assert payload_of(header)["codemie_branch"] == "feature/ünïcode"
+
+    def test_a_value_of_256_characters_is_carried(self):
+        assert build_spend_logs_metadata(**ALL_SIX, branch="b" * 256)["codemie_branch"] == "b" * 256
+
+    def test_a_longer_value_is_dropped_rather_than_cut(self):
+        payload = build_spend_logs_metadata(**ALL_SIX, repository="r" * 257, branch="main")
+        assert "codemie_repository" not in payload
+        assert payload["codemie_branch"] == "main"
+
+    def test_neither_rescues_nor_breaks_the_identity_triple(self):
+        payload = build_spend_logs_metadata(
+            **{**ALL_SIX, "user_id": "not-a-uuid"}, repository="acme/api", branch="main"
+        )
+        assert payload["codemie_repository"] == "acme/api"
+        assert "codemie_user_id" not in payload
+        assert payload["codemie_request_id"] == "req-1"
+
+
+class TestTheClientKeyIsValidatedOnItsOwn:
+    """The sixth group: which CLI client made the request, as the client reported it."""
+
+    def test_a_client_is_carried_verbatim(self):
+        assert build_spend_logs_metadata(**ALL_SIX, client="codemie-claude")["codemie_client"] == "codemie-claude"
+
+    @pytest.mark.parametrize("absent", [None, ""])
+    def test_an_absent_client_sends_no_key(self, absent):
+        assert build_spend_logs_metadata(**ALL_SIX, client=absent) == build_spend_logs_metadata(**ALL_SIX)
+
+    def test_a_client_of_64_characters_is_carried(self):
+        assert build_spend_logs_metadata(**ALL_SIX, client="c" * 64)["codemie_client"] == "c" * 64
+
+    def test_a_longer_client_is_dropped_and_costs_nothing_else(self):
+        payload = build_spend_logs_metadata(
+            **ALL_SIX, client="c" * 65, origin=TrafficOrigin.CLI.value, repository="acme/api"
+        )
+        assert "codemie_client" not in payload
+        assert payload["codemie_origin"] == "cli"
+        assert payload["codemie_repository"] == "acme/api"
+        assert payload["codemie_user_id"] == USER
+
+
 class TestTheHeaderStaysSmall:
     """AD-21 (amendment 2026-09-07): the header's size is measured, not extrapolated, and this pins it.
 
@@ -200,3 +268,22 @@ class TestTheHeaderStaysSmall:
 
         wire_line = f"{SPEND_LOGS_METADATA_HEADER}: {header[SPEND_LOGS_METADATA_HEADER]}\r\n".encode("ascii")
         assert len(wire_line) < 1024
+
+    def test_the_longest_allowed_location_values_stay_under_the_header_line_limit(self):
+        """Client text is unbounded and every non-ASCII character is escaped to six bytes."""
+        header = spend_logs_metadata_header(
+            request_id=str(uuid.uuid4()),
+            run_id=str(uuid.uuid4()),
+            user_id=USER,
+            category=max((c.value for c in BudgetCategory), key=len),
+            project="p" * 50,
+            workflow_id=str(uuid.uuid4()),
+            origin=max((o.value for o in TrafficOrigin), key=len),
+            repository="ü" * 256,
+            branch="ü" * 256,
+            client="ü" * 64,
+        )
+        assert len(payload_of(header)) == 10
+
+        wire_line = f"{SPEND_LOGS_METADATA_HEADER}: {header[SPEND_LOGS_METADATA_HEADER]}\r\n".encode("ascii")
+        assert len(wire_line) < 8192

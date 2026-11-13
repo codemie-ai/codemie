@@ -965,3 +965,57 @@ class TestTheProxyNamesTheClientTypeRegardlessOfWhoPaid:
         payload = self._proxy_payload({proxy_router.REQUEST_ID: "req-1", proxy_router.CLIENT_TYPE: "codemie-cli"})
         assert payload["codemie_origin"] == "cli"
         assert "codemie_user_id" not in payload
+
+
+class TestTheProxyReportsWhereACliRequestWasMade:
+    """The CLI's repository and branch headers reach the ledger through the spend metadata, decoded."""
+
+    def _payload_for(self, inbound: dict) -> dict:
+        import importlib
+
+        proxy_router = importlib.import_module("codemie.enterprise.litellm.proxy_router")
+
+        request_info = proxy_router._extract_request_info({"X-CodeMie-CLI": "codemie-cli/1.0.0", **inbound})
+        request_info[proxy_router.SPEND_ATTRIBUTION_CATEGORY] = BudgetCategory.CLI.value
+        headers: dict = {}
+        proxy_router._apply_spend_logs_metadata_header(
+            headers, request_info, SimpleNamespace(id=USER_ID, username="alice", email="alice@example.com")
+        )
+        return metadata_in(headers)
+
+    def test_the_decoded_repository_and_branch_are_carried(self):
+        payload = self._payload_for({"X-CodeMie-Repository": "acme/my%20api", "X-CodeMie-Branch": "feature/ABC-123"})
+        assert payload["codemie_repository"] == "acme/my api"
+        assert payload["codemie_branch"] == "feature/ABC-123"
+
+    def test_a_request_without_the_headers_sends_neither_key(self):
+        payload = self._payload_for({})
+        assert "codemie_repository" not in payload
+        assert "codemie_branch" not in payload
+        assert payload["codemie_origin"] == "cli"
+        assert payload["codemie_category"] == "cli"
+
+    def test_a_non_cli_call_that_sends_the_headers_carries_them_too(self):
+        import importlib
+
+        proxy_router = importlib.import_module("codemie.enterprise.litellm.proxy_router")
+
+        request_info = proxy_router._extract_request_info({"X-CodeMie-Repository": "acme/api"})
+        request_info[proxy_router.SPEND_ATTRIBUTION_CATEGORY] = BudgetCategory.PLATFORM.value
+        headers: dict = {}
+        proxy_router._apply_spend_logs_metadata_header(
+            headers, request_info, SimpleNamespace(id=USER_ID, username="alice", email="alice@example.com")
+        )
+        payload = metadata_in(headers)
+        assert payload["codemie_repository"] == "acme/api"
+        assert payload["codemie_origin"] == "proxy"
+
+    def test_the_client_is_carried(self):
+        assert self._payload_for({"X-CodeMie-Client": "codemie-claude"})["codemie_client"] == "codemie-claude"
+
+    def test_no_client_header_sends_no_client_key(self):
+        assert "codemie_client" not in self._payload_for({})
+
+    def test_a_client_reported_as_unknown_sends_no_client_key(self):
+        """The CLI sends this word itself when an agent has no client type."""
+        assert "codemie_client" not in self._payload_for({"X-CodeMie-Client": "unknown"})

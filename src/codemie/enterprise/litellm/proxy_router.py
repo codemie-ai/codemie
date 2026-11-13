@@ -390,6 +390,10 @@ def _apply_spend_logs_metadata_header(headers: dict, request_info: dict | None, 
     premium or platform budget paid for was lost to the CLI split. Every other proxied call is
     `proxy`, so no row of a known kind on this path lands NULL by design.
 
+    **The repository, branch and client are the client's own report**, from the CLI headers. They
+    say where and with what the work happened, not who pays, so a forged value is wrong evidence,
+    never wrong money.
+
     **The run id is minted here** because one inbound proxied request is exactly one outbound LLM
     call. Minting it is not cosmetic: without it every attempt row carries a NULL run id and each
     counts as its own request, inflating request volume for precisely the calls the provider
@@ -420,8 +424,18 @@ def _apply_spend_logs_metadata_header(headers: dict, request_info: dict | None, 
             category=category,
             project=_proxy_attribution_project(request_info, user),
             origin=(TrafficOrigin.CLI if _is_cli_request(request_info) else TrafficOrigin.PROXY).value,
+            repository=request_info.get(REPOSITORY) or None,
+            branch=request_info.get(BRANCH) or None,
+            client=_reported_client(request_info),
         )
     )
+
+
+def _reported_client(request_info: dict) -> str | None:
+    """The client the CLI named, or None. `unknown` is both this module's placeholder for a missing
+    header and the word the CLI itself sends for an agent with no client type."""
+    client = request_info.get(CLIENT_TYPE)
+    return None if not client or client == UNKNOWN else client
 
 
 def _proxy_attribution_project(request_info: dict, user: User | None) -> str | None:

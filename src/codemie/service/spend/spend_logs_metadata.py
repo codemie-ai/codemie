@@ -14,7 +14,7 @@
 
 """The one builder for the `x-litellm-spend-logs-metadata` header.
 
-Seven keys in **four groups**, kept apart because their failure semantics differ:
+Ten keys in **six groups**, kept apart because their failure semantics differ:
 
 | Group | Keys | Absence means |
 | --- | --- | --- |
@@ -22,13 +22,15 @@ Seven keys in **four groups**, kept apart because their failure semantics differ
 | identity | `codemie_user_id`, `codemie_category`, `codemie_project` | a **defect** - the fallback parser takes over |
 | dimension | `codemie_workflow_id` | **normal** - most calls are not inside a workflow |
 | origin | `codemie_origin` | **normal** - what the request was for; absent before the sending release |
+| location | `codemie_repository`, `codemie_branch` | **normal** - present only when the CLI headers were sent |
+| client | `codemie_client` | **normal** - present only when the CLI reported which client it is |
 
 `codemie_project` names the project whose project key or project-member customer was charged; the
 own-credentials bypass is the one known exception.
 
 **The header value is built with `json.dumps` and never by concatenation, and that is not style.**
 LiteLLM parses this header with a swallow-everything `safe_json_loads` and then *skips the
-assignment* when it returns None. One malformed character therefore discards **all seven keys at
+assignment* when it returns None. One malformed character therefore discards **all ten keys at
 once** - the identity triple included - with no error on either side, and the row lands with no
 project. `ensure_ascii=True` (the default, stated here so it is not "simplified" away) matters
 because `codemie_project` is free text while httpx and the OpenAI SDK require latin-1/ASCII header
@@ -43,13 +45,14 @@ part: a row carrying a user id and no category would satisfy every provenance ch
 from every category budget, which is the unattributed-row failure wearing the provenance column as a
 disguise. Better to send nothing and be parsed by the fallback, which is a *counted* state.
 
-**The two non-identity keys are outside that rule, and the asymmetry is written here because this is
-where it is enforced.** A chat call legitimately has no workflow id, and a call made on a pooled
-thread nothing published on legitimately has no origin. If completeness were ever tested over "every
-key present in the object", every ordinary chat call would fail it, fall to the fallback parser, and
-collapse project attribution platform-wide. So each of the two is validated on its own terms - the
-workflow id for emptiness, the origin against its closed vocabulary - and a missing, empty or
-unrecognised value affects only its own column. Never the identity triple, never the correlation ids.
+**The non-identity keys are outside that rule, and the asymmetry is written here because this is
+where it is enforced.** A chat call legitimately has no workflow id, a call made on a pooled thread
+nothing published on legitimately has no origin, and only a call that sent one has a repository. If
+completeness were ever tested over "every key present in the object", every ordinary chat call would
+fail it, fall to the fallback parser, and collapse project attribution platform-wide. So each is
+validated on its own terms - the workflow id for emptiness, the origin against its closed
+vocabulary, the location and client keys for length - and a missing, empty or unrecognised value affects only
+its own column. Never the identity triple, never the correlation ids.
 """
 
 from __future__ import annotations
@@ -74,15 +77,29 @@ KEY_CATEGORY = "codemie_category"
 KEY_PROJECT = "codemie_project"
 KEY_WORKFLOW_ID = "codemie_workflow_id"
 KEY_ORIGIN = "codemie_origin"
+KEY_REPOSITORY = "codemie_repository"
+KEY_BRANCH = "codemie_branch"
+KEY_CLIENT = "codemie_client"
+
+#: Longer client-reported values are dropped, not cut: a cut value would be stored as a repository,
+#: branch or client that never existed, and unbounded text, escaped six bytes per non-ASCII
+#: character, could push this header past the 8 KiB line limit of the ingress in front of LiteLLM.
+MAX_LOCATION_LENGTH = 256
+MAX_CLIENT_LENGTH = 64
 
 __all__ = [
+    "KEY_BRANCH",
     "KEY_CATEGORY",
+    "KEY_CLIENT",
     "KEY_ORIGIN",
     "KEY_PROJECT",
+    "KEY_REPOSITORY",
     "KEY_REQUEST_ID",
     "KEY_RUN_ID",
     "KEY_USER_ID",
     "KEY_WORKFLOW_ID",
+    "MAX_CLIENT_LENGTH",
+    "MAX_LOCATION_LENGTH",
     "SPEND_LOGS_METADATA_HEADER",
     "build_spend_logs_metadata",
     "spend_logs_metadata_header",
@@ -141,7 +158,18 @@ def _origin_or_nothing(origin: str | None) -> dict[str, str]:
     return {KEY_ORIGIN: origin}
 
 
-def build_spend_logs_metadata(
+def _bounded_or_nothing(key: str, value: str | None, max_length: int) -> dict[str, str]:
+    if not value:
+        return {}
+    if len(value) > max_length:
+        logger.debug(
+            f"spend_logs_metadata: {key} is {len(value)} characters, over {max_length}; " "the row is sent without it"
+        )
+        return {}
+    return {key: value}
+
+
+def build_spend_logs_metadata(  # noqa: PLR0913 - keyword-only, one argument per header key
     *,
     request_id: str | None = None,
     run_id: str | None = None,
@@ -150,6 +178,9 @@ def build_spend_logs_metadata(
     project: str | None = None,
     workflow_id: str | None = None,
     origin: str | None = None,
+    repository: str | None = None,
+    branch: str | None = None,
+    client: str | None = None,
 ) -> dict[str, str]:
     """The metadata object, with each group admitted on its own terms."""
     payload: dict[str, str] = {}
@@ -166,6 +197,9 @@ def build_spend_logs_metadata(
     if workflow_id:
         payload[KEY_WORKFLOW_ID] = workflow_id
     payload.update(_origin_or_nothing(origin))
+    payload.update(_bounded_or_nothing(KEY_REPOSITORY, repository, MAX_LOCATION_LENGTH))
+    payload.update(_bounded_or_nothing(KEY_BRANCH, branch, MAX_LOCATION_LENGTH))
+    payload.update(_bounded_or_nothing(KEY_CLIENT, client, MAX_CLIENT_LENGTH))
 
     return payload
 
