@@ -15202,8 +15202,16 @@
         "additionalProperties": false,
         "properties": {
           "path": {
-            "title": "Path",
-            "type": "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Page of the version to open: path, query and fragment (`pathname + search + hash`), at most 4096 characters together. Null opens `/`. A page the content gateway would not serve is 422 INVALID_LAUNCH.",
+            "title": "Path"
           },
           "purpose": {
             "enum": [

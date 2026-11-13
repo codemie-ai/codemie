@@ -31,6 +31,7 @@ from sqlalchemy.orm import aliased
 
 from codemie.core.hosted_applications.errors import HostedApplicationError
 from codemie.core.hosted_applications.identity import ABSOLUTE_AUTH_SECONDS
+from codemie.core.hosted_applications.paths import local_target
 from codemie.repository.hosted_applications.repository import as_uuid, not_found
 from codemie.rest_api.models.hosted_application import (
     HostedApplicationViewSessions as Credential,
@@ -47,6 +48,42 @@ from codemie.service.hosted_applications.projections import timestamp
 def access_condition(purpose, user_id_expr):
     """The access module's term for a launch purpose: a preview is for managers, a view for readers."""
     return (manageable if purpose == "owner_preview" else readable)(App.__table__, user_id_expr)
+
+
+# The longest page a launch may name: path, query and fragment together.
+MAX_LAUNCH_TARGET = 4096
+
+
+def invalid_launch():
+    return HostedApplicationError("INVALID_LAUNCH", "Invalid application launch")
+
+
+def launch_target(path) -> str:
+    """The local page a launch opens: ``/`` by default, else ``path`` exactly as sent.
+
+    ``path`` is a page of the version as the content names it: path, query and fragment
+    (``pathname + search + hash``). At most 4096 characters for path, query and fragment together, all
+    printable ASCII without spaces or backslashes, starting with one ``/``. The path and query follow the
+    content gateway's ``local_target`` rule, so a ticket can only name a page the gateway would serve; the
+    fragment never reaches the gateway. Anything else is ``INVALID_LAUNCH``. The result is stored on the
+    ticket and later written into a script.
+    """
+    if path is None:
+        return "/"
+    if (
+        not isinstance(path, str)
+        or len(path) > MAX_LAUNCH_TARGET
+        or not path.startswith("/")
+        or path.startswith("//")
+        or any(not 32 < ord(c) < 127 or c == "\\" for c in path)
+    ):
+        raise invalid_launch()
+    raw, _, query = path.partition("#")[0].partition("?")
+    try:
+        local_target(raw.encode("ascii"), query.encode("ascii"))
+    except HostedApplicationError as exc:
+        raise invalid_launch() from exc
+    return path
 
 
 def denied():
@@ -131,9 +168,10 @@ class HostedApplicationLaunchService:
         await tx.session.flush()
         return context
 
-    async def issue(self, identity, app_id, *, purpose, version_id=None):
+    async def issue(self, identity, app_id, *, purpose, version_id=None, path=None):
+        target_path = launch_target(path)
         if purpose not in ("owner_preview", "published_view"):
-            raise HostedApplicationError("INVALID_LAUNCH", "Invalid application launch")
+            raise invalid_launch()
         async with self.repository.transaction(*identity, write=True) as tx:
             # The caller's quota row serializes this launch with a concurrent sign-out, as before.
             await tx.lock_quota(identity.principal_id)
@@ -179,7 +217,7 @@ class HostedApplicationLaunchService:
                     token_digest=self.digest(token, "ticket"),
                     purpose=purpose,
                     destination_host=self.host(version.id),
-                    target_path="/",
+                    target_path=target_path,
                     access_revision=app.access_revision,
                     revision=1,
                     created_at=tx.now,
@@ -328,6 +366,7 @@ class HostedApplicationLaunchService:
                 "version": version.model_dump(),
                 "attempt": output.model_dump(),
                 "viewer_subject": live.credential.principal_id,
+                "target": live.credential.target_path or "/",
             }
 
         return await self._authorized(token, "view_session", finish, version_id=version_id)

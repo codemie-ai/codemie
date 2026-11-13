@@ -42,6 +42,22 @@ async def test_ticket_is_one_use_bound_to_version_host_and_normal_login(launch, 
 
 
 @pytest.mark.asyncio
+async def test_launch_path_travels_from_ticket_to_view_session(launch, identity):
+    handoff, service, worker, _ = launch
+    context = identity()
+    app, queued_version = await queued(service, context)
+    await worker.run_one()
+    version_id = UUID(queued_version["version_id"])
+    ticket = await handoff.issue(context, app["id"], purpose="owner_preview", path="/deck.html?presenter=1#/3")
+    cookie, target = await handoff.consume(ticket["ticket"], handoff.host(version_id))
+    assert target == "/deck.html?presenter=1#/3"
+    assert (await handoff.authorize(cookie, version_id))["target"] == "/deck.html?presenter=1#/3"
+    plain = await handoff.issue(context, app["id"], purpose="owner_preview")
+    cookie, target = await handoff.consume(plain["ticket"], handoff.host(version_id))
+    assert target == "/" and (await handoff.authorize(cookie, version_id))["target"] == "/"
+
+
+@pytest.mark.asyncio
 async def test_delete_denies_existing_cookie(launch, identity):
     handoff, service, worker, _ = launch
     context = identity()

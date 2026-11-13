@@ -119,6 +119,49 @@ async def test_embedded_launch_has_scoped_frame_ancestors_partitioned_cookie_and
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('dest', ['iframe', 'document'])
+async def test_a_launch_with_a_path_opens_that_page(launch, identity, dest):
+    handoff, service, worker, _ = launch
+    app, staged = await queued(service, identity(), b'<html>Deck</html>')
+    assert await worker.run_one()
+    version_id = UUID(staged['version_id'])
+    gateway = ContentGateway(handoff, service.storage)
+    tree = HostDispatcher(
+        unavailable,
+        gateway.app(),
+        content_domain=handoff.settings.content_domain,
+        content_port=handoff.settings.content_port,
+    )
+    target = '/deck.html?presenter=1#/3'
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=tree), base_url='http://' + handoff.host(version_id)
+    ) as client:
+        ticket = await handoff.issue(identity(), app['id'], purpose='owner_preview', path=target)
+        bootstrap = await client.post(
+            '/_platform/launch',
+            data={'ticket': ticket['ticket']},
+            headers={
+                'origin': handoff.settings.ui_origins[0],
+                'sec-fetch-mode': 'navigate',
+                'sec-fetch-dest': dest,
+                'sec-fetch-site': 'cross-site',
+            },
+        )
+        assert bootstrap.status_code == 303
+        if dest == 'document':
+            assert bootstrap.headers['location'] == handoff.settings.version_origin(version_id, viewer=True) + target
+            return
+        assert bootstrap.headers['location'] == '/_platform/view'
+        client.cookies.clear()
+        client.cookies.set(
+            gateway.embedded_cookie_name, bootstrap.headers['set-cookie'].split(';')[0].partition('=')[2]
+        )
+        ready = await client.get('/_platform/view', headers={'sec-fetch-dest': 'iframe'})
+    assert ready.status_code == 200
+    assert 'location.replace("/deck.html?presenter=1#/3")' in ready.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'changes',
     [

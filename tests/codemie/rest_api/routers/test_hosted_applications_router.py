@@ -886,4 +886,50 @@ def test_launch_takes_no_static_preview_mode():
     value = SimpleNamespace(launch=SimpleNamespace(issue=AsyncMock(return_value={})))
     app_id = uuid4()
     asyncio.run(launch_endpoint(app_id, LaunchRequest(purpose="published_view"), MagicMock(), value, MagicMock()))
-    assert value.launch.issue.call_args.kwargs == {"purpose": "published_view", "version_id": None}
+    assert value.launch.issue.call_args.kwargs == {"purpose": "published_view", "version_id": None, "path": None}
+
+
+def launch_headers():
+    return {"Content-Type": "application/json", "Authorization": "Bearer token"}
+
+
+@pytest.mark.parametrize("path", [None, "/", "/deck.html?presenter=1#/3"])
+def test_launch_passes_the_requested_path_exactly_as_sent(client, signed_in, path):
+    issue = AsyncMock(return_value={"ticket": "t"})
+    APP.state.hosted_applications = runtime(launch=SimpleNamespace(issue=issue))
+    app_id = uuid4()
+    response = client.post(
+        f"/v1/hosted-applications/{app_id}/launch",
+        json={"purpose": "published_view", "version_id": None, "path": path},
+        headers=launch_headers(),
+    )
+    assert response.status_code == 200
+    assert issue.await_args.args[1] == app_id
+    assert issue.await_args.kwargs == {"purpose": "published_view", "version_id": None, "path": path}
+
+
+@pytest.mark.parametrize("path", ["//evil.example/", "/_platform/view", "/a/../b", "/a%2Fb", "/a b", "/" + "a" * 4097])
+def test_launch_refuses_a_path_outside_the_version(client, signed_in, path):
+    from codemie.service.hosted_applications.launch import HostedApplicationLaunchService
+
+    service = HostedApplicationLaunchService(SimpleNamespace(repository=SimpleNamespace()), SimpleNamespace())
+    APP.state.hosted_applications = runtime(launch=service)
+    response = client.post(
+        f"/v1/hosted-applications/{uuid4()}/launch",
+        json={"purpose": "published_view", "path": path},
+        headers=launch_headers(),
+    )
+    assert response.status_code == 422
+    assert hosted(response)["code"] == "INVALID_LAUNCH"
+
+
+def test_launch_path_must_be_a_string(client, signed_in):
+    issue = AsyncMock(return_value={})
+    APP.state.hosted_applications = runtime(launch=SimpleNamespace(issue=issue))
+    response = client.post(
+        f"/v1/hosted-applications/{uuid4()}/launch",
+        json={"purpose": "published_view", "path": ["/"]},
+        headers=launch_headers(),
+    )
+    assert response.status_code == 422
+    issue.assert_not_awaited()

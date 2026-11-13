@@ -57,6 +57,7 @@ class Launch:
         self.version, self.attempt = version, attempt
         self.sessions = {VIEWER: "viewer", OTHER: "other"}
         self.tokens = []
+        self.target = "/"
 
     async def consume(self, ticket, host):
         raise HostedApplicationError("LAUNCH_EXPIRED", "Return to CodeMie", 401)
@@ -70,6 +71,7 @@ class Launch:
             "version": self.version,
             "attempt": self.attempt,
             "viewer_subject": self.sessions[token],
+            "target": self.target,
         }
 
 
@@ -322,6 +324,93 @@ async def test_interactive_navigation_representation_preserves_ranges_and_cache(
             assert response.headers["content-range"] == f"bytes {start}-{end}/{len(page.content)}"
         launch.sessions.pop(VIEWER)
         assert (await http.get("/", headers=nav | {"if-none-match": page.headers["etag"]})).status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "replaced"),
+    [
+        ("/", 'location.replace("/")'),
+        ("/deck.html?presenter=1#/3", 'location.replace("/deck.html?presenter=1#/3")'),
+        # Launch validation never lets these through; the readiness page stays script-safe regardless.
+        (
+            "/x?</script><script>alert(1)//&",
+            'location.replace("/x?\\u003c/script\\u003e\\u003cscript\\u003ealert(1)//\\u0026")',
+        ),
+    ],
+)
+async def test_embedded_view_opens_the_launched_target(tmp_path, target, replaced):
+    storage, version, attempt, _ = await build_site(tmp_path)
+    launch = Launch(version, attempt)
+    launch.target = target
+    gateway = ContentGateway(launch, storage)
+    async with client(mount(gateway, version["id"])) as http:
+        ready = await http.get(
+            "/_platform/view",
+            headers={"cookie": gateway.embedded_cookie_name + "=" + VIEWER, "sec-fetch-dest": "iframe"},
+        )
+    assert ready.status_code == 200
+    assert replaced in ready.text
+    assert ready.text.count("location.replace(") == 1
+    assert ready.text.count("<script>") == ready.text.count("</script>") == 1
+    assert "codemie-hosted-ready" in ready.text
+
+
+def test_request_target_uses_the_shared_local_target(monkeypatch):
+    from codemie.hosted_apps_gateway import content as content_module
+
+    seen = []
+    monkeypatch.setattr(content_module, "local_target", lambda raw, query: seen.append((raw, query)) or "/x")
+    scope = {"type": "http", "raw_path": b"/app/x", "root_path": "/app", "query_string": b"q=1", "headers": []}
+    assert ContentGateway.request_target(SimpleRequest(scope)) == "/x"
+    assert seen == [(b"/x", b"q=1")]
+
+
+class SimpleRequest:
+    def __init__(self, scope, headers=None):
+        self.scope, self.headers = scope, headers or {}
+
+
+@pytest.mark.parametrize(
+    ("cookies", "embedded"),
+    [("embedded", True), ("session", False), ("both", True)],
+)
+def test_session_credential_says_whether_the_launch_was_embedded(tmp_path, cookies, embedded):
+    gateway = ContentGateway(Launch({"id": uuid4()}, {}), None)
+    values = {
+        "embedded": gateway.embedded_cookie_name + "=" + VIEWER,
+        "session": gateway.cookie_name + "=" + OTHER,
+        "both": gateway.embedded_cookie_name + "=" + VIEWER + "; " + gateway.cookie_name + "=" + OTHER,
+    }
+    token, flag = gateway.session_credential(SimpleRequest({}, {"cookie": values[cookies]}))
+    assert flag is embedded
+    assert token == (OTHER if cookies == "session" else VIEWER)
+
+
+def test_frame_message_names_the_page_to_open_target(tmp_path):
+    gateway = ContentGateway(Launch({"id": uuid4()}, {}), None)
+    assert 'location.replace("/deck.html")' in gateway.frame_message("codemie-hosted-ready", target="/deck.html")
+    assert "location.replace" not in gateway.frame_message("codemie-hosted-unavailable")
+
+
+@pytest.mark.asyncio
+async def test_only_embedded_navigations_get_the_window_broker(tmp_path):
+    storage, version, attempt, _ = await build_site(tmp_path)
+    launch = Launch(version, attempt)
+    gateway = ContentGateway(launch, storage)
+    nav = {"sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe", "accept": "text/html"}
+    viewer = launch.settings.version_origin(version["id"], viewer=True)
+    async with client(mount(gateway, version["id"])) as http:
+        embedded = await http.get("/", headers=nav | {"cookie": gateway.embedded_cookie_name + "=" + VIEWER})
+        standalone = await http.get("/", headers=nav | {"cookie": gateway.cookie_name + "=" + VIEWER})
+        asset = await http.get("/style.css", headers={"cookie": gateway.embedded_cookie_name + "=" + VIEWER})
+    for page in (embedded, standalone):
+        assert page.status_code == 200 and page.content.startswith(INDEX)
+        assert "codemie-hosted-location" in page.text and viewer in page.text
+    assert "codemie-hosted-open" in embedded.text and "window.open" in embedded.text
+    assert "codemie-hosted-open" not in standalone.text and "window.open" not in standalone.text
+    assert embedded.headers["etag"] != standalone.headers["etag"]
+    assert asset.content == b"body{color:#123}"
 
 
 @pytest.mark.asyncio

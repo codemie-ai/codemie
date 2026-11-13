@@ -31,7 +31,7 @@ from starlette.routing import Route
 from codemie.configs.logger import logger
 from codemie.core.hosted_applications.errors import HostedApplicationError
 from codemie.core.hosted_applications.manifest import resolve_asset
-from codemie.core.hosted_applications.paths import decode_content_path, strip_root_path
+from codemie.core.hosted_applications.paths import decode_content_path, local_target, strip_root_path
 from codemie.core.hosted_applications.protocol import etag_matches, parse_range, parse_session_cookies
 from codemie.hosted_apps_gateway.admission import ContentCapacity, ContentLimits
 from codemie.hosted_apps_gateway.cache import ImmutableContentCache
@@ -41,6 +41,7 @@ from codemie.hosted_apps_gateway.navigation import (
     WRAPPER_SCRIPT_HASH,
     navigation_suffix,
     representation_range,
+    script_string,
 )
 from codemie.service.hosted_applications.observability import hosted_request_monitoring
 
@@ -139,14 +140,7 @@ class ContentGateway:
     def request_target(request):
         # Preserve a framework's path/query without credentials, host inference or HTML injection.
         raw = strip_root_path(request.scope.get("raw_path", b"/"), request.scope.get("root_path", ""))
-        decode_content_path(raw)
-        query = request.scope.get("query_string", b"")
-        if len(raw) > 4096 or len(query) > 8192 or any(c < 32 or c == 127 for c in query):
-            raise HostedApplicationError("CONTENT_UNAVAILABLE", UNAVAILABLE, 400)
-        try:
-            return raw.decode("ascii") + ("?" + query.decode("ascii") if query else "")
-        except UnicodeError as exc:
-            raise HostedApplicationError("CONTENT_UNAVAILABLE", UNAVAILABLE, 400) from exc
+        return local_target(raw, request.scope.get("query_string", b""))
 
     async def standalone(self, request):
         """Trusted wrapper: viewing credentials stay on the separate version child origin."""
@@ -245,13 +239,14 @@ class ContentGateway:
             response.headers["set-cookie"] += "; Partitioned"
         return response
 
-    def frame_message(self, kind, *, ready=False):
+    def frame_message(self, kind, *, target=None):
+        """Tell the CodeMie frame ``kind``; with ``target``, then open that launched page of the version."""
         message = json.dumps({"type": kind})
         scripts = "".join(
             "parent.postMessage(" + message + "," + json.dumps(origin) + ");" for origin in self.settings.ui_origins
         )
-        if ready:
-            scripts += 'location.replace("/");'
+        if target is not None:
+            scripts += "location.replace(" + script_string(target) + ");"
         return "<script>" + scripts + "</script>"
 
     async def view(self, request):
@@ -265,11 +260,20 @@ class ContentGateway:
         # uses the bounded message as a loading hint, never as an authority or navigation URL.
         return HTMLResponse(
             '<!doctype html><html><meta charset="utf-8"><title>Opening application</title>'
-            '<body>Opening application…' + self.frame_message("codemie-hosted-ready", ready=True) + '</body></html>',
+            '<body>Opening application…'
+            + self.frame_message("codemie-hosted-ready", target=state.get("target") or "/")
+            + '</body></html>',
             headers=headers,
         )
 
     def session_cookie(self, request):
+        return self.session_credential(request)[0]
+
+    def session_credential(self, request):
+        """The viewing session's token, and whether it is the embedded one (it wins over the own-tab one).
+
+        The embedded cookie is only ever set for a launch inside a CodeMie page.
+        """
         # One strict tokenizer: a sibling version origin can set Domain cookies for the shared
         # content domain, so only exact platform names with exact token values are honored.
         try:
@@ -279,7 +283,7 @@ class ContentGateway:
         name = next((candidate for candidate in self.cookie_names if candidate in cookies), self.cookie_name)
         if name not in cookies:
             raise HostedApplicationError("LAUNCH_EXPIRED", RETURN_TO_CODEMIE, 401)
-        return cookies[name]
+        return cookies[name], name == self.embedded_cookie_name
 
     async def authorize_content(self, request, token):
         async with asyncio.timeout(10):
@@ -302,7 +306,7 @@ class ContentGateway:
         path = decode_content_path(raw_path)
         if path.partition("/")[0].casefold() in RESERVED:
             raise HostedApplicationError("FILE_NOT_FOUND", "File unavailable", 404)
-        token = self.session_cookie(request)
+        token, embedded = self.session_credential(request)
         state = await self.authorize_content(request, token)
         version, attempt = state["version"], state["attempt"]
         session_headers = self.response_headers(request)
@@ -315,8 +319,14 @@ class ContentGateway:
             )
         manifest = await self.cache.manifest(version, attempt)
         asset = resolve_asset(manifest, path, html_navigation=navigation(request))
+        # Only a launch inside a CodeMie page is offered the window broker; the own-tab viewer has
+        # nothing that would answer it.
         suffix = (
-            navigation_suffix(self.settings.version_origin(request.state.hosted_version_id, viewer=True))
+            navigation_suffix(
+                self.settings.version_origin(request.state.hosted_version_id, viewer=True),
+                self.settings.ui_origins,
+                embedded=embedded,
+            )
             if navigation(request) and asset["mime"].startswith("text/html")
             else b""
         )

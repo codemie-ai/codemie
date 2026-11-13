@@ -19,7 +19,7 @@ import zipfile
 import pytest
 
 from codemie.core.hosted_applications.errors import HostedApplicationError
-from codemie.core.hosted_applications.paths import canonical_artifact_path, decode_content_path
+from codemie.core.hosted_applications.paths import canonical_artifact_path, decode_content_path, local_target
 from codemie.core.hosted_applications.validation import ValidationLimits, inspect_bundle
 
 
@@ -89,6 +89,38 @@ def test_content_path_does_not_repair_or_double_decode(path):
 def test_unicode_and_spaces_have_one_roundtrip():
     assert decode_content_path(b"/assets/hello%20world.css") == "assets/hello world.css"
     assert canonical_artifact_path("assets/café.css") == "assets/café.css"
+
+
+@pytest.mark.parametrize(
+    ("raw", "query", "expected"),
+    [
+        (b"/", b"", "/"),
+        (b"/deck.html", b"presenter=1", "/deck.html?presenter=1"),
+        (b"/assets/hello%20world.css", b"a=%2F&b=..", "/assets/hello%20world.css?a=%2F&b=.."),
+        (b"/docs/", b"", "/docs/"),
+    ],
+)
+def test_a_local_target_is_the_path_and_query_exactly_as_sent(raw, query, expected):
+    assert local_target(raw, query) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "query", "code", "status"),
+    [
+        (b"/_platform/view", b"", "FILE_NOT_FOUND", 404),
+        (b"/a/../b", b"", "FILE_NOT_FOUND", 404),
+        (b"/a%2Fb", b"", "FILE_NOT_FOUND", 404),
+        (b"//other/app", b"", "FILE_NOT_FOUND", 404),
+        (b"/", b"a" * 8193, "CONTENT_UNAVAILABLE", 400),
+        (b"/", b"a\x01", "CONTENT_UNAVAILABLE", 400),
+        (b"/", b"a\x7f", "CONTENT_UNAVAILABLE", 400),
+        (b"/", "é".encode(), "CONTENT_UNAVAILABLE", 400),
+    ],
+)
+def test_a_target_the_gateway_would_not_serve_is_refused(raw, query, code, status):
+    with pytest.raises(HostedApplicationError) as raised:
+        local_target(raw, query)
+    assert (raised.value.code, raised.value.status) == (code, status)
 
 
 def test_accepts_static_react_bundle_at_origin_root(tmp_path):

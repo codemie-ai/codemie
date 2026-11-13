@@ -23,6 +23,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Query, Request
 
 from fastapi.responses import JSONResponse, Response
+from pydantic import Field
 
 from codemie.configs import config
 from codemie.core.hosted_applications.errors import HostedApplicationError
@@ -56,7 +57,14 @@ from codemie.service.hosted_applications.runtime import HostedApplicationsRuntim
 class LaunchRequest(RequestModel):
     purpose: Literal["owner_preview", "published_view"]
     version_id: UUID | None = None
-    path: None = None
+    path: str | None = Field(
+        default=None,
+        description=(
+            "Page of the version to open: path, query and fragment (`pathname + search + hash`), at most "
+            "4096 characters together. Null opens `/`. A page the content gateway would not serve is "
+            "422 INVALID_LAUNCH."
+        ),
+    )
 
 
 router = APIRouter(prefix="/v1", tags=["Hosted applications"], route_class=HostedAPIRoute)
@@ -393,7 +401,9 @@ async def launch(
     user: User = Depends(authenticate),
 ) -> JSONResponse:
     return reply(
-        await value.launch.issue(HostedActor(user, identity), app_id, purpose=body.purpose, version_id=body.version_id)
+        await value.launch.issue(
+            HostedActor(user, identity), app_id, purpose=body.purpose, version_id=body.version_id, path=body.path
+        )
     )
 
 

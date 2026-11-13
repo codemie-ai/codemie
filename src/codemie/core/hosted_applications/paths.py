@@ -80,6 +80,24 @@ def decode_content_path(raw_path: bytes) -> str:
         raise HostedApplicationError("FILE_NOT_FOUND", "File unavailable", 404) from exc
 
 
+def local_target(raw_path: bytes, query: bytes) -> str:
+    """The one rule for a page inside a version: ``raw_path`` plus ``?query`` as sent, if the gateway serves it.
+
+    The path is decoded once by ``decode_content_path`` (no ``.``/``..`` or empty segments, no encoded
+    slash, backslash or NUL, never ``_platform``), else ``FILE_NOT_FOUND`` 404. The raw path is at most
+    4096 bytes and the query at most 8192 ASCII bytes without control characters, else
+    ``CONTENT_UNAVAILABLE`` 400. Nothing is repaired or re-encoded. Used by the content gateway for every
+    request and by the launch for its path.
+    """
+    decode_content_path(raw_path)
+    if len(raw_path) > 4096 or len(query) > 8192 or any(c < 32 or c == 127 for c in query):
+        raise HostedApplicationError("CONTENT_UNAVAILABLE", "Application unavailable", 400)
+    try:
+        return raw_path.decode("ascii") + ("?" + query.decode("ascii") if query else "")
+    except UnicodeError as exc:
+        raise HostedApplicationError("CONTENT_UNAVAILABLE", "Application unavailable", 400) from exc
+
+
 def normalize_name(value: str, maximum: int = 160) -> tuple[str, str]:
     value = unicodedata.normalize("NFC", value).strip()
     if not value or len(value) > maximum or any(unicodedata.category(c).startswith("C") for c in value):

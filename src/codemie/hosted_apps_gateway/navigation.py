@@ -19,44 +19,59 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from pathlib import Path
 
-WRAPPER_SCRIPT = r"""(() => {
-  const frame = document.querySelector('iframe');
-  const content = new URL(frame.dataset.src);
-  addEventListener('message', event => {
-    if (event.source !== frame.contentWindow || event.origin !== content.origin) return;
-    const data = event.data;
-    if (!data || data.type !== 'codemie-hosted-location' || typeof data.target !== 'string') return;
-    const target = data.target;
-    if (target.length > 12288 || !target.startsWith('/') || target.startsWith('//') ||
-        /[\\\x00-\x1f\x7f]/.test(target)) return;
-    const url = new URL(target, location.origin);
-    if (url.origin !== location.origin || url.username || url.password ||
-        /^\/_platform(?:\/|$)/i.test(url.pathname)) return;
-    history.replaceState(null, '', url.pathname + url.search + url.hash);
-  });
-  frame.src = content.href + location.hash;
-})();"""
+
+def inline_script(name: str) -> str:
+    """The exact text of a browser script shipped next to this module, for an inline ``<script>``.
+
+    Read as bytes, so the text (and the wrapper's CSP hash) never depends on the platform's newline
+    translation. The leading license comment block stays in the file and is not sent to browsers.
+    A script that could end or open a script element is refused at import time.
+    """
+    text = Path(__file__).with_name(name).read_bytes().decode("utf-8")
+    if text.startswith("// Copyright "):
+        text = text.split("\n\n", 1)[1]
+    lowered = text.lower()
+    if "</script" in lowered or "<script" in lowered or "<!--" in lowered:
+        raise RuntimeError(f"{name} cannot be inlined into a script element")
+    return text
+
+
+# Own-tab w- wrapper; its CSP authorizes it by the SHA-256 of these exact bytes.
+WRAPPER_SCRIPT = inline_script("viewer_wrapper.js")
 WRAPPER_SCRIPT_HASH = base64.b64encode(hashlib.sha256(WRAPPER_SCRIPT.encode()).digest()).decode()
+# Route report appended to every interactive HTML navigation, and the window broker appended after
+# it for an embedded launch only. Both run inside the function that ``navigation_suffix`` opens.
+LOCATION_SCRIPT = inline_script("content_hook.js")
+BROKER_SCRIPT = inline_script("content_broker.js")
 
 
-def navigation_suffix(viewer_origin: str) -> bytes:
+def script_string(value) -> str:
+    """``value`` as a JSON literal that cannot close the inline script element it is written into."""
+    return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def navigation_suffix(viewer_origin: str, ui_origins=(), *, embedded: bool = False) -> bytes:
     """Add a fixed browser hook only to interactive HTML navigation representations.
 
     Stored version bytes stay immutable. The parent verifies the exact child origin/window,
     and copies only a bounded local path to its address bar. No tokens or app metadata travel.
+    ``embedded`` (a launch inside a CodeMie page) adds the window broker: same-origin ``window.open``
+    calls and new-tab links ask the CodeMie page to open that page in a new CodeMie window.
     """
     return (
         "\n<script>(() => {\n"
-        "const report = () => parent.postMessage({type: 'codemie-hosted-location', "
-        "target: location.pathname + location.search + location.hash}, " + json.dumps(viewer_origin) + ");\n"
-        "for (const name of ['pushState', 'replaceState']) {\n"
-        "  const original = history[name];\n"
-        "  history[name] = function(...args) { const value = Reflect.apply(original, this, args); "
-        "report(); return value; };\n"
-        "}\n"
-        "addEventListener('popstate', report); addEventListener('hashchange', report); report();\n"
-        "})();</script>"
+        + "const viewer = "
+        + script_string(viewer_origin)
+        + ", ui = "
+        + script_string(list(ui_origins))
+        + ", embedded = "
+        + ("true" if embedded else "false")
+        + ";\n"
+        + LOCATION_SCRIPT
+        + (BROKER_SCRIPT if embedded else "")
+        + "})();</script>"
     ).encode()
 
 
