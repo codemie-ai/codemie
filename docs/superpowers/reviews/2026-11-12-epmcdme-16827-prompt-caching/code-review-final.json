@@ -1,0 +1,14 @@
+{
+  "decision": "approve",
+  "rationale": "Compact profile: only the edge-case lens ran, acceptance was skipped (no spec), so confidence is low. All 4 edge-case candidates were checked against source and dismissed: the Vertex flag gating only VERTEX_AI_ANTHROPIC, the removed claude-3-5-sonnet Bedrock exclusion and the lack of markers on direct Bedrock are intentional per the task (the old gate also cached GOOGLE_VERTEX_AI Claude), and the debug log that reports caching enabled on no-op routes is below the emission floor. 0 deferred, 4 dismissed.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of the compact profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of the compact profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of the compact profile." }
+  ],
+  "findings": [],
+  "deferred": []
+}

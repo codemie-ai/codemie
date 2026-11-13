@@ -5008,26 +5008,6 @@ langchain-core = ">=1.4.6,<2.0.0"
 pydantic = ">=2.7.4,<3.0.0"
 
 [[package]]
-name = "langchain-anthropic-smart-cache"
-version = "0.2.3"
-description = "Intelligent cache management for LangChain Anthropic models with advanced optimization strategies"
-optional = false
-python-versions = ">=3.8"
-groups = ["main"]
-files = [
-    {file = "langchain_anthropic_smart_cache-0.2.3-py3-none-any.whl", hash = "sha256:f04bc21107dd3ab1cd30254d98742d3207297701d498c8a4fb54c379e2adfb42"},
-    {file = "langchain_anthropic_smart_cache-0.2.3.tar.gz", hash = "sha256:b286ccc8a37533d302f65e74cc29906cc608fdbe7d7ef2cae58e83b295c40662"},
-]
-
-[package.dependencies]
-langchain-core = ">=0.1.0"
-tiktoken = ">=0.5.0"
-
-[package.extras]
-anthropic = ["langchain-anthropic (>=0.1.0)"]
-dev = ["black (>=22.0)", "build (>=0.10.0)", "flake8 (>=4.0)", "mypy (>=0.950)", "pytest (>=6.0)", "pytest-cov (>=2.0)", "twine (>=4.0.0)"]
-
-[[package]]
 name = "langchain-aws"
 version = "1.4.3"
 description = "An integration package connecting AWS and LangChain"
@@ -13123,4 +13103,4 @@ pdf-svg = ["cairosvg"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<3.14"
-content-hash = "74c0ce80795ffdd3a369af19af04d98f7858e9d49caed5c8ebed3c8f98415606"
+content-hash = "83872fddba4560f0ccc5320c596bbfa9728e41d20ab7d96a7f242a1c5f142f9d"

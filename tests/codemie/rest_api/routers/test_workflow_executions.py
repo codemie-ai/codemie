@@ -1114,6 +1114,33 @@ async def test_resume_with_user_input_passes_input_to_executor(
     "mock_background_tasks",
 )
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("query", "expected"), [("", True), ("?disable_cache=false", False)])
+async def test_resume_passes_disable_cache_to_executor(
+    mock_authentication: MagicMock,
+    mock_ability: MagicMock,
+    mock_workflow_executor: MagicMock,
+    request_headers: dict,
+    query: str,
+    expected: bool,
+) -> None:
+    mock_ability.return_value.can.return_value = True
+    mock_authentication.return_value = USER
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.put(f"{RESUME_URL}{query}", headers=request_headers)
+
+    assert response.status_code == 200
+    assert mock_workflow_executor.create_executor.call_args.kwargs["disable_cache"] is expected
+
+
+@pytest.mark.usefixtures(
+    "mock_workflow_service",
+    "mock_request_summary_manager",
+    "mock_workflow_executor",
+    "mock_background_tasks",
+)
+@pytest.mark.asyncio
 async def test_resume_without_body_uses_none_user_input(
     mock_authentication: MagicMock,
     mock_ability: MagicMock,

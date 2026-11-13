@@ -457,6 +457,7 @@ def resume_workflow_execution(
             execution_id=execution.execution_id,
             request_headers=request_headers,
             file_names=file_names,
+            disable_cache=disable_cache,
             **extra_kwargs,
         )
 

@@ -39,6 +39,7 @@ from codemie.core.constants import (
     HEADER_CODEMIE_TAGGING_PROJECT,
 )
 from codemie.core.models import ElasticSearchKwargs, GitRepo, SVNRepo, CodeFields, Application
+from codemie.core.prompt_caching import enable_prompt_caching, should_cache_prompts
 from codemie.service.llm.model_availability_service import ProjectModelPolicy
 from codemie.rest_api.models.settings import DialCredentials, LiteLLMContext
 from codemie.service.llm_service.llm_service import llm_service, LLMService
@@ -396,44 +397,11 @@ def get_llm_by_credentials(
     if request_id:
         llm.callbacks = [TokensCalculationCallback(request_id=request_id, llm_model=llm_model)]
 
-    is_claude = llm_service.is_claude_models(llm_model_details.base_name)
-    is_open_ai = llm_model_details.provider == LLMProvider.AZURE_OPENAI
-    is_bedrock = llm_model_details.provider == LLMProvider.AWS_BEDROCK
-
-    # Claude 3.5 models on Bedrock don't support prompt caching with tools
-    is_unsupported_bedrock_model = is_bedrock and "claude-3-5-sonnet" in llm_model_details.base_name
-
-    # Vertex AI Claude doesn't support Anthropic beta headers (anthropic_beta)
-    # Google wraps the Claude API and doesn't support prompt caching headers
-    # Can be enabled via VERTEX_AI_ENABLE_PROMPT_CACHE config if needed
-    is_vertex_claude = llm_model_details.provider == LLMProvider.VERTEX_AI_ANTHROPIC
-    vertex_ai_cache_enabled = config.VERTEX_AI_ANTHROPIC_ENABLE_PROMPT_CACHE if is_vertex_claude else True
-
-    # Check if caching is disabled via context variable
-    cache_disabled = get_disable_prompt_cache()
-
-    # Enable prompt caching for Claude models (except unsupported cases)
-    enable_caching = (
-        is_claude
-        and not is_unsupported_bedrock_model
-        and vertex_ai_cache_enabled
-        and (not is_open_ai or is_using_litellm)
-        and not cache_disabled
-    )
-
-    if enable_caching:
-        from langchain_anthropic_smart_cache import SmartCacheCallbackHandler
-
-        cache_handler = SmartCacheCallbackHandler()
-        if llm.callbacks:
-            llm.callbacks.append(cache_handler)
-        else:
-            llm.callbacks = [cache_handler]
+    if should_cache_prompts(
+        llm_model_details, uses_litellm=is_using_litellm, disabled_for_request=get_disable_prompt_cache()
+    ):
+        enable_prompt_caching(llm, uses_litellm=is_using_litellm)
         logger.debug(f"Prompt caching enabled for model={llm_model}")
-    elif cache_disabled:
-        logger.debug(f"Prompt caching explicitly disabled for model={llm_model}")
-    elif is_vertex_claude:
-        logger.debug(f"Prompt caching not supported for Vertex AI Claude models: {llm_model}")
     return llm
 
 
@@ -602,7 +570,7 @@ def get_bedrock_llm(
     top_p: Optional[float] = None,
     streaming: bool = True,
 ):
-    from langchain_aws import ChatBedrockConverse
+    from codemie.core.prompt_caching_bedrock import PromptCachingChatBedrockConverse
 
     # Merge static config headers with dynamic headers
     merged_headers = {}
@@ -621,7 +589,7 @@ def get_bedrock_llm(
         kwargs['temperature'] = temperature
     if top_p is not None and llm_model_details.features.top_p is not False:
         kwargs['top_p'] = top_p
-    return ChatBedrockConverse(**kwargs)
+    return PromptCachingChatBedrockConverse(**kwargs)
 
 
 def get_anthropic_llm(

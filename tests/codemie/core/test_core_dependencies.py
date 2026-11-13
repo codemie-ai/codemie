@@ -377,7 +377,7 @@ class TestGetBedrockLlmTemperature:
     @staticmethod
     def _call(supported, temperature, top_p=0.9, top_p_supported=True):
         with (
-            patch("langchain_aws.ChatBedrockConverse") as mock_cls,
+            patch("codemie.core.prompt_caching_bedrock.PromptCachingChatBedrockConverse") as mock_cls,
             patch("codemie.core.dependecies.get_bedrock_runtime_client"),
         ):
             get_bedrock_llm(_model_details(supported, top_p_supported), temperature=temperature, top_p=top_p)

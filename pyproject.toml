@@ -81,7 +81,6 @@ langchain-markitdown = "^0.1.8"
 pypandoc-binary = "^1.15"
 cairosvg = {version = "^2.7.1", optional = true}
 codemie-sdk-python = "^0.1.159"
-langchain-anthropic-smart-cache = "^0.2.3"
 wrapt = "^2.1.1"
 orjson = "^3.11.7"
 cachetools = "^6.2.4"
