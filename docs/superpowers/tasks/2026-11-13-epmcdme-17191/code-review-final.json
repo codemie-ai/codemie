@@ -1,0 +1,61 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved; 0 findings"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved; 0 findings"
+    }
+  ],
+  "reviewed_head": "24b7e76debef6f83f832692dc5543150e3b46e16",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "Only the edge-case lens ran (compact profile); no spec supplied so acceptance was skipped (no-spec, low confidence). 1 candidate dismissed as noise: missing 304 handling is explicitly out of scope per the task. 0 deferred; no standards audit by profile.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards not audited for this profile."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards not audited for this profile."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards not audited for this profile."
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "Only the edge-case lens ran (compact profile); no spec supplied so acceptance was skipped (no-spec, low confidence). 1 candidate dismissed as noise: missing 304 handling is explicitly out of scope per the task. 0 deferred; no standards audit by profile.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17191",
+  "head": "24b7e76debef6f83f832692dc5543150e3b46e16",
+  "runner": "poetry",
+  "started_at": "2026-11-13T10:49:32.657061+00:00",
+  "completed_at": "2026-11-13T10:49:32.657061+00:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 64000,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 146000,
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise",
+      "exit_code": 1,
+      "notes": "make test aborts at collection on tests/enterprise (codemie_enterprise not installed locally); reran ignoring it. 22 failures in files untouched by this branch (diff is cli_analytics.py router + its cache-header test, which passes 28/28): cli_analytics postgres live tests, openapi snapshot (missing /chat/completions, enterprise), usage_attribution, spend attribution, message_exporter."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 500,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "pre-push hook step; sonar/pytest steps of pre-push are opt-in"
+    }
+  ],
+  "failures": {
+    "unit": "\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /Users/yevhen_slyva/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /Users/yevhen_slyva/codemie-dev/codemie/src/codemie/service/settings/settings_transfer_service.py:426: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\ntests/codemie/service/test_mcp_config_service_auth_crud.py::test_update_rejects_auth_config_id_change_when_credentials_exist\n  /Users/yevhen_slyva/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:610: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._apply_config_field_update(\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /Users/yevhen_slyva/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:294: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /Users/yevhen_slyva/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:679: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(mcp_config.config, config_id=config_id)\n\ntests/codemie/service/test_mcp_config_service_clone.py::test_invalid_auth_config_raises_422\n  /Users/yevhen_slyva/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:388: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_migration_subagent_listing.py::test_the_real_chain_reaches_the_head_flags_the_copilot_sub_agents_and_builds_the_index\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_migration_subagent_listing.py::test_the_revision_runs_again_after_a_partial_attempt\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_hook_only_session_detail_matches_the_session_list\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_listing_gate_drops_start_only_and_sub_agent_sessions\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_late_parent_start_flags_the_already_rolled_up_child_as_a_sub_agent\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_aggregates_keep_claude_session_results_and_add_the_session_without_usage\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_model_breakdown_merges_dotted_and_dashed_claude_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_claude_code_subagent_start_does_not_hide_the_session_it_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_subagent_with_cost_rows_of_its_own_stays_listed\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_hidden_subagent_is_dropped_from_every_session_aggregate_and_still_opens_by_id\nFAILED tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline\nFAILED tests/codemie/service/conversation/test_message_exporter.py::TestDocxExport::test_export_to_docx_single_message\nFAILED tests/codemie/service/spend/test_attribution.py::TestTheEnumsAndComposersHaveNotDrifted::test_the_mirrored_project_composer_matches_its_source\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_classification_overrides_reuse_the_cached_inputs\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_over_the_limit_the_last_good_analysis_answers_with_the_time_to_wait\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_last_good_is_kept_a_day_only_for_standard_periods_with_default_settings\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_failure_serves_the_last_good_analysis\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_refresh_drops_the_cache_at_most_once_a_minute\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_evidence_is_read_once_for_every_period_ending_at_the_same_time\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_evidence_is_reused_for_the_rest_of_the_hour\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_short_periods_reuse_only_the_evidence_of_their_quarter_hour\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_cache_lifetimes\n22 failed, 33352 passed, 683 skipped, 5 xfailed, 632 warnings in 146.24s (0:02:26)\n"
+  }
+}

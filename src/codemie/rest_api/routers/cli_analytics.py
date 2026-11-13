@@ -510,7 +510,7 @@ def _respond(payload: dict, model_class: Any) -> JSONResponse:
     if config.is_local:
         response.headers["Cache-Control"] = "no-store"
     else:
-        response.headers["Cache-Control"] = "private, max-age=300"
+        response.headers["Cache-Control"] = "private, no-cache"
         response.headers["ETag"] = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
     return response
 
