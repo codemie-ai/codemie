@@ -158,6 +158,7 @@ class ProjectService:
         ALLOWED_MODELS_INVALID_MODEL="Invalid model identifier in allowed_models: {model}",
         ALLOWED_MODELS_UNAUTHORIZED="Only project admins and maintainers can update allowed models",
         DEFAULT_MODEL_REQUIRED_WITH_ALLOWED_MODELS="default_model is required when allowed_models is set",
+        DEFAULT_MODEL_NOT_AVAILABLE="default_model is not an available chat model: {model}",
     )
 
     @classmethod
@@ -256,15 +257,15 @@ class ProjectService:
             create_kwargs["cli_analytics_enabled"] = cli_analytics_enabled
         project = application_repository.create(**create_kwargs)
 
-        # Initialize project-level model availability + default model
-        # so the UI shows a checked "DEFAULT" radio on first open.
-        # CLI-only models are allowed too (CodeMie CLI and its connectors list a project's models);
-        # the default comes from the web-available ones, since web chat starts on it.
+        # Initialize project-level model availability + default model so the UI shows a checked "DEFAULT"
+        # radio on first open. allowed_models stays NULL: every model and router is allowed, including
+        # ones added to the platform later, and only the default is stored. It comes from the
+        # web-available models, since web chat starts on it.
         models = llm_service.get_allowed_chat_models(actor, include_all=True)
         deployment_names = [m.deployment_name for m in models]
         validated_models = cls.validate_allowed_models(deployment_names)
         cls.ensure_chat_model_allowed(validated_models)
-        project.allowed_models = validated_models
+        project.allowed_models = None
         project.default_model = next(m.deployment_name for m in models if m.forbidden_for_web is not True)
 
         activity_event_repository.insert(
@@ -910,6 +911,25 @@ class ProjectService:
             )
 
     @classmethod
+    def ensure_default_model_available(cls, default_model: str) -> None:
+        """Validate that default_model names an available chat model or router.
+
+        Raises:
+            ExtendedHTTPException 400: If default_model matches no available chat model or router
+        """
+        from codemie.service.llm.model_availability_service import model_aliases
+        from codemie.service.llm_service.llm_service import llm_service
+
+        all_models = list(llm_service.get_all_llm_model_info())
+        available_ids = cls._get_available_chat_model_ids(all_models) | cls._get_available_router_model_ids(all_models)
+
+        if not model_aliases(default_model) & available_ids:
+            raise ExtendedHTTPException(
+                code=400,
+                message=cls.ERRORS.DEFAULT_MODEL_NOT_AVAILABLE.format(model=default_model),
+            )
+
+    @classmethod
     def update_allowed_models(
         cls,
         user: User,
@@ -927,6 +947,8 @@ class ProjectService:
 
             effective_default_model = default_model if default_model is not None else project.default_model
             cls.validate_default_model(effective_default_model, validated_models)
+            if validated_models is None and default_model is not None:
+                cls.ensure_default_model_available(default_model)
 
             if validated_models is not None and effective_default_model is None:
                 raise ExtendedHTTPException(

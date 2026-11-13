@@ -1,0 +1,83 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved: CR-001 (missing migration test) disposed - recent migrations are tested at <=50% (4/10, 10/20, 14/30), so no test added"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved: CR-001 (missing migration test) disposed - recent migrations are tested at <=50% (4/10, 10/20, 14/30), so no test added"
+    }
+  ],
+  "reviewed_head": "a25e40b46e761d532a1bffb50e317cd1cff27254",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No spec existed, so acceptance was skipped and confidence is low; the migration, create path and update_allowed_models checks were read and are correct. One major finding: the new constraint migration has no unit test unlike its neighbours. 12 candidates dismissed as handled (router options return a list, disabled models are already filtered), by-design per the task, or below the emission floor; 0 deferred. Top-level decision synced to approve after the user waived CR-001 at the code-review.final gate (wont-fix, see findings[0].disposition); no check round ran and the finding was not fixed.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [
+    "migration"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 1
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/external/alembic/versions/c8d2f6a1b9e3_relax_model_whitelist_default_check.py",
+      "line": 36,
+      "title": "Migration c8d2f6a1b9e3 has no unit test",
+      "problem": "The new migration drops and recreates ck_model_whitelist_requires_default with the relaxed predicate, but no test in tests/codemie/migrations covers it, although neighbouring migrations each have one that mocks op, asserts DDL arguments and checks the revision chain. Every service test mocks the repository and session, so none exercises the constraint.",
+      "impact": "A wrong constraint name, table, schema or predicate (or a revert to the strict form) would not fail any test; create_shared_project_in_session and update_allowed_models(None, default) would then violate the CHECK at commit time in a real database. The source was read and is currently correct, so this is a regression gap rather than a live bug.",
+      "recommendation": "Add tests/codemie/migrations/test_c8d2f6a1b9e3_relax_model_whitelist_default_check.py in the style of test_add_cli_analytics_enabled_to_applications.py: monkeypatch module.op, call upgrade(), assert op.drop_constraint('ck_model_whitelist_requires_default', 'applications', schema='codemie', type_='check') and op.create_check_constraint with the same name, 'applications', 'allowed_models IS NULL OR default_model IS NOT NULL', schema='codemie'; assert down_revision == 'aad1456a4f17' and that downgrade() makes no op calls.",
+      "status": "wont-fix",
+      "disposition": {
+        "rationale": "Migration tests are the exception, not the rule: 4 of the last 10 added migrations have one (40%), 10 of the last 20 (50%), 14 of the last 30 (47%). Per the user's threshold (about 50% or lower, skip), no test is added. The migration is a single drop/re-create of one CHECK, verified by the single-head script and static review.",
+        "source": "hitl"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "3 subjects in the review range all match the documented EPMCDME-####: Description format (EPMCDME-17119)"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "changed files: project_service.py, alembic migration, test_project_service.py; new method is typed with a docstring, migration carries the license header and lives under src/external (configured ignore), and the new validation is a core ProjectService concern so Module Cohesion is met"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "security-patterns.md covers auth, secret handling and untrusted input; the change adds a default_model availability check (400 on unknown model) and a CHECK constraint migration with static SQL; no credentials logged, no query built from input, no auth change"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "No spec existed, so acceptance was skipped and confidence is low; the migration, create path and update_allowed_models checks were read and are correct. One major finding: the new constraint migration has no unit test unlike its neighbours. 12 candidates dismissed as handled (router options return a list, disabled models are already filtered), by-design per the task, or below the emission floor; 0 deferred.",
+    "confidence": "low",
+    "risk_flags": [
+      "migration"
+    ]
+  }
+}

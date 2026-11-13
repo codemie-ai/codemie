@@ -455,7 +455,7 @@ class TestCreateSharedProjectInSession:
         project = ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
 
         mock_llm_service.get_allowed_chat_models.assert_called_once_with(service_account, include_all=True)
-        assert project.allowed_models == ["gpt-4o", "claude-3"]
+        assert project.allowed_models is None
         assert project.default_model == "gpt-4o"
 
     def test_new_project_allows_cli_only_models_but_defaults_to_a_web_one(
@@ -477,7 +477,7 @@ class TestCreateSharedProjectInSession:
 
         project = ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
 
-        assert project.allowed_models == ["claude-router-cli", "gpt-4o"]
+        assert project.allowed_models is None
         assert project.default_model == "gpt-4o"
 
     def test_writes_project_created_activity_event(
@@ -1000,6 +1000,81 @@ class TestValidateDefaultModelCliOnly:
         models_patch, routers_patch = self._catalog(cli_only_model=True, cli_only_router=True)
         with models_patch, routers_patch:
             ProjectService.validate_default_model("gpt-4o", ["gpt-cli-2025", "claude-router-cli", "gpt-4o"])
+
+
+class TestUpdateAllowedModelsNullListDefault:
+    CHAT_IDS = {"gpt-4o-deployment"}
+    ROUTER_IDS = {"smart-router"}
+
+    @pytest.fixture
+    def harness(self):
+        project = SimpleNamespace(name="p", default_model="stored-default")
+        aliases = {
+            "gpt-4o": {"gpt-4o", "gpt-4o-deployment"},
+            "gpt-4o-deployment": {"gpt-4o", "gpt-4o-deployment"},
+        }
+        with (
+            patch("codemie.service.project.project_service.get_session"),
+            patch.object(ProjectService, "_find_project", return_value=project),
+            patch.object(ProjectService, "_check_allowed_models_authorization"),
+            patch.object(ProjectService, "_persist_allowed_models") as persist,
+            patch.object(ProjectService, "ensure_chat_model_allowed"),
+            patch(
+                "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+                return_value=[],
+            ) as catalog,
+            patch.object(ProjectService, "_get_available_chat_model_ids", return_value=self.CHAT_IDS) as chat_ids,
+            patch.object(ProjectService, "_get_available_router_model_ids", return_value=self.ROUTER_IDS) as router_ids,
+            patch(
+                "codemie.service.llm.model_availability_service.model_aliases",
+                side_effect=lambda model: aliases.get(model, {model}),
+            ),
+        ):
+            yield SimpleNamespace(persist=persist, catalog=catalog, chat_ids=chat_ids, router_ids=router_ids)
+
+    def test_null_list_rejects_unknown_default(self, harness, regular_user):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.update_allowed_models(regular_user, "p", None, "does-not-exist")
+
+        assert exc_info.value.code == 400
+        assert exc_info.value.message == "default_model is not an available chat model: does-not-exist"
+        harness.persist.assert_not_called()
+
+    def test_null_list_rejects_empty_string_default(self, harness, regular_user):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.update_allowed_models(regular_user, "p", None, "")
+
+        assert exc_info.value.code == 400
+        harness.persist.assert_not_called()
+
+    def test_null_list_accepts_default_by_deployment_name(self, harness, regular_user):
+        ProjectService.update_allowed_models(regular_user, "p", None, "gpt-4o-deployment")
+
+        assert harness.persist.call_args.args[2:4] == (None, "gpt-4o-deployment")
+
+    def test_null_list_accepts_default_by_base_name(self, harness, regular_user):
+        ProjectService.update_allowed_models(regular_user, "p", None, "gpt-4o")
+
+        assert harness.persist.call_args.args[2:4] == (None, "gpt-4o")
+
+    def test_null_list_accepts_router_default(self, harness, regular_user):
+        ProjectService.update_allowed_models(regular_user, "p", None, "smart-router")
+
+        assert harness.persist.call_args.args[2:4] == (None, "smart-router")
+
+    def test_null_list_omitted_default_keeps_stored_unchecked(self, harness, regular_user):
+        ProjectService.update_allowed_models(regular_user, "p", None, None)
+
+        assert harness.persist.call_args.args[2:4] == (None, "stored-default")
+        harness.chat_ids.assert_not_called()
+        harness.router_ids.assert_not_called()
+
+    def test_list_branch_does_not_call_catalogue_check(self, harness, regular_user):
+        with patch.object(ProjectService, "ensure_default_model_available") as ensure_default:
+            ProjectService.update_allowed_models(regular_user, "p", ["gpt-4o-deployment"], "gpt-4o-deployment")
+
+        ensure_default.assert_not_called()
+        assert harness.persist.call_args.args[2:4] == (["gpt-4o-deployment"], "gpt-4o-deployment")
 
 
 class TestCheckAllowedModelsAuthorization:
