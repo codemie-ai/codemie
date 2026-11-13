@@ -1,0 +1,72 @@
+{
+  "task": "Make personal-project recognition and default project resolution case-insensitive across user security model, personal project service, LLM service utils, and LiteLLM budget routing",
+  "generated": "2026-10-29T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L",
+      "affected": "User security model, PersonalProjectService, llm_service utils, LiteLLM llm_factory, LiteLLM proxy_router",
+      "layers": "Service, API (security/auth model), External (LiteLLM)"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "Identity/default-project resolution semantics, budget routing correctness for mixed-case personal projects, orphan-vs-real project preference",
+      "mitigation": "Extensive unit and end-to-end tests for mixed-case and orphan scenarios; no schema change or data migration (removed by product owner); easily reversible"
+    },
+    "file_change_estimate": {
+      "score": 5,
+      "label": "XL",
+      "modified_files": 11,
+      "modified_file_list": [
+        "src/codemie/enterprise/litellm/llm_factory.py",
+        "src/codemie/enterprise/litellm/proxy_router.py",
+        "src/codemie/rest_api/security/user.py",
+        "src/codemie/service/llm_service/utils.py",
+        "src/codemie/service/project/personal_project_service.py",
+        "tests/codemie/rest_api/security/test_user.py",
+        "tests/codemie/service/llm_service/test_utils_litellm_context.py",
+        "tests/codemie/service/project/test_personal_project_service.py",
+        "tests/codemie/service/user/test_user_management_service_effective_default.py",
+        "tests/enterprise/litellm/test_llm_factory.py",
+        "tests/enterprise/litellm/test_proxy_router.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": ["src/", "tests/"]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M",
+      "layers_changed": ["API", "Service", "External"],
+      "schema_migration": false,
+      "cross_system": true
+    }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 11,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Five source components across security model, project service, llm utils and two LiteLLM integration modules share the same case-insensitivity rule." },
+    { "dimension": "file_change_estimate", "reason": "11 files (5 source, 6 test) per diffstat, 476 insertions and 48 deletions; test-heavy so size is driven by coverage, not logic breadth." }
+  ],
+  "red_flags_applied": [
+    "Touches shared identity/budget routing logic: Component Scope kept at L",
+    "Initial assessment (L, 23) assumed a data migration for orphan rows; migration removed by product owner so Technical Risk, Layers and Clarity dropped, actual M (18)"
+  ],
+  "split_recommendation": null
+}

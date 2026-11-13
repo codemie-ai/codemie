@@ -1,0 +1,28 @@
+{
+  "decision": "approve",
+  "rationale": "The fix-up (commit ff91e2a4f, tests only, +84 lines) resolves both findings: CR-001 via two end-to-end ensure_personal_project_async tests (no aadd_project when the real membership exists; orphan-only membership links the real name and the activity event carries it), CR-002 via detail and list view tests asserting exactly one is_default on the real project for a real+orphan user. No production code changed, so no new high-risk surface. A mutation check reported by the author turned 3 of 4 new tests red. The carried-forward business_review rows for AC2/AC3 predate the fix-up and are now covered by these tests.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: mixed-case email user gets exactly one personal-project membership with the real name; no orphan created", "status": "pass", "notes": "_find_application is case-insensitive; membership lookup and insert use application.name; tests test_create_personal_project_does_not_add_orphan_for_mixed_case_application and test_has_personal_project_complete_matches_mixed_case_application."},
+    {"kind": "story-ac", "item": "AC2: admin user details show exactly one default project for such users", "status": "partial", "notes": "Carried forward from the final round: resolver tests only at that time. Since resolved by CR-002 view-level tests (detail and list)."},
+    {"kind": "story-ac", "item": "AC3: unit tests cover mixed-case emails in ensure_personal_project_async, resolve_default_project, _unfunded_project", "status": "partial", "notes": "Carried forward from the final round: ensure_personal_project_async was only covered with mocked collaborators. Since resolved by CR-001 end-to-end tests."},
+    {"kind": "story-ac", "item": "AC4: existing prod orphans found, removed, count reported", "status": "na", "notes": "Overridden by the product owner: no migration, script or cleanup (spec Non-goals and Decisions)."},
+    {"kind": "story-ac", "item": "AC5: budget attribution names the project actually charged", "status": "pass", "notes": "Four comparison sites use same_project_name with tests; grep sweep found no other personal-project comparisons."},
+    {"kind": "spec", "item": "Design 1: canonical project name in personal-project setup", "status": "pass", "notes": "Real name used for membership, activity event and reconcile; case-only reconcile is a no-op; foreign or non-personal case variants rejected."},
+    {"kind": "spec", "item": "Design 2: resolve_default_project case-insensitive, prefers name differing from email, sorted tie-break", "status": "pass", "notes": "same_project_name and _pick_member in security/user.py with tests."},
+    {"kind": "spec", "item": "Design 3: personal-project detection in budget code", "status": "pass", "notes": "_unfunded_project, llm_factory (2 sites), proxy_router use the shared helper."},
+    {"kind": "spec", "item": "Design 4: existing orphan rows stay harmless", "status": "pass", "notes": "Default resolves to the real project; orphan has no application so is not listed."},
+    {"kind": "spec", "item": "Tests list: includes admin detail/list/profile marking exactly one default for real+orphan user", "status": "partial", "notes": "Carried forward: detail and list now covered by CR-002 tests; the profile view uses the same resolve_membership_default helper and has no dedicated test."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "Commits use the EPMCDME-16566: prefix."},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff check and format pass on touched files."},
+    {"kind": "security", "status": "pass", "notes": "No email in logs (user_id and project_type only); no new inputs or secrets."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "test_ensure_adds_nothing_when_mixed_case_project_and_membership_exist and test_ensure_links_the_real_name_when_only_an_orphan_membership_exists run the real helpers through ensure_personal_project_async and assert no orphan aadd_project, the real name on the new link, and the real name on the activity event."},
+    {"id": "CR-002", "status": "resolved", "notes": "TestMixedCaseOrphanMembership asserts _defaults(...) == {REAL: True} for the admin detail and list views with memberships [real, lowercase orphan] where only the real one is visible."}
+  ]
+}

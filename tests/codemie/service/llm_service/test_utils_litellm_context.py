@@ -562,6 +562,12 @@ class TestUnfundedProjectAtContextCreation:
         assert result is None
         probe.assert_not_called()
 
+    def test_mixed_case_personal_project_is_not_a_fallback(self):
+        """EPMCDME-16566: the personal project keeps the casing it was created with."""
+        result, probe = self._run(scopes=set(), project="Carol@Example.com")
+        assert result is None
+        probe.assert_not_called()
+
     def test_internal_proxy_mode_skips_probe(self):
         result, probe = self._run(scopes=set(), mode="internal")
         assert result is None

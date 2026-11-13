@@ -29,8 +29,24 @@ AUTHORIZATION_HEADER = "Authorization"
 
 
 def same_project_name(a: str | None, b: str | None) -> bool:
-    """Project names compare case-insensitively; empty values never match (EPMCDME-16625)."""
+    """True when both names are set and equal ignoring case (EPMCDME-16566, EPMCDME-16625).
+
+    The personal project is named after the email, but the IdP can deliver the email with other
+    casing than the stored one, so a project name must never be compared to an email exactly.
+    """
     return bool(a) and bool(b) and a.casefold() == b.casefold()
+
+
+def _pick_member(names: set[str], candidate: str, email: str | None) -> str | None:
+    """Return the member project equal to candidate ignoring case, or None.
+
+    When several match, the one that is not exactly the email wins: the exact-email name can only
+    be an orphan membership created before EPMCDME-16566, while the real project keeps its own casing.
+    """
+    matches = sorted(name for name in names if same_project_name(name, candidate))
+    if not matches:
+        return None
+    return next((name for name in matches if name != email), matches[0])
 
 
 def resolve_default_project(project_names: Iterable[str], stored_default: str | None, email: str | None) -> str | None:
@@ -40,15 +56,17 @@ def resolve_default_project(project_names: Iterable[str], stored_default: str | 
     unbound spend on the personal budget, and the first project by name is the last resort.
     The fallback is never persisted, so every reader must derive it here: the UI then always
     shows exactly one default and runtime routing follows what it shows (EPMCDME-15738).
+    Names match ignoring case and resolve to the real member project (EPMCDME-16566).
     """
-    if stored_default:
-        return stored_default
     names = set(project_names)
+    if stored_default:
+        return _pick_member(names, stored_default, email) or stored_default
     if not names:
         return None
-    personal = next((name for name in sorted(names) if same_project_name(name, email)), None)
-    if personal:
-        return personal
+    if email:
+        personal = _pick_member(names, email, email)
+        if personal:
+            return personal
     return min(names)
 
 

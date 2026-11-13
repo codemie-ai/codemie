@@ -3462,6 +3462,17 @@ class TestFlagPersonalBudgetFallback:
 
         assert "budget_fallback_from" not in request_info
 
+    @pytest.mark.parametrize("project", ["Alice@Example.com", "ALICE"])
+    def test_personal_identity_with_other_casing_is_not_a_fallback(self, project):
+        """EPMCDME-16566: the personal project can keep the casing the IdP first delivered."""
+        from codemie.enterprise.litellm.proxy_router import BudgetAvailability, _flag_personal_budget_fallback
+
+        request_info = {"project": project}
+
+        _flag_personal_budget_fallback(self._user(), request_info, BudgetAvailability(user_budget_ids={}))
+
+        assert "budget_fallback_from" not in request_info
+
     def test_funded_project_is_not_flagged(self):
         from codemie.enterprise.litellm.proxy_router import BudgetAvailability, _flag_personal_budget_fallback
 

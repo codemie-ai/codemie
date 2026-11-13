@@ -134,3 +134,41 @@ class TestListUsersEffectiveDefault:
         result = UserManagementService.list_users(MagicMock(), "project_admin", is_project_admin=True)
 
         assert _defaults(result.data[0].projects) == {"alpha": False}
+
+
+class TestMixedCaseOrphanMembership:
+    """EPMCDME-16566: a lowercase orphan membership (no application) must not hide the real project's default."""
+
+    REAL = "Mixed.Case@epam.com"
+    LOWER = "mixed.case@epam.com"
+
+    @patch("codemie.repository.user_project_repository.user_project_repository.get_by_user_id")
+    @patch("codemie.repository.user_project_repository.user_project_repository.get_visible_projects_for_user")
+    @patch("codemie.service.user.user_management_service.user_repository")
+    def test_detail_marks_the_real_project_as_the_only_default(self, mock_user_repo, mock_get_visible, mock_get_all):
+        mock_user_repo.get_by_id.return_value = _user(email=self.LOWER)
+        mock_user_repo.get_user_knowledge_bases.return_value = []
+        mock_get_visible.return_value = _memberships((self.REAL, False))  # the orphan has no application
+        mock_get_all.return_value = _memberships((self.REAL, False), (self.LOWER, False))
+
+        result = UserManagementService.get_user_with_relationships(
+            MagicMock(), "target_user", "admin", is_admin=True, is_project_admin=False
+        )
+
+        assert _defaults(result.projects) == {self.REAL: True}
+
+    @patch("codemie.repository.user_project_repository.user_project_repository.filter_visible_projects_from_map")
+    @patch("codemie.service.user.user_management_service.user_repository")
+    def test_list_marks_the_real_project_as_the_only_default(self, mock_user_repo, mock_filter_visible):
+        alice = _user("alice", self.LOWER)
+        mock_user_repo.count_users.return_value = 1
+        mock_user_repo.query_users.return_value = [alice]
+        mock_user_repo.fetch_projects_map.return_value = {
+            "alice": _memberships((self.REAL, False), (self.LOWER, False), user_id="alice")
+        }
+        mock_user_repo.fetch_budget_assignments_map.return_value = {}
+        mock_filter_visible.return_value = {"alice": _memberships((self.REAL, False), user_id="alice")}
+
+        result = UserManagementService.list_users(MagicMock(), "admin", is_project_admin=True)
+
+        assert _defaults(result.data[0].projects) == {self.REAL: True}

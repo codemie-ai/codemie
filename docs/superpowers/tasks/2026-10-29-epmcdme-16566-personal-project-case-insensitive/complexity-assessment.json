@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "task": "Make personal-project setup, default-project resolution and budget attribution case-insensitive, and clean existing orphan lowercase user_projects rows via a data migration.",
+  "generated": "2026-10-29",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "personal_project_service, application_repository, user_project_repository, security/user.py (resolve_default_project, a shared utility used by admin, profile and access routers), llm_service/utils.py (_unfunded_project) and llm_factory attribution; all login flows (authentication, registration, migration coordinator) call the changed service." },
+    { "dimension": "technical_risk", "reason": "Prod data cleanup of orphan user_projects rows is hard to reverse. The orphan is not confirmed on prod. Rows must be deleted or renamed while respecting the unique constraint and the single-default index. Budget attribution must stay consistent with the real charge. Existing patterns (func.lower lookups, count-logging Alembic data repairs) lower the novelty." },
+    { "dimension": "file_change_estimate", "reason": "About 7-8 source files plus one new Alembic migration, and about 6-8 test files, several with exact-call-arg assertions that must be updated. Spans service, repository, security, llm_service, enterprise and alembic directories." },
+    { "dimension": "affected_layers", "reason": "Service, Repository, DB-Persistence (data migration, no schema change) and the LLM budget attribution layer. No API contract or frontend change." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utility resolve_default_project and multiple login flows",
+    "Technical Risk bumped from L to XL: requires data migration on prod; budget attribution is security-adjacent",
+    "File Change Estimate bumped from L to XL: data migration plus many test updates"
+  ],
+  "split_recommendation": null
+}

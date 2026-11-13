@@ -68,7 +68,7 @@ from codemie.core.constants import (
 from codemie.core.dependecies import litellm_context
 from codemie.core.utils import calculate_token_cost
 from codemie.rest_api.security.authentication import BEARER_AUTHORIZATION_HEADER, authenticate
-from codemie.rest_api.security.user import User
+from codemie.rest_api.security.user import User, same_project_name
 from codemie.service.budget.attribution_resolver import (
     AssetKind,
     AttributionDecision,
@@ -735,7 +735,7 @@ def _flag_personal_budget_fallback(
     """
     project = request_info.get(PROJECT)
     funded = bool(availability.project_scopes) if project_budget_used is None else project_budget_used
-    if funded or not project or project in {user.username, user.email}:
+    if funded or not project or any(same_project_name(project, name) for name in (user.username, user.email)):
         return
     # Attribution may already have moved the charge from the requested project to the default project;
     # keep the originally targeted project and record that the personal budget paid in the end.

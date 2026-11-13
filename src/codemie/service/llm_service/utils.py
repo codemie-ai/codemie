@@ -23,7 +23,7 @@ from codemie.core.dependecies import set_dial_credentials, set_litellm_context
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.assistant import AssistantBase
 from codemie.rest_api.models.settings import LiteLLMContext
-from codemie.rest_api.security.user import User
+from codemie.rest_api.security.user import User, same_project_name
 from codemie.service.budget.attribution_resolver import (
     AssetKind,
     AttributionDecision,
@@ -154,7 +154,7 @@ def _unfunded_project(
     as the CLI does (AR-1). A user without an email is probed like any other: a stand-in owner must not be passed
     as able to pay unchecked (AR-3).
     """
-    if litellm_creds or not project or (user.email and project == user.email):
+    if litellm_creds or not project or same_project_name(project, user.email):
         return None
     if not user.id:
         raise ValueError("no user id to check project funding with")

@@ -77,6 +77,7 @@ class TestPersonalProjectService:
             with patch(
                 "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
+                return_value="project-name",
             ) as mock_create:
                 # Act
                 result = await PersonalProjectService.ensure_personal_project_async(user_id, user_email)
@@ -107,6 +108,7 @@ class TestPersonalProjectService:
             with patch(
                 "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
+                return_value="project-name",
             ) as mock_create:
                 # Act
                 result = await PersonalProjectService.ensure_personal_project_async(user_id, user_email)
@@ -184,6 +186,7 @@ class TestPersonalProjectService:
             with patch(
                 "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
+                return_value="project-name",
             ):
                 # Act
                 await PersonalProjectService.ensure_personal_project_async(user_id, user_email)
@@ -209,7 +212,7 @@ class TestPersonalProjectService:
 
         # Mock: Application exists with correct type
         mock_app = Application(name=user_email, project_type="personal", created_by=user_id)
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_app)
 
         # Mock: user_projects mapping exists
         mock_mapping = UserProject(user_id=user_id, project_name=user_email, is_project_admin=False)
@@ -220,7 +223,7 @@ class TestPersonalProjectService:
 
         # Assert
         assert result is True
-        mock_app_repo.aget_by_name.assert_called_once_with(session, user_email)
+        mock_app_repo.aget_active_by_name_case_insensitive.assert_called_once_with(session, user_email)
         mock_user_proj_repo.aget_by_user_and_project.assert_called_once_with(session, user_id, user_email)
 
     @pytest.mark.asyncio
@@ -235,7 +238,7 @@ class TestPersonalProjectService:
 
         # Mock: Application exists
         mock_app = Application(name=user_email, project_type="personal", created_by=user_id)
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_app)
 
         # Mock: user_projects mapping MISSING
         mock_user_proj_repo.aget_by_user_and_project = AsyncMock(return_value=None)
@@ -256,7 +259,7 @@ class TestPersonalProjectService:
         user_email = "john.doe@example.com"
 
         # Mock: No application exists
-        mock_app_repo.aget_by_name = AsyncMock(return_value=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=None)
 
         # Act
         result = await PersonalProjectService._has_personal_project_complete(session, user_id, user_email)
@@ -279,7 +282,7 @@ class TestPersonalProjectService:
         user_email = "john.doe@example.com"
 
         # Mock: No existing application
-        mock_app_repo.aget_by_name = AsyncMock(return_value=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=None)
 
         # Mock new application creation (using aget_or_create for race conditions)
         mock_application = Application(name=user_email, project_type="shared", created_by=None)
@@ -320,7 +323,7 @@ class TestPersonalProjectService:
         user_email = "john.doe@example.com"
 
         # Mock: No existing application
-        mock_app_repo.aget_by_name = AsyncMock(return_value=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=None)
         mock_application = Application(name=user_email, project_type="shared", created_by=None)
         mock_app_repo.aget_or_create = AsyncMock(return_value=mock_application)
 
@@ -347,7 +350,7 @@ class TestPersonalProjectService:
 
         # Mock: Application exists
         mock_app = Application(name=user_email, project_type="personal", created_by=user_id)
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_app)
         mock_user_proj_repo.aget_by_project_name = AsyncMock(return_value=[])
 
         # Mock: User-project mapping ALREADY EXISTS
@@ -374,7 +377,7 @@ class TestPersonalProjectService:
 
         # Mock: Shared application exists
         mock_app = Application(name=user_email, project_type="shared", created_by="other-user")
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_app)
 
         # Mock: Multiple users have access (current user + another user)
         current_user_mapping = UserProject(user_id=user_id, project_name=user_email, is_project_admin=False)
@@ -407,7 +410,7 @@ class TestPersonalProjectService:
 
         for user_email in test_emails:
             # Mock: No existing application
-            mock_app_repo.aget_by_name = AsyncMock(return_value=None)
+            mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=None)
             mock_application = Application(name=user_email, project_type="shared", created_by=None)
             mock_app_repo.aget_or_create = AsyncMock(return_value=mock_application)
             mock_user_proj_repo.aget_by_user_and_project = AsyncMock(return_value=None)
@@ -432,7 +435,7 @@ class TestPersonalProjectService:
         user_email = "john.doe@example.com"
 
         # Mock: No existing application
-        mock_app_repo.aget_by_name = AsyncMock(return_value=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=None)
 
         # Mock new application creation (using aget_or_create for race conditions)
         mock_application = Application(name=user_email, project_type="shared", created_by=None)
@@ -475,7 +478,7 @@ class TestPersonalProjectService:
         mock_get_async_session.return_value = _make_async_session_cm(mock_session)
 
         # Mock: No existing personal project
-        mock_app_repo.aget_by_name = AsyncMock(return_value=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=None)
         mock_user_proj_repo.aget_by_user_and_project = AsyncMock(return_value=None)
         mock_user_proj_repo.aget_by_project_name = AsyncMock(return_value=[])
         mock_user_proj_repo.aadd_project = AsyncMock()
@@ -510,7 +513,7 @@ class TestPersonalProjectService:
 
         # Mock: Shared application exists
         mock_app = Application(name=user_email, project_type="shared", created_by="old-owner")
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_app)
 
         # Mock: Only current user has access (safe to convert)
         current_user_mapping = UserProject(user_id=user_id, project_name=user_email, is_project_admin=False)
@@ -539,7 +542,7 @@ class TestPersonalProjectService:
         mock_app = Application(
             name=user_email, project_type="shared", created_by="old-owner", cli_analytics_enabled=True
         )
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_app)
         mapping = UserProject(user_id=user_id, project_name=user_email, is_project_admin=False)
         mock_user_proj_repo.aget_by_project_name = AsyncMock(return_value=[mapping])
         mock_user_proj_repo.aget_by_user_and_project = AsyncMock(return_value=mapping)
@@ -562,7 +565,7 @@ class TestPersonalProjectService:
 
         # Mock: Shared application exists
         mock_app = Application(name=user_email, project_type="shared", created_by="other-user")
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_app)
 
         # Mock: Only ONE other user has access (but not current user) - still unsafe!
         other_user_mapping = UserProject(user_id="other-user", project_name=user_email, is_project_admin=True)
@@ -585,7 +588,7 @@ class TestPersonalProjectService:
         user_email = "john.doe@example.com"
 
         # Mock: No existing application
-        mock_app_repo.aget_by_name = AsyncMock(return_value=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=None)
 
         # Mock new application creation via aget_or_create
         mock_application = Application(name=user_email, project_type="shared", created_by=None)
@@ -636,6 +639,7 @@ class TestConcurrentPersonalProjectCreation:
             with patch(
                 "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
+                return_value="project-name",
             ):
                 # Simulate two concurrent calls
                 for _ in range(2):
@@ -681,6 +685,7 @@ class TestConcurrentPersonalProjectCreation:
             with patch(
                 "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
+                return_value="project-name",
             ):
                 # First call succeeds
                 result1 = await PersonalProjectService.ensure_personal_project_async(user_id, user_email)
@@ -722,6 +727,7 @@ class TestConcurrentPersonalProjectCreation:
             with patch(
                 "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
+                return_value="project-name",
             ):
                 result2 = await PersonalProjectService.ensure_personal_project_async(user_id, user_email)
                 assert result2 is True  # Retry succeeds
@@ -747,6 +753,7 @@ class TestConcurrentPersonalProjectCreation:
             with patch(
                 "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
+                return_value="project-name",
             ):
                 results = await asyncio.gather(
                     *[PersonalProjectService.ensure_personal_project_async(user_id, user_email) for _ in range(4)]
@@ -789,6 +796,7 @@ class TestPersonalProjectServiceEdgeCases:
             with patch(
                 "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
+                return_value="project-name",
             ):
                 # Act
                 result = await PersonalProjectService.ensure_personal_project_async(user_id, user_email)
@@ -879,7 +887,7 @@ class TestPersonalProjectServiceEdgeCases:
 
         # Mock old application exists and is personal project owned by user
         mock_old_app = Application(name=old_email, project_type="personal", created_by=user_id)
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_old_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_old_app)
         mock_user_proj_repo.aremove_project = AsyncMock()
         mock_ensure.return_value = True
 
@@ -915,7 +923,7 @@ class TestPersonalProjectServiceEdgeCases:
         mock_get_async_session.return_value = _make_async_session_cm(mock_session)
 
         # Mock: Old application does NOT exist
-        mock_app_repo.aget_by_name = AsyncMock(return_value=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=None)
         mock_ensure.return_value = True
 
         # Act
@@ -949,7 +957,7 @@ class TestPersonalProjectServiceEdgeCases:
 
         # Mock: Old application exists but is SHARED (not personal)
         mock_old_app = Application(name=old_email, project_type="shared", created_by=user_id)
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_old_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_old_app)
         mock_ensure.return_value = True
 
         # Act
@@ -983,7 +991,7 @@ class TestPersonalProjectServiceEdgeCases:
 
         # Mock: Old application exists and is personal but owned by DIFFERENT user
         mock_old_app = Application(name=old_email, project_type="personal", created_by="other-user-id")
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_old_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_old_app)
         mock_ensure.return_value = True
 
         # Act
@@ -1049,7 +1057,7 @@ class TestPersonalProjectServiceEdgeCases:
 
         # Mock: Old project exists and gets deleted successfully
         mock_old_app = Application(name=old_email, project_type="personal", created_by=user_id)
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_old_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_old_app)
         mock_user_proj_repo.aremove_project = AsyncMock()
 
         # Mock: New project creation FAILS
@@ -1086,7 +1094,7 @@ class TestPersonalProjectServiceEdgeCases:
         mock_get_async_session.return_value = _make_async_session_cm(mock_session)
 
         mock_old_app = Application(name=old_email, project_type="personal", created_by=user_id)
-        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_old_app)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=mock_old_app)
         mock_user_proj_repo.aremove_project = AsyncMock()
         mock_ensure.return_value = True
 
@@ -1123,3 +1131,213 @@ class TestPersonalProjectServiceEdgeCases:
         assert result is False
         assert old_app.deleted_at is None
         mock_ensure.assert_not_called()
+
+
+class TestCaseInsensitivePersonalProject:
+    """EPMCDME-16566: the membership must carry the application's real name, never an orphan casing."""
+
+    REAL = "Mixed.Case@epam.com"
+    EMAIL = "mixed.case@epam.com"
+    USER_ID = "user-16566"
+
+    @staticmethod
+    def _app(name, *, project_type="personal", created_by="user-16566"):
+        return Application(name=name, project_type=project_type, created_by=created_by)
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_has_personal_project_complete_matches_mixed_case_application(self, mock_app_repo, mock_user_proj):
+        session = AsyncMock()
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=self._app(self.REAL))
+        mock_user_proj.aget_by_user_and_project = AsyncMock(
+            return_value=UserProject(user_id=self.USER_ID, project_name=self.REAL)
+        )
+
+        result = await PersonalProjectService._has_personal_project_complete(session, self.USER_ID, self.EMAIL)
+
+        assert result is True
+        mock_user_proj.aget_by_user_and_project.assert_called_once_with(session, self.USER_ID, self.REAL)
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_create_personal_project_does_not_add_orphan_for_mixed_case_application(
+        self, mock_app_repo, mock_user_proj
+    ):
+        session = AsyncMock()
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=self._app(self.REAL))
+        mock_user_proj.aget_by_project_name = AsyncMock(
+            return_value=[UserProject(user_id=self.USER_ID, project_name=self.REAL)]
+        )
+        mock_user_proj.aget_by_user_and_project = AsyncMock(return_value=None)
+        mock_user_proj.aadd_project = AsyncMock()
+
+        name = await PersonalProjectService._create_personal_project(session, self.USER_ID, self.EMAIL)
+
+        assert name == self.REAL
+        mock_user_proj.aget_by_user_and_project.assert_called_once_with(session, self.USER_ID, self.REAL)
+        mock_user_proj.aadd_project.assert_called_once_with(session, self.USER_ID, self.REAL, is_project_admin=False)
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_create_personal_project_skips_membership_when_real_row_exists(self, mock_app_repo, mock_user_proj):
+        session = AsyncMock()
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=self._app(self.REAL))
+        mock_user_proj.aget_by_project_name = AsyncMock(return_value=[])
+        mock_user_proj.aget_by_user_and_project = AsyncMock(
+            return_value=UserProject(user_id=self.USER_ID, project_name=self.REAL)
+        )
+        mock_user_proj.aadd_project = AsyncMock()
+
+        await PersonalProjectService._create_personal_project(session, self.USER_ID, self.EMAIL)
+
+        mock_user_proj.aadd_project.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "variant",
+        [
+            Application(name="Mixed.Case@epam.com", project_type="personal", created_by="someone-else"),
+            Application(name="Mixed.Case@epam.com", project_type="shared", created_by="user-16566"),
+        ],
+        ids=["owned-by-another-user", "not-personal"],
+    )
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_create_personal_project_rejects_foreign_case_variant(self, mock_app_repo, mock_user_proj, variant):
+        session = AsyncMock()
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=variant)
+        mock_user_proj.aadd_project = AsyncMock()
+
+        with pytest.raises(ValueError):
+            await PersonalProjectService._create_personal_project(session, self.USER_ID, self.EMAIL)
+
+        mock_user_proj.aadd_project.assert_not_called()
+        session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_create_personal_project_uses_application_name_returned_by_get_or_create(
+        self, mock_app_repo, mock_user_proj
+    ):
+        session = AsyncMock()
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=None)
+        mock_app_repo.aget_or_create = AsyncMock(
+            return_value=self._app(self.REAL, project_type="shared", created_by=None)
+        )
+        mock_user_proj.aget_by_user_and_project = AsyncMock(return_value=None)
+        mock_user_proj.aadd_project = AsyncMock()
+
+        name = await PersonalProjectService._create_personal_project(session, self.USER_ID, self.EMAIL)
+
+        assert name == self.REAL
+        mock_user_proj.aadd_project.assert_called_once_with(session, self.USER_ID, self.REAL, is_project_admin=False)
+
+    @pytest.mark.asyncio
+    @patch("codemie.clients.postgres.get_async_session")
+    @patch("codemie.service.project.personal_project_service.activity_event_repository")
+    async def test_ensure_uses_canonical_name_for_activity_event(self, mock_activity_repo, mock_get_async_session):
+        mock_session = AsyncMock()
+        mock_get_async_session.return_value = _make_async_session_cm(mock_session)
+        mock_activity_repo.async_insert = AsyncMock()
+
+        with (
+            patch.object(
+                PersonalProjectService, "_has_personal_project_complete", new_callable=AsyncMock, return_value=False
+            ),
+            patch.object(
+                PersonalProjectService, "_create_personal_project", new_callable=AsyncMock, return_value=self.REAL
+            ),
+        ):
+            assert await PersonalProjectService.ensure_personal_project_async(self.USER_ID, self.EMAIL) is True
+
+        event = mock_activity_repo.async_insert.call_args.args[0]
+        assert event.entity_id == self.REAL
+
+    @pytest.mark.asyncio
+    @patch("codemie.clients.postgres.get_async_session")
+    @patch("codemie.service.project.personal_project_service.PersonalProjectService.ensure_personal_project_async")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_reconcile_case_only_email_change_is_noop(
+        self, mock_app_repo, mock_user_proj, mock_ensure, mock_get_async_session
+    ):
+        result = await PersonalProjectService.reconcile_personal_project_on_email_change(
+            self.USER_ID, "Foo@x.com", "foo@x.com", "regular"
+        )
+
+        assert result is True
+        mock_get_async_session.assert_not_called()
+        mock_user_proj.aremove_project.assert_not_called()
+        mock_ensure.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("codemie.clients.postgres.get_async_session")
+    @patch("codemie.service.project.personal_project_service.PersonalProjectService.ensure_personal_project_async")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_reconcile_finds_old_project_case_insensitively(
+        self, mock_app_repo, mock_user_proj, mock_ensure, mock_get_async_session
+    ):
+        mock_session = AsyncMock()
+        mock_get_async_session.return_value = _make_async_session_cm(mock_session)
+        old_app = self._app("Old@x.com")
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=old_app)
+        mock_user_proj.aremove_project = AsyncMock()
+        mock_ensure.return_value = True
+
+        await PersonalProjectService.reconcile_personal_project_on_email_change(
+            self.USER_ID, "old@x.com", "new@x.com", "regular"
+        )
+
+        assert old_app.deleted_at is not None
+        mock_user_proj.aremove_project.assert_called_once_with(mock_session, self.USER_ID, "Old@x.com")
+
+    @pytest.mark.asyncio
+    @patch("codemie.clients.postgres.get_async_session")
+    @patch("codemie.service.project.personal_project_service.activity_event_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_ensure_adds_nothing_when_mixed_case_project_and_membership_exist(
+        self, mock_app_repo, mock_user_proj, mock_activity_repo, mock_get_async_session
+    ):
+        mock_get_async_session.return_value = _make_async_session_cm(AsyncMock())
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=self._app(self.REAL))
+        mock_user_proj.aget_by_user_and_project = AsyncMock(
+            return_value=UserProject(user_id=self.USER_ID, project_name=self.REAL)
+        )
+        mock_user_proj.aadd_project = AsyncMock()
+
+        assert await PersonalProjectService.ensure_personal_project_async(self.USER_ID, self.EMAIL) is True
+
+        mock_user_proj.aadd_project.assert_not_called()
+        mock_activity_repo.async_insert.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("codemie.clients.postgres.get_async_session")
+    @patch("codemie.service.project.personal_project_service.activity_event_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_ensure_links_the_real_name_when_only_an_orphan_membership_exists(
+        self, mock_app_repo, mock_user_proj, mock_activity_repo, mock_get_async_session
+    ):
+        mock_get_async_session.return_value = _make_async_session_cm(AsyncMock())
+        mock_activity_repo.async_insert = AsyncMock()
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=self._app(self.REAL))
+        orphan = UserProject(user_id=self.USER_ID, project_name=self.EMAIL)
+
+        async def membership(_session, _user_id, project_name):
+            return orphan if project_name == self.EMAIL else None
+
+        mock_user_proj.aget_by_user_and_project = AsyncMock(side_effect=membership)
+        mock_user_proj.aget_by_project_name = AsyncMock(return_value=[])
+        mock_user_proj.aadd_project = AsyncMock()
+
+        assert await PersonalProjectService.ensure_personal_project_async(self.USER_ID, self.EMAIL) is True
+
+        mock_user_proj.aadd_project.assert_called_once()
+        assert mock_user_proj.aadd_project.call_args.args[2] == self.REAL
+        assert mock_activity_repo.async_insert.call_args.args[0].entity_id == self.REAL

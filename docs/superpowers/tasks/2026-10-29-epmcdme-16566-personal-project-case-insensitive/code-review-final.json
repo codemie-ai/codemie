@@ -1,0 +1,45 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran with spec present. Implementation matches spec design 1-4, but two required criteria are only partially evidenced by tests: AC3 (no end-to-end test of ensure_personal_project_async with a mixed-case application) and AC2 (no view-level test that the admin user detail marks exactly one default for a real+orphan user). Dismissed 9 lens concerns as pre-existing, already guarded or out of scope (None old_email is guarded by same_project_name; soft-deleted case-variant behaviour unchanged; concurrent case-variant creation needs a DB constraint, a stated non-goal; stored-default swap needs case-variant shared projects that aget_or_create prevents; orphan always equals the email string passed at login so the tie-break holds). Deferred: repeated warning for foreign case-variants (spec says skip-and-warn, code raises ValueError, behaviour equivalent), casefold vs SQL lower for exotic Unicode, reconcile not removing pre-fix orphans on a non-case email change.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: mixed-case email user gets exactly one personal-project membership with the real name; no orphan created", "status": "pass", "notes": "_find_application is case-insensitive; membership lookup and insert use application.name; tests test_create_personal_project_does_not_add_orphan_for_mixed_case_application and test_has_personal_project_complete_matches_mixed_case_application."},
+    {"kind": "story-ac", "item": "AC2: admin user details show exactly one default project for such users", "status": "partial", "notes": "Resolver tests only (test_membership_default_prefers_real_row); no test drives the admin detail/list/profile views."},
+    {"kind": "story-ac", "item": "AC3: unit tests cover mixed-case emails in ensure_personal_project_async, resolve_default_project, _unfunded_project", "status": "partial", "notes": "resolve_default_project and _unfunded_project covered; ensure_personal_project_async only via a test that mocks both collaborators (activity event name)."},
+    {"kind": "story-ac", "item": "AC4: existing prod orphans found, removed, count reported", "status": "na", "notes": "Overridden by the product owner: no migration, script or cleanup (spec Non-goals and Decisions)."},
+    {"kind": "story-ac", "item": "AC5: budget attribution names the project actually charged", "status": "pass", "notes": "Four comparison sites use same_project_name with tests; grep sweep performed in Task 4 found no other personal-project comparisons (legacy_jwt username workspace and usage_attribution.is_personal_project are unrelated)."},
+    {"kind": "spec", "item": "Design 1: canonical project name in personal-project setup", "status": "pass", "notes": "Real name used for membership, activity event and reconcile; case-only reconcile is a no-op; foreign or non-personal case variants rejected."},
+    {"kind": "spec", "item": "Design 2: resolve_default_project case-insensitive, prefers name differing from email, sorted tie-break", "status": "pass", "notes": "same_project_name and _pick_member in security/user.py with tests."},
+    {"kind": "spec", "item": "Design 3: personal-project detection in budget code", "status": "pass", "notes": "_unfunded_project, llm_factory (2 sites), proxy_router use the shared helper."},
+    {"kind": "spec", "item": "Design 4: existing orphan rows stay harmless", "status": "pass", "notes": "Default resolves to the real project; orphan has no application so is not listed."},
+    {"kind": "spec", "item": "Tests list: includes admin detail/list/profile marking exactly one default for real+orphan user", "status": "partial", "notes": "View-level test missing."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "Commits use the EPMCDME-16566: prefix."},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff check and format pass on touched files."},
+    {"kind": "security", "status": "pass", "notes": "No email in logs (user_id and project_type only); no new inputs or secrets."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/project/test_personal_project_service.py",
+      "title": "No end-to-end test of ensure_personal_project_async with a mixed-case application",
+      "problem": "AC3 names ensure_personal_project_async, but its only mixed-case test mocks both _has_personal_project_complete and _create_personal_project, so the no-duplicate-membership behaviour is never asserted through the public entry point.",
+      "impact": "A regression that reintroduces the lowercase aadd_project call inside the real flow would pass the unit tests.",
+      "recommendation": "Add tests that run ensure_personal_project_async with the real helpers: (a) mixed-case application plus the real membership already present, assert aadd_project is never called and True is returned; (b) mixed-case application with only an orphan lowercase membership, assert aadd_project is called once with the real name."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/user",
+      "title": "No view-level test for exactly one default with real plus orphan memberships",
+      "problem": "The spec's test list and AC2 require the admin detail/list/profile to mark exactly one is_default: true on the real row for a user with both the real and the orphan membership; only resolve_membership_default is tested.",
+      "impact": "The user-visible symptom of the ticket (empty Default radio) is not pinned by any test at the layer where it appears.",
+      "recommendation": "Add a test in the user_management_service tests (detail view) with memberships [real, orphan lowercase] where the orphan has no application, asserting a single ProjectInfo with is_default True for the real project; add the list-view equivalent if the same helper is used there."
+    }
+  ]
+}

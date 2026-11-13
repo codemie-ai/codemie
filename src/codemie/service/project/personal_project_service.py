@@ -28,6 +28,7 @@ from codemie.configs.logger import logger
 from codemie.core.models import Application
 from codemie.repository.user_project_repository import user_project_repository
 from codemie.repository.application_repository import application_repository
+from codemie.rest_api.security.user import same_project_name
 from codemie.rest_api.security.user_type_validator import is_personal_project_excluded_account
 from codemie.service.activity.activity_models import (
     ActivityDomain,
@@ -77,14 +78,16 @@ class PersonalProjectService:
                     return True
 
                 # Create personal project (transaction-safe)
-                await PersonalProjectService._create_personal_project(isolated_session, user_id, user_email)
+                project_name = await PersonalProjectService._create_personal_project(
+                    isolated_session, user_id, user_email
+                )
 
                 await activity_event_repository.async_insert(
                     ActivityEventCreate(
                         domain=ActivityDomain.PROJECT_MANAGEMENT,
                         event_type=ProjectManagementEvent.PROJECT_CREATED,
                         entity_type=ActivityEntityType.PROJECT,
-                        entity_id=user_email,
+                        entity_id=project_name,
                         actor_id=user_id,
                         attributes={"project_type": "personal"},
                     ),
@@ -125,8 +128,12 @@ class PersonalProjectService:
             if is_personal_project_excluded_account(user_id, user_type):
                 return False
 
+            if same_project_name(old_email, new_email):
+                # A case-only change names the same project; re-creating it would drop its memberships
+                return True
+
             async with get_async_session() as session:
-                old_app = await application_repository.aget_by_name(session, old_email)
+                old_app = await PersonalProjectService._find_application(session, old_email)
                 if (
                     old_app
                     and old_app.project_type == Application.ProjectType.PERSONAL
@@ -134,7 +141,7 @@ class PersonalProjectService:
                 ):
                     old_app.deleted_at = datetime.now(UTC).replace(tzinfo=None)
                     session.add(old_app)
-                    await user_project_repository.aremove_project(session, user_id, old_email)
+                    await user_project_repository.aremove_project(session, user_id, old_app.name)
                     await session.commit()
                     logger.info(f"Old personal project soft-deleted on email change: user_id={user_id}")
 
@@ -167,20 +174,38 @@ class PersonalProjectService:
             True if BOTH Application and user_projects mapping exist, False otherwise
         """
         # Check 1: Application exists with correct type and owner
-        applications = await application_repository.aget_by_name(session, user_email)
-        if not applications:
+        application = await PersonalProjectService._find_application(session, user_email)
+        if not application:
             return False
 
-        application = applications
         if application.project_type != Application.ProjectType.PERSONAL or application.created_by != user_id:
             return False
 
-        # Check 2: user_projects mapping exists
-        user_project = await user_project_repository.aget_by_user_and_project(session, user_id, user_email)
+        # Check 2: user_projects mapping exists under the application's real name
+        user_project = await user_project_repository.aget_by_user_and_project(session, user_id, application.name)
         return user_project is not None
 
     @staticmethod
-    async def _create_personal_project(session, user_id: str, user_email: str) -> None:
+    async def _find_application(session, user_email: str) -> Application | None:
+        """Active application named like the email, ignoring case (EPMCDME-16566).
+
+        The IdP can deliver the email with other casing than the project was created with; the
+        application's own name is the one memberships must carry.
+        """
+        return await application_repository.aget_active_by_name_case_insensitive(session, user_email)
+
+    @staticmethod
+    def _is_reusable(application: Application, user_id: str, user_email: str) -> bool:
+        """An exact-name application can be converted as before.
+
+        A case variant is reused only when it is already this user's personal project.
+        """
+        if application.name == user_email:
+            return True
+        return application.project_type == Application.ProjectType.PERSONAL and application.created_by == user_id
+
+    @staticmethod
+    async def _create_personal_project(session, user_id: str, user_email: str) -> str:
         """Create personal project and user-project mapping
 
         FR-7.1 Personal Project Specifications:
@@ -194,16 +219,27 @@ class PersonalProjectService:
             user_id: User UUID
             user_email: User email (project name)
 
+        Returns:
+            The application's real name, which the user-project mapping carries
+
         Raises:
+            ValueError: Another user's or a non-personal project differs from the email only by case
             Exception: Database errors propagate to caller
         """
-        # Check if application already exists
-        existing_app = await application_repository.aget_by_name(session, user_email)
+        # Check if application already exists (ignoring case: it keeps the casing it was created with)
+        existing_app = await PersonalProjectService._find_application(session, user_email)
+
+        if existing_app and not PersonalProjectService._is_reusable(existing_app, user_id, user_email):
+            logger.warning(
+                f"Project differing only by case is not this user's personal project: "
+                f"user_id={user_id}, project_type={existing_app.project_type}"
+            )
+            raise ValueError("Cannot use a case-variant project that is not this user's personal project")
 
         if existing_app:
             # Validate safe conversion: Only convert if NO other users have access
             # Check ALL users who have access to this project (not just current user)
-            all_project_users = await user_project_repository.aget_by_project_name(session, user_email)
+            all_project_users = await user_project_repository.aget_by_project_name(session, existing_app.name)
 
             # Filter out current user to check if OTHER users exist
             other_users_count = len([u for u in all_project_users if u.user_id != user_id])
@@ -229,6 +265,7 @@ class PersonalProjectService:
                 session.add(existing_app)
                 await session.flush()
                 logger.debug(f"Converted application to personal: user_id={user_id}, project_type=personal")
+            project_name = existing_app.name
         else:
             # Create new application (get_or_create handles race conditions)
             application = await application_repository.aget_or_create(session, user_email)
@@ -238,18 +275,20 @@ class PersonalProjectService:
             session.add(application)
             await session.flush()
             logger.debug(f"Created personal application: user_id={user_id}, project_type=personal")
+            project_name = application.name
 
-        # Ensure user-project mapping exists (idempotent)
-        existing_mapping = await user_project_repository.aget_by_user_and_project(session, user_id, user_email)
+        # Ensure user-project mapping exists under the application's real name (idempotent)
+        existing_mapping = await user_project_repository.aget_by_user_and_project(session, user_id, project_name)
 
         if not existing_mapping:
             # Create user-project mapping with is_project_admin=FALSE (Phase 2 spec)
             # Story 9: Personal projects are non-collaborative, no admin permissions needed
-            await user_project_repository.aadd_project(session, user_id, user_email, is_project_admin=False)
+            await user_project_repository.aadd_project(session, user_id, project_name, is_project_admin=False)
             logger.debug(f"User-project mapping created: user_id={user_id}, is_project_admin=False")
 
         # Flush changes (commit handled by caller)
         await session.flush()
+        return project_name
 
 
 # Singleton instance

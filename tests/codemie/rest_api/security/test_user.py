@@ -21,7 +21,12 @@ from unittest.mock import patch
 
 import pytest
 
-from codemie.rest_api.security.user import User, resolve_default_project, resolve_membership_default
+from codemie.rest_api.security.user import (
+    User,
+    resolve_default_project,
+    resolve_membership_default,
+    same_project_name,
+)
 
 
 class TestUserModel:
@@ -342,3 +347,38 @@ class TestSameProjectName:
     def test_resolve_default_project_matches_email_case_insensitively(self):
         names = ["1-alpha", "Dmytro_Bondarenko5@EPAM.com"]
         assert resolve_default_project(names, None, "dmytro_bondarenko5@epam.com") == "Dmytro_Bondarenko5@EPAM.com"
+
+
+class TestCaseInsensitivePersonalProject:
+    """EPMCDME-16566: a personal project differing from the email only by case is the same project."""
+
+    REAL = "Mixed.Case@epam.com"
+    ORPHAN = "mixed.case@epam.com"
+
+    def test_same_project_name_ignores_case(self):
+        assert same_project_name("Foo@x.com", "foo@x.com")
+        assert not same_project_name(None, "a")
+        assert not same_project_name("", "")
+        assert not same_project_name("a", "b")
+
+    def test_mixed_case_member_matches_lowercase_email(self):
+        assert resolve_default_project([self.REAL], None, self.ORPHAN) == self.REAL
+
+    def test_mixed_case_email_resolves_real_project_over_lowercase_orphan(self):
+        assert resolve_default_project([self.REAL, self.ORPHAN], None, self.ORPHAN) == self.REAL
+
+    def test_stored_default_orphan_name_resolves_real_project(self):
+        assert resolve_default_project([self.ORPHAN, self.REAL], self.ORPHAN, self.ORPHAN) == self.REAL
+
+    def test_stored_default_not_in_names_is_returned_unchanged(self):
+        assert resolve_default_project(["a"], "zzz", self.ORPHAN) == "zzz"
+
+    def test_exact_case_unchanged(self):
+        assert resolve_default_project(["foo@x.com", "alpha"], None, "foo@x.com") == "foo@x.com"
+
+    def test_membership_default_prefers_real_row(self):
+        rows = [
+            SimpleNamespace(project_name=self.REAL, is_default=False),
+            SimpleNamespace(project_name=self.ORPHAN, is_default=True),
+        ]
+        assert resolve_membership_default(rows, self.ORPHAN) == self.REAL

@@ -32,6 +32,7 @@ from codemie.service.spend.run_context import current_run_id
 from codemie.service.spend.spend_logs_metadata import spend_logs_metadata_header
 
 from codemie.core.constants import LITELLM_CUSTOMER_ID_HEADER
+from codemie.rest_api.security.user import same_project_name
 from .project_member_runtime_sync import ensure_project_member_runtime_ready_sync
 from .runtime_budget_selection import RuntimeBudgetMode, select_runtime_budget_mode
 
@@ -747,9 +748,10 @@ def _record_direct_budget_attribution(
         return
     personal = context.personal_project
     steps = list(context.budget_candidates) if context.budget_candidates else [context.budget_fallback_from or project]
-    paying = project if (project_budget_used or not personal) and project != personal else None
-    outcome = charge_outcome([step for step in steps if step != personal], paying)
-    context.current_project = paying or personal
+    paying = project if (project_budget_used or not personal) and not same_project_name(project, personal) else None
+    outcome = charge_outcome([step for step in steps if not same_project_name(step, personal)], paying)
+    # The charged project keeps the member project's own casing when it is the personal project (EPMCDME-16566).
+    context.current_project = paying or (project if same_project_name(project, personal) else personal)
     context.budget_fallback_from = outcome.fallback_from
     context.budget_fallback_kind = outcome.fallback_kind.value if outcome.fallback_kind else None
     context.budget_outcome_built = True
@@ -853,8 +855,8 @@ def _configure_direct_runtime_overrides(
         has_real_project_context = has_real_project_context or bool(
             runtime_context
             and runtime_context.current_project
-            and runtime_context.current_project != username
-            and runtime_context.current_project != runtime_context.personal_project
+            and not same_project_name(runtime_context.current_project, username)
+            and not same_project_name(runtime_context.current_project, runtime_context.personal_project)
             and has_project_budget_scopes
         )
 

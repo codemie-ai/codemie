@@ -2145,3 +2145,54 @@ class TestDefaultProjectFallbackAttribution:
         assert context.current_project == "user@test.com"
         assert context.budget_fallback_from == "team-a"
         assert context.budget_fallback_kind == "personal"
+
+
+class TestMixedCasePersonalProject:
+    """EPMCDME-16566: the personal project keeps the casing it was created with, which can differ from the email."""
+
+    def test_record_attribution_keeps_mixed_case_personal_project(self):
+        from codemie.enterprise.litellm.llm_factory import _record_direct_budget_attribution
+        from codemie.rest_api.models.settings import LiteLLMContext
+
+        context = LiteLLMContext(
+            credentials=None,
+            current_project="Mixed.Case@epam.com",
+            personal_project="mixed.case@epam.com",
+            budget_fallback_from=None,
+        )
+
+        _record_direct_budget_attribution(context, "Mixed.Case@epam.com", project_budget_used=False)
+
+        assert context.current_project == "Mixed.Case@epam.com"
+        assert context.budget_fallback_from is None
+
+    def test_runtime_override_treats_mixed_case_personal_project_as_no_project_context(self):
+        from codemie.enterprise.litellm.llm_factory import _configure_direct_runtime_overrides
+        from codemie.rest_api.models.settings import LiteLLMContext
+
+        context = LiteLLMContext(
+            credentials=None,
+            current_project="Mixed.Case@epam.com",
+            personal_project="mixed.case@epam.com",
+            budget_fallback_from=None,
+        )
+
+        with (
+            patch(
+                "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime",
+                return_value=({}, None, None, True, None),
+            ),
+            patch("codemie.enterprise.litellm.llm_factory._try_apply_premium_budget", return_value=True) as premium,
+            patch("codemie.enterprise.litellm.llm_factory._record_direct_budget_attribution"),
+        ):
+            _configure_direct_runtime_overrides(
+                llm_model_details=MagicMock(base_name="claude-opus-4"),
+                litellm_context=context,
+                username="mixed.case@epam.com",
+                user_id="uid-1",
+                creds=None,
+                merged_headers={},
+                request_params={},
+            )
+
+        assert premium.call_args.kwargs["has_project_context"] is False
