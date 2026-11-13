@@ -21,8 +21,10 @@ enterprise package and must not leak into this module.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from collections.abc import Sequence
 
 from pydantic import BaseModel, Field
 
@@ -51,6 +53,34 @@ class BudgetProviderMemberState(BaseModel):
     budget_reset_at: str | None = None
     sync_status: str = SyncStatus.OK
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MemberSyncItem:
+    """Frozen scalar snapshot of one project member allocation to sync.
+
+    Duck-types both the ``allocation`` and ``budget`` arguments of
+    ``sync_member_allocation`` so the batch method can delegate to it
+    per item without constructing ORM instances.
+    """
+
+    allocation_id: str
+    project_budget_id: str
+    project_name: str
+    budget_category: str
+    user_id: str
+    allocation_mode: str
+    effective_budget_id: str | None
+    override_budget_id: str | None
+    shared_budget_id: str | None
+    allocated_max_budget: float
+    allocated_soft_budget: float
+    budget_duration: str
+    budget_reset_at: str | None  # copied unconverted from budget
+    effective_max_budget: float | None
+
+
+MemberSyncOutcome = BudgetProviderMemberState | Exception
 
 
 class BudgetRuntimeContext(BaseModel):
@@ -161,8 +191,8 @@ class BudgetEnforcementProvider(Protocol):
 
     Project budget methods (Phase 8 — Release B):
       ensure_project_budget, update_project_budget, delete_project_budget,
-      get_project_budget_state_by_ref, sync_member_allocation, delete_member_allocation,
-      resolve_runtime.
+      get_project_budget_state_by_ref, sync_member_allocation, sync_member_allocations,
+      delete_member_allocation, resolve_runtime.
 
     Runtime helpers:
       resolve_runtime_sync, provider_name.
@@ -298,6 +328,11 @@ class BudgetEnforcementProvider(Protocol):
         budget: "Budget",
         effective_max_budget: float | None = None,
     ) -> BudgetProviderMemberState: ...
+
+    async def sync_member_allocations(
+        self,
+        items: Sequence[MemberSyncItem],
+    ) -> list[MemberSyncOutcome]: ...
 
     async def delete_member_allocation(
         self,

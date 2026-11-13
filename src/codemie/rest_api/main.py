@@ -39,6 +39,7 @@ from codemie.enterprise.litellm import (
     is_litellm_enabled,
     set_global_litellm_service,
 )
+from codemie.enterprise.litellm.project_member_sync_executor import shutdown_project_member_sync_executor
 from codemie.enterprise.plugin import (
     initialize_plugin_from_config,
     set_global_plugin_service,
@@ -1172,6 +1173,14 @@ def _stop_scheduler(app: FastAPI, attr_name: str, display_name: str, method: str
         logger.info(f"{display_name} shutdown complete")
 
 
+async def _shutdown_project_member_sync_executor() -> None:
+    try:
+        await shutdown_project_member_sync_executor()
+        logger.info("Project member sync executor shutdown complete")
+    except Exception as e:
+        logger.error(f"Error shutting down project member sync executor: {e}", exc_info=True)
+
+
 async def _shutdown_services(app: FastAPI, tasks: list):
     """Shutdown all services and background tasks."""
     from codemie.service.llm_proxy.provider_registry import get_active_llm_proxy_provider
@@ -1184,6 +1193,8 @@ async def _shutdown_services(app: FastAPI, tasks: list):
     if observability_provider is not None:
         observability_provider.shutdown()
         logger.info("Observability provider shutdown complete")
+
+    await _shutdown_project_member_sync_executor()
 
     get_active_llm_proxy_provider().close()
 

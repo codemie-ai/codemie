@@ -14,10 +14,14 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from codemie.enterprise.litellm.budget_provider_adapter import (
@@ -25,12 +29,50 @@ from codemie.enterprise.litellm.budget_provider_adapter import (
     _normalize_budget_reset_at,
     _normalize_personal_budget_identifier,
 )
+from codemie.enterprise.litellm.project_member_sync_executor import ProjectMemberSyncExecutor
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
 from codemie.service.budget.provider import (
+    BudgetProviderMemberState,
     BudgetProviderState,
     BudgetRuntimeContext,
     BudgetResetReconciliationTarget,
+    MemberSyncItem,
 )
+
+
+def _member_sync_item(
+    *,
+    allocation_id: str = "alloc-1",
+    project_budget_id: str = "proj-budget-1",
+    project_name: str = "proj-a",
+    budget_category: str = "cli",
+    user_id: str = "user-1",
+    allocation_mode: str = "shared",
+    effective_budget_id: str | None = None,
+    override_budget_id: str | None = None,
+    shared_budget_id: str | None = None,
+    allocated_max_budget: float = 25.0,
+    allocated_soft_budget: float = 20.0,
+    budget_duration: str = "30d",
+    budget_reset_at: str | None = "2026-04-22T10:00:00Z",
+    effective_max_budget: float | None = None,
+) -> MemberSyncItem:
+    return MemberSyncItem(
+        allocation_id=allocation_id,
+        project_budget_id=project_budget_id,
+        project_name=project_name,
+        budget_category=budget_category,
+        user_id=user_id,
+        allocation_mode=allocation_mode,
+        effective_budget_id=effective_budget_id,
+        override_budget_id=override_budget_id,
+        shared_budget_id=shared_budget_id,
+        allocated_max_budget=allocated_max_budget,
+        allocated_soft_budget=allocated_soft_budget,
+        budget_duration=budget_duration,
+        budget_reset_at=budget_reset_at,
+        effective_max_budget=effective_max_budget,
+    )
 
 
 @pytest.mark.asyncio
@@ -930,3 +972,567 @@ def test_resolve_runtime_core_without_member_ref_has_no_headers():
     result = adapter._resolve_runtime_core(context=_runtime_context({}))
 
     assert result.headers == {}
+
+
+class TestSyncMemberAllocationsBatch:
+    """T3: sync_member_allocations entry point and the ordered fallback path."""
+
+    @staticmethod
+    def _service(**overrides: Any) -> SimpleNamespace:
+        defaults = {
+            "get_budget_info_map_strict": MagicMock(return_value={}),
+            "sync_project_member_budget_assignment": MagicMock(),
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    @pytest.mark.asyncio
+    async def test_empty_input_makes_no_service_call(self):
+        service = self._service()
+        adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+        result = await adapter.sync_member_allocations([])
+
+        assert result == []
+        service.get_budget_info_map_strict.assert_not_called()
+        service.sync_project_member_budget_assignment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_none_service_gives_failed_state_per_item(self):
+        adapter = LiteLLMBudgetEnforcementProvider(service=self._service())
+        items = [_member_sync_item(allocation_id="alloc-1"), _member_sync_item(allocation_id="alloc-2")]
+
+        with patch.object(adapter, "_get_service", return_value=None):
+            result = await adapter.sync_member_allocations(items)
+
+        assert len(result) == 2
+        for outcome in result:
+            assert isinstance(outcome, BudgetProviderMemberState)
+            assert outcome.sync_status == SyncStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_duplicate_customer_skips_strict_lookup_and_runs_ordered_in_input_order(self):
+        call_order: list[str] = []
+
+        def sync_assignment(**kwargs):
+            call_order.append(kwargs["user_id"])
+            return SimpleNamespace(
+                provider_member_ref=f"ref-{kwargs['user_id']}",
+                budget_id=f"budget-{kwargs['user_id']}",
+                budget_reset_at="2026-04-22T10:00:00Z",
+                metadata={},
+            )
+
+        service = self._service(sync_project_member_budget_assignment=sync_assignment)
+        adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1"),
+            _member_sync_item(allocation_id="alloc-2", user_id="user-2"),
+            _member_sync_item(allocation_id="alloc-3", user_id="user-1"),  # duplicate (project, category, user)
+        ]
+
+        executor = ProjectMemberSyncExecutor(workers=2)
+        with patch(
+            "codemie.enterprise.litellm.budget_provider_adapter.get_project_member_sync_executor",
+            return_value=executor,
+        ):
+            result = await adapter.sync_member_allocations(items)
+        await executor.shutdown()
+
+        service.get_budget_info_map_strict.assert_not_called()
+        assert call_order == ["user-1", "user-2", "user-1"]
+        assert len(result) == 3
+        for outcome in result:
+            assert isinstance(outcome, BudgetProviderMemberState)
+            assert outcome.sync_status == SyncStatus.OK
+
+    @pytest.mark.parametrize(
+        "lookup_error",
+        [httpx.HTTPError("boom"), ValueError("invalid response")],
+    )
+    @pytest.mark.asyncio
+    async def test_strict_lookup_failure_falls_back_to_ordered_calls_and_one_failure_does_not_stop_others(
+        self, lookup_error
+    ):
+        call_order: list[str] = []
+
+        def sync_assignment(**kwargs):
+            call_order.append(kwargs["user_id"])
+            if kwargs["user_id"] == "user-2":
+                raise RuntimeError("provider exploded")
+            return SimpleNamespace(
+                provider_member_ref=f"ref-{kwargs['user_id']}",
+                budget_id=f"budget-{kwargs['user_id']}",
+                budget_reset_at="2026-04-22T10:00:00Z",
+                metadata={},
+            )
+
+        service = self._service(
+            get_budget_info_map_strict=MagicMock(side_effect=lookup_error),
+            sync_project_member_budget_assignment=sync_assignment,
+        )
+        adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1"),
+            _member_sync_item(allocation_id="alloc-2", user_id="user-2"),
+            _member_sync_item(allocation_id="alloc-3", user_id="user-3"),
+        ]
+
+        executor = ProjectMemberSyncExecutor(workers=2)
+        with patch(
+            "codemie.enterprise.litellm.budget_provider_adapter.get_project_member_sync_executor",
+            return_value=executor,
+        ):
+            result = await adapter.sync_member_allocations(items)
+        await executor.shutdown()
+
+        assert call_order == ["user-1", "user-2", "user-3"]
+        assert len(result) == 3
+        assert isinstance(result[0], BudgetProviderMemberState)
+        assert result[0].sync_status == SyncStatus.OK
+        assert isinstance(result[1], RuntimeError)
+        assert isinstance(result[2], BudgetProviderMemberState)
+        assert result[2].sync_status == SyncStatus.OK
+
+    @pytest.mark.asyncio
+    async def test_results_map_none_missing_budget_id_and_ok_with_metadata(self):
+        def sync_assignment(**kwargs):
+            if kwargs["user_id"] == "user-none":
+                return None
+            if kwargs["user_id"] == "user-missing":
+                return SimpleNamespace(
+                    provider_member_ref="ref-missing", budget_id=None, budget_reset_at=None, metadata={}
+                )
+            return SimpleNamespace(
+                provider_member_ref="ref-ok",
+                budget_id="budget-ok",
+                budget_reset_at="2026-04-22T10:00:00Z",
+                metadata={"foo": "bar"},
+            )
+
+        service = self._service(sync_project_member_budget_assignment=sync_assignment)
+        adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+        # budget_reset_at=None routes every item through the ordered single-member path.
+        items = [
+            _member_sync_item(allocation_id="alloc-none", user_id="user-none", budget_reset_at=None),
+            _member_sync_item(allocation_id="alloc-missing", user_id="user-missing", budget_reset_at=None),
+            _member_sync_item(allocation_id="alloc-ok", user_id="user-ok", budget_reset_at=None),
+        ]
+
+        executor = ProjectMemberSyncExecutor(workers=2)
+        with patch(
+            "codemie.enterprise.litellm.budget_provider_adapter.get_project_member_sync_executor",
+            return_value=executor,
+        ):
+            result = await adapter.sync_member_allocations(items)
+        await executor.shutdown()
+
+        assert result[0].sync_status == SyncStatus.FAILED
+        assert result[1].sync_status == SyncStatus.FAILED
+        assert result[2].sync_status == SyncStatus.OK
+        assert result[2].provider_budget_id == "budget-ok"
+        assert result[2].metadata["foo"] == "bar"
+        assert result[2].metadata["internal_budget"] is True
+        assert result[2].metadata["budget_scope"] == "project_member"
+
+
+class _FastPathService:
+    """Thread-safe service double for the batch fast path (ensure + assign) and the ordered path."""
+
+    def __init__(
+        self,
+        *,
+        snapshot: dict[str, Any] | None = None,
+        ensure_behaviour: dict[str, str] | None = None,
+        failing_assign_users: set[str] | None = None,
+        assign_hook: Any = None,
+    ) -> None:
+        self._lock = threading.Lock()
+        self.snapshot = snapshot or {}
+        self.ensure_behaviour = ensure_behaviour or {}
+        self.failing_assign_users = failing_assign_users or set()
+        self.assign_hook = assign_hook
+        self.lookup_calls: list[dict[str, Any]] = []
+        self.ensure_calls: list[dict[str, Any]] = []
+        self.ensure_results: list[Any] = []
+        self.assign_calls: list[dict[str, Any]] = []
+        self.ordered_calls: list[dict[str, Any]] = []
+        self.events: list[str] = []
+
+    def get_budget_info_map_strict(self, *, budget_ids):
+        with self._lock:
+            self.lookup_calls.append({"budget_ids": list(budget_ids)})
+        return {budget_id: budget for budget_id, budget in self.snapshot.items() if budget_id in budget_ids}
+
+    def ensure_project_member_budget(self, **kwargs):
+        with self._lock:
+            self.ensure_calls.append(kwargs)
+            sequence = len(self.ensure_calls)
+        behaviour = self.ensure_behaviour.get(kwargs["budget_id"], "ok")
+        if behaviour == "raise":
+            raise RuntimeError(f"ensure exploded for {kwargs['budget_id']}")
+        if behaviour == "failed_create":
+            result = SimpleNamespace(budget=None, write_succeeded=False)
+        elif behaviour == "failed_update":
+            result = SimpleNamespace(budget=kwargs["existing_budget"], write_succeeded=False)
+        else:
+            budget = SimpleNamespace(
+                budget_id=kwargs["budget_id"], budget_reset_at=kwargs["budget_reset_at"], version=sequence
+            )
+            result = SimpleNamespace(budget=budget, write_succeeded=True)
+        with self._lock:
+            self.ensure_results.append(result)
+        return result
+
+    def assign_project_member_budget(self, **kwargs):
+        user_id = kwargs["user_id"]
+        with self._lock:
+            self.assign_calls.append(kwargs)
+            self.events.append(f"start:{user_id}")
+        try:
+            if self.assign_hook is not None:
+                self.assign_hook(kwargs)
+            if user_id in self.failing_assign_users:
+                raise RuntimeError(f"assign exploded for {user_id}")
+            return SimpleNamespace(
+                provider_member_ref=f"ref-{user_id}",
+                budget_id=kwargs["budget_id"],
+                budget_reset_at=kwargs["budget_reset_at"],
+                metadata={"assigned_with": kwargs["budget"]},
+            )
+        finally:
+            with self._lock:
+                self.events.append(f"end:{user_id}")
+
+    def sync_project_member_budget_assignment(self, **kwargs):
+        with self._lock:
+            self.ordered_calls.append(kwargs)
+        return SimpleNamespace(
+            provider_member_ref=f"ordered-{kwargs['user_id']}",
+            budget_id=kwargs["effective_budget_id"],
+            budget_reset_at=kwargs["budget_reset_at"],
+            metadata={},
+        )
+
+
+async def _run_batch(service: Any, items: list[MemberSyncItem], *, workers: int = 8) -> list[Any]:
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+    executor = ProjectMemberSyncExecutor(workers=workers)
+    try:
+        with patch(
+            "codemie.enterprise.litellm.budget_provider_adapter.get_project_member_sync_executor",
+            return_value=executor,
+        ):
+            return await adapter.sync_member_allocations(items)
+    finally:
+        await executor.shutdown()
+
+
+def _existing_budget(budget_id: str) -> SimpleNamespace:
+    return SimpleNamespace(budget_id=budget_id, budget_reset_at="2026-04-22T10:00:00Z", version=0)
+
+
+class TestSyncMemberAllocationsFastPath:
+    """T4: parallel fast path (runs per effective ID, parallel IDs, per-ID fallbacks)."""
+
+    @pytest.mark.asyncio
+    async def test_shared_category_with_remainder_runs_two_ensures_and_waits_for_run_one_assigns(self):
+        shared_id = "proj-budget-1:shared"
+        run_one_users = ["user-1", "user-2", "user-3", "user-4"]
+        started_run_one: list[str] = []
+        all_run_one_started = threading.Event()
+        counter_lock = threading.Lock()
+
+        def assign_hook(kwargs):
+            if kwargs["user_id"] not in run_one_users:
+                return
+            with counter_lock:
+                started_run_one.append(kwargs["user_id"])
+                if len(started_run_one) == len(run_one_users):
+                    all_run_one_started.set()
+            # Every run-1 assignment is in flight at once (parallel), then holds briefly so a
+            # run-2 assignment that does not wait would visibly start before these end.
+            assert all_run_one_started.wait(timeout=5)
+            time.sleep(0.05)
+
+        existing = _existing_budget(shared_id)
+        service = _FastPathService(snapshot={shared_id: existing}, assign_hook=assign_hook)
+        items = [
+            _member_sync_item(allocation_id=f"alloc-{n}", user_id=f"user-{n}", shared_budget_id=shared_id)
+            for n in range(1, 5)
+        ]
+        items.append(
+            _member_sync_item(
+                allocation_id="alloc-5", user_id="user-5", shared_budget_id=shared_id, effective_max_budget=5.0
+            )
+        )
+
+        result = await _run_batch(service, items)
+
+        assert service.lookup_calls == [{"budget_ids": [shared_id]}]
+        assert len(service.ensure_calls) == 2
+        assert service.ensure_calls[0]["existing_budget"] is existing
+        assert service.ensure_calls[0]["max_budget"] == 25.0
+        assert service.ensure_calls[1]["existing_budget"] is service.ensure_results[0].budget
+        assert service.ensure_calls[1]["max_budget"] == 5.0
+        assert len(service.assign_calls) == 5
+        assert service.ordered_calls == []
+
+        run_two_start = service.events.index("start:user-5")
+        for user_id in run_one_users:
+            assert service.events.index(f"end:{user_id}") < run_two_start
+
+        for n, outcome in enumerate(result, start=1):
+            assert isinstance(outcome, BudgetProviderMemberState)
+            assert outcome.sync_status == SyncStatus.OK
+            assert outcome.provider_member_ref == f"ref-user-{n}"
+            assert outcome.provider_budget_id == shared_id
+        assert result[0].metadata["assigned_with"] is service.ensure_results[0].budget
+        assert result[4].metadata["assigned_with"] is service.ensure_results[1].budget
+
+    @pytest.mark.asyncio
+    async def test_interleaved_ids_map_outcomes_by_index(self):
+        service = _FastPathService(snapshot={"budget-a": _existing_budget("budget-a")})
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1", effective_budget_id="budget-a"),
+            _member_sync_item(allocation_id="alloc-2", user_id="user-2", effective_budget_id="budget-b"),
+            _member_sync_item(allocation_id="alloc-3", user_id="user-3", effective_budget_id="budget-a"),
+        ]
+
+        result = await _run_batch(service, items)
+
+        assert [outcome.provider_member_ref for outcome in result] == ["ref-user-1", "ref-user-2", "ref-user-3"]
+        assert [outcome.provider_budget_id for outcome in result] == ["budget-a", "budget-b", "budget-a"]
+        assert sorted(call["budget_id"] for call in service.ensure_calls) == ["budget-a", "budget-b"]
+        assert service.ordered_calls == []
+
+    @pytest.mark.asyncio
+    async def test_id_missing_from_strict_map_ensures_with_no_existing_budget(self):
+        service = _FastPathService(snapshot={"budget-a": _existing_budget("budget-a")})
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1", effective_budget_id="budget-a"),
+            _member_sync_item(allocation_id="alloc-2", user_id="user-2", effective_budget_id="budget-b"),
+        ]
+
+        await _run_batch(service, items)
+
+        ensure_by_id = {call["budget_id"]: call for call in service.ensure_calls}
+        assert ensure_by_id["budget-a"]["existing_budget"] is service.snapshot["budget-a"]
+        assert ensure_by_id["budget-b"]["existing_budget"] is None
+
+    @pytest.mark.asyncio
+    async def test_reset_none_run_and_later_runs_go_ordered_while_other_id_stays_fast(self):
+        service = _FastPathService(
+            snapshot={"budget-x": _existing_budget("budget-x"), "budget-y": _existing_budget("budget-y")}
+        )
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1", effective_budget_id="budget-x"),
+            _member_sync_item(allocation_id="alloc-2", user_id="user-2", effective_budget_id="budget-x"),
+            _member_sync_item(
+                allocation_id="alloc-3", user_id="user-3", effective_budget_id="budget-x", budget_reset_at=None
+            ),
+            _member_sync_item(allocation_id="alloc-4", user_id="user-4", effective_budget_id="budget-x"),
+            _member_sync_item(allocation_id="alloc-5", user_id="user-5", effective_budget_id="budget-y"),
+        ]
+
+        result = await _run_batch(service, items)
+
+        assert [call["user_id"] for call in service.ordered_calls] == ["user-3", "user-4"]
+        assert sorted(call["user_id"] for call in service.assign_calls) == ["user-1", "user-2", "user-5"]
+        assert [call["budget_id"] for call in service.ensure_calls].count("budget-x") == 1
+        assert [outcome.provider_member_ref for outcome in result] == [
+            "ref-user-1",
+            "ref-user-2",
+            "ordered-user-3",
+            "ordered-user-4",
+            "ref-user-5",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_failed_update_assigns_first_member_with_stale_budget_and_rest_go_ordered(self):
+        stale = _existing_budget("budget-x")
+        service = _FastPathService(
+            snapshot={"budget-x": stale, "budget-y": _existing_budget("budget-y")},
+            ensure_behaviour={"budget-x": "failed_update"},
+        )
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1", effective_budget_id="budget-x"),
+            _member_sync_item(allocation_id="alloc-2", user_id="user-2", effective_budget_id="budget-x"),
+            _member_sync_item(allocation_id="alloc-3", user_id="user-3", effective_budget_id="budget-y"),
+            _member_sync_item(
+                allocation_id="alloc-4", user_id="user-4", effective_budget_id="budget-x", effective_max_budget=5.0
+            ),
+        ]
+
+        result = await _run_batch(service, items)
+
+        assign_by_user = {call["user_id"]: call for call in service.assign_calls}
+        assert sorted(assign_by_user) == ["user-1", "user-3"]
+        assert assign_by_user["user-1"]["budget"] is stale
+        assert [call["user_id"] for call in service.ordered_calls] == ["user-2", "user-4"]
+        assert [call["budget_id"] for call in service.ensure_calls].count("budget-x") == 1
+        assert [outcome.provider_member_ref for outcome in result] == [
+            "ref-user-1",
+            "ordered-user-2",
+            "ref-user-3",
+            "ordered-user-4",
+        ]
+        assert result[0].sync_status == SyncStatus.OK
+
+    @pytest.mark.asyncio
+    async def test_failed_create_records_empty_result_and_rest_go_ordered(self):
+        service = _FastPathService(
+            snapshot={"budget-y": _existing_budget("budget-y")},
+            ensure_behaviour={"budget-x": "failed_create"},
+        )
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1", effective_budget_id="budget-x"),
+            _member_sync_item(allocation_id="alloc-2", user_id="user-2", effective_budget_id="budget-x"),
+            _member_sync_item(allocation_id="alloc-3", user_id="user-3", effective_budget_id="budget-y"),
+        ]
+
+        result = await _run_batch(service, items)
+
+        assert [call["user_id"] for call in service.assign_calls] == ["user-3"]
+        assert [call["user_id"] for call in service.ordered_calls] == ["user-2"]
+        assert isinstance(result[0], BudgetProviderMemberState)
+        assert result[0].sync_status == SyncStatus.FAILED
+        assert result[0].provider_budget_id is None
+        assert result[1].provider_member_ref == "ordered-user-2"
+        assert result[2].provider_member_ref == "ref-user-3"
+
+    @pytest.mark.asyncio
+    async def test_ensure_raising_is_first_member_outcome_without_assign_and_rest_go_ordered(self):
+        service = _FastPathService(
+            snapshot={"budget-x": _existing_budget("budget-x"), "budget-y": _existing_budget("budget-y")},
+            ensure_behaviour={"budget-x": "raise"},
+        )
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1", effective_budget_id="budget-x"),
+            _member_sync_item(allocation_id="alloc-2", user_id="user-2", effective_budget_id="budget-y"),
+            _member_sync_item(allocation_id="alloc-3", user_id="user-3", effective_budget_id="budget-x"),
+            _member_sync_item(
+                allocation_id="alloc-4", user_id="user-4", effective_budget_id="budget-x", effective_max_budget=5.0
+            ),
+        ]
+
+        result = await _run_batch(service, items)
+
+        assert isinstance(result[0], RuntimeError)
+        assert [call["user_id"] for call in service.assign_calls] == ["user-2"]
+        assert [call["user_id"] for call in service.ordered_calls] == ["user-3", "user-4"]
+        assert [call["budget_id"] for call in service.ensure_calls].count("budget-x") == 1
+        assert result[1].provider_member_ref == "ref-user-2"
+        assert result[2].provider_member_ref == "ordered-user-3"
+        assert result[3].provider_member_ref == "ordered-user-4"
+
+    @pytest.mark.asyncio
+    async def test_one_assignment_raising_leaves_siblings_and_later_runs_processed_without_retry(self):
+        shared_id = "proj-budget-1:shared"
+        service = _FastPathService(
+            snapshot={shared_id: _existing_budget(shared_id)},
+            failing_assign_users={"user-2"},
+        )
+        items = [
+            _member_sync_item(allocation_id=f"alloc-{n}", user_id=f"user-{n}", shared_budget_id=shared_id)
+            for n in range(1, 4)
+        ]
+        items.append(
+            _member_sync_item(
+                allocation_id="alloc-4", user_id="user-4", shared_budget_id=shared_id, effective_max_budget=5.0
+            )
+        )
+
+        result = await _run_batch(service, items)
+
+        assert sorted(call["user_id"] for call in service.assign_calls) == ["user-1", "user-2", "user-3", "user-4"]
+        assert len(service.ensure_calls) == 2
+        assert service.ordered_calls == []
+        assert result[0].sync_status == SyncStatus.OK
+        assert isinstance(result[1], RuntimeError)
+        assert result[2].sync_status == SyncStatus.OK
+        assert result[3].sync_status == SyncStatus.OK
+
+
+class TestSyncMemberAllocationsReviewFixes:
+    """CR-003 started log per item; CR-004 conversion errors stay per item."""
+
+    @pytest.mark.asyncio
+    async def test_batch_emits_sync_started_log_per_item(self):
+        service = _FastPathService(snapshot={"budget-a": _existing_budget("budget-a")})
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1", effective_budget_id="budget-a"),
+            _member_sync_item(
+                allocation_id="alloc-2", user_id="user-2", effective_budget_id="budget-b", effective_max_budget=7.0
+            ),
+        ]
+
+        with patch("codemie.enterprise.litellm.budget_provider_adapter.logger") as mock_logger:
+            await _run_batch(service, items)
+
+        started = [
+            call.args[0]
+            for call in mock_logger.debug.call_args_list
+            if "budget_event=provider_member_budget_sync_started" in call.args[0]
+        ]
+        assert len(started) == 2
+        assert "effective_budget_id='budget-a'" in started[0]
+        assert "allocation_id='alloc-1'" in started[0]
+        assert "user_id='user-1'" in started[0]
+        assert "resolved_max_budget=25.0" in started[0]
+        assert "enforcement_override=False" in started[0]
+        assert "allocated_soft_budget=20.0" in started[0]
+        assert "effective_budget_id='budget-b'" in started[1]
+        assert "resolved_max_budget=7.0" in started[1]
+        assert "enforcement_override=True" in started[1]
+
+    @pytest.mark.asyncio
+    async def test_ordered_path_conversion_error_is_item_outcome(self):
+        service = _FastPathService()
+        good = service.sync_project_member_budget_assignment
+
+        def sync_assignment(**kwargs):
+            if kwargs["user_id"] == "user-1":
+                return SimpleNamespace(provider_member_ref="ref", budget_id="bud", budget_reset_at=None, metadata=None)
+            return good(**kwargs)
+
+        service.sync_project_member_budget_assignment = sync_assignment
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1"),
+            _member_sync_item(allocation_id="alloc-2", user_id="user-2"),
+            _member_sync_item(allocation_id="alloc-3", user_id="user-1"),  # duplicate -> ordered path
+        ]
+
+        result = await _run_batch(service, items)
+
+        assert isinstance(result[0], TypeError)
+        assert result[1].sync_status == SyncStatus.OK
+        assert isinstance(result[2], TypeError)
+
+    @pytest.mark.asyncio
+    async def test_malformed_ensure_result_falls_back_without_aborting_batch(self):
+        service = _FastPathService(snapshot={"budget-a": _existing_budget("budget-a")})
+        original_ensure = service.ensure_project_member_budget
+
+        def ensure(**kwargs):
+            if kwargs["budget_id"] == "budget-a":
+                return object()  # no write_succeeded / budget attributes
+            return original_ensure(**kwargs)
+
+        service.ensure_project_member_budget = ensure
+        items = [
+            _member_sync_item(allocation_id="alloc-1", user_id="user-1", effective_budget_id="budget-a"),
+            _member_sync_item(allocation_id="alloc-2", user_id="user-2", effective_budget_id="budget-a"),
+            _member_sync_item(allocation_id="alloc-3", user_id="user-3", effective_budget_id="budget-b"),
+        ]
+
+        result = await _run_batch(service, items)
+
+        assert isinstance(result[0], AttributeError)
+        assert result[1].sync_status == SyncStatus.OK
+        assert result[1].provider_member_ref == "ordered-user-2"
+        assert result[2].sync_status == SyncStatus.OK
+        assert result[2].provider_member_ref == "ref-user-3"

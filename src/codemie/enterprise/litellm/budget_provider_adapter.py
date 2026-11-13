@@ -25,11 +25,17 @@ budget operations — they must go through get_active_provider().
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from codemie.configs import logger
 from codemie.core.constants import LITELLM_CUSTOMER_ID_HEADER
+from codemie.enterprise.litellm.project_member_sync_executor import (
+    ProjectMemberSyncExecutor,
+    get_project_member_sync_executor,
+)
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
 from codemie.service.budget.budget_models import build_override_project_budget_id, build_shared_project_budget_id
 from codemie.service.budget.provider import (
@@ -41,6 +47,8 @@ from codemie.service.budget.provider import (
     BudgetRuntimeContext,
     BudgetRuntimeProviderResult,
     GlobalBudgetState,
+    MemberSyncItem,
+    MemberSyncOutcome,
     PersonalBudgetEntry,
     ProjectBudgetState,
 )
@@ -111,7 +119,7 @@ def _normalize_budget_reset_at(raw_value: Any, fallback: str | None) -> str | No
     return raw_value.isoformat()
 
 
-def _effective_project_member_budget_id(allocation: "ProjectMemberBudgetAssignment") -> str:
+def _effective_project_member_budget_id(allocation: "ProjectMemberBudgetAssignment | MemberSyncItem") -> str:
     effective_budget_id = getattr(allocation, "effective_budget_id", None)
     if effective_budget_id:
         return effective_budget_id
@@ -127,6 +135,244 @@ def _effective_project_member_budget_id(allocation: "ProjectMemberBudgetAssignme
     if getattr(allocation, "allocation_mode", None) == "fixed":
         return build_override_project_budget_id(allocation.project_budget_id, allocation.user_id)
     return build_shared_project_budget_id(allocation.project_budget_id)
+
+
+def _resolved_max_budget(item: "MemberSyncItem") -> float:
+    """Return the effective max budget override if set, else the allocated max budget."""
+    return item.effective_max_budget if item.effective_max_budget is not None else item.allocated_max_budget
+
+
+def _log_member_sync_started(item: "MemberSyncItem", effective_budget_id: str) -> None:
+    """Emit the per-member sync-started event, matching ``sync_member_allocation``."""
+    logger.debug(
+        f"budget_event=provider_member_budget_sync_started component=litellm_budget_provider "
+        f"provider={_PROVIDER_NAME!r} project_name={item.project_name!r} "
+        f"budget_id={item.project_budget_id!r} effective_budget_id={effective_budget_id!r} "
+        f"budget_category={item.budget_category!r} allocation_id={item.allocation_id!r} "
+        f"user_id={item.user_id!r} allocated_max_budget={item.allocated_max_budget!r} "
+        f"resolved_max_budget={_resolved_max_budget(item)!r} "
+        f"enforcement_override={item.effective_max_budget is not None} "
+        f"allocated_soft_budget={item.allocated_soft_budget!r}"
+    )
+
+
+def _member_state_from_result(  # noqa: PLR0913
+    result: Any,
+    *,
+    project_name: str,
+    project_budget_id: str,
+    budget_category: str,
+    allocation_id: str | None,
+    user_id: str,
+) -> BudgetProviderMemberState:
+    """Convert a provider sync result into a BudgetProviderMemberState (shared by all sync paths)."""
+    if result is None:
+        logger.debug(
+            f"budget_event=provider_member_budget_sync_failed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={project_name!r} "
+            f"budget_id={project_budget_id!r} budget_category={budget_category!r} "
+            f"allocation_id={allocation_id!r} user_id={user_id!r} reason=empty_provider_result"
+        )
+        return BudgetProviderMemberState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
+
+    provider_budget_id = getattr(result, "budget_id", None)
+    if not provider_budget_id:
+        logger.debug(
+            f"budget_event=provider_member_budget_sync_failed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={project_name!r} "
+            f"budget_id={project_budget_id!r} budget_category={budget_category!r} "
+            f"allocation_id={allocation_id!r} user_id={user_id!r} reason=missing_provider_budget_id"
+        )
+        return BudgetProviderMemberState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
+
+    metadata = dict(result.metadata)
+    metadata["internal_budget"] = True
+    metadata["budget_scope"] = "project_member"
+    metadata["provider_budget_id"] = provider_budget_id
+
+    logger.debug(
+        f"budget_event=provider_member_budget_sync_completed component=litellm_budget_provider "
+        f"provider={_PROVIDER_NAME!r} project_name={project_name!r} "
+        f"budget_id={project_budget_id!r} budget_category={budget_category!r} "
+        f"allocation_id={allocation_id!r} user_id={user_id!r} "
+        f"provider_member_ref={result.provider_member_ref!r} provider_budget_id={provider_budget_id!r} "
+        f"budget_reset_at={result.budget_reset_at!r}"
+    )
+    return BudgetProviderMemberState(
+        provider=_PROVIDER_NAME,
+        provider_member_ref=result.provider_member_ref,
+        provider_budget_id=provider_budget_id,
+        budget_reset_at=result.budget_reset_at,
+        sync_status=SyncStatus.OK,
+        metadata=metadata,
+    )
+
+
+@dataclass(frozen=True)
+class _MemberSyncContext:
+    service: LiteLLMService
+    executor: ProjectMemberSyncExecutor
+    items: Sequence[MemberSyncItem]
+    ids: Sequence[str]
+    outcomes: list[MemberSyncOutcome | None]
+
+
+async def _run_ordered(ctx: _MemberSyncContext, idxs: Iterable[int]) -> None:
+    """Run ``sync_project_member_budget_assignment`` for ``idxs`` in order, one at a time.
+
+    Fills ``outcomes`` in place. An exception from one item becomes that item's
+    outcome and does not stop later items in ``idxs``.
+    """
+    for i in idxs:
+        item = ctx.items[i]
+        try:
+            result = await ctx.executor.run(
+                ctx.service.sync_project_member_budget_assignment,
+                project_budget_id=item.project_budget_id,
+                project_name=item.project_name,
+                budget_category=item.budget_category,
+                user_id=item.user_id,
+                allocated_max_budget=_resolved_max_budget(item),
+                allocated_soft_budget=item.allocated_soft_budget,
+                budget_duration=item.budget_duration,
+                budget_reset_at=item.budget_reset_at,
+                effective_budget_id=ctx.ids[i],
+            )
+            ctx.outcomes[i] = _item_member_state(item, result)
+        except Exception as exc:
+            ctx.outcomes[i] = exc
+
+
+def _item_member_state(item: "MemberSyncItem", result: Any) -> BudgetProviderMemberState:
+    return _member_state_from_result(
+        result,
+        project_name=item.project_name,
+        project_budget_id=item.project_budget_id,
+        budget_category=item.budget_category,
+        allocation_id=item.allocation_id,
+        user_id=item.user_id,
+    )
+
+
+def _log_budget_group_fallback(budget_id: str, reason: str, remaining: int) -> None:
+    logger.debug(
+        f"budget_event=provider_member_budget_batch_fallback component=litellm_budget_provider "
+        f"provider={_PROVIDER_NAME!r} effective_budget_id={budget_id!r} reason={reason} "
+        f"remaining_items={remaining!r}"
+    )
+
+
+async def _assign_member(
+    service: "LiteLLMService",
+    executor: ProjectMemberSyncExecutor,
+    item: "MemberSyncItem",
+    budget_id: str,
+    budget: Any,
+) -> "MemberSyncOutcome":
+    """Assign one member to an ensured budget; an exception becomes the member's outcome."""
+    try:
+        result = await executor.run(
+            service.assign_project_member_budget,
+            project_name=item.project_name,
+            budget_category=item.budget_category,
+            user_id=item.user_id,
+            budget_id=budget_id,
+            budget=budget,
+            budget_reset_at=item.budget_reset_at,
+        )
+        return _item_member_state(item, result)
+    except Exception as exc:
+        return exc
+
+
+def _split_into_runs(items: Sequence["MemberSyncItem"], budget_id: str, idxs: Sequence[int]) -> list[list[int]]:
+    """Split ``idxs`` into consecutive stretches of items with an identical write payload."""
+    runs: list[list[int]] = []
+    last_key: tuple[Any, ...] | None = None
+    for i in idxs:
+        item = items[i]
+        key = (
+            budget_id,
+            _resolved_max_budget(item),
+            item.allocated_soft_budget,
+            item.budget_duration,
+            item.budget_reset_at,
+        )
+        if runs and key == last_key:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+            last_key = key
+    return runs
+
+
+async def _sync_budget_group(ctx: _MemberSyncContext, budget_id: str, idxs: Sequence[int], current: Any) -> None:
+    """Sync every item of one effective budget ID, run by run, in input order.
+
+    A run is a consecutive stretch of ``idxs`` with an identical write payload. Each
+    run gets one ensure, then its members are assigned in parallel; the next run
+    starts only after every assignment of this one has settled. On any fallback
+    trigger the attempted member is settled and the rest of the ID (later runs
+    included) goes to ``_run_ordered``; the ID never returns to batching.
+    """
+    runs = _split_into_runs(ctx.items, budget_id, idxs)
+
+    for position, run in enumerate(runs):
+        first = ctx.items[run[0]]
+        later = [i for later_run in runs[position + 1 :] for i in later_run]
+
+        if first.budget_reset_at is None:
+            _log_budget_group_fallback(budget_id, "missing_budget_reset_at", len(run) + len(later))
+            await _run_ordered(ctx, run + later)
+            return
+
+        try:
+            ensure = await ctx.executor.run(
+                ctx.service.ensure_project_member_budget,
+                budget_id=budget_id,
+                max_budget=_resolved_max_budget(first),
+                soft_budget=first.allocated_soft_budget,
+                budget_duration=first.budget_duration,
+                budget_reset_at=first.budget_reset_at,
+                existing_budget=current,
+            )
+            write_succeeded = bool(ensure.write_succeeded)
+            ensured_budget = ensure.budget
+        except Exception as exc:
+            ctx.outcomes[run[0]] = exc
+            _log_budget_group_fallback(budget_id, "ensure_raised", len(run) - 1 + len(later))
+            await _run_ordered(ctx, run[1:] + later)
+            return
+
+        if write_succeeded:
+            run_outcomes = await asyncio.gather(
+                *(_assign_member(ctx.service, ctx.executor, ctx.items[i], budget_id, ensured_budget) for i in run)
+            )
+            for i, outcome in zip(run, run_outcomes, strict=True):
+                ctx.outcomes[i] = outcome
+            current = ensured_budget
+            continue
+
+        if ensured_budget is None:
+            ctx.outcomes[run[0]] = _item_member_state(first, None)
+            reason = "failed_create"
+        else:
+            ctx.outcomes[run[0]] = await _assign_member(ctx.service, ctx.executor, first, budget_id, ensured_budget)
+            reason = "failed_update"
+        _log_budget_group_fallback(budget_id, reason, len(run) - 1 + len(later))
+        await _run_ordered(ctx, run[1:] + later)
+        return
+
+
+async def _sync_budget_groups(ctx: _MemberSyncContext, snapshot: dict[str, Any]) -> None:
+    """Group item indices by effective budget ID (input order kept) and sync the groups in parallel."""
+    groups: dict[str, list[int]] = {}
+    for i, budget_id in enumerate(ctx.ids):
+        groups.setdefault(budget_id, []).append(i)
+
+    await asyncio.gather(
+        *(_sync_budget_group(ctx, budget_id, idxs, snapshot.get(budget_id)) for budget_id, idxs in groups.items())
+    )
 
 
 def _is_project_virtual_key_target(target: BudgetResetReconciliationTarget) -> bool:
@@ -155,10 +401,10 @@ class LiteLLMBudgetEnforcementProvider:
 
     provider_name: str = _PROVIDER_NAME
 
-    def __init__(self, service: "LiteLLMService | None" = None) -> None:
+    def __init__(self, service: LiteLLMService | None = None) -> None:
         self._service = service
 
-    def _get_service(self) -> "LiteLLMService | None":
+    def _get_service(self) -> LiteLLMService | None:
         if self._service is not None:
             return self._service
 
@@ -229,7 +475,7 @@ class LiteLLMBudgetEnforcementProvider:
             f"provider={_PROVIDER_NAME!r} project_name={project_name!r} key_alias={key_alias!r}"
         )
 
-    async def _delete_project_provider_key_alias(self, *, service: "LiteLLMService", key_alias: str) -> None:
+    async def _delete_project_provider_key_alias(self, *, service: LiteLLMService, key_alias: str) -> None:
         try:
             await asyncio.to_thread(service.api_client.post, "/key/delete", data={"key_aliases": [key_alias]})
         except Exception as exc:
@@ -269,7 +515,7 @@ class LiteLLMBudgetEnforcementProvider:
     async def _carry_spend_forward(
         self,
         *,
-        service: "LiteLLMService",
+        service: LiteLLMService,
         key_state: dict[str, Any],
         carry_spend: float,
         project_name: str,
@@ -310,7 +556,7 @@ class LiteLLMBudgetEnforcementProvider:
     async def _recreate_project_budget_key_alias(
         self,
         *,
-        service: "LiteLLMService",
+        service: LiteLLMService,
         project_name: str,
         budget_category: BudgetCategory,
         budget_id: str,
@@ -671,7 +917,7 @@ class LiteLLMBudgetEnforcementProvider:
 
     @staticmethod
     async def _fetch_reconciliation_budget_map(
-        service: "LiteLLMService",
+        service: LiteLLMService,
         targets: list[BudgetResetReconciliationTarget],
     ) -> dict[str, Any]:
         budget_ids = [
@@ -685,7 +931,7 @@ class LiteLLMBudgetEnforcementProvider:
 
     @staticmethod
     async def _fetch_reconciliation_key_map(
-        service: "LiteLLMService",
+        service: LiteLLMService,
         targets: list[BudgetResetReconciliationTarget],
         budget_map: dict[str, Any],
     ) -> dict[str, Any]:
@@ -1063,8 +1309,8 @@ class LiteLLMBudgetEnforcementProvider:
     async def sync_member_allocation(
         self,
         *,
-        allocation: "ProjectMemberBudgetAssignment",
-        budget: "Budget",
+        allocation: ProjectMemberBudgetAssignment,
+        budget: Budget,
         effective_max_budget: float | None = None,
     ) -> BudgetProviderMemberState:
         effective_budget_id = _effective_project_member_budget_id(allocation)
@@ -1103,46 +1349,82 @@ class LiteLLMBudgetEnforcementProvider:
             budget_reset_at=budget.budget_reset_at,
             effective_budget_id=effective_budget_id,
         )
-        if result is None:
-            logger.debug(
-                f"budget_event=provider_member_budget_sync_failed component=litellm_budget_provider "
-                f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
-                f"budget_id={allocation.project_budget_id!r} budget_category={allocation.budget_category!r} "
-                f"allocation_id={allocation_id!r} user_id={allocation.user_id!r} reason=empty_provider_result"
-            )
-            return BudgetProviderMemberState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
+        return _member_state_from_result(
+            result,
+            project_name=allocation.project_name,
+            project_budget_id=allocation.project_budget_id,
+            budget_category=allocation.budget_category,
+            allocation_id=allocation_id,
+            user_id=allocation.user_id,
+        )
 
-        provider_budget_id = getattr(result, "budget_id", None)
-        if not provider_budget_id:
-            logger.debug(
-                f"budget_event=provider_member_budget_sync_failed component=litellm_budget_provider "
-                f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
-                f"budget_id={allocation.project_budget_id!r} budget_category={allocation.budget_category!r} "
-                f"allocation_id={allocation_id!r} user_id={allocation.user_id!r} reason=missing_provider_budget_id"
-            )
-            return BudgetProviderMemberState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
+    async def sync_member_allocations(
+        self,
+        items: Sequence[MemberSyncItem],
+    ) -> list[MemberSyncOutcome]:
+        """Batch member budget sync: see module docstring at the top of this file.
 
-        metadata = dict(result.metadata)
-        metadata["internal_budget"] = True
-        metadata["budget_scope"] = "project_member"
-        metadata["provider_budget_id"] = provider_budget_id
+        Routes to the ordered single-member path when a duplicate customer is
+        present in the batch or the strict budget lookup fails; otherwise hands
+        the lookup snapshot to the parallel fast path (``_sync_budget_groups``).
+        """
+        if not items:
+            return []
+
+        ids = [_effective_project_member_budget_id(item) for item in items]
+        for item, effective_budget_id in zip(items, ids, strict=True):
+            _log_member_sync_started(item, effective_budget_id)
+
+        executor = get_project_member_sync_executor()
+        service = self._get_service()
+        if service is None:
+            for item in items:
+                logger.debug(
+                    f"budget_event=provider_member_budget_sync_failed component=litellm_budget_provider "
+                    f"provider={_PROVIDER_NAME!r} project_name={item.project_name!r} "
+                    f"budget_id={item.project_budget_id!r} budget_category={item.budget_category!r} "
+                    f"allocation_id={item.allocation_id!r} user_id={item.user_id!r} reason=provider_unavailable"
+                )
+            return [BudgetProviderMemberState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED) for _ in items]
+
+        seen_customers: set[tuple[str, str, str]] = set()
+        has_duplicate_customer = False
+        for item in items:
+            customer_key = (item.project_name, item.budget_category, item.user_id)
+            if customer_key in seen_customers:
+                has_duplicate_customer = True
+                break
+            seen_customers.add(customer_key)
+
+        outcomes: list[MemberSyncOutcome | None] = [None] * len(items)
+        all_idxs = range(len(items))
+        ctx = _MemberSyncContext(service, executor, items, ids, outcomes)
+
+        if has_duplicate_customer:
+            await _run_ordered(ctx, all_idxs)
+            return outcomes  # type: ignore[return-value]
+
+        unique_ids = list(dict.fromkeys(ids))
+
+        try:
+            snapshot = await executor.run(service.get_budget_info_map_strict, budget_ids=unique_ids)
+        except Exception as exc:
+            logger.warning(
+                f"budget_event=provider_member_budget_lookup_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} operation=get_budget_info_map_strict "
+                f"error_type={type(exc).__name__!r} error={exc!s}"
+            )
+            await _run_ordered(ctx, all_idxs)
+            return outcomes  # type: ignore[return-value]
 
         logger.debug(
-            f"budget_event=provider_member_budget_sync_completed component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
-            f"budget_id={allocation.project_budget_id!r} budget_category={allocation.budget_category!r} "
-            f"allocation_id={allocation_id!r} user_id={allocation.user_id!r} "
-            f"provider_member_ref={result.provider_member_ref!r} provider_budget_id={provider_budget_id!r} "
-            f"budget_reset_at={result.budget_reset_at!r}"
+            f"budget_event=provider_member_budget_lookup_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=get_budget_info_map_strict "
+            f"requested={len(unique_ids)!r} matched={len(snapshot)!r}"
         )
-        return BudgetProviderMemberState(
-            provider=_PROVIDER_NAME,
-            provider_member_ref=result.provider_member_ref,
-            provider_budget_id=provider_budget_id,
-            budget_reset_at=result.budget_reset_at,
-            sync_status=SyncStatus.OK,
-            metadata=metadata,
-        )
+
+        await _sync_budget_groups(ctx, snapshot)
+        return outcomes  # type: ignore[return-value]
 
     async def _get_internal_member_budget_ids(self) -> set[str]:
         service = self._get_service()
@@ -1172,7 +1454,7 @@ class LiteLLMBudgetEnforcementProvider:
                 internal_budget_ids.add(nested_budget_id)
         return internal_budget_ids
 
-    async def delete_member_allocation(self, *, allocation: "ProjectMemberBudgetAssignment") -> None:
+    async def delete_member_allocation(self, *, allocation: ProjectMemberBudgetAssignment) -> None:
         service = self._get_service()
         if service is None:
             logger.debug(

@@ -1,0 +1,369 @@
+{
+  "decision": "approve",
+  "rationale": "Targeted re-check of 7 prior findings: CR-003, CR-004, CR-005, CR-006 resolved at HEAD a9c29234 (per-item sync_started log restored, conversion and ensure-result errors kept per item, batch call wrapped in both flows, two create-flow tests added). CR-001 (codemie-enterprise 2.3.45 bump), CR-002 (batch helpers kept in budget_provider_adapter.py) and CR-007 (AC13 timing) remain unfixed in code and evidence; the user explicitly waived all three and instructed that they be treated as non-issues, so they no longer block. Approval rests on that human waiver, not on a fix.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "§1 sync_member_allocations(items) on BudgetEnforcementProvider",
+      "status": "pass",
+      "notes": "Protocol method and MemberSyncOutcome alias added"
+    },
+    {
+      "kind": "spec",
+      "item": "§1 Noop batch loops over sync_member_allocation",
+      "status": "pass",
+      "notes": "per-item except loop"
+    },
+    {
+      "kind": "spec",
+      "item": "§1 Frozen scalar MemberSyncItem snapshots; workers never touch ORM/session",
+      "status": "pass",
+      "notes": "frozen dataclass built by _member_sync_item"
+    },
+    {
+      "kind": "spec",
+      "item": "§1 One outcome per item in input order; [] for empty input, no HTTP call",
+      "status": "pass",
+      "notes": "indexed outcomes; early return"
+    },
+    {
+      "kind": "spec",
+      "item": "§1 Unavailable service / missing provider budget ID keep FAILED mapping",
+      "status": "pass",
+      "notes": "provider_unavailable and empty-result branches kept"
+    },
+    {
+      "kind": "spec",
+      "item": "§1 Routing reuses _effective_project_member_budget_id unchanged",
+      "status": "pass",
+      "notes": "type hint only"
+    },
+    {
+      "kind": "spec",
+      "item": "§1 Shared result-to-state helper used by all paths",
+      "status": "pass",
+      "notes": "_member_state_from_result"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.1 Duplicate customer sends whole batch ordered",
+      "status": "pass",
+      "notes": "preflight before strict lookup"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.2 One strict lookup; exception -> whole batch ordered, never an item outcome",
+      "status": "pass",
+      "notes": "try/except around get_budget_info_map_strict"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.3 Group consecutive identical-payload items per ID into runs",
+      "status": "pass",
+      "notes": "run key in _sync_budget_group"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.4 One ensure per run, parallel assigns, wait before next run, IDs in parallel",
+      "status": "pass",
+      "notes": "gather per run and per group"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.5 Fallbacks per effective ID; ID never returns to batching",
+      "status": "pass",
+      "notes": "four fallback branches tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.6 Per-item except; no blanket retries",
+      "status": "pass",
+      "notes": "see CR-004 for conversion step outside the try"
+    },
+    {
+      "kind": "spec",
+      "item": "§2 Ordered path via shared execution helper, never async sync_member_allocation",
+      "status": "pass",
+      "notes": "executor.run(sync_project_member_budget_assignment)"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 Lazily created process-wide ThreadPoolExecutor in new module",
+      "status": "pass",
+      "notes": "project_member_sync_executor.py"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 LITELLM_PROJECT_MEMBER_SYNC_WORKERS int=8, range 1-32",
+      "status": "pass",
+      "notes": "Field(default=8, ge=1, le=32)"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 One async execution helper for every blocking call",
+      "status": "pass",
+      "notes": "ProjectMemberSyncExecutor.run"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 One BoundedSemaphore on main loop; acquire before submit; release semantics",
+      "status": "pass",
+      "notes": "acquire/submit/done-callback/shield"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 copy_context().run with OTel context attached",
+      "status": "pass",
+      "notes": "_call_with_otel_context"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 Pool threads never wait on other pool work",
+      "status": "pass",
+      "notes": "coordination on the loop"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 Off-loop shutdown before LLM proxy close; never recreated",
+      "status": "pass",
+      "notes": "main.py ordering"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 No admission limit, queue timeout or overload response",
+      "status": "pass",
+      "notes": "none added"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 Categories sequential; prepare, batch, persist per flow",
+      "status": "pass",
+      "notes": "both flows"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 Create prep captures snapshots only",
+      "status": "pass",
+      "notes": "prep exception kept as prepare_exc"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 Resync prep: update_allocation then FIXED override child, out of provider loop",
+      "status": "pass",
+      "notes": "_prepare_resync_member"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 Persist outcomes one by one; router single final commit preserved",
+      "status": "pass",
+      "notes": "no commit/flush added"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 Create flow arguments and persistence as today",
+      "status": "pass",
+      "notes": "FAILED marker on exception"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 EQUAL resync: state discarded; exception logged",
+      "status": "pass",
+      "notes": "_log_resync_member_failure"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 FIXED resync persists override child and metadata; exception logged",
+      "status": "pass",
+      "notes": "_persist_fixed_member_state"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 shared_sample = first non-FIXED non-exception item",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 Single-member callers untouched",
+      "status": "pass",
+      "notes": "not in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "§5 Bump pyproject.toml:58 and poetry.lock to codemie-enterprise 2.3.45 before merge",
+      "status": "waived",
+      "notes": "pyproject.toml:58 still pins 2.3.44; poetry.lock unchanged (CR-001) Waived by user."
+    },
+    {
+      "kind": "spec",
+      "item": "§5 Never commit local path dependencies or compose.enterprise-local.yaml",
+      "status": "pass",
+      "notes": "none in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "AC1 One outcome per item in order; [] for empty input",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2 Noop batch matches looped sync_member_allocation",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3 One lookup, one write per run, one assign per member, <=N in flight",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4 Duplicate customer or lookup exception -> ordered, no lookup FAILED",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5 Each fallback trigger produces §2.5 outcome; other IDs stay fast",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6 One item's exception never cancels or fails another",
+      "status": "pass",
+      "notes": "holds for provider-call exceptions; conversion errors escape (CR-004)"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7 Runs per ID in input order; each waits for previous run's assigns",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "AC8 Capacity/release semantics; context and OTel propagate",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "AC9 Executor shut down off-loop before LLM proxy closes; never recreated",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "AC10 Workers outside 1-32 rejected",
+      "status": "pass",
+      "notes": "tested [0, 33]"
+    },
+    {
+      "kind": "spec",
+      "item": "AC11 All three flows match main's DB writes, shared_sample, skips, logs and markers",
+      "status": "partial",
+      "notes": "batch paths drop adapter provider_member_budget_sync_started debug log; resync warning order changes (CR-003)"
+    },
+    {
+      "kind": "spec",
+      "item": "AC12 Single-member callers/tests unchanged; doubles updated; new tests cover AC1-10",
+      "status": "pass",
+      "notes": "new tests in five files"
+    },
+    {
+      "kind": "spec",
+      "item": "AC13 Budget save timed before/after on local enterprise stack (~40 members, 3 categories)",
+      "status": "waived",
+      "notes": "no timing recorded in diff or run artifacts (CR-007) Waived by user."
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no cancellation, progress, cross-save locking, UI changes",
+      "status": "pass",
+      "notes": "none added"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: categories not run in parallel",
+      "status": "pass",
+      "notes": "unchanged"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no admission limit, queue timeout or overload rejection",
+      "status": "pass",
+      "notes": "none"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no changes to reset/delete/backfill/clear-override/runtime sync/enterprise",
+      "status": "pass",
+      "notes": "not in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no skipping, blanket retries, ORDER BY, amount/reset fixes",
+      "status": "pass",
+      "notes": "none"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 7 subjects in 599fc2d1..HEAD follow git-workflow.md 'EPMCDME-####: Description' (ticket EPMCDME-14996, colon, capitalized description); branch name EPMCDME-14996_batch-member-budget-sync also matches the documented ticket-first convention"
+    },
+    {
+      "kind": "code-quality",
+      "status": "waived",
+      "notes": "met: new module project_member_sync_executor.py and its test carry the Apache 2.0 header, use from __future__ import annotations, X | None unions and parameterized generics, typed signatures; config field and shutdown hook are typed. Unmet: code-quality.md Module Cohesion says not to add to a file of ~500+ lines when the change is not that file's core responsibility and to extract a nameable piece first; budget_provider_adapter.py (1625 lines at base, 1906 now) gained a ~240-line module-level block of batch-sync orchestration helpers (_run_ordered, _assign_member, _sync_budget_group, _sync_budget_groups, _log_budget_group_fallback, _item_member_state, _resolved_max_budget at lines 141-380) that is a separately nameable concern (batch member budget group sync), while only the executor was extracted Module Cohesion (CR-002) waived by user."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "security-patterns.md checked: no auth/endpoint changes, no hardcoded credentials (new LITELLM_PROJECT_MEMBER_SYNC_WORKERS is config-backed with bounds 1..32), new log lines carry project_name/budget ids/user_id/error type and message only with no tokens, keys or auth headers (error={exc!s} follows 8 pre-existing occurrences in the same adapter), no new untrusted-input parsing; no concrete security defect observed in the touched hunks"
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "waived",
+      "notes": "Not fixed. Explicitly waived by the user, who instructed these be treated as non-issues. pyproject.toml not in changed_files; line 58 still pins codemie-enterprise 2.3.44. User waived at code-review.final gate (blocked on 2.3.45 publication)."
+    },
+    {
+      "id": "CR-002",
+      "status": "waived",
+      "notes": "Not fixed. Explicitly waived by the user, who instructed these be treated as non-issues. _run_ordered/_sync_budget_groups etc. still module-level in budget_provider_adapter.py; no extracted module. User accepted cohesion as-is at code-review.final gate."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "_log_member_sync_started emits provider_member_budget_sync_started per item before routing, same fields as sync_member_allocation; test added. Resync warning order unchanged (inherent to spec'd prepare/batch/persist)."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "_run_ordered converts inside per-item try; ensure fields read inside try; both callers wrap sync_member_allocations into per-item exception outcomes; four tests added."
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "notes": "New test makes middle _member_sync_item raise; asserts 2 items batched and OK/FAILED/OK metadata in order."
+    },
+    {
+      "id": "CR-006",
+      "status": "resolved",
+      "notes": "New test asserts _persist_child_budget_provider_state budget_id equals each member's distinct effective ID in order."
+    },
+    {
+      "id": "CR-007",
+      "status": "waived",
+      "notes": "Not fixed. Explicitly waived by the user, who instructed these be treated as non-issues. Declared kind evidence; fix_evidence maps no artifact or command, no timing in run dir. User assigned AC13 timing to Stage 7."
+    }
+  ]
+}

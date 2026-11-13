@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "task": "Batch LiteLLM project-member budget sync in core: a provider batch method, an async coordinator on a dedicated bounded executor with shutdown drain and ordered fallbacks, and project_budget_service create/resync flows switched to prepare, batch, then ordered persist, with stored results and error behavior unchanged.",
+  "generated": "2026-10-13T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 3, "label": "M" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 25,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base L: the BudgetEnforcementProvider protocol and noop registry, the LiteLLM budget provider adapter (new batch algorithm and coordinator), ProjectBudgetService create and EQUAL/FIXED resync flows, plus config and app shutdown wiring. Bumped to XL because the provider protocol is a shared contract and the shutdown lifecycle is shared application infrastructure." },
+    { "dimension": "technical_risk", "reason": "No precedent in the budget domain for a process-shared, lazily created bounded ThreadPoolExecutor with a semaphore cap, contextvars/OTel propagation and a shutdown drain. The closest pattern is _WorkerPool in tool_call_channel.py, and it covers none of the ordered-fallback or behavior-preservation needs. Splitting the flows into prepare, batch and persist has to keep each flow's current exception scope, shared_sample semantics and FIXED preparation order exactly. A module-level semaphore could also be bound to a single event loop. Base L, bumped twice to XXL: the work is performance-driven, and the spec lists fallback and edge cases (duplicate-customer preflight, strict-lookup failure, reset=None, failed create/update, ensure raising, input-order mapping) that no existing test template covers. Rollback stays code-only (no schema change), which is why the size stays at L and does not move higher." },
+    { "dimension": "file_change_estimate", "reason": "About 8 production files modified: provider.py, provider_registry.py, budget_provider_adapter.py, project_budget_service.py, config.py, rest_api/main.py, pyproject.toml, poetry.lock. Another 5 existing test modules need their provider doubles updated: adapter, service, lifecycle, group creation, registry. Expect 1 to 3 new files for the coordinator/executor module and the batch, concurrency and shutdown tests." },
+    { "dimension": "affected_layers", "reason": "Service (budget flows), Infrastructure (executor, config, shutdown lifecycle), External (LiteLLM through the enterprise service) and DB-Persistence (persist writes reordered, no schema change). The cross-cutting context propagation and lifecycle work push this to L even though no schema changes." },
+    { "dimension": "requirements_clarity", "reason": "Scored S. The authoritative core-sdlc-standard-prompt.md defines the batch contract, the algorithm, the flow table and the behavior that must not change. Its conflicts with technical-brief.md (strict-lookup failure, admission, fixed-sum validation) are resolved by prompt precedence. The open items are minor: when enterprise 2.3.45 is published and how the semaphore is scoped to the event loop." },
+    { "dimension": "calibration", "reason": "The nearest bundled examples are L epmcdme-10401 (22) and XL epmcdme-10303 (27). This task agrees with L: unlike 10303, it adds no new external service, no heavyweight SDK and no credential surface, and its risk is concentrated in concurrency and behavior preservation inside one repo." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utilities (BudgetEnforcementProvider protocol contract, app shutdown lifecycle)",
+    "Technical Risk bumped from L to XL: performance (speeding up budget save) is the primary concern",
+    "Technical Risk bumped from XL to XXL: the AC list specific fallback and edge cases, and no existing test template covers concurrency, ordering, fallback or shutdown"
+  ],
+  "split_recommendation": null
+}

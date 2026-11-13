@@ -536,9 +536,17 @@ async def test_resync_member_allocations_raises_400_when_fixed_overrides_exceed_
         allocated_max_budget=26.0,
     )
 
-    with patch(
-        "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.get_active_by_budget_id",
-        new=AsyncMock(return_value=[fixed_allocation]),
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(return_value=[]))
+
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=[fixed_allocation]),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_allocation",
+            new=AsyncMock(),
+        ) as mock_update_allocation,
     ):
         with pytest.raises(ExtendedHTTPException) as exc_info:
             await service._resync_member_allocations(
@@ -547,11 +555,13 @@ async def test_resync_member_allocations_raises_400_when_fixed_overrides_exceed_
                 budget=SimpleNamespace(),
                 eff_max=25.0,
                 eff_soft=20.0,
-                provider=SimpleNamespace(),
+                provider=provider,
             )
 
     assert exc_info.value.code == 400
     assert exc_info.value.message == f"{SOFT_LIMIT_EXCEEDED_MESSAGE} {HARD_LIMIT_EXCEEDED_MESSAGE}"
+    mock_update_allocation.assert_not_awaited()
+    provider.sync_member_allocations.assert_not_awaited()
 
 
 def _allocation(user_id: str, mode: AllocationMode, soft: float, max_budget: float) -> SimpleNamespace:
@@ -847,8 +857,8 @@ async def test_clear_member_override_falls_back_to_allocation_value_when_no_shar
 
 
 @pytest.mark.asyncio
-async def test_resync_member_allocation_syncs_litellm_for_equal_mode_members():
-    """Equal-mode members must trigger provider.sync_member_allocation during rebalance (Gap B fix)."""
+async def test_prepare_resync_member_builds_batch_item_for_equal_mode_members():
+    """Equal-mode members must be prepared for the provider batch during rebalance (Gap B fix)."""
     service = ProjectBudgetService()
     session = AsyncMock()
 
@@ -871,14 +881,10 @@ async def test_resync_member_allocation_syncs_litellm_for_equal_mode_members():
         budget_duration="30d",
         budget_reset_at=None,
     )
-
-    member_state = BudgetProviderMemberState(
-        provider="litellm",
-        provider_member_ref="ref-1",
-        provider_budget_id="provider-bud-1",
-        sync_status=SyncStatus.OK,
+    mock_provider = SimpleNamespace(
+        sync_member_allocation=AsyncMock(),
+        sync_member_allocations=AsyncMock(),
     )
-    mock_provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=member_state))
 
     with (
         patch(
@@ -891,8 +897,8 @@ async def test_resync_member_allocation_syncs_litellm_for_equal_mode_members():
         ),
         patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
     ):
-        result = await service._resync_member_allocation(
-            session=session,
+        prepared = await service._prepare_resync_member(
+            session,
             budget_id="proj-budget-1",
             budget=budget,
             alloc=equal_alloc,
@@ -901,15 +907,17 @@ async def test_resync_member_allocation_syncs_litellm_for_equal_mode_members():
             provider=mock_provider,
         )
 
-    # Provider must be called for equal-mode members.
-    mock_provider.sync_member_allocation.assert_awaited_once()
-    call_kwargs = mock_provider.sync_member_allocation.await_args.kwargs
-    assert call_kwargs["allocation"] is equal_alloc
-    assert call_kwargs["budget"] is budget
-    assert call_kwargs["effective_max_budget"] is None
-
+    # Preparation never calls the provider; the batch call happens later.
+    mock_provider.sync_member_allocation.assert_not_awaited()
+    mock_provider.sync_member_allocations.assert_not_awaited()
+    updated, item, amounts = prepared
+    assert updated is equal_alloc
+    assert item.allocation_id == "alloc-1"
+    assert item.project_budget_id == "proj-budget-1"
+    assert item.allocation_mode == AllocationMode.EQUAL.value
+    assert item.effective_max_budget is None
     # Must still return amounts so _ensure_shared_child_budget_after_resync can run.
-    assert result == (25.0, 20.0)
+    assert amounts == (25.0, 20.0)
 
 
 @pytest.mark.asyncio
@@ -1123,25 +1131,19 @@ async def test_failed_member_push_is_marked_failed_for_the_next_update():
         provider_metadata={"provider": "litellm", "sync_status": SyncStatus.OK, "raw": {"provider_member_ref": "m-1"}},
     )
     budget = SimpleNamespace(budget_id="proj-budget-1", budget_duration="30d", budget_reset_at=None)
-    provider = SimpleNamespace(
-        provider_name="litellm", sync_member_allocation=AsyncMock(side_effect=RuntimeError("provider down"))
-    )
+    provider = SimpleNamespace(provider_name="litellm")
 
-    with (
-        patch(f"{_MEMBER_REPO}.update_allocation", new=AsyncMock(return_value=alloc)),
-        patch(f"{_MEMBER_REPO}.update_provider_metadata", new=AsyncMock()) as update_metadata,
-    ):
-        result = await service._resync_member_allocation(
+    with patch(f"{_MEMBER_REPO}.update_provider_metadata", new=AsyncMock()) as update_metadata:
+        shared_sample = await service._persist_resync_outcomes(
             session,
-            budget_id="proj-budget-1",
-            budget=budget,
-            alloc=alloc,
-            new_amounts=(25.0, 20.0),
-            effective_max_budget=None,
-            provider=provider,
+            "proj-budget-1",
+            budget,
+            provider,
+            [(alloc, alloc, SimpleNamespace(), (25.0, 20.0))],
+            [RuntimeError("provider down")],
         )
 
-    assert result is None
+    assert shared_sample is None
     update_metadata.assert_awaited_once_with(
         session,
         allocation_id="alloc-1",

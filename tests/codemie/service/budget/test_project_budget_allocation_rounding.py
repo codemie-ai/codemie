@@ -240,18 +240,15 @@ async def test_resync_logs_warning_when_equal_share_is_zero():
         )
         for i in range(70)
     ]
-    provider = SimpleNamespace(
-        sync_member_allocation=AsyncMock(
-            return_value=BudgetProviderMemberState(
-                provider="litellm",
-                provider_member_ref="member-ref",
-                provider_budget_id="member-budget",
-                budget_reset_at=None,
-                sync_status=SyncStatus.OK,
-                metadata={},
-            )
-        )
+    member_state = BudgetProviderMemberState(
+        provider="litellm",
+        provider_member_ref="member-ref",
+        provider_budget_id="member-budget",
+        budget_reset_at=None,
+        sync_status=SyncStatus.OK,
+        metadata={},
     )
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(return_value=[member_state] * len(allocations)))
     with (
         patch(
             f"{SERVICE_MODULE}.project_member_budget_assignment_repository.get_active_by_budget_id",

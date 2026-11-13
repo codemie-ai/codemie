@@ -19,11 +19,24 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+import pytest_asyncio
 
 from codemie.enterprise.litellm.budget_provider_adapter import LiteLLMBudgetEnforcementProvider
+from codemie.enterprise.litellm.project_member_sync_executor import ProjectMemberSyncExecutor
 from codemie.repository.project_budget_repository import project_member_budget_assignment_repository as repository
 from codemie.service.budget.budget_models import build_shared_project_budget_id, build_override_project_budget_id
 from codemie.service.budget.project_budget_service import ProjectBudgetService
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def member_sync_executor(mocker):
+    executor = ProjectMemberSyncExecutor(workers=2)
+    mocker.patch(
+        "codemie.enterprise.litellm.budget_provider_adapter.get_project_member_sync_executor",
+        return_value=executor,
+    )
+    yield executor
+    await executor.shutdown()
 
 
 @pytest.mark.asyncio

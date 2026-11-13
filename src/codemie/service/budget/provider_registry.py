@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
+from collections.abc import Sequence
 
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
 from codemie.service.budget.provider import (
@@ -34,6 +35,8 @@ from codemie.service.budget.provider import (
     BudgetProviderState,
     BudgetRuntimeContext,
     BudgetRuntimeProviderResult,
+    MemberSyncItem,
+    MemberSyncOutcome,
     PersonalBudgetEntry,
     GlobalBudgetState,
     ProjectBudgetState,
@@ -237,6 +240,24 @@ class _NoopBudgetEnforcementProvider:
     ) -> BudgetProviderMemberState:
         _ = (allocation, budget, effective_max_budget)
         return BudgetProviderMemberState(provider=_NOOP_PROVIDER_NAME, sync_status=SyncStatus.NOOP)
+
+    async def sync_member_allocations(
+        self,
+        items: Sequence[MemberSyncItem],
+    ) -> list[MemberSyncOutcome]:
+        outcomes: list[MemberSyncOutcome] = []
+        for item in items:
+            try:
+                outcomes.append(
+                    await self.sync_member_allocation(
+                        allocation=item,
+                        budget=item,
+                        effective_max_budget=item.effective_max_budget,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - per-item outcome, not re-raised
+                outcomes.append(exc)
+        return outcomes
 
     async def delete_member_allocation(
         self,

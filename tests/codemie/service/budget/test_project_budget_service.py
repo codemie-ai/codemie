@@ -51,15 +51,17 @@ async def test_resync_member_allocations_updates_shared_child_budget_for_equal_m
         allocation_mode="equal",
     )
     provider = SimpleNamespace(
-        sync_member_allocation=AsyncMock(
-            return_value=BudgetProviderMemberState(
-                provider="litellm",
-                provider_member_ref="member-ref-1",
-                provider_budget_id="member-budget-1",
-                budget_reset_at="2026-04-22T10:00:00Z",
-                sync_status=SyncStatus.OK,
-                metadata={"internal_budget": True},
-            )
+        sync_member_allocations=AsyncMock(
+            return_value=[
+                BudgetProviderMemberState(
+                    provider="litellm",
+                    provider_member_ref="member-ref-1",
+                    provider_budget_id="member-budget-1",
+                    budget_reset_at="2026-04-22T10:00:00Z",
+                    sync_status=SyncStatus.OK,
+                    metadata={"internal_budget": True},
+                )
+            ]
         )
     )
 
@@ -93,8 +95,10 @@ async def test_resync_member_allocations_updates_shared_child_budget_for_equal_m
             provider=provider,
         )
 
-    call_kwargs = provider.sync_member_allocation.await_args.kwargs
-    assert call_kwargs["effective_max_budget"] is None
+    provider.sync_member_allocations.assert_awaited_once()
+    items = provider.sync_member_allocations.await_args.args[0]
+    assert len(items) == 1
+    assert all(item.effective_max_budget is None for item in items)
     mock_update_metadata.assert_awaited_once()
     mock_ensure_shared_child_budget.assert_awaited_once_with(
         session,
@@ -129,7 +133,7 @@ async def test_resync_member_allocations_persists_reset_date_on_member_budget():
         sync_status=SyncStatus.OK,
         metadata={},
     )
-    provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=member_state))
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(return_value=[member_state]))
 
     with (
         patch(
@@ -254,7 +258,7 @@ async def test_sync_created_member_allocations_marks_failures():
     service = ProjectBudgetService()
     session = AsyncMock()
     allocation = SimpleNamespace(id="alloc-1", user_id="user-1", allocated_max_budget=25.0, provider_metadata=None)
-    provider = SimpleNamespace(sync_member_allocation=AsyncMock(side_effect=RuntimeError("sync failed")))
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(return_value=[RuntimeError("sync failed")]))
 
     with patch(
         "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
@@ -304,15 +308,17 @@ async def test_resync_member_allocations_respects_enforce_limit(
         allocation_mode="equal",
     )
     provider = SimpleNamespace(
-        sync_member_allocation=AsyncMock(
-            return_value=BudgetProviderMemberState(
-                provider="litellm",
-                provider_member_ref="member-ref-1",
-                provider_budget_id="member-budget-1",
-                budget_reset_at="2026-04-22T10:00:00Z",
-                sync_status=SyncStatus.OK,
-                metadata={"internal_budget": True},
-            )
+        sync_member_allocations=AsyncMock(
+            return_value=[
+                BudgetProviderMemberState(
+                    provider="litellm",
+                    provider_member_ref="member-ref-1",
+                    provider_budget_id="member-budget-1",
+                    budget_reset_at="2026-04-22T10:00:00Z",
+                    sync_status=SyncStatus.OK,
+                    metadata={"internal_budget": True},
+                )
+            ]
         )
     )
 
@@ -346,11 +352,325 @@ async def test_resync_member_allocations_respects_enforce_limit(
             provider=provider,
         )
 
-    call_kwargs = provider.sync_member_allocation.await_args.kwargs
-    assert call_kwargs["effective_max_budget"] == expected_effective_max
+    items = provider.sync_member_allocations.await_args.args[0]
+    assert [item.effective_max_budget for item in items] == [expected_effective_max]
     mock_ensure_shared.assert_awaited_once()
     ensure_kwargs = mock_ensure_shared.await_args.kwargs
     assert ensure_kwargs["per_member_max_budget"] == expected_per_member_max
+
+
+_SERVICE_MODULE = "codemie.service.budget.project_budget_service"
+
+
+def _resync_alloc(alloc_id: str, user_id: str, mode: str, max_budget: float, soft_budget: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=alloc_id,
+        user_id=user_id,
+        project_name="proj-a",
+        budget_category="cli",
+        allocation_mode=mode,
+        allocated_max_budget=max_budget,
+        allocated_soft_budget=soft_budget,
+        effective_budget_id=None,
+        override_budget_id=None,
+        shared_budget_id=None,
+        provider_metadata=None,
+    )
+
+
+def _resync_budget() -> SimpleNamespace:
+    return SimpleNamespace(
+        budget_id="proj-budget-1",
+        max_budget=100.0,
+        budget_duration="30d",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        created_by="admin",
+    )
+
+
+def _member_state(sync_status: SyncStatus = SyncStatus.OK) -> BudgetProviderMemberState:
+    return BudgetProviderMemberState(
+        provider="litellm",
+        provider_member_ref="member-ref",
+        provider_budget_id="member-budget",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        sync_status=sync_status,
+        metadata={"internal_budget": True},
+    )
+
+
+def _update_allocation_returning(updated_by_id: dict) -> AsyncMock:
+    async def _update(_session, *, allocation_id, allocated_max_budget, allocated_soft_budget):
+        return updated_by_id[allocation_id]
+
+    return AsyncMock(side_effect=_update)
+
+
+@pytest.mark.asyncio
+async def test_resync_fixed_member_prepares_before_provider_batch_and_persists_state():
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    budget = _resync_budget()
+    fixed = _resync_alloc("alloc-1", "user-1", "fixed", 30.0, 25.0)
+    equal = _resync_alloc("alloc-2", "user-2", "equal", 70.0, 55.0)
+    calls: list[str] = []
+    state = _member_state()
+
+    async def _update(_session, *, allocation_id, allocated_max_budget, allocated_soft_budget):
+        calls.append(f"update_allocation:{allocation_id}")
+        return {"alloc-1": fixed, "alloc-2": equal}[allocation_id]
+
+    async def _ensure_override(*_args, **kwargs):
+        calls.append(f"ensure_override:{kwargs['user_id']}")
+
+    async def _batch(items):
+        calls.append("sync_member_allocations")
+        return [state, state]
+
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(side_effect=_batch))
+
+    with (
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=[fixed, equal]),
+        ),
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.update_allocation",
+            new=AsyncMock(side_effect=_update),
+        ),
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(service, "_ensure_override_child_budget", new=AsyncMock(side_effect=_ensure_override)),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()) as mock_persist_child,
+        patch.object(service, "_ensure_shared_child_budget_after_resync", new=AsyncMock()),
+        patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=False),
+    ):
+        await service._resync_member_allocations(
+            session=session,
+            budget_id="proj-budget-1",
+            budget=budget,
+            eff_max=100.0,
+            eff_soft=80.0,
+            provider=provider,
+        )
+
+    assert calls == [
+        "update_allocation:alloc-1",
+        "ensure_override:user-1",
+        "update_allocation:alloc-2",
+        "sync_member_allocations",
+    ]
+    items = provider.sync_member_allocations.await_args.args[0]
+    assert [item.allocation_id for item in items] == ["alloc-1", "alloc-2"]
+    assert items[0].effective_max_budget is None
+    assert items[1].effective_max_budget == 100.0
+    assert [call.kwargs["budget_id"] for call in mock_persist_child.await_args_list] == [
+        "proj-budget-1:user:user-1",
+        ProjectBudgetService._effective_member_budget_id("proj-budget-1", equal),
+    ]
+    assert [call.kwargs["allocation_id"] for call in mock_update_metadata.await_args_list] == ["alloc-1", "alloc-2"]
+    assert all(call.kwargs["sync_status"] == SyncStatus.OK for call in mock_update_metadata.await_args_list)
+    assert all(
+        call.kwargs["budget_reset_at"] == "2026-04-22T10:00:00Z" for call in mock_update_metadata.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_resync_fixed_member_persistence_exception_is_logged_and_marks_member_failed():
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    budget = _resync_budget()
+    first = _resync_alloc("alloc-1", "user-1", "fixed", 30.0, 25.0)
+    second = _resync_alloc("alloc-2", "user-2", "fixed", 20.0, 15.0)
+    state = _member_state()
+    provider = SimpleNamespace(
+        provider_name="litellm",
+        sync_member_allocations=AsyncMock(return_value=[state, state]),
+    )
+
+    with (
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=[first, second]),
+        ),
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.update_allocation",
+            new=_update_allocation_returning({"alloc-1": first, "alloc-2": second}),
+        ),
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(service, "_ensure_override_child_budget", new=AsyncMock()),
+        patch.object(
+            service,
+            "_persist_child_budget_provider_state",
+            new=AsyncMock(side_effect=[RuntimeError("persist failed"), None]),
+        ),
+        patch.object(service, "_ensure_shared_child_budget_after_resync", new=AsyncMock()),
+        patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=True),
+        patch(f"{_SERVICE_MODULE}.logger") as mock_logger,
+    ):
+        await service._resync_member_allocations(
+            session=session,
+            budget_id="proj-budget-1",
+            budget=budget,
+            eff_max=100.0,
+            eff_soft=80.0,
+            provider=provider,
+        )
+
+    mock_logger.warning.assert_called_once_with(
+        "budget_event=provider_member_budget_sync_failed component=project_budget_service "
+        "provider='litellm' project_name='proj-a' budget_id='proj-budget-1' "
+        "budget_category='cli' allocation_id='alloc-1' user_id='user-1' error=persist failed"
+    )
+    assert [call.kwargs["allocation_id"] for call in mock_update_metadata.await_args_list] == [
+        "alloc-1",
+        "alloc-1",
+        "alloc-2",
+    ]
+    assert [call.kwargs["sync_status"] == SyncStatus.FAILED for call in mock_update_metadata.await_args_list] == [
+        False,
+        True,
+        False,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resync_skips_members_whose_preparation_fails_or_returns_none():
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    budget = _resync_budget()
+    raising = _resync_alloc("alloc-1", "user-1", "equal", 25.0, 20.0)
+    missing = _resync_alloc("alloc-2", "user-2", "equal", 25.0, 20.0)
+    fixed_raising = _resync_alloc("alloc-3", "user-3", "fixed", 10.0, 5.0)
+    kept = _resync_alloc("alloc-4", "user-4", "equal", 25.0, 20.0)
+
+    async def _update(_session, *, allocation_id, allocated_max_budget, allocated_soft_budget):
+        if allocation_id == "alloc-1":
+            raise RuntimeError("update failed")
+        return {"alloc-2": None, "alloc-3": fixed_raising, "alloc-4": kept}[allocation_id]
+
+    provider = SimpleNamespace(
+        provider_name="litellm",
+        sync_member_allocations=AsyncMock(return_value=[_member_state()]),
+    )
+
+    with (
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=[raising, missing, fixed_raising, kept]),
+        ),
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.update_allocation",
+            new=AsyncMock(side_effect=_update),
+        ),
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(
+            service, "_ensure_override_child_budget", new=AsyncMock(side_effect=RuntimeError("override failed"))
+        ),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
+        patch.object(service, "_ensure_shared_child_budget_after_resync", new=AsyncMock()) as mock_after,
+        patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=True),
+        patch(f"{_SERVICE_MODULE}.logger") as mock_logger,
+    ):
+        await service._resync_member_allocations(
+            session=session,
+            budget_id="proj-budget-1",
+            budget=budget,
+            eff_max=100.0,
+            eff_soft=80.0,
+            provider=provider,
+        )
+
+    items = provider.sync_member_allocations.await_args.args[0]
+    assert [item.allocation_id for item in items] == ["alloc-4"]
+    warnings = [call.args[0] for call in mock_logger.warning.call_args_list]
+    assert len(warnings) == 2
+    assert "allocation_id='alloc-1'" in warnings[0] and "error=update failed" in warnings[0]
+    assert "allocation_id='alloc-3'" in warnings[1] and "error=override failed" in warnings[1]
+    assert [call.kwargs["allocation_id"] for call in mock_update_metadata.await_args_list] == [
+        "alloc-1",
+        "alloc-3",
+        "alloc-4",
+    ]
+    assert [call.kwargs["sync_status"] == SyncStatus.FAILED for call in mock_update_metadata.await_args_list] == [
+        True,
+        True,
+        False,
+    ]
+    assert mock_after.await_args.kwargs["shared_sample"] == (25.0, 20.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("equal_status", [SyncStatus.FAILED, SyncStatus.NOOP])
+async def test_resync_shared_sample_skips_fixed_and_raised_items(equal_status):
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    budget = _resync_budget()
+    fixed = _resync_alloc("alloc-1", "user-1", "fixed", 10.0, 5.0)
+    raised = _resync_alloc("alloc-2", "user-2", "equal", 31.0, 21.0)
+    taken = _resync_alloc("alloc-3", "user-3", "equal", 32.0, 22.0)
+    later = _resync_alloc("alloc-4", "user-4", "equal", 33.0, 23.0)
+    updated = {a.id: a for a in (fixed, raised, taken, later)}
+    provider = SimpleNamespace(
+        provider_name="litellm",
+        sync_member_allocations=AsyncMock(
+            return_value=[_member_state(), RuntimeError("sync failed"), _member_state(equal_status), _member_state()]
+        ),
+    )
+
+    with (
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=[fixed, raised, taken, later]),
+        ),
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.update_allocation",
+            new=_update_allocation_returning(updated),
+        ),
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(service, "_ensure_override_child_budget", new=AsyncMock()),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
+        patch.object(service, "_ensure_shared_child_budget_after_resync", new=AsyncMock()) as mock_after,
+        patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=True),
+        patch(f"{_SERVICE_MODULE}.logger") as mock_logger,
+    ):
+        await service._resync_member_allocations(
+            session=session,
+            budget_id="proj-budget-1",
+            budget=budget,
+            eff_max=200.0,
+            eff_soft=150.0,
+            provider=provider,
+        )
+
+    mock_after.assert_awaited_once_with(
+        session,
+        budget_id="proj-budget-1",
+        budget=budget,
+        shared_sample=(32.0, 22.0),
+    )
+    warnings = [call.args[0] for call in mock_logger.warning.call_args_list]
+    assert len(warnings) == 1
+    assert "allocation_id='alloc-2'" in warnings[0] and "error=sync failed" in warnings[0]
+    # Every member persists either its provider state or the FAILED marker, FIXED and EQUAL alike.
+    assert [call.kwargs["allocation_id"] for call in mock_update_metadata.await_args_list] == [
+        "alloc-1",
+        "alloc-2",
+        "alloc-3",
+        "alloc-4",
+    ]
+    assert mock_update_metadata.await_args_list[1].kwargs["sync_status"] == SyncStatus.FAILED
 
 
 @pytest.mark.asyncio
@@ -375,7 +695,7 @@ async def test_sync_created_member_allocations_uses_full_budget_when_enforce_lim
         provider_budget_id="bud-1",
         sync_status=SyncStatus.OK,
     )
-    provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=member_state))
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(return_value=[member_state]))
 
     with (
         patch(
@@ -392,8 +712,153 @@ async def test_sync_created_member_allocations_uses_full_budget_when_enforce_lim
             enforce_limit=False,
         )
 
-    call_kwargs = provider.sync_member_allocation.await_args.kwargs
-    assert call_kwargs["effective_max_budget"] == 2000.0
+    items = provider.sync_member_allocations.await_args.args[0]
+    assert items[0].effective_max_budget == 2000.0
+
+
+@pytest.mark.asyncio
+async def test_sync_created_member_allocations_batch_receives_exact_effective_max_budget():
+    """The batch call receives each item's effective_max_budget computed per-member."""
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    allocation1 = SimpleNamespace(
+        id="alloc-1", user_id="user-1", allocated_max_budget=100.0, allocated_soft_budget=80.0
+    )
+    allocation2 = SimpleNamespace(
+        id="alloc-2", user_id="user-2", allocated_max_budget=200.0, allocated_soft_budget=160.0
+    )
+    budget = SimpleNamespace(budget_id="proj-budget-1", max_budget=2000.0, budget_duration="30d", budget_reset_at=None)
+    member_state = BudgetProviderMemberState(provider="litellm", sync_status=SyncStatus.OK)
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(return_value=[member_state, member_state]))
+
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
+    ):
+        await service._sync_created_member_allocations(
+            session=session,
+            provider=provider,
+            budget=budget,
+            allocations=[allocation1, allocation2],
+            enforce_limit=True,
+        )
+
+    items = provider.sync_member_allocations.await_args.args[0]
+    assert [item.effective_max_budget for item in items] == [100.0, 200.0]
+
+
+@pytest.mark.asyncio
+async def test_sync_created_member_allocations_mixed_outcomes_persist_in_order():
+    """A mixed OK / FAILED / NOOP / exception batch gives today's writes per member in order."""
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    allocations = [
+        SimpleNamespace(
+            id=f"alloc-{i}",
+            user_id=f"user-{i}",
+            allocated_max_budget=100.0,
+            allocated_soft_budget=80.0,
+            provider_metadata=None,
+        )
+        for i in range(1, 5)
+    ]
+    budget = SimpleNamespace(budget_id="proj-budget-1", max_budget=2000.0, budget_duration="30d", budget_reset_at=None)
+    ok_state = BudgetProviderMemberState(
+        provider="litellm", provider_member_ref="ref-ok", provider_budget_id="bud-ok", sync_status=SyncStatus.OK
+    )
+    failed_state = BudgetProviderMemberState(
+        provider="litellm",
+        provider_member_ref="ref-failed",
+        provider_budget_id="bud-failed",
+        sync_status=SyncStatus.FAILED,
+    )
+    noop_state = BudgetProviderMemberState(
+        provider="litellm", provider_member_ref="ref-noop", provider_budget_id="bud-noop", sync_status=SyncStatus.NOOP
+    )
+    exc = RuntimeError("provider blew up")
+    outcomes = [ok_state, failed_state, noop_state, exc]
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(return_value=outcomes))
+
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
+    ):
+        await service._sync_created_member_allocations(
+            session=session,
+            provider=provider,
+            budget=budget,
+            allocations=allocations,
+            enforce_limit=True,
+        )
+
+    calls = mock_update_metadata.await_args_list
+    assert len(calls) == 4
+    assert calls[0].kwargs["allocation_id"] == "alloc-1"
+    assert calls[0].kwargs["sync_status"] == SyncStatus.OK
+    assert calls[1].kwargs["allocation_id"] == "alloc-2"
+    assert calls[1].kwargs["sync_status"] == SyncStatus.FAILED
+    assert calls[2].kwargs["allocation_id"] == "alloc-3"
+    assert calls[2].kwargs["sync_status"] == SyncStatus.NOOP
+    assert calls[3].kwargs["allocation_id"] == "alloc-4"
+    assert calls[3].kwargs["sync_status"] == SyncStatus.FAILED
+    assert calls[3].kwargs["provider_metadata"] == {"sync_status": SyncStatus.FAILED}
+
+
+@pytest.mark.asyncio
+async def test_sync_created_member_allocations_persistence_exception_does_not_block_later_members():
+    """A persistence exception on member 2 gives the FAILED marker, and member 3 is still persisted."""
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    allocations = [
+        SimpleNamespace(
+            id=f"alloc-{i}",
+            user_id=f"user-{i}",
+            allocated_max_budget=100.0,
+            allocated_soft_budget=80.0,
+            provider_metadata=None,
+        )
+        for i in range(1, 4)
+    ]
+    budget = SimpleNamespace(budget_id="proj-budget-1", max_budget=2000.0, budget_duration="30d", budget_reset_at=None)
+    member_state = BudgetProviderMemberState(
+        provider="litellm", provider_member_ref="ref-1", provider_budget_id="bud-1", sync_status=SyncStatus.OK
+    )
+    provider = SimpleNamespace(
+        sync_member_allocations=AsyncMock(return_value=[member_state, member_state, member_state])
+    )
+
+    persist_mock = AsyncMock(side_effect=[None, RuntimeError("persist failed"), None])
+
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(service, "_persist_child_budget_provider_state", new=persist_mock),
+    ):
+        await service._sync_created_member_allocations(
+            session=session,
+            provider=provider,
+            budget=budget,
+            allocations=allocations,
+            enforce_limit=True,
+        )
+
+    calls = mock_update_metadata.await_args_list
+    assert len(calls) == 3
+    assert calls[0].kwargs["allocation_id"] == "alloc-1"
+    assert calls[0].kwargs["sync_status"] == SyncStatus.OK
+    assert calls[1].kwargs["allocation_id"] == "alloc-2"
+    assert calls[1].kwargs["sync_status"] == SyncStatus.FAILED
+    assert calls[1].kwargs["provider_metadata"] == {"sync_status": SyncStatus.FAILED}
+    assert calls[2].kwargs["allocation_id"] == "alloc-3"
+    assert calls[2].kwargs["sync_status"] == SyncStatus.OK
 
 
 @pytest.mark.asyncio
@@ -1010,7 +1475,7 @@ async def test_sync_created_member_allocations_keeps_override_cap_when_enforce_l
     member_state = BudgetProviderMemberState(
         provider="litellm", provider_member_ref="ref-1", provider_budget_id="bud-1", sync_status=SyncStatus.OK
     )
-    provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=member_state))
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(return_value=[member_state]))
 
     with (
         patch(
@@ -1023,7 +1488,8 @@ async def test_sync_created_member_allocations_keeps_override_cap_when_enforce_l
             session=AsyncMock(), provider=provider, budget=budget, allocations=[allocation], enforce_limit=False
         )
 
-    assert provider.sync_member_allocation.await_args.kwargs["effective_max_budget"] == 500.0
+    items = provider.sync_member_allocations.await_args.args[0]
+    assert [item.effective_max_budget for item in items] == [500.0]
 
 
 def _reset_provider():
@@ -1140,3 +1606,207 @@ async def test_reset_project_budget_syncs_member_with_effective_cap(allocation_m
     provider.sync_member_allocation.assert_awaited_once_with(
         allocation=allocation, budget=budget, effective_max_budget=expected_max
     )
+
+
+@pytest.mark.asyncio
+async def test_sync_created_member_allocations_preparation_failure_keeps_order():
+    """CR-005: a member whose preparation raises is FAILED and excluded; neighbours keep their outcomes."""
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    allocations = [
+        SimpleNamespace(
+            id=f"alloc-{i}",
+            user_id=f"user-{i}",
+            allocated_max_budget=100.0,
+            allocated_soft_budget=80.0,
+            provider_metadata=None,
+        )
+        for i in range(1, 4)
+    ]
+    budget = SimpleNamespace(budget_id="proj-budget-1", max_budget=2000.0, budget_duration="30d", budget_reset_at=None)
+    item1, item3 = SimpleNamespace(name="item-1"), SimpleNamespace(name="item-3")
+    state1 = BudgetProviderMemberState(
+        provider="litellm", provider_member_ref="ref-1", provider_budget_id="bud-1", sync_status=SyncStatus.OK
+    )
+    state3 = BudgetProviderMemberState(
+        provider="litellm", provider_member_ref="ref-3", provider_budget_id="bud-3", sync_status=SyncStatus.OK
+    )
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(return_value=[state1, state3]))
+
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()) as mock_persist,
+        patch.object(service, "_member_sync_item", side_effect=[item1, RuntimeError("prep"), item3]),
+    ):
+        await service._sync_created_member_allocations(
+            session=session,
+            provider=provider,
+            budget=budget,
+            allocations=allocations,
+            enforce_limit=True,
+        )
+
+    assert provider.sync_member_allocations.await_args.args[0] == [item1, item3]
+    calls = mock_update_metadata.await_args_list
+    assert [c.kwargs["allocation_id"] for c in calls] == ["alloc-1", "alloc-2", "alloc-3"]
+    assert [c.kwargs["sync_status"] for c in calls] == [SyncStatus.OK, SyncStatus.FAILED, SyncStatus.OK]
+    assert calls[1].kwargs["provider_metadata"] == {"sync_status": SyncStatus.FAILED}
+    assert [c.kwargs["member_state"] for c in mock_persist.await_args_list] == [state1, state3]
+
+
+@pytest.mark.asyncio
+async def test_sync_created_member_allocations_persists_child_state_on_each_effective_budget_id():
+    """CR-006: each member's provider state is persisted on its own effective child budget ID."""
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    allocations = [
+        SimpleNamespace(
+            id="alloc-1",
+            user_id="user-1",
+            allocation_mode="equal",
+            allocated_max_budget=100.0,
+            allocated_soft_budget=80.0,
+        ),
+        SimpleNamespace(
+            id="alloc-2",
+            user_id="user-2",
+            allocation_mode="fixed",
+            override_budget_id="override-user-2",
+            allocated_max_budget=300.0,
+            allocated_soft_budget=200.0,
+        ),
+        SimpleNamespace(
+            id="alloc-3",
+            user_id="user-3",
+            allocation_mode="fixed",
+            allocated_max_budget=50.0,
+            allocated_soft_budget=40.0,
+        ),
+    ]
+    budget = SimpleNamespace(budget_id="proj-budget-1", max_budget=2000.0, budget_duration="30d", budget_reset_at=None)
+    state = BudgetProviderMemberState(
+        provider="litellm", provider_member_ref="ref", provider_budget_id="bud", sync_status=SyncStatus.OK
+    )
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(return_value=[state, state, state]))
+
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()) as mock_persist,
+    ):
+        await service._sync_created_member_allocations(
+            session=session,
+            provider=provider,
+            budget=budget,
+            allocations=allocations,
+            enforce_limit=True,
+        )
+
+    expected = [
+        ProjectBudgetService._effective_member_budget_id("proj-budget-1", allocations[0]),
+        "override-user-2",
+        ProjectBudgetService._effective_member_budget_id("proj-budget-1", allocations[2]),
+    ]
+    assert len(set(expected)) == 3
+    assert "proj-budget-1" not in expected
+    assert [c.kwargs["budget_id"] for c in mock_persist.await_args_list] == expected
+
+
+@pytest.mark.asyncio
+async def test_sync_created_member_allocations_batch_exception_marks_every_member_failed():
+    """CR-004: an exception from the batch call becomes each member's outcome (FAILED marker), as on main."""
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    allocations = [
+        SimpleNamespace(
+            id=f"alloc-{i}",
+            user_id=f"user-{i}",
+            allocated_max_budget=100.0,
+            allocated_soft_budget=80.0,
+            provider_metadata=None,
+        )
+        for i in range(1, 3)
+    ]
+    budget = SimpleNamespace(budget_id="proj-budget-1", max_budget=2000.0, budget_duration="30d", budget_reset_at=None)
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(side_effect=RuntimeError("batch blew up")))
+
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()) as mock_persist,
+    ):
+        await service._sync_created_member_allocations(
+            session=session,
+            provider=provider,
+            budget=budget,
+            allocations=allocations,
+            enforce_limit=True,
+        )
+
+    calls = mock_update_metadata.await_args_list
+    assert [c.kwargs["allocation_id"] for c in calls] == ["alloc-1", "alloc-2"]
+    assert all(c.kwargs["sync_status"] == SyncStatus.FAILED for c in calls)
+    mock_persist.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resync_member_allocations_batch_exception_logs_each_member_and_still_finalizes():
+    """CR-004: a batch-level exception is logged per member and the shared child step still runs."""
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    budget = SimpleNamespace(budget_id="proj-budget-1", budget_duration="30d", budget_reset_at="2026-04-22T10:00:00Z")
+    allocations = [
+        SimpleNamespace(
+            id=f"alloc-{i}",
+            user_id=f"user-{i}",
+            project_name="proj-a",
+            budget_category="cli",
+            allocated_max_budget=25.0,
+            allocated_soft_budget=20.0,
+            allocation_mode="equal",
+            provider_metadata=None,
+        )
+        for i in range(1, 3)
+    ]
+    batch_exc = RuntimeError("batch blew up")
+    provider = SimpleNamespace(sync_member_allocations=AsyncMock(side_effect=batch_exc))
+
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=allocations),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_allocation",
+            new=AsyncMock(side_effect=lambda *a, **k: allocations[0]),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(service, "_log_resync_member_failure") as mock_log_failure,
+        patch.object(service, "_ensure_shared_child_budget_after_resync", new=AsyncMock()) as mock_finalize,
+        patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=True),
+    ):
+        await service._resync_member_allocations(
+            session=session,
+            budget_id="proj-budget-1",
+            budget=budget,
+            eff_max=50.0,
+            eff_soft=40.0,
+            provider=provider,
+        )
+
+    assert [c.args[2].id for c in mock_log_failure.call_args_list] == ["alloc-1", "alloc-2"]
+    assert all(c.args[3] is batch_exc for c in mock_log_failure.call_args_list)
+    assert [c.kwargs["allocation_id"] for c in mock_update_metadata.await_args_list] == ["alloc-1", "alloc-2"]
+    assert all(c.kwargs["sync_status"] == SyncStatus.FAILED for c in mock_update_metadata.await_args_list)
+    mock_finalize.assert_awaited_once()
+    assert mock_finalize.await_args.kwargs["shared_sample"] is None

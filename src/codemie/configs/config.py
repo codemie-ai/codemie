@@ -928,6 +928,8 @@ class Config(BaseSettings):
     LITELLM_REQUEST_TIMEOUT: float = 5.0  # 5 seconds - HTTP request timeout
     LITELLM_LIST_REQUEST_TIMEOUT: float = 30.0  # 30 seconds - timeout for list/bulk endpoints
     LITELLM_FAIL_OPEN_ON_503: bool = True  # Fail open - allow requests on 503 errors
+    # Worker threads (and in-flight cap) for blocking LiteLLM calls of batch project member budget sync
+    LITELLM_PROJECT_MEMBER_SYNC_WORKERS: int = Field(default=8, ge=1, le=32)
 
     AI_AGENT_RECURSION_LIMIT: int = 150
     AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS: int = 5

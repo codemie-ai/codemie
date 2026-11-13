@@ -70,7 +70,12 @@ from codemie.service.activity.activity_models import (
     BudgetManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
-from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetProviderMemberState, BudgetProviderState
+from codemie.service.budget.provider import (
+    BudgetEnforcementProvider,
+    BudgetProviderMemberState,
+    BudgetProviderState,
+    MemberSyncItem,
+)
 from codemie.service.budget.provider_registry import get_active_provider, is_sync_current
 
 if TYPE_CHECKING:
@@ -558,6 +563,29 @@ class ProjectBudgetService:
         )
         return member_state
 
+    @staticmethod
+    def _member_sync_item(
+        allocation: ProjectMemberBudgetAssignment,
+        budget: Budget,
+        effective_max_budget: float | None,
+    ) -> MemberSyncItem:
+        return MemberSyncItem(
+            allocation_id=str(allocation.id),
+            project_budget_id=getattr(budget, "budget_id", None),
+            project_name=getattr(allocation, "project_name", None),
+            budget_category=getattr(allocation, "budget_category", None),
+            user_id=getattr(allocation, "user_id", None),
+            allocation_mode=getattr(allocation, "allocation_mode", None),
+            effective_budget_id=getattr(allocation, "effective_budget_id", None),
+            override_budget_id=getattr(allocation, "override_budget_id", None),
+            shared_budget_id=getattr(allocation, "shared_budget_id", None),
+            allocated_max_budget=getattr(allocation, "allocated_max_budget", None),
+            allocated_soft_budget=getattr(allocation, "allocated_soft_budget", None),
+            budget_duration=getattr(budget, "budget_duration", None),
+            budget_reset_at=getattr(budget, "budget_reset_at", None),
+            effective_max_budget=effective_max_budget,
+        )
+
     async def _sync_created_member_allocations(
         self,
         *,
@@ -567,6 +595,7 @@ class ProjectBudgetService:
         allocations: list[ProjectMemberBudgetAssignment],
         enforce_limit: bool,
     ) -> None:
+        prepared: list[dict] = []
         for alloc in allocations:
             provider_name = getattr(provider, "provider_name", "unknown")
             project_name = getattr(alloc, "project_name", None)
@@ -575,6 +604,9 @@ class ProjectBudgetService:
             allocation_id = getattr(alloc, "id", None)
             user_id = getattr(alloc, "user_id", None)
             allocation_mode = getattr(alloc, "allocation_mode", None)
+            item: MemberSyncItem | None = None
+            prepare_exc: Exception | None = None
+            effective_budget_id = None
             try:
                 effective_budget_id = self._effective_member_budget_id(budget_id, alloc) if budget_id else None
                 logger.debug(
@@ -587,35 +619,82 @@ class ProjectBudgetService:
                     f"allocated_soft_budget={getattr(alloc, 'allocated_soft_budget', None)!r}"
                 )
                 effective_max_budget = member_effective_max_budget(alloc, budget, enforce_limit)
-                member_state = await self._sync_member_allocation(
-                    session=session,
-                    provider=provider,
-                    allocation=alloc,
-                    budget=budget,
-                    effective_max_budget=effective_max_budget,
+                item = self._member_sync_item(alloc, budget, effective_max_budget)
+            except Exception as exc:
+                prepare_exc = exc
+            prepared.append(
+                {
+                    "alloc": alloc,
+                    "provider_name": provider_name,
+                    "project_name": project_name,
+                    "budget_id": budget_id,
+                    "budget_category": budget_category,
+                    "allocation_id": allocation_id,
+                    "user_id": user_id,
+                    "effective_budget_id": effective_budget_id,
+                    "item": item,
+                    "prepare_exc": prepare_exc,
+                }
+            )
+
+        items = [entry["item"] for entry in prepared if entry["item"] is not None]
+        try:
+            results = await provider.sync_member_allocations(items)
+        except Exception as exc:
+            results = [exc] * len(items)
+        result_iter = iter(results)
+
+        for entry in prepared:
+            outcome = entry["prepare_exc"] if entry["item"] is None else next(result_iter)
+            if isinstance(outcome, Exception):
+                logger.warning(
+                    f"budget_event=provider_member_budget_sync_failed component=project_budget_service "
+                    f"provider={entry['provider_name']!r} project_name={entry['project_name']!r} "
+                    f"budget_id={entry['budget_id']!r} budget_category={entry['budget_category']!r} "
+                    f"allocation_id={entry['allocation_id']!r} user_id={entry['user_id']!r} error={outcome}"
                 )
+                await self._mark_member_sync_failed(session, entry["alloc"])
+                continue
+
+            member_state = outcome
+            try:
                 await self._persist_child_budget_provider_state(
                     session,
-                    budget_id=effective_budget_id,
+                    budget_id=entry["effective_budget_id"],
                     member_state=member_state,
+                )
+                await project_member_budget_assignment_repository.update_provider_metadata(
+                    session,
+                    allocation_id=entry["alloc"].id,
+                    provider_metadata={
+                        **self._build_provider_metadata(
+                            provider=member_state.provider,
+                            provider_member_ref=member_state.provider_member_ref,
+                            provider_budget_id=member_state.provider_budget_id,
+                            sync_status=member_state.sync_status,
+                            raw=member_state.metadata,
+                        )
+                    },
+                    sync_status=member_state.sync_status,
+                    budget_reset_at=member_state.budget_reset_at,
                 )
                 logger.debug(
                     f"budget_event=provider_member_budget_sync_completed component=project_budget_service "
-                    f"provider={member_state.provider!r} project_name={project_name!r} "
-                    f"budget_id={budget_id!r} effective_budget_id={effective_budget_id!r} "
-                    f"budget_category={budget_category!r} allocation_id={allocation_id!r} "
-                    f"user_id={user_id!r} provider_member_ref={member_state.provider_member_ref!r} "
+                    f"provider={member_state.provider!r} project_name={entry['project_name']!r} "
+                    f"budget_id={entry['budget_id']!r} effective_budget_id={entry['effective_budget_id']!r} "
+                    f"budget_category={entry['budget_category']!r} allocation_id={entry['allocation_id']!r} "
+                    f"user_id={entry['user_id']!r} provider_member_ref={member_state.provider_member_ref!r} "
                     f"provider_budget_id={member_state.provider_budget_id!r} "
                     f"sync_status={member_state.sync_status!r} budget_reset_at={member_state.budget_reset_at!r}"
                 )
             except Exception as exc:
                 logger.warning(
                     f"budget_event=provider_member_budget_sync_failed component=project_budget_service "
-                    f"provider={provider_name!r} project_name={project_name!r} budget_id={budget_id!r} "
-                    f"budget_category={budget_category!r} allocation_id={allocation_id!r} "
-                    f"user_id={user_id!r} error={exc}"
+                    f"provider={entry['provider_name']!r} project_name={entry['project_name']!r} "
+                    f"budget_id={entry['budget_id']!r} budget_category={entry['budget_category']!r} "
+                    f"allocation_id={entry['allocation_id']!r} user_id={entry['user_id']!r} error={exc}"
                 )
-                await self._mark_member_sync_failed(session, alloc)
+                await self._mark_member_sync_failed(session, entry["alloc"])
 
     @staticmethod
     async def _mark_member_sync_failed(session: AsyncSession, alloc: ProjectMemberBudgetAssignment) -> None:
@@ -1135,25 +1214,26 @@ class ProjectBudgetService:
 
     # ==================== Update ====================
 
-    async def _sync_fixed_allocation(
+    async def _persist_resynced_member_state(
         self,
         session: AsyncSession,
         budget: Budget,
         updated: ProjectMemberBudgetAssignment,
-        provider: BudgetEnforcementProvider,
+        member_state: BudgetProviderMemberState,
     ) -> None:
-        """Sync a single FIXED-mode member allocation with the provider."""
-        await self._ensure_override_child_budget(
+        """Persist the provider state of one re-synced member allocation in the caller's transaction."""
+        await project_member_budget_assignment_repository.update_provider_metadata(
             session,
-            main_budget=budget,
-            project_name=updated.project_name,
-            user_id=updated.user_id,
-            actor_id=getattr(budget, "created_by", "system"),
-            allocated_soft_budget=updated.allocated_soft_budget,
-            allocated_max_budget=updated.allocated_max_budget,
-        )
-        member_state = await self._sync_member_allocation(
-            session=session, provider=provider, allocation=updated, budget=budget
+            allocation_id=updated.id,
+            provider_metadata=self._build_provider_metadata(
+                provider=member_state.provider,
+                provider_member_ref=member_state.provider_member_ref,
+                provider_budget_id=member_state.provider_budget_id,
+                sync_status=member_state.sync_status,
+                raw=member_state.metadata,
+            ),
+            sync_status=member_state.sync_status,
+            budget_reset_at=member_state.budget_reset_at,
         )
         await self._persist_child_budget_provider_state(
             session,
@@ -1161,7 +1241,22 @@ class ProjectBudgetService:
             member_state=member_state,
         )
 
-    async def _resync_member_allocation(
+    @staticmethod
+    def _log_resync_member_failure(
+        provider: BudgetEnforcementProvider,
+        budget_id: str,
+        alloc: ProjectMemberBudgetAssignment,
+        exc: Exception,
+    ) -> None:
+        logger.warning(
+            f"budget_event=provider_member_budget_sync_failed component=project_budget_service "
+            f"provider={getattr(provider, 'provider_name', 'unknown')!r} "
+            f"project_name={alloc.project_name!r} budget_id={budget_id!r} "
+            f"budget_category={alloc.budget_category!r} allocation_id={alloc.id!r} "
+            f"user_id={alloc.user_id!r} error={exc}"
+        )
+
+    async def _prepare_resync_member(
         self,
         session: AsyncSession,
         *,
@@ -1171,7 +1266,8 @@ class ProjectBudgetService:
         new_amounts: tuple[float, float] | None,
         effective_max_budget: float | None,
         provider: BudgetEnforcementProvider,
-    ) -> tuple[float, float] | None:
+    ) -> tuple[ProjectMemberBudgetAssignment, MemberSyncItem, tuple[float, float]] | None:
+        """Update one member allocation and build its provider batch item; None skips the member."""
         if new_amounts is None:
             return None
         new_max, new_soft = new_amounts
@@ -1188,33 +1284,28 @@ class ProjectBudgetService:
                 return None
 
             if updated.allocation_mode == AllocationMode.FIXED.value:
-                await self._sync_fixed_allocation(session, budget, updated, provider)
-                return None
-
-            member_state = await self._sync_member_allocation(
-                session=session,
-                provider=provider,
-                allocation=updated,
-                budget=budget,
-                effective_max_budget=effective_max_budget,
-            )
-            await self._persist_child_budget_provider_state(
-                session,
-                budget_id=self._effective_member_budget_id(budget_id, updated),
-                member_state=member_state,
-            )
-
+                await self._ensure_override_child_budget(
+                    session,
+                    main_budget=budget,
+                    project_name=updated.project_name,
+                    user_id=updated.user_id,
+                    actor_id=getattr(budget, "created_by", "system"),
+                    allocated_soft_budget=updated.allocated_soft_budget,
+                    allocated_max_budget=updated.allocated_max_budget,
+                )
+                item = self._member_sync_item(updated, budget, None)
+                return updated, item, (updated.allocated_max_budget, updated.allocated_soft_budget)
+            item = self._member_sync_item(updated, budget, effective_max_budget)
             return (
-                effective_max_budget if effective_max_budget is not None else updated.allocated_max_budget
-            ), updated.allocated_soft_budget
-        except Exception as exc:
-            logger.warning(
-                f"budget_event=provider_member_budget_sync_failed component=project_budget_service "
-                f"provider={getattr(provider, 'provider_name', 'unknown')!r} "
-                f"project_name={alloc.project_name!r} budget_id={budget_id!r} "
-                f"budget_category={alloc.budget_category!r} allocation_id={alloc.id!r} "
-                f"user_id={alloc.user_id!r} error={exc}"
+                updated,
+                item,
+                (
+                    effective_max_budget if effective_max_budget is not None else updated.allocated_max_budget,
+                    updated.allocated_soft_budget,
+                ),
             )
+        except Exception as exc:
+            self._log_resync_member_failure(provider, budget_id, alloc, exc)
             await self._mark_member_sync_failed(session, alloc)
             return None
 
@@ -1275,9 +1366,11 @@ class ProjectBudgetService:
             ),
             enforce_limit,
         )
-        shared_sample: tuple[float, float] | None = None
+        prepared: list[
+            tuple[ProjectMemberBudgetAssignment, ProjectMemberBudgetAssignment, MemberSyncItem, tuple[float, float]]
+        ] = []
         for alloc in allocations:
-            sample = await self._resync_member_allocation(
+            prepared_member = await self._prepare_resync_member(
                 session,
                 budget_id=budget_id,
                 budget=budget,
@@ -1286,7 +1379,15 @@ class ProjectBudgetService:
                 effective_max_budget=None if enforce_limit else eff_max,
                 provider=provider,
             )
-            shared_sample = shared_sample or sample
+            if prepared_member is not None:
+                prepared.append((alloc, *prepared_member))
+
+        try:
+            outcomes = await provider.sync_member_allocations([item for _, _, item, _ in prepared])
+        except Exception as exc:
+            outcomes = [exc] * len(prepared)
+
+        shared_sample = await self._persist_resync_outcomes(session, budget_id, budget, provider, prepared, outcomes)
         if shared_sample is not None:
             # Samples are (max, soft); the shared row takes them only through the one amount rule.
             shared_soft, shared_max = shared_project_budget_amounts(
@@ -1299,6 +1400,34 @@ class ProjectBudgetService:
             budget=budget,
             shared_sample=shared_sample,
         )
+
+    async def _persist_resync_outcomes(  # noqa: PLR0913
+        self,
+        session: AsyncSession,
+        budget_id: str,
+        budget: Budget,
+        provider: BudgetEnforcementProvider,
+        prepared: list[
+            tuple[ProjectMemberBudgetAssignment, ProjectMemberBudgetAssignment, MemberSyncItem, tuple[float, float]]
+        ],
+        outcomes: list[Any],
+    ) -> tuple[float, float] | None:
+        """Persist each synced member state, log failures, and return the first non-FIXED member's amounts."""
+        shared_sample: tuple[float, float] | None = None
+        for (alloc, updated, _item, amounts), outcome in zip(prepared, outcomes, strict=True):
+            if isinstance(outcome, Exception):
+                self._log_resync_member_failure(provider, budget_id, alloc, outcome)
+                await self._mark_member_sync_failed(session, alloc)
+                continue
+            try:
+                await self._persist_resynced_member_state(session, budget, updated, outcome)
+            except Exception as exc:
+                self._log_resync_member_failure(provider, budget_id, alloc, exc)
+                await self._mark_member_sync_failed(session, alloc)
+                continue
+            if updated.allocation_mode != AllocationMode.FIXED.value:
+                shared_sample = shared_sample or amounts
+        return shared_sample
 
     async def recompute_equal_shares(self, session: AsyncSession, project_name: str) -> None:
         """Recompute and persist equal member shares for every project budget, without provider calls.

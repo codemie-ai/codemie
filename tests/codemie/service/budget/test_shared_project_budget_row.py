@@ -160,11 +160,21 @@ async def test_resync_applies_the_amount_rule_to_the_shared_sample(enforce_limit
     with (
         patch(f"{_MEMBER_REPOSITORY}.get_active_by_budget_id", new=AsyncMock(return_value=[_allocation()])),
         patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=enforce_limit),
-        patch.object(service, "_resync_member_allocation", new=AsyncMock(return_value=resync_sample)),
+        patch.object(
+            service,
+            "_prepare_resync_member",
+            new=AsyncMock(return_value=(_allocation(), MagicMock(), resync_sample)),
+        ),
+        patch.object(service, "_persist_resync_outcomes", new=AsyncMock(return_value=resync_sample)),
         patch.object(service, "_ensure_shared_child_budget_after_resync", new=AsyncMock()) as ensure_after_resync,
     ):
         await service._resync_member_allocations(
-            session, "b1", budget, eff_max=60.0, eff_soft=50.0, provider=MagicMock()
+            session,
+            "b1",
+            budget,
+            eff_max=60.0,
+            eff_soft=50.0,
+            provider=MagicMock(sync_member_allocations=AsyncMock(return_value=[])),
         )
 
     ensure_after_resync.assert_awaited_once_with(session, budget_id="b1", budget=budget, shared_sample=expected_sample)

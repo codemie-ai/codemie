@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
+from codemie.service.budget.provider import BudgetProviderMemberState, MemberSyncItem
 from codemie.service.budget.provider_registry import get_active_provider, register_budget_enforcement_provider
 
 
@@ -129,3 +130,72 @@ def test_register_budget_enforcement_provider_overrides_noop(monkeypatch):
     register_budget_enforcement_provider(custom_provider)
 
     assert get_active_provider() is custom_provider
+
+
+def _make_member_sync_item(suffix: str) -> MemberSyncItem:
+    return MemberSyncItem(
+        allocation_id=f"alloc-{suffix}",
+        project_budget_id=f"project-budget-{suffix}",
+        project_name=f"proj-{suffix}",
+        budget_category=BudgetCategory.CLI,
+        user_id=f"user-{suffix}",
+        allocation_mode="FIXED",
+        effective_budget_id=f"effective-{suffix}",
+        override_budget_id=None,
+        shared_budget_id=None,
+        allocated_max_budget=10.0,
+        allocated_soft_budget=5.0,
+        budget_duration="30d",
+        budget_reset_at=None,
+        effective_max_budget=10.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_member_allocations_empty_input_returns_empty_list():
+    provider = get_active_provider()
+
+    result = await provider.sync_member_allocations(items=[])
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_sync_member_allocations_returns_outcome_per_item_matching_looped_calls():
+    provider = get_active_provider()
+    items = [_make_member_sync_item("1"), _make_member_sync_item("2"), _make_member_sync_item("3")]
+
+    batch_result = await provider.sync_member_allocations(items=items)
+
+    looped_result = [
+        await provider.sync_member_allocation(
+            allocation=item, budget=item, effective_max_budget=item.effective_max_budget
+        )
+        for item in items
+    ]
+
+    assert len(batch_result) == 3
+    assert batch_result == looped_result
+
+
+@pytest.mark.asyncio
+async def test_sync_member_allocations_catches_per_item_exception_and_continues():
+    from codemie.service.budget.provider_registry import NoopBudgetProvider
+
+    class _FlakyProvider(NoopBudgetProvider):
+        async def sync_member_allocation(self, *, allocation, budget, effective_max_budget=None):
+            if allocation.allocation_id == "alloc-2":
+                raise RuntimeError("boom")
+            return await super().sync_member_allocation(
+                allocation=allocation, budget=budget, effective_max_budget=effective_max_budget
+            )
+
+    provider = _FlakyProvider()
+    items = [_make_member_sync_item("1"), _make_member_sync_item("2"), _make_member_sync_item("3")]
+
+    result = await provider.sync_member_allocations(items=items)
+
+    assert len(result) == 3
+    assert isinstance(result[0], BudgetProviderMemberState)
+    assert isinstance(result[1], RuntimeError)
+    assert isinstance(result[2], BudgetProviderMemberState)

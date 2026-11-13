@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-10-13T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 23,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 14,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the provider-neutral BudgetEnforcementProvider protocol (new MemberSyncItem/MemberSyncOutcome contract and sync_member_allocations method), the noop provider in the registry, the LiteLLM budget provider adapter (grouped parallel fast path with ordered fallback), a new ProjectMemberSyncExecutor abstraction, ProjectBudgetService create and equal/fixed resync flows, config and app lifespan shutdown. Base L (4+ components, new abstraction) bumped for affecting multiple workflows." },
+    { "dimension": "technical_risk", "reason": "No exact precedent: a bounded thread pool with an event-loop semaphore whose slots are held through cancellation via asyncio.shield, contextvars and OTel context propagation into worker threads, and per-budget-group run batching with ensure-then-parallel-assign and fallback to ordered sync on any failure. Performance (batch throughput against LiteLLM) is the primary concern. Base L bumped for the performance red flag. The fix commit keeping batch failures per item shows the error-path semantics were subtle." },
+    { "dimension": "file_change_estimate", "reason": "14 files changed (2436 insertions, 134 deletions): 7 source files (1 new executor module, 6 modified) and 7 test files (new executor and lifecycle suites, the rest extended) across src/codemie/configs, enterprise/litellm, rest_api, service/budget and their test trees. The diffstat maps 11-15 files to XL." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: affects multiple workflows (project budget create flow plus equal and fixed resync flows)",
+    "Technical Risk bumped from L to XL: performance/scalability is the primary concern (parallel batch member sync with bounded concurrency)"
+  ],
+  "split_recommendation": null
+}

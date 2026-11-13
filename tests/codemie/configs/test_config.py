@@ -225,3 +225,20 @@ def test_standalone_not_exposed_in_customer_config(monkeypatch, flag):
 
     monkeypatch.setenv("STANDALONE", flag)
     assert not [c for c in customer_config.resolve_all() if "standalone" in str(c.id).lower()]
+
+
+def test_litellm_project_member_sync_workers_defaults_to_eight():
+    assert Config(_env_file=()).LITELLM_PROJECT_MEMBER_SYNC_WORKERS == 8
+
+
+@pytest.mark.parametrize("workers", [1, 8, 32])
+def test_litellm_project_member_sync_workers_accepts_values_in_range(workers):
+    config = Config(LITELLM_PROJECT_MEMBER_SYNC_WORKERS=workers)
+
+    assert workers == config.LITELLM_PROJECT_MEMBER_SYNC_WORKERS
+
+
+@pytest.mark.parametrize("workers", [0, 33])
+def test_litellm_project_member_sync_workers_rejects_values_out_of_range(workers):
+    with pytest.raises(ValidationError):
+        Config(LITELLM_PROJECT_MEMBER_SYNC_WORKERS=workers)
