@@ -306,7 +306,9 @@ async def test_interactive_navigation_representation_preserves_ranges_and_cache(
     async with client(mount(gateway, version["id"])) as http:
         plain = await http.get("/", headers={"cookie": nav["cookie"]})
         page = await http.get("/", headers=nav)
-        assert page.content.startswith(INDEX)
+        hook = page.content[: page.content.index(b"</script>") + len(b"</script>")]
+        # INDEX has no <head> or doctype, so the hook goes first.
+        assert hook.startswith(b"\n<script>") and page.content == hook + INDEX
         assert "codemie-hosted-location" in page.text
         assert launch.settings.version_origin(version["id"], viewer=True) in page.text
         assert len(page.content) == int(page.headers["content-length"])
@@ -317,7 +319,7 @@ async def test_interactive_navigation_representation_preserves_ranges_and_cache(
         ).status_code == 200
         head = await http.head("/", headers=nav)
         assert not head.content and head.headers["content-length"] == page.headers["content-length"]
-        for start, end in ((0, 3), (len(INDEX) - 3, len(INDEX) + 3), (len(INDEX), len(page.content) - 1)):
+        for start, end in ((0, 3), (len(hook) - 3, len(hook) + 3), (len(hook), len(page.content) - 1), (5, 5)):
             response = await http.get("/", headers=nav | {"range": f"bytes={start}-{end}"})
             assert response.status_code == 206
             assert response.content == page.content[start : end + 1]
@@ -405,7 +407,7 @@ async def test_only_embedded_navigations_get_the_window_broker(tmp_path):
         standalone = await http.get("/", headers=nav | {"cookie": gateway.cookie_name + "=" + VIEWER})
         asset = await http.get("/style.css", headers={"cookie": gateway.embedded_cookie_name + "=" + VIEWER})
     for page in (embedded, standalone):
-        assert page.status_code == 200 and page.content.startswith(INDEX)
+        assert page.status_code == 200 and page.content.endswith(INDEX)
         assert "codemie-hosted-location" in page.text and viewer in page.text
     assert "codemie-hosted-open" in embedded.text and "window.open" in embedded.text
     assert "codemie-hosted-open" not in standalone.text and "window.open" not in standalone.text
@@ -633,3 +635,22 @@ async def test_every_adapter_serves_the_same_statuses_headers_and_bytes(tmp_path
         past = await http.get("/large.png", headers=session | {"range": f"bytes={len(LARGE)}-"})
         assert past.status_code == 416 and past.headers["cache-control"] == "private, no-store"
         assert (await http.get("/", headers=session)).content == INDEX
+
+
+@pytest.mark.asyncio
+async def test_the_hook_runs_before_the_first_page_script(tmp_path):
+    deck = (
+        b'<!DOCTYPE html>\n<html lang="en">\n<HEAD>\n<meta charset="utf-8">\n<title>Deck</title>\n'
+        b'<script src="controls.js"></script>\n</HEAD>\n<body><script>boot()</script></body></html>'
+    )
+    storage, version, attempt, _ = await build_site(tmp_path, {"index.html": deck})
+    gateway = ContentGateway(Launch(version, attempt), storage)
+    nav = {"sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe", "accept": "text/html"}
+    async with client(mount(gateway, version["id"])) as http:
+        page = await http.get("/", headers=nav | {"cookie": gateway.embedded_cookie_name + "=" + VIEWER})
+    body = page.content
+    hook = body.index(b"\n<script>(() => {")
+    assert hook == deck.index(b"<title>") - 1 and body.index(b"codemie-hosted-open") < body.index(b"controls.js")
+    assert hook < body.index(b'<script src="controls.js">') < body.index(b"boot()")
+    assert body.replace(body[hook : body.index(b"</script>", hook) + len(b"</script>")], b"") == deck
+    assert int(page.headers["content-length"]) == len(body)

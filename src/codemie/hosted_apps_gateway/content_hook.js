@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Route report for hosted HTML navigations. Appended inline inside an arrow function after
+// Route report for hosted HTML navigations. Inserted before the page's first script (at the start of
+// <head>, see navigation.injection_offset) and needs no parsed DOM. Inline inside an arrow function after
 // `const viewer = <viewer origin>, ui = <CodeMie origins>, embedded = <bool>;` (navigation.py).
 //
 // Messages go only to the frame's actual parent: location.ancestorOrigins[0] when the browser

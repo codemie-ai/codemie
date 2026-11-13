@@ -352,8 +352,12 @@ It is served by the existing gateway under the same wildcard DNS/TLS configurati
 
 The browser scripts live next to `hosted_apps_gateway/navigation.py` (`content_hook.js`, `content_broker.js`,
 `viewer_wrapper.js`) and are inlined exactly as written; the wrapper's CSP hash is computed from its file bytes.
-Interactive HTML navigation responses append a fixed route-reporting hook without changing stored
-version bytes. The wrapper accepts route hints only from its exact child window and origin, and
+Interactive HTML navigation responses carry a fixed route-reporting hook without changing stored
+version bytes. The gateway inserts it before the page's first script, so it is in place while the
+page boots: right after `<meta charset>` (a declaration in the first 1024 bytes stays there), else
+right after `<head ...>`, else after the doctype, else at the very start. It searches the first
+16 KiB of the document, skips markup inside comments, and a UTF-16 document keeps the hook at its
+end. The hook needs no parsed DOM. The wrapper accepts route hints only from its exact child window and origin, and
 copies only bounded paths within its own origin. This preserves history and hash routes on refresh;
 the hints never authorize content or carry credentials. The navigation representation has its own
 ETag, length and streamed range handling. Ordinary asset fetches retain the original bytes. The parent frame's permissions remain the security boundary even if an app tampers
@@ -374,18 +378,34 @@ windows:
 - `window.open(url, name, features)` with a URL on the content's own origin, other than empty or
   `about:blank`, and a name other than `_self`, `_parent`, `_top` or the name of an `<iframe>`
   or `<frame>` in the page, posts
-  `{type: 'codemie-hosted-open', target: pathname + search + hash, name}` to the CodeMie parent.
-  `name` is the window name the content gave, or `''` (a new window every time) when it gave none
-  or a name starting with `_` such as `_blank`. The broker then returns a stand-in window
-  (`closed`, `close()`, `focus()`, `blur()`, `postMessage()`), or `null` when the features ask for
-  `noopener` or `noreferrer`, as the browser would. Every other call reaches the browser's own
-  `window.open` unchanged.
-- The stand-in is not a window. The opened page has no `opener` link back, `closed` is never
-  true, `close()`, `blur()` and `postMessage()` do nothing, and nothing else (`print()`,
-  `document`, `location`) is there. Apps that sync their windows through shared storage or
-  `BroadcastChannel` work; apps that script the other window directly do not. `focus()` on a
-  named stand-in posts the same request again, so CodeMie focuses that window, or opens it again
-  after the user closed it.
+  `{type: 'codemie-hosted-open', target: pathname + search + hash, name, channel, features}` to the
+  CodeMie parent. `name` is the window name the content gave, or `''` (a new window every time)
+  when it gave none or a name starting with `_` such as `_blank`. The broker then returns a
+  stand-in window (`closed`, `close()`, `focus()`, `blur()`, `postMessage()`, see the relay below),
+  or `null` when the features ask for `noopener` or `noreferrer`, as the browser would. Every other
+  call reaches the browser's own `window.open` unchanged.
+- `channel` is a fresh id (`crypto.randomUUID()`) for each stand-in, the relay channel of that
+  window. A name used again returns the same stand-in with the same channel. It is `null` for
+  `noopener`/`noreferrer` and for links, which return no window.
+- `features` is what CodeMie may honour of the third argument: `null`, or
+  `{popup?: true, width?, height?, left?, top?}`. The string is tokenized as the HTML standard
+  does (names and values split by whitespace, `=` and `,`, case-insensitive; `innerWidth`,
+  `innerHeight`, `screenX`, `screenY` are aliases). `popup` follows the standard's "popup window
+  is requested" check, so `width=1180,height=720` alone asks for a popup. The four numbers must be
+  integers (`12.7`, `1e3`, `400px` are dropped); width and height are clamped to 100..10000, left
+  and top to 0..10000. Everything else is dropped.
+- `focus()` on a named stand-in posts the same request again, so CodeMie focuses that window, or
+  opens it again after the user closed it. `close()` posts
+  `{type: 'codemie-hosted-close', channel}`, asking CodeMie to close the window it opened for that
+  channel, and makes `closed` true. `blur()` does nothing.
+- `window.close()` of the content itself (a picker that posts its result to its opener and closes)
+  would do nothing, because the content is a frame. The broker replaces it, on every embedded
+  page: it posts `{type: 'codemie-hosted-close-self'}` (no other fields) to the CodeMie parent,
+  with the same targeting as the open message, and never calls the browser's own `close()`. The
+  UI closes only a window CodeMie itself opened for a brokered request and ignores the message in
+  a tab the user opened. A page opened for a channel also relays `state: 'closed'` at once, so the
+  opener's `w.closed` is `true` right away; if CodeMie ignores the request, it turns `false`
+  again only on that page's next `pageshow`.
 - A `click`/`auxclick` listener on `window`, in the bubble phase, brokers a same-origin `<a href>`
   without `download` when Meta, Ctrl or Shift is held or it is a middle click (name `''`), when
   the link's target starts with `_` and is not `_self`, `_parent` or `_top` (`_blank`, `_new`:
@@ -413,7 +433,9 @@ CodeMie opens a brokered window only while the CodeMie page has user activation 
 key press that led to the request), and limits how many windows one viewer may open in a short
 time; the current numbers are in the UI (`codemie-ui` MR !2301). A request beyond the limit, or
 without activation, opens nothing. The content has already cancelled the browser's own action
-by then, so such a click does nothing. `LaunchRequest.path` is a page of the version as the content names it:
+by then, so such a click does nothing.
+
+`LaunchRequest.path` is a page of the version as the content names it:
 path, query and fragment together. The backend alone decides whether it can be opened: at most
 4096 characters for path, query and fragment together, printable ASCII without spaces or
 backslashes, starting with one `/`, and its path and query must pass `local_target`
@@ -429,6 +451,48 @@ version share one embedded-cookie slot on that version's origin, and the latest 
 is the one every window sends.
 Two CodeMie windows that show the same version share that origin's storage (BroadcastChannel,
 localStorage, IndexedDB), which is how a deck's presenter view finds its main window.
+
+##### The relay between brokered windows
+
+The opened page and the page that opened it talk through a `BroadcastChannel` named
+`codemie-hosted-windows` on the version's content origin. Both are CodeMie windows of the same
+version under the same top-level CodeMie site, so they share it. CodeMie does not see these
+messages.
+
+- The CodeMie window opened for a channel carries `opener=<channel>` in its address. The backend
+  never receives or stores the channel: the CodeMie page names the content frame
+  `codemie-hosted-<32 hex>` for a normal launch and `codemie-hosted-<32 hex>-opener-<channel>`
+  (`[A-Za-z0-9-]{8,64}`) for a window opened for a channel. It grants nothing: it only names a
+  relay channel.
+- On every page load of an embedded launch the broker copies that name into the tab's
+  `sessionStorage` (`codemie-hosted-opener`): the opener form stores the channel, the plain form
+  removes it, and any other name (the app renamed its window) keeps what an earlier page stored.
+  `sessionStorage` belongs to one top-level window, so the main window never takes the channel of
+  a window it opened, although all CodeMie windows of a version share one embedded cookie.
+- The broker then defines `window.opener` as a stand-in for the opener, only when the browser's
+  own `opener` is `null` (it always is inside the CodeMie frame). Because the hook runs before the
+  page's first script, the stand-in `window.opener` and the `window.open` wrapper already exist
+  while the page boots.
+- `postMessage(data, targetOrigin)` on either stand-in (also the `{targetOrigin, transfer}` form)
+  relays `{channel, from: 'opener' | 'child', data}`. `targetOrigin` must be `*`, `/` or the
+  content's own origin; any other is dropped silently, as the browser drops a message for another
+  origin. A transfer list cannot cross a `BroadcastChannel`: it is dropped with one console
+  warning per page, and the data is still sent (cloned, not transferred).
+- The other side dispatches a `message` event on its `window` with that `data`,
+  `origin` set to the content's own origin, and `source` set to its stand-in for the sender (the
+  object `window.open` returned, or `window.opener`), so `event.source === w` checks hold.
+- `closed`: each page posts `{channel, from, state: 'open'}` on `pageshow` and
+  `{state: 'closed'}` on `pagehide`. The other side's stand-in follows it. Before the first
+  `'open'` it is `false` (the window is still loading). The opened page's `window.opener.closed`
+  follows the opener's page the same way. `close()` on `window.opener` does nothing, as a script
+  cannot close its opener.
+- Unsupported: the stand-ins have no `location`, `document`, `print()`, `name` or frames, so
+  direct DOM access or navigation of the other window does not work; `MessagePort` and other
+  transferables do not reach the other side; a message posted before the other page has loaded
+  is lost (as it is with real windows, so apps wait for a "ready" message). When the opener page
+  is replaced (a navigation or reload of the main window), the new page does not know its old
+  stand-ins: the opened window's `window.opener.closed` turns `true` and its messages go
+  nowhere.
 
 Known limitation: when two windows of one version launch at the same moment, the later
 redemption replaces the shared cookie before the earlier window reads `/_platform/view`, so the

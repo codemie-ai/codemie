@@ -39,6 +39,8 @@ from codemie.hosted_apps_gateway.management import route_path
 from codemie.hosted_apps_gateway.navigation import (
     WRAPPER_SCRIPT,
     WRAPPER_SCRIPT_HASH,
+    SCAN_BYTES,
+    injection_offset,
     navigation_suffix,
     representation_range,
     script_string,
@@ -340,10 +342,16 @@ class ContentGateway:
         # Authorization above always precedes conditional/range/HEAD responses.
         if etag_matches(request.headers.get("if-none-match"), headers["ETag"]) and not request.headers.get("range"):
             return Response(status_code=304, headers=headers)
-        return self.asset_response(request, asset, suffix, headers)
+        return await self.asset_response(request, asset, suffix, headers)
 
-    def asset_response(self, request, asset, suffix, headers):
-        """The asset, or the requested byte range of it, with its suffix appended to the representation."""
+    async def injection_point(self, asset):
+        """Where the navigation hook goes in this HTML asset: before its first page script."""
+        end = min(asset["size"], SCAN_BYTES) - 1
+        prefix = b"".join([chunk async for chunk in self.storage.read_range(asset["key"], 0, end)]) if end >= 0 else b""
+        return injection_offset(prefix, asset["size"])
+
+    async def asset_response(self, request, asset, suffix, headers):
+        """The asset, or the requested byte range of it, with the navigation hook inside the representation."""
         size = asset["size"] + len(suffix)
         ranged = request.headers.get("range")
         if ranged and request.headers.get("if-range") not in (None, headers["ETag"]):
@@ -355,7 +363,8 @@ class ContentGateway:
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         if request.method == "HEAD" or length == 0:
             return Response(status_code=206 if ranged else 200, headers=headers)
-        body = representation_range(self.storage, asset["key"], asset["size"], suffix, start, end)
+        offset = await self.injection_point(asset) if suffix else asset["size"]
+        body = representation_range(self.storage, asset["key"], asset["size"], suffix, start, end, offset)
         return StreamingResponse(body, status_code=206 if ranged else 200, headers=headers)
 
     async def failure(self, request, exc):
