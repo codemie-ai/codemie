@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from codemie_tools.base.file_object import FileObject
 
 from codemie.rest_api.security.user import User
@@ -100,3 +102,123 @@ def test_other_owners_never_consult_the_source_blob_rule() -> None:
     can_download(_file("somebody-else"), _user(), None, "tok", repo)
 
     repo.user_references_blob.assert_not_called()
+
+
+_BUCKET = "test-bucket"
+
+
+def _icon_setup(mocker, *, found=True, can_read=True, find_error=None, parents=()):
+    from codemie.configs import config
+
+    mocker.patch.object(config, "CODEMIE_STORAGE_BUCKET_NAME", _BUCKET)
+    find = mocker.patch(
+        "codemie.service.file_service.download_rules.Assistant.find_by_id",
+        return_value=MagicMock() if found else None,
+        side_effect=find_error,
+    )
+    mocker.patch("codemie.service.file_service.download_rules.Ability.can", return_value=can_read)
+    mocker.patch("codemie.service.file_service.download_rules.Assistant.get_global_parents", return_value=list(parents))
+    return find
+
+
+def _icon(name: str = "assistants/a1/icon.png", owner: str = _BUCKET) -> FileObject:
+    return FileObject(name=name, mime_type="image/png", owner=owner)
+
+
+def test_reader_can_download_assistant_icon(mocker) -> None:
+    find = _icon_setup(mocker)
+
+    assert can_download(_icon(), _user(), None, "tok", _repo()) is True
+    find.assert_called_once_with("a1")
+
+
+def test_non_reader_denied_assistant_icon(mocker) -> None:
+    _icon_setup(mocker, can_read=False)
+
+    assert can_download(_icon(), _user(), None, "tok", _repo()) is False
+
+
+def test_assistant_icon_denied_when_assistant_missing(mocker) -> None:
+    _icon_setup(mocker, found=False)
+
+    assert can_download(_icon(), _user(), None, "tok", _repo()) is False
+
+
+def test_assistant_icon_denied_when_lookup_raises(mocker) -> None:
+    _icon_setup(mocker, find_error=RuntimeError("db down"))
+
+    assert can_download(_icon(), _user(), None, "tok", _repo()) is False
+
+
+def test_sub_assistant_icon_allowed_when_user_may_read_a_global_parent(mocker) -> None:
+    sub, parent = MagicMock(name="sub"), MagicMock(name="parent")
+    _icon_setup(mocker, parents=[parent])
+    mocker.patch(
+        "codemie.service.file_service.download_rules.Ability.can",
+        side_effect=lambda action, entity: entity is parent,
+    )
+    mocker.patch("codemie.service.file_service.download_rules.Assistant.find_by_id", return_value=sub)
+
+    assert can_download(_icon(), _user(), None, "tok", _repo()) is True
+
+
+def test_sub_assistant_icon_denied_when_user_cannot_read_the_global_parent(mocker) -> None:
+    _icon_setup(mocker, can_read=False, parents=[MagicMock()])
+
+    assert can_download(_icon(), _user(), None, "tok", _repo()) is False
+
+
+def test_sub_assistant_icon_denied_when_no_global_parent_lists_it(mocker) -> None:
+    _icon_setup(mocker, can_read=False, parents=[])
+
+    assert can_download(_icon(), _user(), None, "tok", _repo()) is False
+
+
+def test_sub_assistant_icon_denied_when_parent_lookup_raises(mocker) -> None:
+    _icon_setup(mocker, can_read=False)
+    mocker.patch(
+        "codemie.service.file_service.download_rules.Assistant.get_global_parents", side_effect=RuntimeError("db down")
+    )
+
+    assert can_download(_icon(), _user(), None, "tok", _repo()) is False
+
+
+def test_direct_reader_does_not_trigger_parent_lookup(mocker) -> None:
+    _icon_setup(mocker)
+    lookup = mocker.patch("codemie.service.file_service.download_rules.Assistant.get_global_parents")
+
+    assert can_download(_icon(), _user(), None, "tok", _repo()) is True
+    lookup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["assistants//icon.png", "assistants/a1/other.png", "assistants/a1/x/icon.png", "assistants/icon.png"],
+)
+def test_malformed_assistant_icon_names_denied(mocker, name) -> None:
+    find = _icon_setup(mocker)
+
+    assert can_download(_icon(name), _user(), None, "tok", _repo()) is False
+    find.assert_not_called()
+
+
+def test_assistant_icon_denied_for_non_bucket_owner(mocker) -> None:
+    find = _icon_setup(mocker)
+
+    assert can_download(_icon(owner="someone-else"), _user(), None, "tok", _repo()) is False
+    find.assert_not_called()
+
+
+def test_workflow_schema_handled_by_rule_b_not_assistant_lookup(mocker) -> None:
+    find = _icon_setup(mocker)
+    mocker.patch("codemie.service.file_service.download_rules.WorkflowConfig.find_by_id", return_value=MagicMock())
+
+    assert can_download(_icon("workflows/w1.svg"), _user(), None, "tok", _repo()) is True
+    find.assert_not_called()
+
+
+def test_memory_snapshot_in_bucket_namespace_denied(mocker) -> None:
+    find = _icon_setup(mocker)
+
+    assert can_download(_icon("memory_snapshots/snap.json.gz"), _user(), None, "tok", _repo()) is False
+    find.assert_not_called()

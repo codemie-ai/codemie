@@ -1704,6 +1704,22 @@ async def test_read_file_workflow_svg_denied_when_workflow_missing(mocker, authe
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
+# Test #5c: 200 — assistant icon readable by a user who may read the assistant (Rule F)
+@pytest.mark.anyio
+async def test_read_file_assistant_icon_allowed_when_user_can_read_assistant(mocker, authenticated_user):
+    """An entity icon assistants/{id}/icon.png is served when Ability grants READ on the assistant (Rule F)."""
+    from codemie.configs import config as _config
+
+    mocker.patch.object(_config, "CODEMIE_STORAGE_BUCKET_NAME", "test-bucket")
+    _setup_read_file_mock(mocker, b"png", "image/png", "assistants/a1/icon.png", owner="test-bucket")
+    mocker.patch("codemie.service.file_service.download_rules.Assistant.find_by_id", return_value=mocker.Mock())
+    mocker.patch("codemie.service.file_service.download_rules.Ability.can", return_value=True)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_200_OK
+
+
 # Test #6: 404 — memory_snapshots are never accessible (pins D-3)
 @pytest.mark.anyio
 async def test_read_file_memory_snapshot_denied_for_any_user(mocker, authenticated_user):

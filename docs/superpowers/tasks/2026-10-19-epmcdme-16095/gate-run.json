@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16095",
+  "head": "97fead00c9e45facc75c99a86074ac8841485c36",
+  "runner": "custom",
+  "started_at": "2026-10-22T12:50:46Z",
+  "completed_at": "2026-10-22T14:09:51Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 8000,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "2 private-key findings in gitignored, untracked .kube-local/kubeconfig.yaml and kubeconfig-internal.yaml (local files, not part of the branch diff)"
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 81000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "7 failures all in tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py: asyncpg UndefinedTableError relation log_events does not exist (local DB lacks table; files untouched by branch). The 3 test_prebuilt_assistants.py failures did NOT occur this run. 20842 passed, 175 skipped."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "notes": "Not requested; duplicates make test"
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN to run."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 9000,
+      "command": "make verify",
+      "exit_code": 2,
+      "notes": "Stopped at gitleaks prerequisite (same .kube-local findings); ruff and license passed; tests covered by the test gate"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4728000,
+      "command": "uvx codemie-test-harness run sanity-api -n 1 --reruns 2",
+      "exit_code": 0,
+      "notes": "197 passed, 4 skipped, 10 reruns in 1:18:24; no collection errors (0 GITHUB_PROJECT errors), so the previous 11 collection failures did not recur. Plan listed -n 2; ran -n 1 as instructed. Ran concurrently with the other gates."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file> per commit in merge_base..HEAD",
+      "exit_code": 0,
+      "notes": "8 commits checked, all exit 0"
+    }
+  ],
+  "failures": {
+    "gitleaks": "docker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 \\\n\t    dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace\nFinding:     [REDACTED PRIVATE KEY]\nSecret:      [REDACTED PRIVATE KEY]\nRuleID:      private-key\nEntropy:     5.604802\nTags:        [decoded:base64 decode-depth:1]\nFile:        /workspace/.kube-local/kubeconfig-internal.yaml\nLine:        18\nFingerprint: /workspace/.kube-local/kubeconfig-internal.yaml:private-key:18\n\nFinding:     [REDACTED PRIVATE KEY]\nSecret:      [REDACTED PRIVATE KEY]\nRuleID:      private-key\nEntropy:     5.604802\nTags:        [decoded:base64 decode-depth:1]\nFile:        /workspace/.kube-local/kubeconfig.yaml\nLine:        18\nFingerprint: /workspace/.kube-local/kubeconfig.yaml:private-key:18\n\n\u001b[90m12:51PM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~54841660 bytes (54.84 MB) in 7.75s\u001b[0m\n\u001b[90m12:51PM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 2\u001b[0m\nmake: *** [gitleaks] Error 1\n",
+    "test": "  /Users/akobir_bahronov/Development/epam/runway/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:241: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_empty_list_raises_422\n  /Users/akobir_bahronov/Development/epam/runway/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:249: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferNonTransferableInList::test_copy_blocked_alias_in_list_raises_422\n  /Users/akobir_bahronov/Development/epam/runway/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:282: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.COPY, _ALL_TYPES, [\"gitlab-hook\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferBothFlagsFalse::test_both_flags_false_raises_422\n  /Users/akobir_bahronov/Development/epam/runway/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:308: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.MOVE, set(), None)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateProjects::test_rejects_same_source_and_target\n  /Users/akobir_bahronov/Development/epam/runway/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:347: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_projects(\"same\", \"same\")\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /Users/akobir_bahronov/Development/epam/runway/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /Users/akobir_bahronov/Development/epam/runway/codemie-dev/codemie/src/codemie/service/settings/settings_transfer_service.py:372: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\ntests/codemie/service/test_mcp_config_service_auth_crud.py::test_update_rejects_auth_config_id_change_when_credentials_exist\n  /Users/akobir_bahronov/Development/epam/runway/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:404: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._apply_config_field_update(\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /Users/akobir_bahronov/Development/epam/runway/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:281: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /Users/akobir_bahronov/Development/epam/runway/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:473: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(mcp_config.config, config_id=config_id)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_two_parallel_agents_get_their_own_exact_totals_not_an_even_split\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_dispatch_without_an_llm_group_has_no_cost_rather_than_a_guess\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_dispatch_with_no_agent_id_falls_back_to_its_parent_span_from_its_start_on\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_subagent_run_time_runs_from_its_call_start_to_its_stop_event_and_is_null_without_one\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_foreground_agent_runs_from_its_call_start_to_its_stop_even_though_its_stop_precedes_the_result\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_parallel_subagents_have_overlapping_windows\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_sequential_subagents_do_not_overlap\n==== 7 failed, 20842 passed, 175 skipped, 262 warnings in 77.85s (0:01:17) =====\nmake: *** [test] Error 1\n",
+    "verify": "poetry run ruff format\n2895 files left unchanged\npoetry run ruff check --fix\nAll checks passed!\npoetry run ruff check\nAll checks passed!\ndocker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 \\\n\t    dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace\nFinding:     [REDACTED PRIVATE KEY]\nSecret:      [REDACTED PRIVATE KEY]\nRuleID:      private-key\nEntropy:     5.604802\nTags:        [decoded:base64 decode-depth:1]\nFile:        /workspace/.kube-local/kubeconfig-internal.yaml\nLine:        18\nFingerprint: /workspace/.kube-local/kubeconfig-internal.yaml:private-key:18\n\nFinding:     [REDACTED PRIVATE KEY]\nSecret:      [REDACTED PRIVATE KEY]\nRuleID:      private-key\nEntropy:     5.604802\nTags:        [decoded:base64 decode-depth:1]\nFile:        /workspace/.kube-local/kubeconfig.yaml\nLine:        18\nFingerprint: /workspace/.kube-local/kubeconfig.yaml:private-key:18\n\n\u001b[90m12:52PM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~54763591 bytes (54.76 MB) in 7.52s\u001b[0m\n\u001b[90m12:52PM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 2\u001b[0m\nmake: *** [gitleaks] Error 1\n"
+  }
+}

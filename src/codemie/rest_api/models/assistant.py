@@ -1406,6 +1406,25 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
             return session.exec(statement).all()
 
     @classmethod
+    def get_global_parents(cls, sub_assistant_id: str) -> List['Assistant']:
+        """Marketplace (is_global) assistants that list ``sub_assistant_id`` in their ``assistant_ids``."""
+        with Session(cls.get_engine()) as session:
+            statement = select(cls).where(
+                cls.is_global == True,  # noqa: E712
+                cls.assistant_ids.contains([sub_assistant_id]),  # type: ignore[attr-defined]
+            )
+            return list(session.exec(statement).all())
+
+    @classmethod
+    def get_uploaded_icon_batch(cls, after_id: str | None, limit: int) -> List['Assistant']:
+        """Assistants whose icon_url references a stored file, ordered by id, strictly after ``after_id``."""
+        with Session(cls.get_engine()) as session:
+            statement = select(cls).where(cls.icon_url.contains("/v1/files/"))  # type: ignore[union-attr]
+            if after_id is not None:
+                statement = statement.where(cls.id > after_id)
+            return list(session.exec(statement.order_by(cls.id).limit(limit)).all())
+
+    @classmethod
     def get_by_bedrock_aws_settings_id(cls, bedrock_aws_settings_id: str):
         """
         Retrieve all assistants filtered by bedrock_aws_settings_id.

@@ -2077,3 +2077,191 @@ class TestApplyTemplateFiltersSearchRelevance:
         templates = [_tmpl("Solar A", "x"), _tmpl("Renewable", "solar")]
         result = _apply_template_filters(templates, {"name": "solar"})
         assert [t.name for t in result] == ["Solar A", "Renewable"]
+
+
+class TestAssistantIconLocalizationWiring:
+    """create/update call AssistantIconService.localize_icon (EPMCDME-16095)."""
+
+    _MGMT = "codemie.rest_api.routers.assistant.management"
+
+    def _request(self, icon_url):
+        from codemie.rest_api.models.assistant import AssistantRequest
+
+        return AssistantRequest(
+            name="Icon Assistant",
+            description="d",
+            system_prompt="p",
+            project="demo",
+            llm_model_type="gpt-4o",
+            skip_integration_validation=True,
+            icon_url=icon_url,
+        )
+
+    def _user(self):
+        user = MagicMock(spec=User)
+        user.id = "user-123"
+        user.username = "testuser"
+        user.name = "Test User"
+        return user
+
+    def _run_create(self, request, localize):
+        from codemie.core.models import Application
+        from codemie.rest_api.routers.assistant.management import create_assistant
+
+        app = MagicMock(allowed_models=None, default_model=None)
+        calls = MagicMock()
+
+        def fake_save(self, *args, **kwargs):
+            self.id = "new-id"
+            calls.save()
+
+        with (
+            patch(f"{self._MGMT}.project_access_check"),
+            patch(f"{self._MGMT}.ensure_application_exists"),
+            patch(
+                "codemie.service.assistant.assistant_version_service.AssistantVersionService.create_initial_version",
+                side_effect=lambda **kw: calls.create_initial_version(kw["request"].icon_url),
+            ),
+            patch(f"{self._MGMT}.GuardrailService.sync_guardrail_assignments_for_entity"),
+            patch(f"{self._MGMT}._track_mcp_usage_on_create"),
+            patch(f"{self._MGMT}._track_assistant_management_metric"),
+            patch.object(Application, "get_by_id", return_value=app),
+            patch.object(Assistant, "save", new=fake_save),
+            patch.object(Assistant, "update", new=lambda self: calls.update(self.icon_url)),
+            patch.object(Assistant, "delete", new=lambda self: calls.delete()),
+            patch(f"{self._MGMT}.AssistantIconService.localize_icon", side_effect=localize) as mock_localize,
+        ):
+            try:
+                response = create_assistant(request, user=self._user())
+            except ExtendedHTTPException as e:
+                return e, mock_localize, calls
+        return response, mock_localize, calls
+
+    def test_create_localizes_after_save_and_before_initial_version(self):
+        request = self._request("https://h/api/v1/files/TOKEN")
+
+        _response, mock_localize, calls = self._run_create(request, lambda *a, **kw: "https://h/api/v1/files/NEW")
+
+        args = mock_localize.call_args.args
+        assert args[0] == "new-id" and args[1] == "https://h/api/v1/files/TOKEN" and args[2] is None
+        assert [c[0] for c in calls.mock_calls] == ["save", "update", "create_initial_version"]
+        calls.update.assert_called_once_with("https://h/api/v1/files/NEW")
+        calls.create_initial_version.assert_called_once_with("https://h/api/v1/files/NEW")
+
+    def test_create_clone_copies_source_entity_icon_to_new_id(self):
+        request = self._request("https://h/api/v1/files/SRC_ENTITY_ICON")
+
+        _response, mock_localize, _calls = self._run_create(request, lambda *a, **kw: "https://h/api/v1/files/COPY")
+
+        assert mock_localize.call_args.args[0] == "new-id"
+        assert mock_localize.call_args.args[1] == "https://h/api/v1/files/SRC_ENTITY_ICON"
+
+    def _run_clone(self, request_icon, source_icon, can_read):
+        request = self._request(request_icon)
+        request.source_assistant_id = "src-id"
+        source = MagicMock(spec=Assistant)
+        source.icon_url = source_icon
+        with (
+            patch.object(Assistant, "find_by_id", return_value=source),
+            patch(f"{self._MGMT}.Ability") as ability,
+            patch(f"{self._MGMT}._update_source_clone_count"),
+        ):
+            ability.return_value.can.return_value = can_read
+            return self._run_create(request, lambda *a, **kw: a[1])
+
+    def test_clone_keeps_the_readable_source_icon_unchanged(self):
+        legacy = "https://h/api/v1/files/LEGACY"
+
+        _response, mock_localize, _calls = self._run_clone(legacy, legacy, can_read=True)
+
+        assert mock_localize.call_args.args[1:3] == (legacy, legacy)
+
+    def test_clone_does_not_inherit_from_an_unreadable_source(self):
+        legacy = "https://h/api/v1/files/LEGACY"
+
+        _response, mock_localize, _calls = self._run_clone(legacy, legacy, can_read=False)
+
+        assert mock_localize.call_args.args[2] is None
+
+    def test_clone_with_a_different_icon_than_the_source_is_validated(self):
+        _response, mock_localize, _calls = self._run_clone(
+            "https://h/api/v1/files/OTHER", "https://h/api/v1/files/LEGACY", can_read=True
+        )
+
+        assert mock_localize.call_args.args[2] is None
+
+    def test_create_rejection_removes_saved_row_and_surfaces_400(self):
+        def reject(*a, **kw):
+            raise ExtendedHTTPException(code=400, message="Invalid assistant icon", details="x")
+
+        error, _mock_localize, calls = self._run_create(self._request("https://h/api/v1/files/T"), reject)
+
+        assert isinstance(error, ExtendedHTTPException) and error.code == 400
+        calls.delete.assert_called_once()
+        calls.create_initial_version.assert_not_called()
+
+    def _run_update(self, request, localize):
+        from codemie.rest_api.routers.assistant.management import update_assistant
+
+        existing = MagicMock(spec=Assistant)
+        existing.project = "demo"
+        existing.icon_url = "https://h/api/v1/files/STORED"
+        repo = MagicMock()
+        with (
+            patch(f"{self._MGMT}.project_access_check"),
+            patch(f"{self._MGMT}.get_assistant_by_id_or_raise", return_value=existing),
+            patch(f"{self._MGMT}.check_user_can_access_assistant"),
+            patch(f"{self._MGMT}._validate_remote_entities_and_raise"),
+            patch(f"{self._MGMT}.AssistantRepository", return_value=repo),
+            patch(f"{self._MGMT}.category_service"),
+            patch(f"{self._MGMT}._filter_invalid_datasources"),
+            patch(f"{self._MGMT}._track_mcp_usage_changes"),
+            patch(f"{self._MGMT}.GuardrailService.sync_guardrail_assignments_for_entity"),
+            patch(f"{self._MGMT}._track_assistant_management_metric"),
+            patch(f"{self._MGMT}.AssistantIconService.localize_icon", side_effect=localize) as mock_localize,
+        ):
+            try:
+                update_assistant("a1", request, background_tasks=MagicMock(), user=self._user())
+            except ExtendedHTTPException as e:
+                return e, mock_localize, repo
+        return None, mock_localize, repo
+
+    def test_update_passes_stored_icon_url_as_current(self):
+        request = self._request("https://h/api/v1/files/NEWTOKEN")
+
+        _err, mock_localize, repo = self._run_update(request, lambda *a, **kw: "https://h/api/v1/files/LOCALIZED")
+
+        assert mock_localize.call_args.args[:3] == (
+            "a1",
+            "https://h/api/v1/files/NEWTOKEN",
+            "https://h/api/v1/files/STORED",
+        )
+        assert repo.update.call_args.args[1].icon_url == "https://h/api/v1/files/LOCALIZED"
+
+    def test_update_rejection_leaves_assistant_unmodified(self):
+        def reject(*a, **kw):
+            raise ExtendedHTTPException(code=400, message="Invalid assistant icon", details="x")
+
+        err, _mock_localize, repo = self._run_update(self._request("https://h/api/v1/files/T"), reject)
+
+        assert err is not None and err.code == 400
+        repo.update.assert_not_called()
+
+    def test_update_without_icon_url_does_not_touch_the_stored_icon(self):
+        from codemie.rest_api.models.assistant import AssistantRequest
+
+        request = AssistantRequest(
+            name="Icon Assistant",
+            description="d",
+            system_prompt="p",
+            project="demo",
+            llm_model_type="gpt-4o",
+            skip_integration_validation=True,
+        )
+
+        err, mock_localize, repo = self._run_update(request, lambda *a, **kw: "https://h/api/v1/files/LOCALIZED")
+
+        assert err is None
+        mock_localize.assert_not_called()
+        assert "icon_url" not in request.model_fields_set
+        repo.update.assert_called_once()

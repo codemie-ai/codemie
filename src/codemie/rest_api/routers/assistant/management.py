@@ -21,7 +21,7 @@ from fastapi import APIRouter, status, Depends, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 
 from codemie.configs import config, logger
-from codemie.core.ability import Action
+from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.utils import slugify
 from codemie.core.models import (
@@ -50,6 +50,7 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.default_applications import ensure_application_exists
 from codemie.repository.assistants.assistant_clone_event_repository import AssistantCloneEventRepository
+from codemie.service.assistant.assistant_icon_service import AssistantIconService
 from codemie.service.assistant.assistant_repository import AssistantRepository
 from codemie.service.assistant.category_service import category_service
 from codemie.service.assistant.sensitive_prompt_variables import (
@@ -188,12 +189,48 @@ def _build_assistant_from_create_request(request: AssistantRequest, user: User) 
     return assistant
 
 
+def _readable_clone_source_icon_url(request: AssistantRequest, user: User) -> Optional[str]:
+    """The icon a clone inherits unchanged from a source assistant the user can read, else None.
+
+    A clone may keep that value even when the user cannot download its file, as before icons were
+    localized: nothing is copied, so no file access is widened.
+    """
+    if not request.source_assistant_id or not request.icon_url:
+        return None
+    source = Assistant.find_by_id(request.source_assistant_id)
+    if source is None or source.icon_url != request.icon_url or not Ability(user).can(Action.READ, source):
+        return None
+    return source.icon_url
+
+
+def _localize_new_assistant_icon(assistant: Assistant, request: AssistantRequest, user: User) -> None:
+    """Copy an uploaded icon to the new assistant's entity file; the id exists only after save.
+
+    On rejection the just-saved row is removed so no half-created assistant (without a version) is left behind.
+    """
+    try:
+        kept_icon_url = _readable_clone_source_icon_url(request, user)
+        icon_url = AssistantIconService.localize_icon(str(assistant.id), request.icon_url, kept_icon_url, user)
+    except Exception:
+        try:
+            assistant.delete()
+        except Exception:
+            logger.warning(f"Failed to remove assistant {assistant.id} after icon rejection")
+        raise
+    if icon_url != request.icon_url:
+        request.icon_url = icon_url
+        assistant.icon_url = icon_url
+        assistant.update()
+
+
 def _save_new_assistant(assistant: Assistant, request: AssistantRequest, user: User) -> None:
     """Persist a newly built assistant, mapping known integrity errors to friendly responses."""
     from codemie.service.assistant.assistant_version_service import AssistantVersionService
 
     try:
         assistant.save(refresh=True)
+
+        _localize_new_assistant_icon(assistant, request, user)
 
         # Create initial version
         AssistantVersionService.create_initial_version(assistant=assistant, request=request, user=user)
@@ -418,6 +455,11 @@ def update_assistant(
         return validation_response
 
     request.mcp_servers = MCPAccessControlService.sanitize_for_save(request.mcp_servers)
+
+    # Before any mutation: a rejected icon (400) leaves the assistant untouched.
+    # Only when the request names an icon: assigning the field would mark it as set and clear the stored one.
+    if "icon_url" in request.model_fields_set:
+        request.icon_url = AssistantIconService.localize_icon(assistant_id, request.icon_url, assistant.icon_url, user)
 
     repository = AssistantRepository()
 

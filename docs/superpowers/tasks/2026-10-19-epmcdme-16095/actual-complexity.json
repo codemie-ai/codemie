@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 11,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches download_rules (new Rule F), AssistantIconService, new assistant_icon_backfill service, assistant management router and assistant model batch query." },
+    { "dimension": "technical_risk", "reason": "File-access authorization rule change (security-sensitive) plus an idempotent data backfill over existing assistant icons; no exact precedent for entity-owned icon copy." },
+    { "dimension": "file_change_estimate", "reason": "11 files changed per diffstat (5 source, 6 test), all additive (890 insertions, 0 deletions)." },
+    { "dimension": "affected_layers", "reason": "API router, service layer, DB/persistence (paged backfill query), and file storage access." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk: affects authorization of file download (Rule F)",
+    "Requires data migration (backfill of existing icons)"
+  ],
+  "split_recommendation": null
+}

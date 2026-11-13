@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import re
+
 from codemie_tools.base.file_object import FileObject
 
 from codemie.configs import config
@@ -24,6 +26,7 @@ from codemie.core.ability import Ability, Action
 from codemie.core.workflow_models.workflow_config import WorkflowConfig
 from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
 from codemie.repository.repository_factory import MCP_IMAGES_SUBDIR
+from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.conversation import Conversation
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.security.user import User
@@ -33,6 +36,13 @@ from codemie.service.share_conversation_service import collect_message_file_toke
 _WORKFLOW_SCHEMA_PREFIX = "workflows/"
 _WORKFLOW_SCHEMA_SUFFIX = ".svg"
 _WORKSPACE_OWNER_PREFIX = "workspace-"
+ASSISTANT_ICON_PREFIX = "assistants/"
+_ASSISTANT_ICON_NAME = re.compile(r"^assistants/([^/]+)/icon[^/]*$")
+
+
+def assistant_icon_name(assistant_id: str, ext: str) -> str:
+    """Blob name of an assistant's uploaded icon: ``assistants/{assistant_id}/icon<ext>``."""
+    return f"{ASSISTANT_ICON_PREFIX}{assistant_id}/icon{ext}"
 
 
 def _can_read_workflow_schema(name: str, user: User) -> bool:
@@ -66,6 +76,39 @@ def _is_readable_workflow_schema(file_object: FileObject, user: User) -> bool:
     """
     bucket = config.CODEMIE_STORAGE_BUCKET_NAME
     return bool(bucket) and file_object.owner == bucket and _can_read_workflow_schema(file_object.name, user)
+
+
+def _is_readable_assistant_icon(file_object: FileObject, user: User) -> bool:
+    """Rule F: an assistant's entity icon, and only for a user who may read that assistant.
+
+    A sub-assistant of a marketplace (global) assistant counts as readable when the user may read that parent,
+    the same rule ``Assistant.get_by_ids`` applies when it lists the sub-assistants under the parent.
+
+    Icons are written as ``assistants/{assistant_id}/icon<ext>`` (AssistantIconService) under the shared
+    CODEMIE_STORAGE_BUCKET_NAME owner, which also holds workflow schemas and memory snapshots, so the
+    name shape is checked first and everything else is denied.
+    Fails closed: any lookup error denies access rather than surfacing a 500 from the auth path.
+    """
+    bucket = config.CODEMIE_STORAGE_BUCKET_NAME
+    if not bucket or file_object.owner != bucket:
+        return False
+
+    match = _ASSISTANT_ICON_NAME.match(file_object.name)
+    if not match:
+        return False
+
+    assistant_id = match.group(1)
+    try:
+        assistant = Assistant.find_by_id(assistant_id)
+        if assistant is None:
+            return False
+        ability = Ability(user)
+        return ability.can(Action.READ, assistant) or any(
+            ability.can(Action.READ, parent) for parent in Assistant.get_global_parents(assistant_id)
+        )
+    except Exception:
+        logger.warning(f"Assistant icon authorization lookup failed for assistant_id={assistant_id!r}")
+        return False
 
 
 def _owns_workspace_blob(owner: str, user: User, workspace_repo: AgentWorkspaceRepository) -> bool:
@@ -175,6 +218,10 @@ def can_download(
 
     # Rule D2: source blob referenced by a live row of the requester's own workspace (no source lookup is needed).
     if _references_source_blob(file_object, user, workspace_repo):
+        return True
+
+    # Rule F: entity icon of an assistant this user may read.
+    if _is_readable_assistant_icon(file_object, user):
         return True
 
     # Rule E: share grant.
