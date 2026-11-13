@@ -493,6 +493,30 @@ class TestLookupCostConfig:
             result = lookup_cost_config("us.anthropic.claude-sonnet-4-6")
         assert result is not None
 
+    def test_resolves_dotted_claude_name_so_it_is_not_unpriced(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        model = _make_llm_model("claude-sonnet-4-6", cache_read_rate=0.00000033)
+        with _patch_config([model]):
+            config = lookup_cost_config("claude-sonnet-4.6")
+        assert config is not None
+        assert config.cache_read_input_token_cost == 0.00000033
+
+    def test_catalog_id_stored_with_dots_still_resolves(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        model = _make_llm_model("claude-3.5-sonnet", cache_read_rate=0.0000003)
+        with _patch_config([model]):
+            config = lookup_cost_config("claude-3.5-sonnet")
+        assert config is not None
+        assert config.cache_read_input_token_cost == 0.0000003
+
+    def test_unresolved_dotted_name_stays_unpriced(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
+
+        with _patch_config([]), patch("litellm.get_model_info", side_effect=Exception("unknown")):
+            assert lookup_cost_config("claude-nonexistent-9.9") is None
+
     def test_returns_none_for_unknown_model(self):
         from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
 

@@ -95,7 +95,7 @@ def test_alembic_upgrades_one_revision_at_a_time_ending_at_the_head_on_that_conn
 
     targets = [call.args[1] for call in upgrade.call_args_list]
     assert len(targets) > 3 and len(set(targets)) == len(targets)
-    assert targets[0] == "a1c1a0000001" and targets[-1] == "a1c1a0000017"  # the first and the head
+    assert targets[0] == "a1c1a0000001" and targets[-1] == "a1c1a0000018"  # the first and the head
     assert targets.index("a1c1a0000010") < targets.index("a1c1a0000011")  # main's publication contract first
     cfg = upgrade.call_args.args[0]
     assert cfg.attributes == {"connection": connection, "schema": "codemie_analytics"}
@@ -228,6 +228,154 @@ def test_schema_extension_avoids_forbidden_constructs(forbidden: str) -> None:
 
 INITIAL_SCHEMA = _load_revision("a1c1a0000001_cli_analytics_initial_schema.py")
 SESSION_TITLE = _load_revision("a1c1a0000009_cli_analytics_session_title.py")
+SUBAGENT_LISTING = _load_revision("a1c1a0000018_cli_analytics_subagent_listing.py")
+
+
+def test_subagent_listing_revision_adds_the_partial_index_and_the_flag() -> None:
+    assert (SUBAGENT_LISTING.revision, SUBAGENT_LISTING.down_revision) == ("a1c1a0000018", "a1c1a0000017")
+    column, backfill = (_normalized(s) for s in SUBAGENT_LISTING.UPGRADE)
+    # hook_events is partitioned: no CONCURRENTLY on the parent; the partitions' indexes are built that way.
+    assert _normalized(SUBAGENT_LISTING.PARENT_INDEX) == (
+        "CREATE INDEX IF NOT EXISTS hook_events_subagent_start ON ONLY hook_events (agent_id) "
+        "WHERE event_type = 'agent.subagent.start'"
+    )
+    assert "ONLY" not in _normalized(SUBAGENT_LISTING.PLAIN_INDEX)
+    assert column == "ALTER TABLE session_dims ADD COLUMN IF NOT EXISTS is_subagent boolean"
+    assert backfill.startswith(
+        "UPDATE session_dims d SET is_subagent = true WHERE d.session_id IN ( SELECT t.session_id"
+    )
+    assert "t.is_subagent IS DISTINCT FROM true" in backfill and backfill.endswith("LIMIT :batch)")
+    assert SUBAGENT_LISTING.DOWNGRADE == [
+        "DROP INDEX IF EXISTS hook_events_subagent_start",
+        "ALTER TABLE session_dims DROP COLUMN IF EXISTS is_subagent",
+    ]
+
+
+def test_the_subagent_backfill_applies_the_rule_of_the_start_event_the_code_applies() -> None:
+    from codemie.repository.cli_analytics.postgres.hook_row_sql import names_subagent_session
+
+    assert _normalized(names_subagent_session("sh")) in _normalized(SUBAGENT_LISTING.BACKFILL)
+
+
+class _RecordingConnection:
+    """A connection that records what a revision does to it, in order, and answers the index build's catalog probes."""
+
+    def __init__(self, partitions: list[list[tuple[str, str]]] | None = None, flagged: list[int] | None = None) -> None:
+        self.log: list[str] = []
+        self._flagged = list(flagged or [0])
+        self._partitions = partitions
+        self._passes = 0
+        self.default_isolation_level = "READ COMMITTED"
+
+    def execute(self, statement, *args):
+        sql = _normalized(str(statement))
+        self.log.append(sql)
+        result = MagicMock()
+        if sql == _normalized(SUBAGENT_LISTING.BACKFILL):
+            result.rowcount = self._flagged.pop(0)
+        elif sql == _normalized(SUBAGENT_LISTING.PARTITION_COUNT):
+            result.scalar.return_value = 0 if self._partitions is None else 2
+        elif sql == _normalized(SUBAGENT_LISTING.UNINDEXED_PARTITIONS):
+            rows = self._partitions[min(self._passes, len(self._partitions) - 1)]
+            self._passes += 1
+            result.all.return_value = rows
+            result.first.return_value = rows[0] if rows else None
+        return result
+
+    def commit(self) -> None:
+        self.log.append("COMMIT")
+
+    def execution_options(self, **options):
+        self.log.append(f"ISOLATION {options['isolation_level']}")
+        return self
+
+
+def _upgrade_subagent_listing(connection: _RecordingConnection) -> list[str]:
+    fake_op = MagicMock()
+    fake_op.get_bind.return_value = connection
+    fake_op.execute.side_effect = connection.execute
+    with patch.object(SUBAGENT_LISTING, "op", fake_op):
+        SUBAGENT_LISTING.upgrade()
+    return connection.log
+
+
+def test_the_subagent_revision_commits_the_column_before_the_slow_steps_without_autocommit_block() -> None:
+    log = _upgrade_subagent_listing(_RecordingConnection())
+
+    assert log == [
+        "SET LOCAL lock_timeout = '5s'",
+        _normalized(SUBAGENT_LISTING.ADD_COLUMN),
+        "COMMIT",  # the runner's transaction is external: the revision ends it itself
+        "ISOLATION AUTOCOMMIT",
+        _normalized(SUBAGENT_LISTING.PARTITION_COUNT),
+        _normalized(SUBAGENT_LISTING.PLAIN_INDEX),
+        "ISOLATION READ COMMITTED",
+        f"SET LOCAL lock_timeout = '{migrations.LOCK_TIMEOUT}'",
+        _normalized(SUBAGENT_LISTING.BACKFILL),
+        "COMMIT",  # a batch is a transaction of its own
+    ]
+
+
+def test_the_subagent_backfill_runs_in_committed_batches_until_one_is_short() -> None:
+    full = SUBAGENT_LISTING.BACKFILL_BATCH
+    connection = _RecordingConnection(flagged=[full, full, 7])
+
+    log = _upgrade_subagent_listing(connection)
+
+    backfill = _normalized(SUBAGENT_LISTING.BACKFILL)
+    batch = [f"SET LOCAL lock_timeout = '{migrations.LOCK_TIMEOUT}'", backfill, "COMMIT"]
+    assert log[-9:] == batch * 3  # the lock wait is restored for every batch: SET LOCAL ends with its commit
+    assert connection._flagged == []
+
+
+def test_the_subagent_revision_restores_the_isolation_level_when_the_index_build_fails() -> None:
+    connection = _RecordingConnection()
+    original = connection.execute
+
+    def fail_on_index(statement, *args):
+        if "CREATE INDEX" in str(statement):
+            raise RuntimeError("lock timeout")
+        return original(statement, *args)
+
+    connection.execute = fail_on_index
+    with pytest.raises(RuntimeError, match="lock timeout"):
+        _upgrade_subagent_listing(connection)
+
+    assert connection.log[-1] == "ISOLATION READ COMMITTED"
+    assert _normalized(SUBAGENT_LISTING.BACKFILL) not in connection.log
+
+
+def test_the_subagent_index_of_a_partitioned_table_is_built_per_partition_and_attached() -> None:
+    connection = _RecordingConnection(partitions=[[("hook_events_p1", "hook_events_p1_subagent_start")], []])
+
+    SUBAGENT_LISTING._build_index(connection)
+
+    assert (
+        connection.log[1:]
+        == [
+            _normalized(SUBAGENT_LISTING.PARENT_INDEX),
+            _normalized(SUBAGENT_LISTING.UNINDEXED_PARTITIONS),
+            "DROP INDEX CONCURRENTLY IF EXISTS hook_events_p1_subagent_start",  # an invalid leftover of a failed build
+            "CREATE INDEX CONCURRENTLY hook_events_p1_subagent_start ON hook_events_p1 "
+            "(agent_id) WHERE event_type = 'agent.subagent.start'",
+            "ALTER INDEX hook_events_subagent_start ATTACH PARTITION hook_events_p1_subagent_start",
+            _normalized(SUBAGENT_LISTING.UNINDEXED_PARTITIONS),
+        ]
+    )
+
+
+def test_the_subagent_index_build_gives_up_when_partitions_keep_appearing() -> None:
+    connection = _RecordingConnection(partitions=[[("hook_events_p1", "hook_events_p1_subagent_start")]])
+
+    with pytest.raises(RuntimeError, match="kept appearing"):
+        SUBAGENT_LISTING._build_index(connection)
+
+    assert (
+        connection.log.count("ALTER INDEX hook_events_subagent_start ATTACH PARTITION hook_events_p1_subagent_start")
+        == 3
+    )
+
+
 _INSERT_TARGET = re.compile(r"INSERT INTO (\w+)(?: AS \w+)? \(([^)]*)\)")
 
 
@@ -239,6 +387,7 @@ def _declared_columns() -> dict[str, set[str]]:
         *SCHEMA_EXTENSION.UPGRADE,
         *SESSION_TITLE.UPGRADE,
         *SESSION_ROUTING.UPGRADE,
+        *SUBAGENT_LISTING.UPGRADE,
     ]:
         lines = statement.strip().splitlines()
         created = re.match(r"CREATE TABLE (\w+) \(", lines[0])
@@ -251,7 +400,9 @@ def _declared_columns() -> dict[str, set[str]]:
                     declared.setdefault(created.group(1), set()).add(definition.split()[0])
         altered = re.match(r"ALTER TABLE (\w+)", lines[0])
         if altered:
-            declared.setdefault(altered.group(1), set()).update(re.findall(r"ADD COLUMN (\w+)", statement))
+            declared.setdefault(altered.group(1), set()).update(
+                re.findall(r"ADD COLUMN (?:IF NOT EXISTS )?(\w+)", statement)
+            )
     return declared
 
 
@@ -406,7 +557,7 @@ def test_the_activity_facts_are_one_revision_after_the_publication_contract_with
         module = _load_revision(path.name)
         revisions[module.revision] = module.down_revision
     heads = set(revisions) - {down for down in revisions.values() if down}
-    assert heads == {"a1c1a0000017"}
+    assert heads == {"a1c1a0000018"}  # the sub-agent listing revision follows the overview rollup
 
 
 def test_the_activity_columns_are_nullable_without_default_under_a_bounded_lock_wait() -> None:
@@ -531,7 +682,7 @@ def test_the_sort_keys_are_one_revision_after_the_activity_facts_with_one_head()
         module = _load_revision(path.name)
         revisions[module.revision] = module.down_revision
     heads = set(revisions) - {down for down in revisions.values() if down}
-    assert heads == {"a1c1a0000017"}
+    assert heads == {"a1c1a0000018"}
 
 
 def test_the_column_step_adds_nullable_columns_without_default_and_a_disabled_control_row() -> None:

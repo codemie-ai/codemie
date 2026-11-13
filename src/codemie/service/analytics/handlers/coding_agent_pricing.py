@@ -33,6 +33,7 @@ _ROUTING_PREFIX = re.compile(r"^(bedrock/)?(converse|invoke)/", re.IGNORECASE)
 _PROVIDER_PREFIX = re.compile(r"^([a-z0-9-]+\.)?anthropic\.", re.IGNORECASE)
 _VERSION_TAG = re.compile(r"(\d{8})-v\d+:\d+$")
 _VERTEX_DATE = re.compile(r"@(\d{8})$")
+_VERSION_DOT = re.compile(r"(?<=\d)\.(?=\d)")
 _DATE_STAMP = re.compile(r"\d{8}")
 _CATALOG_VARIANT_SUFFIX = re.compile(r"(-\d{8})?(-vertex)?$")
 
@@ -41,14 +42,16 @@ def normalize_model(model: str) -> str:
     """Canonical model id: same rules as its SQL twin `normalized_model_name` (first a trailing '-v1' with no colon
     after a Bedrock id `anthropic.claude-…`, so `bedrock/eu.anthropic.claude-opus-4-6-v1` becomes `claude-opus-4-6`;
     then LiteLLM route prefixes `bedrock/[<region>.]anthropic.`, `vertex_ai/`, `anthropic/anthropic.`, `anthropic/`, the
-    Bedrock wrapper, routing and region/provider prefixes, a '-v1:0' tag that follows an 8-digit date stamp, and last
-    Vertex's `@YYYYMMDD` becomes `-YYYYMMDD`)."""
+    Bedrock wrapper, routing and region/provider prefixes, a '-v1:0' tag that follows an 8-digit date stamp, and
+    Vertex's `@YYYYMMDD` becomes `-YYYYMMDD`; last, the version dot of a `claude-*` id is dashed:
+    claude-sonnet-4.6 -> claude-sonnet-4-6, the form the catalog prices)."""
     model = _BEDROCK_CLAUDE_VERSION.sub(r"\g<1>", model)
     model = _ROUTE_PREFIX.sub("", model)
     model = _ROUTING_PREFIX.sub("", model)
     model = _PROVIDER_PREFIX.sub("", model)
     model = _VERSION_TAG.sub(r"\g<1>", model)
-    return _VERTEX_DATE.sub(r"-\g<1>", model)
+    model = _VERTEX_DATE.sub(r"-\g<1>", model)
+    return _VERSION_DOT.sub("-", model) if model[:7].lower() == "claude-" else model
 
 
 def unpriced_display_names(models: Iterable[str]) -> list[str]:

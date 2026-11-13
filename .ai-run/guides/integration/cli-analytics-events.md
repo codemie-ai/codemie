@@ -188,6 +188,7 @@ One event per request to the model: one group of transcript lines with the same 
 | `web_search_requests`, `web_fetch_requests` | int | server tool use | same names |
 | `stop_reason` | string | the stop reason of the message; empty or absent on a non-error request means a partial streaming snapshot; an `is_api_error` request is never partial | same name |
 | `output_tokens_partial` | bool | sent by the CLI when `output_tokens` is a partial count; the backend does not store it, partial is derived from an empty `stop_reason` on a request that is not an `is_api_error` one; the backend ignores `output_tokens_partial`, `stop_reason` (on a non-`is_api_error` request) decides | not stored |
+| `usage_partial` | bool | sent by the Copilot CLI as `true` on a row whose `input_tokens`, `cache_*` tokens are unknown (0) because the session's `session.shutdown` totals were not available when the row was built (incremental `agentStop` slice, killed session, or totals that could not be matched to requests); the same `request_id` is re-sent with totals after the shutdown and the maximum wins; absent means complete; the backend does not interpret it | `attrs` |
 | `is_api_error` | bool | the line is an API error | same name |
 | `git_branch` | string | the branch of the line | same name |
 | any other key | | | `attrs` |

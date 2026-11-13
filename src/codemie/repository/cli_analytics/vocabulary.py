@@ -216,7 +216,8 @@ def strip_pasted_content(text: str) -> str:
 HARNESS_LABEL_OVERRIDES: dict[str, str] = {
     "claude-code": "Claude Code",
     "codemie-claude": "CodeMie Claude",
-    "copilot-cli": "Copilot CLI",
+    "copilot-cli": "GitHub Copilot CLI",
+    "copilot-desktop": "GitHub Copilot Desktop",
 }
 
 

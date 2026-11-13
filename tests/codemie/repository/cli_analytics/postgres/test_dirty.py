@@ -251,6 +251,45 @@ def test_a_subagent_usage_hook_marks_dimensions_usage_and_session() -> None:
     assert dirty_keys(batch) == {(D, hb.SESSION): 50}  # DIMENSIONS 2 + USAGE_FACTS 16 + SESSION 32
 
 
+@pytest.mark.parametrize("platform", ["copilot-cli", "copilot-desktop"])
+def test_a_copilot_subagent_start_also_marks_the_session_it_names_as_agent_id(platform: str) -> None:
+    start = {**hb.minimal("agent.subagent.start", "s1", NOON.isoformat()), "agent_id": "child", "platform": platform}
+
+    assert dirty_keys(_hooks(start)) == {(D, "s1"): 38, (D, "child"): 32}  # the child: SESSION 32 only
+
+
+@pytest.mark.parametrize("platform", ["claude-code", None])
+def test_a_subagent_start_of_another_client_marks_no_session_it_names(platform: str | None) -> None:
+    # Claude Code sends the sub-agent's own short id under the parent's session: that id is no session.
+    start = {**hb.minimal("agent.subagent.start", "s1", NOON.isoformat()), "agent_id": "child"}
+    if platform:
+        start["platform"] = platform
+
+    assert dirty_keys(_hooks(start)) == {(D, "s1"): 38}
+
+
+def test_a_subagent_start_naming_its_own_session_marks_no_other_session() -> None:
+    start = {
+        **hb.minimal("agent.subagent.start", "s1", NOON.isoformat()),
+        "agent_id": "s1",
+        "platform": "copilot-cli",
+    }
+
+    assert dirty_keys(_hooks(start)) == {(D, "s1"): 38}
+
+
+def test_the_dirty_marker_and_the_sql_rule_of_a_subagent_start_name_the_same_platforms() -> None:
+    from codemie.repository.cli_analytics.postgres.hook_row_sql import (
+        SUBAGENT_SESSION_PLATFORMS,
+        names_subagent_session,
+    )
+
+    rule = names_subagent_session("h")
+
+    assert all(f"'{platform}'" in rule for platform in SUBAGENT_SESSION_PLATFORMS)
+    assert "h.session_id <> ''" in rule and "h.agent_id <> h.session_id" in rule
+
+
 def test_a_tool_end_hook_marks_span_facts_on_its_day_and_the_hour_before() -> None:
     with_lines = {**hb.minimal("agent.tool.end", "s2", NOON.isoformat()), "lines_added": 5, "lines_removed": 0}
     batch = _hooks(hb.minimal("agent.tool.end", "s1", JUST_AFTER_MIDNIGHT.isoformat()), with_lines)

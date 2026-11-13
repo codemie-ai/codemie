@@ -32,6 +32,25 @@ def is_claude_code(alias: str = "") -> str:
     return f"coalesce({attrs}->>'platform', 'claude-code') = 'claude-code'"
 
 
+# Clients whose sub-agents run as sessions of their own: the agent.subagent.start of a parent names the sub-agent's
+# session in `agent_id`. Claude Code sends the sub-agent's own short id under the parent's session, which is no session.
+SUBAGENT_SESSION_PLATFORMS = ("copilot-cli", "copilot-desktop")
+
+
+def names_subagent_session(alias: str = "") -> str:
+    """SQL: the row of `alias` (unqualified without one) is an agent.subagent.start that hides the session it names
+    from the session listing: a client of `SUBAGENT_SESSION_PLATFORMS`, a non-empty session of its own and an
+    `agent_id` that is another session. Every reader of the event (the session_dims flag, its backfill, the rollup's
+    dirty marker) applies this one rule."""
+    prefix = f"{alias}." if alias else ""
+    platforms = ", ".join(f"'{platform}'" for platform in SUBAGENT_SESSION_PLATFORMS)
+    return (
+        f"{prefix}event_type = 'agent.subagent.start' AND {prefix}session_id <> '' "
+        f"AND coalesce({prefix}agent_id, '') <> '' AND {prefix}agent_id <> {prefix}session_id "
+        f"AND {prefix}attrs->>'platform' IN ({platforms})"
+    )
+
+
 def call_end_row(end: str, call: str, tool_name: str) -> str:
     """SQL: the hook row `end` is an agent.tool.end/.error of `tool_name` with the tool_use_id of `call`, in
     `call`'s window. A denied call only ever gets agent.tool.denied."""

@@ -78,7 +78,7 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
     fork_of_dispatch,
     skill_end_agent_id,
 )
-from codemie.repository.cli_analytics.postgres.hook_row_sql import is_claude_code
+from codemie.repository.cli_analytics.postgres.hook_row_sql import is_claude_code, names_subagent_session
 from codemie.repository.cli_analytics.postgres.rates_version import EMPTY_RATES_VERSION
 from codemie.repository.cli_analytics.postgres.session_derived import read_classifier_names
 from codemie.repository.cli_analytics.postgres.session_sort_keys import (
@@ -1454,6 +1454,11 @@ _SESSION_DIMS_VALUES: tuple[tuple[str, str], ...] = (
     ("claude_account_email", "ca.email"),
     ("platform", f"left(nullif(btrim(coalesce(lv.v->>'platform', {_PLATFORM_FROM_NAMES}), {_BLANKS}), ''), 200)"),
     ("ingest_source", "CASE WHEN src.plugin THEN 'plugin' ELSE 'otel' END"),
+    # A parent's agent.subagent.start names this session as its agent_id: its work belongs to the parent.
+    (
+        "is_subagent",
+        f"EXISTS (SELECT 1 FROM hook_events sh WHERE sh.agent_id = k.session_id AND {names_subagent_session('sh')})",
+    ),
     ("client_version", f"coalesce(lv.v->>'client_version', {_otel_session_text('app.version')})"),
     ("entrypoint", f"coalesce(lv.v->>'entrypoint', {_otel_session_text('app.entrypoint')})"),
     ("session_title", f"left(nullif(btrim(lv.v->>'session_title', {_BLANKS}), ''), 200)"),
@@ -1505,6 +1510,8 @@ def _session_dims_set(column: str) -> str:
             "ingest_source = CASE WHEN 'plugin' IN (sd.ingest_source, EXCLUDED.ingest_source) THEN 'plugin' "
             "ELSE coalesce(EXCLUDED.ingest_source, sd.ingest_source) END"
         )
+    if column == "is_subagent":  # sticky: a purge of the raw start event must not clear it
+        return "is_subagent = coalesce(sd.is_subagent, false) OR EXCLUDED.is_subagent"
     if column == "sources":  # a union, sorted, never set by the client
         return (
             "sources = (SELECT jsonb_agg(DISTINCT x.v ORDER BY x.v) FROM (SELECT e.v COLLATE \"C\" AS v "
@@ -2354,6 +2361,9 @@ SELECT day, session_id, bit_or(kinds) & $3 FROM (
     UNION ALL
     SELECT {_neighbour_day("interval '1 hour'")}, session_id, {_SPANS} FROM spans
     WHERE {_RANGE} AND span_kind = {_TOOL} AND skill_name <> ''
+    UNION ALL
+    SELECT {_DAY_OF_TS}, agent_id, {_SESSION} FROM hook_events
+    WHERE {_RANGE} AND {names_subagent_session()}
     UNION ALL
     SELECT {_DAY_OF_TS}, session_id, {_METRICS} | {_SESSION_IF_ANY} FROM metric_points
     WHERE {_RANGE}

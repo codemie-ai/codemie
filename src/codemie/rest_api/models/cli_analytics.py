@@ -382,6 +382,7 @@ class LocalAnalyticsSessionEvent(BaseModel):
         description="Cache-write tokens (5m + 1h + unsplit) of an api_request or subagent_totals event; "
         "null for a tool_call.",
     )
+    reasoning_tokens: int | None = Field(None, description="Thinking tokens (part of output); null when not reported")
     cost_usd: float | None = None
     tool_name: str | None = None
 

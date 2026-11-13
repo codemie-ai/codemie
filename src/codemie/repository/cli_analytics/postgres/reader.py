@@ -114,7 +114,7 @@ from codemie.repository.cli_analytics.postgres.inline_skill_attribution import I
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
 from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES_CTE, request_route
-from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms, _has_totals
+from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _GROUP_REACH, _attr_ms, _has_totals
 from codemie.repository.cli_analytics.postgres.project_page_sql import project_page_sql
 from codemie.repository.cli_analytics.postgres.route_identity import group_model, routed_predicate
 from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
@@ -537,6 +537,7 @@ def _admitted_arms(alias: str, columns: str, scope: str | None = None) -> tuple[
     `columns` is the select list, `scope` an extra condition on `alias` (the viewer scope of the ids-only form)."""
     a = alias
     base = f"FROM session_dims {a} WHERE {a}.started_at IS NOT NULL" + (f" AND {scope}" if scope else "")
+    base += f" AND {_is_listed(a)}"
     started = _started_in_window(a)
     outside = f"NOT ({started}) AND {a}.has_activity"
     on_edge_day = (
@@ -680,7 +681,7 @@ _GRAIN_MODEL = normalized_model_name("c.model_name")
 _GRAIN = f"c.day, c.session_id, c.user_email, {_GRAIN_MODEL}, c.query_source"
 _TOP_MODEL = (
     f"(array_agg({_GRAIN_MODEL} ORDER BY c.grain_calls DESC NULLS LAST, c.day, c.session_id {_C}, "
-    f"c.user_email {_C}, {_GRAIN_MODEL} {_C}, c.query_source {_C}))[1]"
+    f"c.user_email {_C}, {_GRAIN_MODEL} {_C}, c.query_source {_C}) FILTER (WHERE c.model_name IS NOT NULL))[1]"
 )
 
 
@@ -744,6 +745,18 @@ def _facts_from(include_costless: bool) -> str:
     return f"""{cost}
              JOIN sel s ON s.session_id = c.session_id
              JOIN act a ON a.session_id = c.session_id"""
+
+
+# Main's rule decides which sessions have activity (`_has_any_activity`, the stored `has_activity`); this gate adds
+# one thing to it: the own id of a sub-agent (a parent's agent.subagent.start names it as agent_id, see
+# `hook_row_sql.names_subagent_session`; its work belongs to the parent) is not listed unless it has cost rows of its
+# own. `is_subagent` is set at rollup time from that event. Session Detail by id is not gated: a direct link to a
+# hidden session still opens. A session that is not a sub-agent short-circuits before the cost probe.
+def _is_listed(alias: str) -> str:
+    return (
+        f"(NOT coalesce({alias}.is_subagent, false) "
+        f"OR EXISTS (SELECT 1 FROM cost_daily cd WHERE cd.session_id = {alias}.session_id))"
+    )
 
 
 def detail_gate(scope: Any, sid: str = "$sid::text") -> tuple[str, dict[str, Any]]:
@@ -3110,24 +3123,25 @@ class PostgresCliAnalyticsReader:
         """API requests and tool calls of a session, in time order. A request's 5m / 1h cache-write split is NULL
         when its attributes carry none.
 
-        The requests are the session's OTel api_request records. A session with none (hooks only: GitHub Copilot,
-        Claude Code without telemetry) takes its `usage_requests` instead, grouped as the cost rollup groups its
-        transcript requests (by request id, else message id, and raw model: the largest value of every field, its one
-        route over a plain model, the plain model when its rows name more than one route, the latest time; a row with
-        neither id alone). A session with both keeps its OTel
-        requests: a transcript request and its OTel record are one request, and the pairing is the rollup's alone.
+        The requests are the session's OTel api_request records, plus the transcript requests (`usage_requests`,
+        grouped as the cost rollup groups them: by request id, else message id, and raw model; the largest value of
+        every field, the latest time; a row with neither id alone) that no OTel record covers. One switch decides
+        it, per request group, not per session or per row: a transcript request is dropped when an OTel api_request
+        lies in the UTC day of its latest time widened by the rollup's pairing reach (`_GROUP_REACH`), the day
+        `_BUILD_REQUESTS` assigns it, so a request and its OTel record across midnight are one request and a
+        re-sent request is never cut in two. A session without OTel records (hooks only: GitHub Copilot, Claude
+        Code without telemetry) lists all its transcript requests; a session with both lists each day's requests
+        from OTel where that day has them and from the transcript where it has not.
         Every request's `model_name` is the name cost_daily keys its tokens by, so each request is priced as
         cost_daily prices it: the route of a transcript request run on a route of its own model, one that normalises
         to its raw model up to a trailing date (`routed_predicate`) (an OTel record takes the route of the transcript
         request the rollup pairs it with, see `request_routes`), else the OTel name, or the raw model of a transcript
-        request.
+        request. `reasoning_tokens` are the transcript's thinking tokens; an OTel api_request carries none (NULL).
 
-        Known limitation of that per-session switch: a session with any OTel api_request lists only the OTel
-        requests, so a transcript request the rollup leaves unpaired (for example OTel enabled mid-session) is priced
-        in the session cost but not listed, and the listed costs can then sum to less than the session cost. A
-        request the rollup pairs can also use a different token precedence there than in its raw OTel record. A
-        future fix for mixed sessions must reuse the rollup's resolved pairing and token rules (its time-window and
-        model-fingerprint tiers), not exclude transcript rows by request id alone.
+        Tool calls are listed from the spans, and from the `agent.tool.start` hooks for a UTC day with no TOOL,
+        TOOL_EXECUTION or INTERACTION span, with no widening around midnight: the rollup's own day rule
+        (`_NO_SPAN_OF_KIND`), so the listed calls are the ones the tools table and the session list count, a hook
+        before midnight and a span after it counted by both, as there.
 
         A subagent known only by its totals (a session_usage row with attrs.token_source = 'subagent_usage', which
         the cost rollup writes only when no request of that agent is kept) has no request: each such row is one
@@ -3149,28 +3163,13 @@ class PostgresCliAnalyticsReader:
                    coalesce(cache_creation_tokens, 0) AS cache_creation_tokens,
                    {_attr_ms("log_events", "cache_creation_5m_tokens")} AS cache_creation_5m_tokens,
                    {_attr_ms("log_events", "cache_creation_1h_tokens")} AS cache_creation_1h_tokens,
-                   '' AS tool_name
-            FROM log_events
-            WHERE session_id = $sid::text AND event_kind = {_API_REQUEST} AND {gate}
-            UNION ALL
-            SELECT max(u.ts), 'api_request',
-                   CASE WHEN {routed_predicate(_GROUP_MODEL, "max(u.model_raw)")} THEN {_GROUP_MODEL}
-                        ELSE coalesce(u.model_raw, '') END,
-                   coalesce(max(u.input_tokens), 0), coalesce(max(u.output_tokens), 0),
-                   coalesce(max(u.cache_read_tokens), 0),
-                   coalesce(max(u.cache_creation_5m_tokens), 0) + coalesce(max(u.cache_creation_1h_tokens), 0),
-                   max(u.cache_creation_5m_tokens), max(u.cache_creation_1h_tokens), ''
-            FROM usage_requests u
-            WHERE u.session_id = $sid::text AND {gate}
-              AND NOT EXISTS (SELECT 1 FROM log_events l
-                              WHERE l.session_id = $sid::text AND l.event_kind = {_API_REQUEST})
-            GROUP BY coalesce(nullif(u.request_id, ''), nullif(u.message_id, '')), coalesce(u.model_raw, ''),
-                     CASE WHEN coalesce(nullif(u.request_id, ''), nullif(u.message_id, '')) IS NULL
-                          THEN u.tableoid::text || u.ctid::text END
+                   NULL::bigint AS reasoning_tokens, '' AS tool_name
+            FROM log_events WHERE session_id = $sid::text AND event_kind = {_API_REQUEST} AND {gate}
             UNION ALL
             SELECT coalesce(h.ts, u.day::timestamp AT TIME ZONE 'UTC'), 'subagent_totals', u.model,
                    coalesce(u.input_tokens, 0), coalesce(u.output_tokens, 0), coalesce(u.cache_read_tokens, 0),
-                   coalesce(u.cache_creation_tokens, 0), u.cache_creation_5m_tokens, u.cache_creation_1h_tokens, ''
+                   coalesce(u.cache_creation_tokens, 0), u.cache_creation_5m_tokens, u.cache_creation_1h_tokens,
+                   NULL, ''
             FROM session_usage u
             LEFT JOIN LATERAL (
                 SELECT x.ts FROM hook_events x
@@ -3180,8 +3179,53 @@ class PostgresCliAnalyticsReader:
             ) h ON true
             WHERE u.session_id = $sid::text AND u.attrs->>'token_source' = 'subagent_usage' AND {gate}
             UNION ALL
-            SELECT ts, 'tool_call', '', 0, 0, 0, 0, NULL, NULL, tool_name
+            SELECT ts, 'tool_call', '', 0, 0, 0, 0, NULL, NULL, NULL, tool_name
             FROM spans WHERE session_id = $sid::text AND span_kind = {_TOOL} AND tool_name <> '' AND {gate}
+            UNION ALL
+            SELECT h.ts, 'tool_call', '', 0, 0, 0, 0, NULL, NULL, NULL, h.tool_name
+            FROM hook_events h
+            WHERE h.session_id = $sid::text AND h.event_type = 'agent.tool.start' AND h.tool_name <> '' AND {gate}
+              AND octet_length(h.tool_name) <= {MAX_KEY_BYTES}
+              AND NOT EXISTS (SELECT 1 FROM spans s
+                              WHERE s.session_id = h.session_id
+                                AND s.span_kind IN ({_TOOL}, {_EXEC}, {_INTERACTION})
+                                AND s.ts >= date_trunc('day', h.ts, 'UTC')
+                                AND s.ts < date_trunc('day', h.ts, 'UTC') + interval '1 day')
+            UNION ALL
+            -- Same identity and merge rule as _BUILD_REQUESTS, with its cache-write rule (5m + 1h, NULL split
+            -- kept). The handler prices the row at the catalog from these tokens, like every other request.
+            -- model_name is the name cost_daily keys the request by: its route when it ran on one of its own
+            -- model (routed_predicate), else model_raw, like the GROUP BY, so a dotted/dashed mismatch between
+            -- model and model_raw cannot price this row under a different name than the session total.
+            -- A request is dropped when an OTel api_request lies in its UTC day widened by the rollup's pairing
+            -- reach (_GROUP_REACH): the log_events branch lists it, so a transcript request and its OTel record
+            -- across midnight are one request. The test runs once per request, on the grouped time (the one
+            -- _BUILD_REQUESTS assigns its day by), never on single rows, which would cut a re-sent request in two.
+            SELECT g.ts, 'api_request', g.model_name, g.input_tokens, g.output_tokens, g.cache_read_tokens,
+                   g.cache_creation_tokens, g.cache_creation_5m_tokens, g.cache_creation_1h_tokens,
+                   g.thinking_tokens, ''
+            FROM (
+                SELECT max(u.ts) AS ts,
+                       CASE WHEN {routed_predicate(_GROUP_MODEL, "max(u.model_raw)")} THEN {_GROUP_MODEL}
+                            ELSE coalesce(max(u.model_raw), '') END AS model_name,
+                       coalesce(max(u.input_tokens), 0) AS input_tokens,
+                       coalesce(max(u.output_tokens), 0) AS output_tokens,
+                       coalesce(max(u.cache_read_tokens), 0) AS cache_read_tokens,
+                       coalesce(max(u.cache_creation_5m_tokens), 0) + coalesce(max(u.cache_creation_1h_tokens), 0)
+                           AS cache_creation_tokens,
+                       max(u.cache_creation_5m_tokens) AS cache_creation_5m_tokens,
+                       max(u.cache_creation_1h_tokens) AS cache_creation_1h_tokens,
+                       max(u.thinking_tokens) AS thinking_tokens
+                FROM usage_requests u
+                WHERE u.session_id = $sid::text AND {gate}
+                GROUP BY coalesce(nullif(u.request_id, ''), nullif(u.message_id, '')), coalesce(u.model_raw, ''),
+                         CASE WHEN coalesce(nullif(u.request_id, ''), nullif(u.message_id, '')) IS NULL
+                              THEN u.tableoid::text || u.ctid::text END
+            ) g
+            WHERE NOT EXISTS (SELECT 1 FROM log_events l
+                              WHERE l.session_id = $sid::text AND l.event_kind = {_API_REQUEST}
+                                AND l.ts >= date_trunc('day', g.ts, 'UTC') - {_GROUP_REACH}
+                                AND l.ts < date_trunc('day', g.ts, 'UTC') + interval '1 day' + {_GROUP_REACH})
         ) events
         ORDER BY timestamp, event_type {_C}, tool_name {_C}, model_name {_C}""",
             {"sid": session_id, **gate_params},

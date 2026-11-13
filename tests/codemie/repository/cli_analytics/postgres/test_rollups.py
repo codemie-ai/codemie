@@ -1458,13 +1458,18 @@ def test_a_transcript_request_run_on_a_route_is_keyed_by_the_route() -> None:
     matched, transcript = " ".join(parts[0].split()), " ".join(parts[1].split())
 
     def normalized(column: str) -> str:
-        return (
+        stripped = (
             f"regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace({column}, "
             "'(anthropic\\.claude-[a-z0-9.-]*?)-v1$', '\\1', 'i'), "
             "'^(bedrock/([a-z0-9-]+\\.)?anthropic\\.|vertex_ai/|anthropic/(anthropic\\.)?)', '', 'i'), "
             "'^(bedrock/)?(converse|invoke)/', '', 'i'), "
             "'^([a-z0-9-]+\\.)?anthropic\\.', '', 'i'), '(\\d{8})-v\\d+:\\d+$', '\\1'), "
             "'@(\\d{8})$', '-\\1')"
+        )
+        # the dotted version of a claude-* id is dashed last, after the steps above
+        return (
+            f"CASE WHEN {stripped} ~* '^claude-' "
+            f"THEN regexp_replace({stripped}, '(?<=\\d)\\.(?=\\d)', '-', 'g') ELSE {stripped} END"
         )
 
     routed = (
@@ -1481,7 +1486,7 @@ def test_a_transcript_request_run_on_a_route_is_keyed_by_the_route() -> None:
     )
     # session_dims.models, rebuilt from cost_daily, lists a model run on several routes once
     assert (
-        "SELECT regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(c.model_name, "
+        "SELECT CASE WHEN regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(c.model_name, "
         "'(anthropic\\.claude-[a-z0-9.-]*?)-v1$', '\\1', 'i'), "
         "'^(bedrock/([a-z0-9-]+\\.)?anthropic\\.|vertex_ai/|anthropic/(anthropic\\.)?)', '', 'i')"
         in rollups._COUNTER_JOINS

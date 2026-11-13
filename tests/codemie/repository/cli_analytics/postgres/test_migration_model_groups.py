@@ -43,7 +43,7 @@ def test_the_model_groups_are_one_revision_after_the_sort_keys_with_one_head() -
         module = _load_revision(path.name)
         revisions[module.revision] = module.down_revision
     heads = set(revisions) - {down for down in revisions.values() if down}
-    assert heads == {"a1c1a0000017"}
+    assert heads == {"a1c1a0000018"}
 
 
 def test_the_column_step_bounds_the_lock_wait_and_is_idempotent() -> None:

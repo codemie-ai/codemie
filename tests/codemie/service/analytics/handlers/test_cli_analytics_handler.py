@@ -26,6 +26,8 @@ from tests.codemie.repository.cli_analytics.support.users_reads import install_u
 from codemie.configs.config import config
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
+from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer
+from codemie.service.analytics.handlers.session_money import token_counts
 from codemie.repository.cli_analytics.ports import (
     RollupCost,
     G_MODEL,
@@ -1344,6 +1346,40 @@ async def test_get_session_detail_unpriced_model_contributes_zero_without_breaki
     assert unpriced == ["definitely-not-a-real-model-xyz-9999"]
     assert detail["cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
     assert detail["cache_read_cost_usd"] == pytest.approx(8.87843836, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_get_session_detail_hook_only_request_is_priced_and_carries_the_ac4_fields():
+    """A hook-only request (dotted Claude id, cache write, thinking tokens) is priced at the catalog, not at $0;
+    an unknown model on one is reported as unpriced."""
+    request = {
+        "timestamp": datetime(2026, 1, 1, 0, 1),
+        "event_type": "api_request",
+        "model_name": "claude-opus-5.5",
+        "input_tokens": 1_000,
+        "output_tokens": 500,
+        "cache_read_tokens": 2_000,
+        "cache_creation_tokens": 300,
+        "cache_creation_5m_tokens": 200,
+        "cache_creation_1h_tokens": 100,
+        "reasoning_tokens": 120,
+        "tool_name": "",
+    }
+    unknown = request | {"model_name": "definitely-not-a-real-model-xyz-9999", "reasoning_tokens": None}
+    handler = _priced_detail_handler([], events=[request, unknown])
+
+    detail, unpriced, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
+
+    priced, unknown_event = detail["events"]
+
+    async def catalog_price() -> float:
+        return CatalogPricer().price("claude-opus-5.5", token_counts(request))
+
+    assert priced["cost_usd"] > 0
+    assert priced["cost_usd"] == pytest.approx(await _priced(catalog_price()))
+    assert (priced["cache_creation_tokens"], priced["reasoning_tokens"]) == (300, 120)
+    assert unknown_event["cost_usd"] == 0 and unknown_event["reasoning_tokens"] is None
+    assert unpriced == ["definitely-not-a-real-model-xyz-9999"]
 
 
 @pytest.mark.asyncio

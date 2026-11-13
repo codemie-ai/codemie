@@ -24,8 +24,9 @@ from codemie.rest_api.routers import cli_analytics_ingest_route
 from codemie.service.analytics.handlers import funding_buckets
 
 # sha256 of the statements as the builders produce them on the base (EPMCDME-16427 part2).
-_SESSION_SQL_DIGEST = "".join(("afbf6510e1db9cc4a1ace574a68038da", "917c86ac3d3699e50305ce4292935feb"))
-_SPEND_SQL_DIGEST = "".join(("d9b89f9b21d02187546c594a6d0a9404", "babd326a6220e384de85a63c8d852f0c"))
+# The session and spend digests moved with EPMCDME-16457's dashing of dotted Claude versions in normalized_model_name.
+_SESSION_SQL_DIGEST = "".join(("658929ae3a6dff2b2d94a82d3c42223d", "d22df8d3587b67cf399f90c60c5993fe"))
+_SPEND_SQL_DIGEST = "".join(("4ed2d133211bea7a7d56ab5f593a1a6d", "286730f758bfb3545fde9925e9054094"))
 _GROUPS_SQL_DIGEST = "".join(("fbde8947bbc1dd3a0dbd08bdf5b90e18", "2fdd32c64a920c243a0f6ff115d4bf51"))
 
 

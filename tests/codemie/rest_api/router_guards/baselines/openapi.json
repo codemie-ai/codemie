@@ -17459,6 +17459,18 @@
             ],
             "title": "Output Tokens"
           },
+          "reasoning_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Thinking tokens (part of output); null when not reported",
+            "title": "Reasoning Tokens"
+          },
           "timestamp": {
             "description": "ISO 8601 datetime string",
             "title": "Timestamp",

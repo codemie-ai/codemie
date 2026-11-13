@@ -1732,6 +1732,7 @@ class LocalAnalyticsHandler:
             "output_tokens": _i(row.get("output_tokens")) if has_usage else None,
             "cache_read_tokens": _i(row.get("cache_read_tokens")) if has_usage else None,
             "cache_creation_tokens": _i(row.get("cache_creation_tokens")) if has_usage else None,
+            "reasoning_tokens": _i(row.get("reasoning_tokens")) if row.get("reasoning_tokens") is not None else None,
             "cost_usd": pricer.price(_s(row.get("model_name")), token_counts(row)) if has_usage else None,
             "tool_name": _s(row.get("tool_name")) or None,
         }

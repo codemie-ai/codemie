@@ -99,10 +99,11 @@ def test_cost_key_sql_text_is_unchanged_by_the_shared_definition() -> None:
         "cte": digest(cost_key_sql.cost_groups_cte()),
         "key_from_groups": digest(cost_key_sql.cost_key_from_groups_sql()),
         "flags_from_groups": digest(cost_key_sql.kind_flags_from_groups_sql()),
-    } == {  # tokens, tokens_spend and key moved with EPMCDME-16633's route-aware normalized_model_name
-        "tokens": "d26c1ba481ecff71",
-        "tokens_spend": "12475ae8eb1f5896",
-        "key": "afbf6510e1db9cc4",
+    } == {  # tokens, tokens_spend and key moved with EPMCDME-16633's route-aware normalized_model_name, and again
+        # with EPMCDME-16457's dashing of dotted Claude versions
+        "tokens": "6437031b0a175a31",
+        "tokens_spend": "6386e2c67ecf2937",
+        "key": "658929ae3a6dff2b",
         "flags": "5fb955ef2e9eb096",
         "cte": "314a2ed0b8e06824",
         "key_from_groups": "fbde8947bbc1dd3a",

@@ -47,6 +47,9 @@ def normalized_model_name(column: str) -> str:
     layer that emits a different case for these tokens must still normalize the same way).
     Never touches a date stamp on its own, a model's own version dash inside the id,
     or a trailing '-v\\d+:\\d+' shape that is not preceded by that date stamp.
+    Dotted Claude versions are dashed last ('claude-sonnet-4.6' -> 'claude-sonnet-4-6', the form the catalog
+    prices), case-insensitively, exactly as `normalize_model` does, so a dotted and a dashed spelling of one
+    model are one group.
     """
     without_bedrock_version = f"regexp_replace({column}, '(anthropic\\.claude-[a-z0-9.-]*?)-v1$', '\\1', 'i')"
     without_route_prefix = (
@@ -56,7 +59,11 @@ def normalized_model_name(column: str) -> str:
     without_routing_prefix = f"regexp_replace({without_route_prefix}, '^(bedrock/)?(converse|invoke)/', '', 'i')"
     without_prefix = f"regexp_replace({without_routing_prefix}, '^([a-z0-9-]+\\.)?anthropic\\.', '', 'i')"
     without_version_tag = f"regexp_replace({without_prefix}, '(\\d{{8}})-v\\d+:\\d+$', '\\1')"
-    return f"regexp_replace({without_version_tag}, '@(\\d{{8}})$', '-\\1')"
+    without_vertex_date = f"regexp_replace({without_version_tag}, '@(\\d{{8}})$', '-\\1')"
+    return (
+        f"CASE WHEN {without_vertex_date} ~* '^claude-' "
+        f"THEN regexp_replace({without_vertex_date}, '(?<=\\d)\\.(?=\\d)', '-', 'g') ELSE {without_vertex_date} END"
+    )
 
 
 # Spend is what the company or a project pays: the cost of a Personal-paid session (also one stored under a work

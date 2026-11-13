@@ -80,8 +80,13 @@ def test_codemie_claude_harness_uses_its_override_label():
 
 
 def test_copilot_cli_harness_uses_its_override_label():
-    assert v.humanize_harness_name("copilot-cli") == "Copilot CLI"
-    assert v.humanize_harness_name("  COPILOT-CLI\u00a0") == "Copilot CLI"
+    assert v.humanize_harness_name("copilot-cli") == "GitHub Copilot CLI"
+    assert v.humanize_harness_name("  COPILOT-CLI\u00a0") == "GitHub Copilot CLI"
+
+
+def test_copilot_desktop_harness_uses_its_override_label():
+    assert v.humanize_harness_name("copilot-desktop") == "GitHub Copilot Desktop"
+    assert v.humanize_harness_name("  COPILOT-DESKTOP ") == "GitHub Copilot Desktop"
 
 
 def test_harness_name_is_trimmed_before_the_override_lookup():

@@ -34,9 +34,11 @@ from codemie.repository.cli_analytics.postgres.agent_call_attribution import (
 )
 from codemie.repository.cli_analytics.postgres.fork_attribution import dispatch_fork_candidate, executed_tool_span
 from codemie.repository.cli_analytics.postgres.hook_row_sql import tool_response_agent_id
+from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.reader import (
     _C,
     _RAW_RETENTION_DAYS,
+    _is_listed,
     _ms,
     PostgresCliAnalyticsReader,
     _text_array,
@@ -749,6 +751,67 @@ async def test_session_detail_meta_reads_the_session_title_next_to_the_first_pro
 
 
 @pytest.mark.asyncio
+async def test_session_detail_meta_falls_back_to_the_hook_platform():
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_meta("s1", scope=DETAIL_SCOPE)  # type: ignore[arg-type]
+
+    sql = " ".join(recorder.statements[0].split())
+    assert (
+        "coalesce(nullif(btrim(o.service_name, E' \\t\\r\\n\\u00a0'), ''), "
+        "nullif(btrim(d.platform, E' \\t\\r\\n\\u00a0'), ''))" in sql
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_detail_hook_branches_are_guarded_by_missing_spans_and_log_events():
+    recorder = _SqlRecorder()
+    reader = PostgresCliAnalyticsReader(recorder)
+
+    await reader.get_session_detail_tools("s1", scope=DETAIL_SCOPE)
+    await reader.get_session_detail_events("s1", scope=DETAIL_SCOPE)
+
+    tools = " ".join(recorder.statements[0].split())
+    events = " ".join(recorder.statements[1].split())
+    assert "FROM invocations_hourly" in tools and "FROM spans" not in tools  # the rollup decides spans vs hooks
+    assert "FROM hook_events" in events and "NOT EXISTS (SELECT 1 FROM spans" in events
+    assert "FROM usage_requests" in events and "NOT EXISTS (SELECT 1 FROM log_events" in events
+
+
+@pytest.mark.asyncio
+async def test_session_detail_hook_branches_follow_the_rollup_rule_per_utc_day():
+    recorder = _SqlRecorder()
+    reader = PostgresCliAnalyticsReader(recorder)
+
+    await reader.get_session_detail_events("s1", scope=DETAIL_SCOPE)
+
+    events = " ".join(recorder.statements[0].split())
+    assert "date_trunc('day', h.ts, 'UTC')" in events
+    # the OTel guard of the usage branch runs on the grouped request (g.ts), widened by the rollup's pairing reach
+    assert "date_trunc('day', g.ts, 'UTC') - interval '3600 seconds'" in events
+    assert "date_trunc('day', g.ts, 'UTC') + interval '1 day' + interval '3600 seconds'" in events
+    assert "date_trunc('day', usage_requests.ts" not in events
+    assert "s.span_kind IN (1, 2, 3)" in events
+    assert f"octet_length(h.tool_name) <= {MAX_KEY_BYTES}" in events
+    # the tool arm is the rollup's own day rule, not widened around midnight: the listed calls are the counted ones
+    assert "s.ts < date_trunc('day', h.ts, 'UTC') + interval '1 day')" in events
+
+
+@pytest.mark.asyncio
+async def test_session_detail_timeline_names_a_transcript_request_like_cost_daily_and_has_one_column_shape():
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_events("s1", scope=DETAIL_SCOPE)
+
+    events = " ".join(recorder.statements[0].split())
+    # one transcript arm (main's second one is gone): the route of its own model, else model_raw, as _BUILD_REQUESTS
+    assert "coalesce(max(u.model_raw), '') END AS model_name" in events
+    assert "max(u.thinking_tokens) AS thinking_tokens" in events
+    # every arm of the UNION ALL has the same 11 columns: the OTel arm carries NULL reasoning tokens
+    assert "NULL::bigint AS reasoning_tokens, '' AS tool_name" in events
+
+
+@pytest.mark.asyncio
 async def test_session_detail_meta_reads_the_same_activity_range_as_the_list():
     # One definition: the same day-bounded probes, open-ended when the session has no session_dims row.
     recorder = _SqlRecorder()
@@ -801,7 +864,7 @@ async def test_cost_methods_have_no_day_window_and_are_bound_to_sel(method):
 
     assert "day BETWEEN" not in sql
     assert "LEFT JOIN sel" not in sql
-    assert "JOIN sel" in sql or "IN (SELECT session_id FROM sel)" in sql
+    assert "JOIN sel" in sql or "IN (SELECT session_id FROM sel)" in sql or "FROM sel s" in sql
 
 
 @pytest.mark.asyncio
@@ -902,13 +965,17 @@ async def test_the_overview_lines_return_the_added_and_removed_of_each_day_for_t
     assert "(added - removed)::bigint AS net_lines" in day or "added - removed::bigint AS net_lines" in day
 
 
-_NORMALIZED_MODEL_NAME_SQL = (
+_STRIPPED_MODEL_NAME_SQL = (
     "regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(regexp_replace(d.model_name, "
     "'(anthropic\\.claude-[a-z0-9.-]*?)-v1$', '\\1', 'i'), "
     "'^(bedrock/([a-z0-9-]+\\.)?anthropic\\.|vertex_ai/|anthropic/(anthropic\\.)?)', '', 'i'), "
     "'^(bedrock/)?(converse|invoke)/', '', 'i'), "
     "'^([a-z0-9-]+\\.)?anthropic\\.', '', 'i'), '(\\d{8})-v\\d+:\\d+$', '\\1'), "
     "'@(\\d{8})$', '-\\1')"
+)
+_NORMALIZED_MODEL_NAME_SQL = (
+    f"CASE WHEN {_STRIPPED_MODEL_NAME_SQL} ~* '^claude-' "
+    f"THEN regexp_replace({_STRIPPED_MODEL_NAME_SQL}, '(?<=\\d)\\.(?=\\d)', '-', 'g') ELSE {_STRIPPED_MODEL_NAME_SQL} END"
 )
 
 
@@ -947,7 +1014,8 @@ def _apply(raw: str) -> str:
     s = re.sub(r"^(bedrock/)?(converse|invoke)/", "", s, flags=re.IGNORECASE)
     s = re.sub(r"^([a-z0-9-]+\.)?anthropic\.", "", s, flags=re.IGNORECASE)
     s = re.sub(r"(\d{8})-v\d+:\d+$", r"\1", s)
-    return re.sub(r"@(\d{8})$", r"-\1", s)
+    s = re.sub(r"@(\d{8})$", r"-\1", s)
+    return re.sub(r"(?<=\d)\.(?=\d)", "-", s) if s[:7].lower() == "claude-" else s
 
 
 def test_normalization_collapses_known_bug_variants_but_not_distinct_models():
@@ -967,6 +1035,26 @@ def test_normalization_collapses_known_bug_variants_but_not_distinct_models():
     assert _apply("anthropic/claude-sonnet-4-6") == "claude-sonnet-4-6"
     assert _apply("vertex_ai/claude-haiku-4-5@20251001") == "claude-haiku-4-5-20251001"
     assert _apply("vertex_ai/claude-sonnet-4-5@20250929") == "claude-sonnet-4-5-20250929"
+
+
+def test_normalization_dashes_dotted_claude_versions_like_the_python_pricer():
+    # The by-model aggregates must merge a dotted and a dashed spelling of one model, as normalize_model does for
+    # the per-session and timeline prices; only claude-* names are touched.
+    from codemie.service.analytics.handlers.coding_agent_pricing import normalize_model
+
+    for raw in (
+        "claude-sonnet-4.6",
+        "Claude-Sonnet-4.6",
+        "claude-3.5-sonnet",
+        "converse/us.anthropic.claude-sonnet-4.6-20251001-v1:0",
+        "gpt-4.1",
+        "claude-sonnet-4-6",
+        "claude-router.v1",  # only a version dot (digit, dot, digit) is dashed
+        "claude-opus-4.6.1",
+    ):
+        assert _apply(raw) == normalize_model(raw)
+    assert _apply("claude-sonnet-4.6") == _apply("claude-sonnet-4-6") == "claude-sonnet-4-6"
+    assert _apply("gpt-4.1") == "gpt-4.1"
 
 
 def test_normalization_handles_invoke_routing_prefix_and_hyphenated_digit_region_tokens():
@@ -1068,6 +1156,14 @@ async def test_session_cost_facts_inner_join_sel_without_epoch_defaults():
     assert "1970-01-01" not in sql
     assert "LEFT JOIN sel" not in sql
     assert "JOIN sel" in sql
+
+
+@pytest.mark.asyncio
+async def test_cost_kpis_counts_sessions_from_sel_not_cost_rows():
+    sql, _ = await _sql_of("get_cost_kpis")
+
+    assert "count(DISTINCT s.session_id)" in sql and "AS total_sessions" in sql
+    assert "FROM sel s LEFT JOIN" in " ".join(sql.split())
 
 
 @pytest.mark.asyncio
@@ -1232,7 +1328,8 @@ async def test_the_start_time_page_and_count_are_separate_lean_statements_withou
     page_sql, count_sql = (" ".join(s.split()) for s in recorder.statements)
 
     assert "LIMIT" in page_sql and "LIMIT" not in count_sql and "count(*)" in count_sql
-    assert "first_prompt" not in page_sql and "first_prompt" not in count_sql  # lean: no wide columns
+    # lean: no wide columns selected (the listing check reads first_prompt in a predicate only)
+    assert "AS first_prompt" not in page_sql and "AS first_prompt" not in count_sql
 
 
 @pytest.mark.asyncio
@@ -1658,10 +1755,13 @@ async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(metho
     # the after-the-first-day and first-day probes of the underived started arm, and the whole-day and window-day
     # probes of each of the three arms that ask `_active_in_window`), and once more per `_DEVELOPER`
     # occurrence for its own cost-email fallback subquery (get_users reads the developer column of `sel`, which
-    # computes it once, and get_session_cost_facts uses it once); a plain `FROM cost_daily c` has no grain_calls column
+    # computes it once, and get_session_cost_facts uses it once); a plain `FROM cost_daily c` has no grain_calls column. The listing gate (`_is_listed`) reads it too, once per
+    # arm, and is taken out first, so the count does not move with that gate's own rule.
+    listing_gate = re.escape(" ".join(_is_listed("ALIAS").split())).replace("ALIAS", r"\w+")
+    without_gate = re.sub(listing_gate, "", sql)
     developer_reads = {"get_users": 1, "get_session_cost_facts": 1}.get(method, 0)
     expected_cost_daily_reads = 1 if method == "get_session_detail_cost" else 9 + developer_reads
-    assert sql.count("cost_daily") == expected_cost_daily_reads
+    assert without_gate.count("cost_daily") == expected_cost_daily_reads
     assert "(SELECT c.*, sum(c.api_call_count) OVER w AS grain_calls, " in sql
 
 

@@ -14,10 +14,12 @@
 
 """Alembic environment of the CLI Analytics PostgreSQL schema.
 
-`run_migrations()` passes an open connection (holding the migration advisory lock, with
-search_path set to the analytics schema) and the schema name through
-`config.attributes`. Migrations use unqualified names, so they apply to whichever schema
-CLI_ANALYTICS_PG_SCHEMA names. The version table lives in that schema too.
+`run_migrations()` passes a connection with a transaction already open (it ran SET LOCAL lock_timeout, took the
+session-level migration advisory lock and set search_path to the analytics schema) and the schema name through
+`config.attributes`. Alembic treats that transaction as external: it opens none of its own, so a revision that must
+leave it (a commit before a slow step, an autocommit connection for CREATE INDEX CONCURRENTLY) ends it itself with
+`op.get_bind().commit()`; `autocommit_block()` is not available. Migrations use unqualified names, so they apply to
+whichever schema CLI_ANALYTICS_PG_SCHEMA names. The version table lives in that schema too.
 """
 
 from alembic import context
@@ -36,6 +38,7 @@ context.configure(
     version_table=VERSION_TABLE,
     version_table_schema=_schema,
     transactional_ddl=True,
+    transaction_per_migration=True,  # no effect under the runner's external transaction; see the docstring
 )
 
 with context.begin_transaction():

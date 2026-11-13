@@ -185,8 +185,9 @@ async def _seed_all(engine, seed: _GroupedSeed) -> dict[str, str]:
 SOURCES = ("live", "stored", "mixed")
 _VERSION = "parity-v1"
 # sha256 of `priced_groups_cte()` as it was before the stored source existed: the all-live form must not change.
-# Re-pinned on the EPMCDME-16427 part2 base, which moved the shared pricing terms.
-_LIVE_FORM_SHA256 = "a78ea19b32d11abfce386c4675e8421f407c5aa06fc13ebac7eab593ba69eb50"
+# Re-pinned on the EPMCDME-16427 part2 base, which moved the shared pricing terms, and for EPMCDME-16457, which dashes
+# dotted Claude versions in normalized_model_name.
+_LIVE_FORM_SHA256 = "2665a0ff2704030b015d389c9f297bca84d5205c7c2052424b444e7dec4bb47a"
 
 
 async def _stamp_for(engine, seed: _GroupedSeed, source: str) -> list[str] | None:

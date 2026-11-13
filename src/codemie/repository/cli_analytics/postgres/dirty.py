@@ -25,6 +25,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from enum import IntFlag
 
 from codemie.repository.cli_analytics.postgres.agent_call_attribution import AGENT_CALL_TOOLS
+from codemie.repository.cli_analytics.postgres.hook_row_sql import SUBAGENT_SESSION_PLATFORMS
 from codemie.repository.cli_analytics.postgres.otlp import DecodedBatch, HookRow, LogRow, MetricRow, SpanRow, UsageRow
 from codemie.repository.cli_analytics.vocabulary import ROLLUP_METRICS, SKILL_DISPATCH_EVENT, EventKind, SpanKind
 
@@ -60,6 +61,7 @@ _SPAN_HOOK_TYPES = frozenset(
     }
 )
 _PROMPT_SUBMIT = "agent.prompt.submit"
+_SUBAGENT_START = "agent.subagent.start"
 _SUBAGENT_USAGE = "agent.subagent.usage"
 # An api_request without a request_id this close to midnight also marks the neighbouring day (bounds
 # inclusive): the window in which the recompute matches it with a transcript request by fingerprint.
@@ -197,8 +199,24 @@ def _mark_hook(keys: DirtyKeys, hook: HookRow) -> None:
         _mark_span_hook(keys, hook)
         if carries_lines(hook):
             _mark(keys, hook.day, hook.session_id, RollupFamily.METRIC_FACTS)
+        if _names_subagent_session(hook):
+            # session_dims.is_subagent of the named session is set by this event, which lies in another session.
+            _mark(keys, hook.day, hook.agent_id, RollupFamily.SESSION)
     elif hook.event_type == _SUBAGENT_USAGE:
         _mark(keys, hook.day, hook.session_id, RollupFamily.USAGE_FACTS)
+
+
+def _names_subagent_session(hook: HookRow) -> bool:
+    """The Python twin of `hook_row_sql.names_subagent_session`."""
+    if (
+        hook.event_type != _SUBAGENT_START
+        or not hook.session_id
+        or not hook.agent_id
+        or hook.agent_id == hook.session_id
+    ):
+        return False
+    attrs = json.loads(hook.attrs) if hook.attrs else None
+    return isinstance(attrs, dict) and attrs.get("platform") in SUBAGENT_SESSION_PLATFORMS
 
 
 def _mark_span(keys: DirtyKeys, span: SpanRow) -> None:
