@@ -27,6 +27,7 @@ from codemie.rest_api.routers.assistant._shared import (
 from codemie.rest_api.routers.utils import check_user_can_access_assistant, get_assistant_by_id_or_raise
 from codemie.rest_api.security.user import User
 from codemie.service.assistant.category_service import category_service
+from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.rest_api.routers.assistant._publish_support import (
     _DEFAULT_ADMIN_SKIP_QUEUE_NOTICE,
     _SUBMITTABLE_STATUSES,
@@ -134,7 +135,8 @@ def _apply_sub_assistant_settings(sub_assistant: Assistant, settings: Optional[S
 
     # Update MCP servers if provided
     if settings.mcp_servers is not None:
-        sub_assistant.mcp_servers = settings.mcp_servers
+        # Already validated for every sub-assistant before any save (publish phase 1); not validated again here
+        sub_assistant.mcp_servers = list(settings.mcp_servers)
 
     # Update categories if provided
     if settings.categories:
@@ -310,6 +312,12 @@ def _publish_sub_assistants(
 
     # Phase 1: Pre-validate all sub-assistants before publishing any
     sub_assistants_to_publish = [_validate_sub_assistant(sub_id, assistant, user) for sub_id in assistant.assistant_ids]
+
+    # Reject an unavailable MCP link before any sub-assistant is saved
+    for sub_id, _ in sub_assistants_to_publish:
+        settings = settings_map.get(sub_id)
+        if settings is not None and settings.mcp_servers is not None:
+            MCPAccessControlService.validate_on_save(settings.mcp_servers)
 
     # Reviewed sub-assistants cannot be reconfigured through the parent's publish
     if gate_armed:

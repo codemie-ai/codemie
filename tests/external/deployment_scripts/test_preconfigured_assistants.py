@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import ANY, patch, MagicMock, call
 from codemie.core.exceptions import ValidationException
@@ -943,3 +945,84 @@ def test_update_with_n_new_mcp_servers_delta_tracked(
 
     expected_new_ids = {f"cfg-{i:03d}" for i in range(server_count)}
     mock_adjust_usage.assert_called_once_with(increments=expected_new_ids, decrements=set())
+
+
+# ---------------------------------------------------------------------------
+# EPMCDME-16489: unavailable catalogue links are disabled before sanitize_for_save
+# ---------------------------------------------------------------------------
+
+_GET_BY_IDS = "codemie.service.mcp.access_control.MCPConfig.get_by_ids"
+
+
+def _link(name: str, config_id: str) -> MCPServerDetails:
+    return MCPServerDetails(name=name, mcp_config_id=config_id, enabled=True)
+
+
+def _catalog_entry(entry_id: str, active: bool = True, public: bool = True):
+    return SimpleNamespace(id=entry_id, is_active=active, is_public=public)
+
+
+def _create_with(mock_template, servers, **get_by_ids):
+    mock_template.mcp_servers = servers
+    mock_template.validate_fields.return_value = ""
+    with (
+        patch('codemie.rest_api.models.assistant.Assistant.get_by_fields', return_value=None),
+        patch(
+            'external.deployment_scripts.preconfigured_assistants.assistant_service.get_assistant_template_by_slug',
+            return_value=mock_template,
+        ),
+        patch('external.deployment_scripts.preconfigured_assistants.get_all_contexts', return_value=[]),
+        patch('codemie.rest_api.models.assistant.Assistant.save') as mock_save,
+        patch('external.deployment_scripts.preconfigured_assistants.llm_service') as mock_llm,
+        patch('external.deployment_scripts.preconfigured_assistants.MCPConfigService.adjust_usage'),
+        patch(_GET_BY_IDS, **get_by_ids),
+    ):
+        mock_llm.default_llm_model = LLMService.BASE_NAME_GPT_41
+        create_preconfigured_assistant("test-slug")
+    return mock_save
+
+
+def test_create_inactive_link_is_disabled_before_sanitize(mock_assistant_template):
+    with patch(
+        'external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save',
+        side_effect=lambda servers: servers,
+    ) as mock_sanitize:
+        mock_save = _create_with(
+            mock_assistant_template,
+            [_link("a", "cfg-1"), _link("b", "cfg-2")],
+            return_value=[_catalog_entry("cfg-1", active=False), _catalog_entry("cfg-2")],
+        )
+
+    sanitized = mock_sanitize.call_args[0][0]
+    assert [s.enabled for s in sanitized] == [False, True]
+    mock_save.assert_called_once()
+
+
+def test_create_all_missing_links_skip_helper_and_sanitize_raises(mock_assistant_template):
+    with pytest.raises(ValidationException):
+        _create_with(mock_assistant_template, [_link("a", "cfg-1")], return_value=[])
+
+
+def test_create_partial_miss_disables_only_the_missing_link(mock_assistant_template):
+    with patch(
+        'external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save',
+        side_effect=lambda servers: servers,
+    ) as mock_sanitize:
+        _create_with(
+            mock_assistant_template,
+            [_link("a", "cfg-1"), _link("b", "cfg-2")],
+            return_value=[_catalog_entry("cfg-2")],
+        )
+
+    assert [s.enabled for s in mock_sanitize.call_args[0][0]] == [False, True]
+
+
+def test_create_lookup_raising_skips_helper_and_sanitize_sees_original(mock_assistant_template):
+    original = [_link("a", "cfg-1")]
+    with patch(
+        'external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save',
+        side_effect=lambda servers: servers,
+    ) as mock_sanitize:
+        _create_with(mock_assistant_template, original, side_effect=RuntimeError("db down"))
+
+    assert mock_sanitize.call_args[0][0] == original

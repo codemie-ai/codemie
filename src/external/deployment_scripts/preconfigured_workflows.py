@@ -14,12 +14,17 @@
 
 import re
 
+import yaml
+from pydantic import ValidationError
+
 from codemie.configs import logger, config
 from codemie.core.models import UserEntity
-from codemie.core.workflow_models import WorkflowConfig, WorkflowConfigTemplate
+from codemie.core.workflow_models import WorkflowAssistant, WorkflowConfig, WorkflowConfigTemplate, WorkflowTool
 from codemie.rest_api.models.index import SearchFields
 from codemie.rest_api.models.settings import CredentialValues
 from codemie_tools.base.models import CredentialTypes
+from codemie.service.mcp.access_control import CatalogLookupError, after_workflow_links_changed
+from codemie.service.mcp.workflow_yaml_editor import WorkflowYamlEditError, disable_dead_links_in_yaml
 from codemie.service.settings.base_settings import CHANGEME_PROMPT, CHANGEME_URL
 from codemie.service.settings.settings import SettingsService
 from codemie.service.workflow_config import WorkflowConfigIndexService
@@ -56,6 +61,42 @@ def patch_template_with_real_assistant_ids(template: WorkflowConfigTemplate):
             template.yaml_config = template.yaml_config.replace("PRECONFIGURED:" + agent_slug, assistant_id)
 
 
+def disable_unavailable_mcp_links(template: WorkflowConfigTemplate) -> None:
+    """Disable inactive/not-public MCP links in the template YAML, in place.
+
+    Strict lookup: if the catalogue cannot be read or returns nothing for the linked ids (it may not be seeded yet),
+    the template is left as written and an error is logged. A partial miss still disables the missing links.
+    """
+    if not template.yaml_config:
+        return
+    try:
+        new_text, report = disable_dead_links_in_yaml(template.yaml_config, strict_lookup=True)
+    except (CatalogLookupError, WorkflowYamlEditError) as e:
+        logger.error(f"Workflow template '{template.name}': MCP links not checked, saving as written: {e}")
+        return
+    if not report:
+        return
+
+    logger.warning(
+        f"Workflow template '{template.name}': disabled {len(report)} unavailable MCP link(s): "
+        f"{', '.join(item.address or item.name for item in report)}"
+    )
+    try:
+        data = yaml.safe_load(new_text) or {}
+        assistants = [
+            WorkflowAssistant(**{**a, "skill_ids": a.get("skill_ids") or []}) for a in (data.get("assistants") or [])
+        ]
+        tools = [WorkflowTool(**t) for t in (data.get("tools") or [])]
+    except (TypeError, ValidationError) as e:
+        logger.error(
+            f"Workflow template '{template.name}': disabled MCP links could not be applied, saving as written: {e}"
+        )
+        return
+    template.yaml_config = new_text
+    template.assistants = assistants
+    template.tools = tools
+
+
 def create_preconfigured_workflow(slug: str, name: str, project_name: str):
     """
     Creates a workflow from the template. If the template contains references to assistant ids
@@ -76,6 +117,7 @@ def create_preconfigured_workflow(slug: str, name: str, project_name: str):
         return
 
     patch_template_with_real_assistant_ids(template)
+    disable_unavailable_mcp_links(template)
 
     logger.info(f"Creating workflow '{name}' in '{project_name}' using template '{slug}'")
 
@@ -83,6 +125,7 @@ def create_preconfigured_workflow(slug: str, name: str, project_name: str):
     user_model = UserEntity(user_id="system", username="system", name="system")
     workflow_config.created_by = user_model
     workflow_config.save(refresh=True)
+    after_workflow_links_changed(workflow_config)
 
 
 def create_amna_workflows(slug_prefix: str):

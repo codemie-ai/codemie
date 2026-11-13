@@ -70,6 +70,7 @@ from codemie.core.workflow_models import (
 )
 from codemie.core.workflow_models.workflow_config import WorkflowMode
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem, GuardrailEntity
+from codemie.rest_api.models.mcp_restore import DisabledMcpResponse, message_with_disabled
 from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden, run_in_thread_pool, raise_not_found
 from codemie.workflows.validation.resources import collect_consumer_slot_integration_warnings
 from codemie.workflows.validation.tool_access import collect_tool_access_owner_integration_warnings
@@ -539,7 +540,7 @@ def _persist_and_finalize_new_workflow(
     # Outside the try: the generic except below would wrap the governance ValidationException
     # into "Workflow Configuration error" with the reason in details; update_workflow re-raises it as-is.
     for candidate in (raw_from_request, parsed_from_yaml):
-        MCPAccessControlService.validate_on_save(MCPAccessControlService.collect_workflow_mcp_servers(candidate))
+        MCPAccessControlService.validate_workflow_mcp(candidate)
     MCPAccessControlService.strip_workflow_mcp_servers(workflow_config)
     try:
         if request.categories is not None:
@@ -1030,7 +1031,7 @@ def get_workflow_versions(
 @router.post(
     "/workflows/{workflow_id}/versions/rollback",
     status_code=status.HTTP_200_OK,
-    response_model=BaseResponse,
+    response_model=DisabledMcpResponse,
     tags=["Workflow Versioning"],
 )
 def rollback_workflow_version(
@@ -1038,15 +1039,20 @@ def rollback_workflow_version(
     request: WorkflowRollbackRequest,
     background_tasks: BackgroundTasks,
     user: User = Depends(authenticate),
-) -> BaseResponse:
+) -> DisabledMcpResponse:
     workflow = _load_workflow_record(workflow_id)
     if not Ability(user).can(Action.WRITE, workflow):
         raise_access_denied("update")
-    rolled_back = WorkflowVersionService.rollback_to_version(
+    rolled_back, disabled_mcp = WorkflowVersionService.rollback_to_version(
         workflow=workflow,
         revision_index=request.revision_index,
         user=user,
         change_notes=request.change_notes,
     )
     background_tasks.add_task(run_in_thread_pool, update_workflow_schema, rolled_back, user)
-    return BaseResponse(message=f"Workflow {workflow_id} rolled back to revision {request.revision_index}.")
+    return DisabledMcpResponse(
+        message=message_with_disabled(
+            f"Workflow {workflow_id} rolled back to revision {request.revision_index}.", disabled_mcp
+        ),
+        disabled_mcp_servers=disabled_mcp,
+    )

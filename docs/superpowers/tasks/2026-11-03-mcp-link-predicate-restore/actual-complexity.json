@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-11-03T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 27,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches MCP access_control predicate, new workflow_yaml_editor and mcp_restore model, assistant/workflow version services, workflow generator, sub-assistant and version routers, and preconfigured assistant/workflow seeding scripts." },
+    { "dimension": "technical_risk", "reason": "Access-control predicate change with disable-and-report restore semantics and in-place workflow YAML editing; no exact precedent, security-relevant." },
+    { "dimension": "file_change_estimate", "reason": "27 files changed per diffstat (11 source, 16 test/baseline), 1867 insertions." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: affects authorization (MCP access control predicate)",
+    "Component Scope bumped: touches core shared access-control utility and multiple workflows/assistants flows"
+  ],
+  "split_recommendation": null
+}

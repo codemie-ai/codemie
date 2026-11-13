@@ -124,7 +124,7 @@ class TestGetWorkflowVersions:
     def test_declares_rollback_post_route(self):
         from fastapi.routing import APIRoute
 
-        from codemie.core.models import BaseResponse
+        from codemie.rest_api.models.mcp_restore import DisabledMcpResponse
         from codemie.rest_api.routers.workflow import router
 
         route = next(
@@ -134,7 +134,7 @@ class TestGetWorkflowVersions:
             and r.path == "/v1/workflows/{workflow_id}/versions/rollback"
             and "POST" in r.methods
         )
-        assert route.response_model is BaseResponse
+        assert route.response_model is DisabledMcpResponse
 
     @patch("codemie.rest_api.routers.workflow.WorkflowVersionService")
     @patch("codemie.rest_api.routers.workflow.Ability")
@@ -247,7 +247,7 @@ class TestRollbackWorkflowVersion:
         mock_ability_instance = MagicMock()
         mock_ability_instance.can.return_value = True
         mock_ability.return_value = mock_ability_instance
-        mock_version_svc.rollback_to_version.return_value = workflow
+        mock_version_svc.rollback_to_version.return_value = (workflow, [])
         request = WorkflowRollbackRequest(revision_index=0)
 
         rollback_workflow_version(workflow_id="workflow-123", request=request, user=user, background_tasks=MagicMock())
@@ -266,6 +266,7 @@ class TestRollbackWorkflowVersion:
         mock_ability_instance = MagicMock()
         mock_ability_instance.can.return_value = True
         mock_ability.return_value = mock_ability_instance
+        mock_version_svc.rollback_to_version.return_value = (workflow, [])
         request = WorkflowRollbackRequest(revision_index=0)
 
         result = rollback_workflow_version(
@@ -274,6 +275,32 @@ class TestRollbackWorkflowVersion:
 
         assert "workflow-123" in result.message
         assert "0" in result.message
+        assert result.disabled_mcp_servers == []
+
+    @patch("codemie.rest_api.routers.workflow.WorkflowVersionService")
+    @patch("codemie.rest_api.routers.workflow.Ability")
+    @patch("codemie.rest_api.routers.workflow.WorkflowConfig.get_by_id")
+    def test_returns_disabled_mcp_report_with_addresses(
+        self, mock_get_by_id, mock_ability, mock_version_svc, user, workflow
+    ):
+        from codemie.rest_api.models.mcp_restore import DisabledMcpServer
+        from codemie.rest_api.models.workflow_version import WorkflowRollbackRequest
+        from codemie.rest_api.routers.workflow import rollback_workflow_version
+
+        mock_get_by_id.return_value = workflow
+        mock_ability.return_value.can.return_value = True
+        report = [DisabledMcpServer(name="m", mcp_config_id="c", reason="missing", address="tools[0].mcp_server")]
+        mock_version_svc.rollback_to_version.return_value = (workflow, report)
+
+        result = rollback_workflow_version(
+            workflow_id="workflow-123",
+            request=WorkflowRollbackRequest(revision_index=0),
+            user=user,
+            background_tasks=MagicMock(),
+        )
+
+        assert result.disabled_mcp_servers == report
+        assert result.message.endswith("Disabled MCP servers that are unavailable: m.")
 
     @patch("codemie.rest_api.routers.workflow.WorkflowVersionService")
     @patch("codemie.rest_api.routers.workflow.Ability")
@@ -288,6 +315,7 @@ class TestRollbackWorkflowVersion:
         mock_ability_instance = MagicMock()
         mock_ability_instance.can.return_value = True
         mock_ability.return_value = mock_ability_instance
+        mock_version_svc.rollback_to_version.return_value = (workflow, [])
         request = WorkflowRollbackRequest(revision_index=2, change_notes="hotfix")
 
         rollback_workflow_version(workflow_id="workflow-123", request=request, user=user, background_tasks=MagicMock())
@@ -373,7 +401,7 @@ class TestRollbackWorkflowVersion:
         mock_ability_instance.can.return_value = True
         mock_ability.return_value = mock_ability_instance
         rolled_back = MagicMock()
-        mock_version_svc.rollback_to_version.return_value = rolled_back
+        mock_version_svc.rollback_to_version.return_value = (rolled_back, [])
         request = WorkflowRollbackRequest(revision_index=0)
         background_tasks = MagicMock()
 

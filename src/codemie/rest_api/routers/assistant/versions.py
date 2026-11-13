@@ -16,9 +16,7 @@
 from fastapi import APIRouter, status, Depends
 
 from codemie.core.ability import Action
-from codemie.core.models import (
-    BaseResponse,
-)
+from codemie.rest_api.models.mcp_restore import DisabledMcpResponse, message_with_disabled
 from codemie.rest_api.routers.assistant._shared import (
     _track_assistant_management_metric,
     _validate_remote_entities_and_raise,
@@ -26,6 +24,7 @@ from codemie.rest_api.routers.assistant._shared import (
 from codemie.rest_api.routers.utils import check_user_can_access_assistant, get_assistant_by_id_or_raise
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.mcp.access_control import CatalogLookupError, catalog_unavailable_error
 
 
 router = APIRouter()
@@ -130,7 +129,7 @@ def compare_assistant_versions(assistant_id: str, version1: int, version2: int, 
 @router.post(
     "/assistants/{assistant_id}/versions/{version_number}/rollback",
     status_code=status.HTTP_200_OK,
-    response_model=BaseResponse,
+    response_model=DisabledMcpResponse,
     tags=["Assistant Versioning"],
 )
 def rollback_assistant_version(
@@ -149,7 +148,8 @@ def rollback_assistant_version(
     - version_number: The version to rollback to
 
     **Returns:**
-    Success message with the new version number created from rollback
+    Success message with the new version number created from rollback and the MCP servers
+    that were disabled because their catalogue entry is unavailable
     """
     from codemie.service.assistant.assistant_version_service import AssistantVersionService
 
@@ -158,16 +158,23 @@ def rollback_assistant_version(
     _validate_remote_entities_and_raise(assistant)
 
     try:
-        new_config = AssistantVersionService.rollback_to_version(
-            assistant=assistant, target_version_number=version_number, user=user, change_notes=None
-        )
+        try:
+            new_config, disabled_mcp = AssistantVersionService.rollback_to_version(
+                assistant=assistant, target_version_number=version_number, user=user, change_notes=None
+            )
+        except CatalogLookupError as exc:
+            raise catalog_unavailable_error() from exc
 
         _track_assistant_management_metric(
             "rollback_version", assistant, user, True, {"target_version": version_number}
         )
 
-        return BaseResponse(
-            message=f"Rolled back to version {version_number}. Created new version {new_config.version_number}"
+        return DisabledMcpResponse(
+            message=message_with_disabled(
+                f"Rolled back to version {version_number}. Created new version {new_config.version_number}.",
+                disabled_mcp,
+            ),
+            disabled_mcp_servers=disabled_mcp,
         )
 
     except Exception as e:

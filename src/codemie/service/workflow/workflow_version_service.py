@@ -21,12 +21,19 @@ from fastapi import status
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException, NotFoundException, ValidationException
 from codemie.core.workflow_models.workflow_config import WorkflowConfig, YamlConfigHistory
+from codemie.rest_api.models.mcp_restore import DisabledMcpServer
 from codemie.rest_api.models.workflow_version import (
     DEFAULT_VERSIONS_PER_PAGE,
     WorkflowRevisionEntry,
     WorkflowVersionHistoryResponse,
 )
 from codemie.rest_api.security.user import User
+from codemie.service.mcp.access_control import (
+    CatalogLookupError,
+    after_workflow_links_changed,
+    catalog_unavailable_error,
+)
+from codemie.service.mcp.workflow_yaml_editor import WorkflowYamlEditError, disable_dead_links_in_yaml
 from codemie.service.workflow_service import WorkflowService
 
 WORKFLOW_CONFIGURATION_ERROR = "Workflow Configuration error"
@@ -59,7 +66,8 @@ class WorkflowVersionService:
         revision_index: int,
         user: User,
         change_notes: str | None = None,
-    ) -> WorkflowConfig:
+    ) -> tuple[WorkflowConfig, list[DisabledMcpServer]]:
+        """Restore a prior revision; MCP links to unavailable catalogue entries come back disabled and are reported."""
         history = workflow.yaml_config_history or []
         if not history:
             raise ExtendedHTTPException(
@@ -83,6 +91,22 @@ class WorkflowVersionService:
                 details="The selected revision does not contain a workflow configuration to restore.",
                 help="Choose a revision that includes a non-empty yaml_config.",
             )
+        # Edit a copy of the text first: on failure nothing on the workflow has been touched.
+        try:
+            restored_yaml, disabled_mcp = disable_dead_links_in_yaml(target.yaml_config)
+        except WorkflowYamlEditError as exc:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message=WORKFLOW_CONFIGURATION_ERROR,
+                details=str(exc),
+                help="The revision's YAML cannot be parsed or edited. Choose another revision.",
+            ) from exc
+        except CatalogLookupError as exc:  # the catalogue read failed; nothing on the workflow was touched
+            logger.error(f"MCP catalogue lookup failed during rollback of workflow {workflow.id}: {exc}")
+            raise catalog_unavailable_error() from exc
+        except Exception:
+            logger.exception(f"Unexpected error while disabling unavailable MCP links, workflow {workflow.id}")
+            raise
         new_entry = YamlConfigHistory(
             yaml_config=workflow.yaml_config or "",
             date=datetime.now(),
@@ -94,7 +118,7 @@ class WorkflowVersionService:
             f"Prepending current config as new history entry."
         )
         original_yaml = workflow.yaml_config
-        workflow.yaml_config = target.yaml_config
+        workflow.yaml_config = restored_yaml
         # parse_execution_config only replaces states when the yaml key is present;
         # clear first so a restored snapshot that omits states cannot keep the live graph.
         workflow.states = []
@@ -115,7 +139,8 @@ class WorkflowVersionService:
                 help="",
             ) from exc
         workflow.update(yaml_config_history=[new_entry, *history])
-        return workflow
+        after_workflow_links_changed(workflow)
+        return workflow, disabled_mcp
 
     @staticmethod
     def _validate_restored_workflow(workflow: WorkflowConfig, user: User) -> None:

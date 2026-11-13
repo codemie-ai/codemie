@@ -1,0 +1,242 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved check round: all 8 findings resolved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User chose option 1: fix all 8 findings CR-001..CR-008 in one fix-up round"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved check round: all 8 findings resolved"
+    }
+  ],
+  "reviewed_head": "3990017dc8b34d91017bb2f5647a4f8ce961525f",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All 8 prior blocking findings graded resolved from current source and the fix-up diff. CR-001 and CR-008 are resolved by new untracked test files (not in changed_files), so confidence is medium; commit them with the fix-up.",
+  "confidence": "medium",
+  "check_confidence": "medium",
+  "risk_flags": [
+    "public-api",
+    "data-contract"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 8,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/assistant/versions.py",
+      "line": 160,
+      "title": "Assistant rollback endpoint report untested",
+      "problem": "No test invokes the assistant rollback handler; the wiring of the disabled MCP report into DisabledMcpResponse is unverified (service test checks only the tuple, OpenAPI baseline only schema shape).",
+      "impact": "If the handler dropped the report, the public API would silently stop reporting disabled MCP links on assistant rollback.",
+      "recommendation": "Add a router-level test calling rollback_assistant_version with AssistantVersionService.rollback_to_version mocked to return (config, [DisabledMcpServer(...)]) and assert result.disabled_mcp_servers equals the report.",
+      "status": "resolved",
+      "check_notes": "New router test test_rollback_returns_disabled_mcp_report asserts disabled_mcp_servers; file is untracked, not in changed_files",
+      "fix": {
+        "change": "Added router-level test for assistant rollback report passthrough",
+        "test": "tests/codemie/rest_api/routers/test_assistant_versions_rollback_report.py"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/mcp/workflow_yaml_editor.py",
+      "line": 752,
+      "title": "Editor confirms only known top-level keys",
+      "problem": "_confirmed compares only the hard-coded _KNOWN_KEYS; other or future top-level keys are never verified unchanged, and _copy_without_mcp strips mcp_servers/mcp_server keys at any depth. Reachability not fully confirmed.",
+      "impact": "Edit side effects on unlisted keys go unverified despite the 'only reported nodes changed' claim; reachability unconfirmed.",
+      "recommendation": "Compare all top-level keys, not only _KNOWN_KEYS, in _confirmed.",
+      "status": "resolved",
+      "check_notes": "_confirmed now compares the union of all top-level keys; _KNOWN_KEYS removed",
+      "fix": {
+        "change": "_confirmed now compares the union of all top-level keys; _KNOWN_KEYS removed",
+        "test": "tests/unit/service/mcp/test_workflow_yaml_editor.py::test_confirmation_compares_unlisted_top_level_keys"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/mcp/workflow_yaml_editor.py",
+      "line": 755,
+      "title": "Post-edit hook lacks single return point",
+      "problem": "disable_dead_links_in_yaml has several return paths; the EPMCDME-16640 seam is a separate no-op after_workflow_links_changed invoked by callers after save, whereas spec requires one return point inside the named function.",
+      "impact": "Required spec design constraint only partly met; 16640 sync may be bypassed or misfire on rollbacks with no link changes.",
+      "recommendation": "Restructure disable_dead_links_in_yaml to end in a single return point where EPMCDME-16640 adds its sync, per spec.",
+      "status": "resolved",
+      "check_notes": "disable_dead_links_in_yaml has one return; AST test added",
+      "fix": {
+        "change": "disable_dead_links_in_yaml has one return point; edit logic moved to _disable_reported",
+        "test": "tests/unit/service/mcp/test_workflow_yaml_editor.py::test_edit_hook_has_a_single_return_point"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/workflow/workflow_version_service.py",
+      "line": 77,
+      "title": "Catalogue outage on workflow rollback unhandled",
+      "problem": "Non-strict restore_mcp_servers re-raises catalogue read errors; rollback_to_version maps only WorkflowYamlEditError.",
+      "impact": "A DB or catalogue outage during rollback surfaces as an unhandled 500; previously rollback without dead links did not read the catalogue. Reachability unconfirmed.",
+      "recommendation": "Catch lookup errors and raise a controlled ExtendedHTTPException (e.g. 503) from the cause.",
+      "status": "resolved",
+      "check_notes": "Catalogue errors mapped to ExtendedHTTPException 503; test added",
+      "fix": {
+        "change": "Workflow rollback maps catalogue read errors to a 503 ExtendedHTTPException",
+        "test": "tests/codemie/service/test_workflow_version_service.py::TestRollbackDisablesUnavailableMcpLinks::test_catalogue_outage_maps_to_503_and_leaves_workflow_untouched"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/external/deployment_scripts/preconfigured_workflows.py",
+      "line": 72,
+      "title": "Partial catalogue miss skips disabling in seeded workflows",
+      "problem": "disable_unavailable_mcp_links uses strict_lookup=True, which raises CatalogLookupError when any linked id has no row, so one missing config among several leaves the template fully enabled. Spec says only a lookup exception or an empty result for a non-empty id set skips the helper; partial misses still disable. The test encodes the opposite; the assistants path follows the spec.",
+      "impact": "Preconfigured workflows are seeded with dead MCP links enabled, violating a required spec behavior; the two preconfigured paths are inconsistent.",
+      "recommendation": "Skip the helper only on lookup exception or no rows at all; on partial misses disable the unavailable links and log. Update test_one_missing_among_several_saved_as_written_and_error_logged.",
+      "status": "resolved",
+      "check_notes": "Strict lookup raises only on empty result; partial miss disables; tests updated",
+      "fix": {
+        "change": "strict_lookup raises only on lookup failure or no rows; partial misses disable and log",
+        "test": "tests/external/deployment_scripts/test_preconfigured_workflows.py::TestPreconfiguredWorkflowMcpLinks::test_one_missing_among_several_still_disables_and_warns"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/external/deployment_scripts/preconfigured_workflows.py",
+      "line": 86,
+      "title": "Null assistants/tools crash template rebuild",
+      "problem": "template.assistants/tools are rebuilt by hand via data.get('assistants', []); a null key raises TypeError, and extra or invalid keys raise after yaml_config is already replaced, leaving the template half-updated. Rebuild also duplicates normal YAML-to-model parsing.",
+      "impact": "Seeding of a preconfigured workflow can abort on an edge-shaped template; reachability unconfirmed.",
+      "recommendation": "Use `data.get('assistants') or []` and `data.get('tools') or []`; wrap the rebuild in try/except (TypeError, ValidationError) and fall back to the unedited template.",
+      "status": "resolved",
+      "check_notes": "Null keys handled with 'or []'; rebuild wrapped, falls back to unedited template",
+      "fix": {
+        "change": "Template rebuild uses 'or []' and falls back to the unedited template on TypeError/ValidationError",
+        "test": "tests/external/deployment_scripts/test_preconfigured_workflows.py::TestPreconfiguredWorkflowMcpLinks::test_template_rebuild_failure_falls_back_to_unedited_template"
+      }
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/mcp/test_toolkit_service_disabled_entries.py",
+      "title": "Workflow agent-node disabled-MCP path untested",
+      "problem": "Spec asks to confirm workflow agent nodes reach the disabled-server skip with a test; the added test calls MCPToolkitService.get_mcp_server_tools directly and ToolNode only.",
+      "impact": "Runtime behavior for disabled MCP entries in workflow agent nodes is unproven.",
+      "recommendation": "Add a test exercising a workflow agent node reaching the disabled-server skip.",
+      "status": "resolved",
+      "check_notes": "Test drives VirtualAssistantService agent-node path into the disabled-server skip",
+      "fix": {
+        "change": "Added test that a workflow agent node's virtual assistant reaches the disabled-server skip",
+        "test": "tests/codemie/service/mcp/test_toolkit_service_disabled_entries.py::test_disabled_mcp_entry_in_workflow_agent_node_is_skipped"
+      }
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Marketplace moderation unchanged test missing",
+      "problem": "Spec requires 'marketplace moderation unchanged (verified by test)'; no such test is present in the diff.",
+      "impact": "Moderation regression would go undetected; required spec criterion only partly met.",
+      "recommendation": "Add a test verifying marketplace moderation behaviour is unchanged.",
+      "status": "resolved",
+      "check_notes": "New test_entity_adapter_mcp_unchanged.py asserts moderation sees disabled and enabled servers; untracked",
+      "fix": {
+        "change": "Added test that marketplace moderation reads MCP servers regardless of enabled flag",
+        "test": "tests/codemie/service/marketplace_management/test_entity_adapter_mcp_unchanged.py"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Post-edit hook: one named function disable_dead_links_in_yaml with a single return point",
+      "status": "partial",
+      "notes": "Multiple return paths; 16640 seam is separate after_workflow_links_changed called by callers"
+    },
+    {
+      "kind": "spec",
+      "item": "Preconfigured workflows: partial misses still disable and log",
+      "status": "partial",
+      "notes": "strict_lookup raises on any missing id, so partial miss saves as written"
+    },
+    {
+      "kind": "spec",
+      "item": "Marketplace moderation unchanged (verified by test)",
+      "status": "partial",
+      "notes": "No verifying test in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Runtime unchanged; workflow agent-node skip confirmed with a test",
+      "status": "partial",
+      "notes": "Test covers toolkit service and ToolNode only, not an agent node"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 9 subjects in range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "New modules carry license headers, use modern type hints; access_control.py under the ~500 line threshold. No documented rule violated in sampled checks"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "YAML parsing uses safe_load/compose and fails closed on YAMLError; logs contain only server names and config ids, no credentials"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Blind lens was truncated (partial coverage); acceptance found two spec requirements only partly met (preconfigured partial-miss handling, single post-edit return point). Reachability was verified only for the highest-risk candidates; ~12 candidates dismissed as noise or deliberate spec decisions (e.g. is_link/custom-config predicate deferred to EPMCDME-16490). Nothing deferred.",
+    "confidence": "medium",
+    "risk_flags": [
+      "public-api",
+      "data-contract"
+    ]
+  }
+}

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,7 +24,14 @@ import pytest
 from codemie.core.exceptions import ValidationException
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.mcp_config import MCPConfig, MCPServerConfigData
-from codemie.service.mcp.access_control import MCPAccessControlService
+from codemie.service.mcp.access_control import (
+    CatalogLookupError,
+    MCPAccessControlService,
+    NodeAddress,
+    is_enabled,
+    is_link,
+    unavailable_reason,
+)
 from codemie.service.mcp.models import MCPServerConfig
 
 _CC = "codemie.service.mcp.access_control.customer_config"
@@ -128,9 +136,29 @@ class TestValidateOnSaveOpenMode:
                 with pytest.raises(ValidationException, match="not available in the catalogue"):
                     MCPAccessControlService.validate_on_save(servers)
 
-    def test_disabled_server_with_invalid_catalog_still_raises(self):
-        # disabled servers are still validated
+    def test_disabled_server_with_dead_catalog_id_saves(self):
         servers = [_server("s1", mcp_config_id="missing", enabled=False)]
+        with _open_mode():
+            with patch(_GET_BY_IDS, return_value=[]):
+                MCPAccessControlService.validate_on_save(servers)
+
+    def test_disabled_and_enabled_entry_with_same_id_save(self):
+        entry = _catalog_entry("cat-1")
+        servers = [_server("off", mcp_config_id="cat-1", enabled=False), _server("on", mcp_config_id="cat-1")]
+        with _open_mode():
+            with patch(_GET_BY_IDS, return_value=[entry]):
+                MCPAccessControlService.validate_on_save(servers)
+
+    def test_two_enabled_links_with_same_id_refused(self):
+        entry = _catalog_entry("cat-1")
+        servers = [_server("a", mcp_config_id="cat-1"), _server("b", mcp_config_id="cat-1")]
+        with _open_mode():
+            with patch(_GET_BY_IDS, return_value=[entry]):
+                with pytest.raises(ValidationException, match="added more than once"):
+                    MCPAccessControlService.validate_on_save(servers)
+
+    def test_re_enabled_dead_entry_refused(self):
+        servers = [_server("s1", mcp_config_id="missing", enabled=True)]
         with _open_mode():
             with patch(_GET_BY_IDS, return_value=[]):
                 with pytest.raises(ValidationException, match="not available in the catalogue"):
@@ -195,12 +223,33 @@ class TestValidateOnSaveRestrictedMode:
             with patch(_GET_BY_IDS, return_value=[entry]):
                 MCPAccessControlService.validate_on_save(servers)
 
-    def test_disabled_inline_server_raises_in_restricted_mode(self):
-        # All servers are checked regardless of enabled flag
+    def test_disabled_custom_server_saves_in_restricted_mode(self):
         servers = [_server("s1", command="npx", enabled=False)]
+        with _restricted_mode():
+            MCPAccessControlService.validate_on_save(servers)
+
+    def test_same_custom_server_enabled_refused_in_restricted_mode(self):
+        servers = [_server("s1", command="npx", enabled=True)]
         with _restricted_mode():
             with pytest.raises(ValidationException, match="custom server"):
                 MCPAccessControlService.validate_on_save(servers)
+
+    def test_enabled_custom_server_with_dead_id_still_refused_in_restricted_mode(self):
+        servers = [_server("s1", mcp_config_id="missing", use_custom_config=True)]
+        with _restricted_mode():
+            with patch(_GET_BY_IDS, return_value=[]):
+                with pytest.raises(ValidationException, match="custom configuration"):
+                    MCPAccessControlService.validate_on_save(servers)
+
+    def test_disabled_link_with_dead_id_saves_in_restricted_mode(self):
+        servers = [_server("s1", mcp_config_id="missing", enabled=False)]
+        with _restricted_mode():
+            with patch(_GET_BY_IDS, return_value=[]):
+                MCPAccessControlService.validate_on_save(servers)
+
+    def test_restore_ignores_disabled_custom_server_in_restricted_mode(self):
+        with _restricted_mode():
+            MCPAccessControlService.validate_on_restore([_server("s1", command="npx", enabled=False)])
 
     def test_use_custom_config_true_raises_in_restricted_mode(self):
         # AC3: declaring custom mode on a catalog-ref server is itself an override.
@@ -565,3 +614,174 @@ class TestRestrictedModeMessages:
         assert reason not in message
         logged = " ".join(str(c.args[0]) for c in log.warning.call_args_list)
         assert reason in logged and "cat-secret-id" in logged
+
+
+class TestPredicates:
+    def test_is_enabled_defaults_true_when_attribute_missing(self):
+        assert is_enabled(MagicMock(spec=[])) is True
+
+    def test_is_enabled_false_for_disabled(self):
+        assert is_enabled(_server("s", enabled=False)) is False
+
+    def test_link_is_enabled_catalog_ref_without_custom_config(self):
+        assert is_link(_server("s", mcp_config_id="c")) is True
+
+    def test_disabled_ref_is_not_a_link(self):
+        assert is_link(_server("s", mcp_config_id="c", enabled=False)) is False
+
+    def test_custom_config_ref_is_not_a_link(self):
+        assert is_link(_server("s", mcp_config_id="c", use_custom_config=True)) is False
+
+    def test_entry_without_id_is_not_a_link(self):
+        assert is_link(_server("s", command="npx")) is False
+
+    def test_link_with_missing_enabled_attribute_counts_as_enabled(self):
+        srv = MagicMock(spec=["mcp_config_id", "use_custom_config"])
+        srv.mcp_config_id, srv.use_custom_config = "c", False
+        assert is_link(srv) is True
+
+    @pytest.mark.parametrize(
+        ("entry", "reason"),
+        [
+            (None, "missing"),
+            (_catalog_entry(is_active=False), "inactive"),
+            (_catalog_entry(is_public=False), "not_public"),
+            (_catalog_entry(), None),
+        ],
+    )
+    def test_unavailable_reason(self, entry, reason):
+        assert unavailable_reason(entry) == reason
+
+
+# ── Workflow node-scoped validation ──────────────────────────────────
+
+
+def _workflow(assistant_servers: list[list[MCPServerDetails]], tool_servers: list[MCPServerDetails | None] = ()):
+    return SimpleNamespace(
+        assistants=[SimpleNamespace(mcp_servers=s) for s in assistant_servers],
+        tools=[SimpleNamespace(mcp_server=s) for s in tool_servers],
+    )
+
+
+class TestWorkflowMcpValidation:
+    def test_node_address_render(self):
+        assert NodeAddress("assistant", 1, 2).render() == "assistants[1].mcp_servers[2]"
+        assert NodeAddress("tool", 3).render() == "tools[3].mcp_server"
+
+    def test_collect_nodes_addresses_and_flat_view(self):
+        a, b, c = _server("a", mcp_config_id="x"), _server("b", mcp_config_id="y"), _server("c", mcp_config_id="x")
+        wf = _workflow([[a], [b]], [None, c])
+        nodes = MCPAccessControlService.collect_workflow_mcp_nodes(wf)
+        assert [(n.render(), s) for n, s in nodes] == [
+            ("assistants[0].mcp_servers[0]", a),
+            ("assistants[1].mcp_servers[0]", b),
+            ("tools[1].mcp_server", c),
+        ]
+        assert MCPAccessControlService.collect_workflow_mcp_servers(wf) == [a, b, c]
+
+    def test_same_catalog_id_across_nodes_saves(self):
+        wf = _workflow(
+            [[_server("a", mcp_config_id="cat-1")], [_server("b", mcp_config_id="cat-1")]],
+            [_server("t", mcp_config_id="cat-1")],
+        )
+        with _open_mode(), patch(_GET_BY_IDS, return_value=[_catalog_entry("cat-1")]) as get:
+            MCPAccessControlService.validate_workflow_mcp(wf)
+        get.assert_called_once()
+
+    def test_same_catalog_id_twice_in_one_node_refused(self):
+        wf = _workflow([[_server("a", mcp_config_id="cat-1"), _server("b", mcp_config_id="cat-1")]])
+        with _open_mode(), patch(_GET_BY_IDS, return_value=[_catalog_entry("cat-1")]):
+            with pytest.raises(ValidationException, match="more than once"):
+                MCPAccessControlService.validate_workflow_mcp(wf)
+
+    def test_disabled_duplicate_in_one_node_saves(self):
+        wf = _workflow([[_server("a", mcp_config_id="cat-1"), _server("b", mcp_config_id="cat-1", enabled=False)]])
+        with _open_mode(), patch(_GET_BY_IDS, return_value=[_catalog_entry("cat-1")]):
+            MCPAccessControlService.validate_workflow_mcp(wf)
+
+    def test_restricted_runs_over_all_nodes(self):
+        wf = _workflow([[_server("a", mcp_config_id="cat-1")]], [_server("t", command="npx")])
+        with _restricted_mode(), patch(_GET_BY_IDS, return_value=[_catalog_entry("cat-1")]):
+            with pytest.raises(ValidationException, match="custom server"):
+                MCPAccessControlService.validate_workflow_mcp(wf)
+
+    def test_catalog_runs_over_all_nodes(self):
+        wf = _workflow([[_server("a", mcp_config_id="cat-1")], [_server("b", mcp_config_id="cat-2")]])
+        with _open_mode(), patch(_GET_BY_IDS, return_value=[_catalog_entry("cat-1")]):
+            with pytest.raises(ValidationException, match="not available in the catalogue"):
+                MCPAccessControlService.validate_workflow_mcp(wf)
+
+    def test_empty_workflow_is_valid(self):
+        MCPAccessControlService.validate_workflow_mcp(_workflow([], []))
+
+
+class TestRestoreMcpServers:
+    def test_dead_links_disabled_in_copy_and_reported_with_reasons(self):
+        servers = [
+            _server("a", mcp_config_id="gone"),
+            _server("b", mcp_config_id="off"),
+            _server("c", mcp_config_id="priv"),
+            _server("d", mcp_config_id="ok"),
+        ]
+        entries = [
+            _catalog_entry("off", is_active=False),
+            _catalog_entry("priv", is_public=False),
+            _catalog_entry("ok"),
+        ]
+        with patch(_GET_BY_IDS, return_value=entries) as get:
+            new, report = MCPAccessControlService.restore_mcp_servers(servers, ["x0", "x1", "x2", "x3"])
+        assert get.call_count == 1
+        assert [s.enabled for s in new] == [False, False, False, True]
+        assert [(r.name, r.mcp_config_id, r.reason, r.address) for r in report] == [
+            ("a", "gone", "missing", "x0"),
+            ("b", "off", "inactive", "x1"),
+            ("c", "priv", "not_public", "x2"),
+        ]
+
+    def test_inputs_not_mutated(self):
+        servers = [_server("a", mcp_config_id="gone")]
+        with patch(_GET_BY_IDS, return_value=[]):
+            new, _ = MCPAccessControlService.restore_mcp_servers(servers)
+        assert servers[0].enabled is True
+        assert new[0] is not servers[0]
+
+    def test_non_links_untouched_and_address_defaults_to_none(self):
+        custom = _server("c", mcp_config_id="gone", use_custom_config=True)
+        off = _server("o", mcp_config_id="gone", enabled=False)
+        plain = _server("p", command="uvx")
+        dead = _server("d", mcp_config_id="gone")
+        with patch(_GET_BY_IDS, return_value=[]):
+            new, report = MCPAccessControlService.restore_mcp_servers([custom, off, plain, dead])
+        assert new[0] is custom and new[1] is off and new[2] is plain
+        assert [r.name for r in report] == ["d"]
+        assert report[0].address is None
+
+    def test_no_links_skips_lookup(self):
+        with patch(_GET_BY_IDS) as get:
+            new, report = MCPAccessControlService.restore_mcp_servers([_server("p", command="uvx")])
+        get.assert_not_called()
+        assert report == [] and len(new) == 1
+
+    def test_strict_disables_missing_link_on_partial_miss(self):
+        servers = [_server("a", mcp_config_id="gone"), _server("b", mcp_config_id="ok")]
+        with patch(_GET_BY_IDS, return_value=[_catalog_entry("ok")]):
+            new, report = MCPAccessControlService.restore_mcp_servers(servers, strict_lookup=True)
+        assert [r.mcp_config_id for r in report] == ["gone"]
+        assert new[0].enabled is False and new[1].enabled is not False
+
+    def test_strict_raises_when_no_rows_for_non_empty_ids(self):
+        with patch(_GET_BY_IDS, return_value=[]):
+            with pytest.raises(CatalogLookupError):
+                MCPAccessControlService.restore_mcp_servers([_server("a", mcp_config_id="x")], strict_lookup=True)
+
+    def test_strict_raises_when_lookup_fails(self):
+        with patch(_GET_BY_IDS, side_effect=RuntimeError("db down")):
+            with pytest.raises(CatalogLookupError):
+                MCPAccessControlService.restore_mcp_servers([_server("a", mcp_config_id="x")], strict_lookup=True)
+
+    def test_strict_ok_when_all_found(self):
+        with patch(_GET_BY_IDS, return_value=[_catalog_entry("ok", is_active=False)]):
+            new, report = MCPAccessControlService.restore_mcp_servers(
+                [_server("a", mcp_config_id="ok")], strict_lookup=True
+            )
+        assert report[0].reason == "inactive" and new[0].enabled is False

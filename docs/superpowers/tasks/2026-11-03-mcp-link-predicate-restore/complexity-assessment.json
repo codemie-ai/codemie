@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Introduce a single MCP link predicate, links-only save validation, disable-and-report restore with in-place workflow YAML editing, and close two validation gaps in MCPAccessControlService and its callers.",
+  "generated": "2026-11-03T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches MCPAccessControlService, workflow and assistant version services, WorkflowService, workflow generator, sub-assistant router, preconfigured scripts, and adds a new YAML in-place editor and node-scoped collector (new abstractions)." },
+    { "dimension": "technical_risk", "reason": "No precedent for text-preserving YAML editing (only a read-only yaml.compose in line_lookup.py); flow style, anchors and merge keys are enumerated edge cases with no existing test template; new reason exposure channel against the deliberately generic refusal message; rollback must keep derived columns consistent. No project examples to calibrate against." },
+    { "dimension": "file_change_estimate", "reason": "About 10-12 source files plus new editor module, response-model changes, OpenAPI snapshot baseline, and test updates (including one test that encodes the changed behaviour)." },
+    { "dimension": "affected_layers", "reason": "Service, REST API (rollback response additive field), persistence (yaml_config and history rewrite on restore), and deployment-time scripts; no schema migration." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: enumerated YAML edge cases (flow, anchors, merge keys) with no covering test template, plus no precedent for the editor",
+    "Component Scope: touches multiple workflows/save paths and a core shared service"
+  ],
+  "split_recommendation": null
+}

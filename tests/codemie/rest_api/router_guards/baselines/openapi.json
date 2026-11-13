@@ -9590,6 +9590,67 @@
         "title": "DeploymentVersionsResponse",
         "type": "object"
       },
+      "DisabledMcpResponse": {
+        "description": "Response of a restore that disabled some MCP links.",
+        "properties": {
+          "disabledMcpServers": {
+            "items": {
+              "$ref": "#/components/schemas/DisabledMcpServer"
+            },
+            "title": "Disabledmcpservers",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "DisabledMcpResponse",
+        "type": "object"
+      },
+      "DisabledMcpServer": {
+        "description": "An MCP link that was disabled on restore because its catalogue entry is unavailable.",
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "mcp_config_id": {
+            "title": "Mcp Config Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "missing",
+              "inactive",
+              "not_public"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "mcp_config_id",
+          "reason"
+        ],
+        "title": "DisabledMcpServer",
+        "type": "object"
+      },
       "DomainFilterEntry": {
         "properties": {
           "entity_types": {
@@ -63603,7 +63664,7 @@
     },
     "/v1/assistants/{assistant_id}/versions/{version_number}/rollback": {
       "post": {
-        "description": "Rollback assistant to a previous version.\n\nCreates a new version with the configuration from the target version.\nThis maintains version history immutability.\n\n**Path Parameters:**\n- assistant_id: The assistant ID\n- version_number: The version to rollback to\n\n**Returns:**\nSuccess message with the new version number created from rollback",
+        "description": "Rollback assistant to a previous version.\n\nCreates a new version with the configuration from the target version.\nThis maintains version history immutability.\n\n**Path Parameters:**\n- assistant_id: The assistant ID\n- version_number: The version to rollback to\n\n**Returns:**\nSuccess message with the new version number created from rollback and the MCP servers\nthat were disabled because their catalogue entry is unavailable",
         "operationId": "rollback_assistant_version_v1_assistants__assistant_id__versions__version_number__rollback_post",
         "parameters": [
           {
@@ -63630,7 +63691,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BaseResponse"
+                  "$ref": "#/components/schemas/DisabledMcpResponse"
                 }
               }
             },
@@ -85823,7 +85884,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BaseResponse"
+                  "$ref": "#/components/schemas/DisabledMcpResponse"
                 }
               }
             },

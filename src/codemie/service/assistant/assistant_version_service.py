@@ -25,6 +25,7 @@ from codemie.rest_api.models.assistant import (
     AssistantRequest,
     AssistantVersionHistoryResponse,
 )
+from codemie.rest_api.models.mcp_restore import DisabledMcpServer
 from codemie.rest_api.security.user import User
 from codemie.service.assistant.assistant_share_service import AssistantShareService
 from codemie.service.mcp.access_control import MCPAccessControlService
@@ -227,7 +228,7 @@ class AssistantVersionService:
     @classmethod
     def rollback_to_version(
         cls, assistant: Assistant, target_version_number: int, user: User, change_notes: Optional[str] = None
-    ) -> AssistantConfiguration:
+    ) -> tuple[AssistantConfiguration, list[DisabledMcpServer]]:
         """
         Rollback assistant to a previous version by creating a new version
         with the target version's configuration.
@@ -239,7 +240,8 @@ class AssistantVersionService:
             change_notes: Optional notes about the rollback
 
         Returns:
-            The new version created from the rollback
+            The new version created from the rollback and the MCP links that were
+            disabled because their catalogue entry is unavailable
 
         Raises:
             ExtendedHTTPException: If validation fails
@@ -268,6 +270,9 @@ class AssistantVersionService:
         MCPAccessControlService.validate_on_restore(target_config.mcp_servers)
         # Restoring a version must not reintroduce personal integrations onto a shared assistant
         AssistantShareService.ensure_no_personal_integration_if_shared(assistant.id, target_config)
+        # Links to unavailable catalogue entries come back disabled instead of blocking the rollback.
+        # The loaded target version is never written: only copies go into the new version and the assistant.
+        restored_mcp_servers, disabled_mcp = MCPAccessControlService.restore_mcp_servers(target_config.mcp_servers)
 
         # Create new version with target configuration
         new_version_number = assistant.version_count + 1
@@ -295,7 +300,7 @@ class AssistantVersionService:
             tools_tokens_size_limit=target_config.tools_tokens_size_limit,
             context=target_config.context,
             toolkits=target_config.toolkits,
-            mcp_servers=target_config.mcp_servers,
+            mcp_servers=restored_mcp_servers,
             assistant_ids=target_config.assistant_ids,
             conversation_starters=target_config.conversation_starters,
             bedrock=target_config.bedrock,
@@ -311,7 +316,9 @@ class AssistantVersionService:
         # Update master record with rollback configuration
         assistant.version_count = new_version_number
         assistant.updated_date = datetime.now(UTC)
-        cls.update_assistant_config_fields(assistant, target_config)
+        cls.update_assistant_config_fields(
+            assistant, target_config.model_copy(update={"mcp_servers": restored_mcp_servers})
+        )
 
         # Refresh first so this merge cannot overwrite a concurrent approve/withdraw
         # with the marketplace columns this object was loaded with.
@@ -330,7 +337,7 @@ class AssistantVersionService:
 
         logger.info(f"Rollback complete. Created version {new_version_number} for assistant {assistant.id}")
 
-        return new_config
+        return new_config, disabled_mcp
 
     @staticmethod
     def _re_submit_after_rollback(assistant: Assistant, user: User) -> None:

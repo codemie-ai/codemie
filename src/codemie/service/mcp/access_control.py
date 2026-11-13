@@ -15,13 +15,17 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from codemie.configs import logger
 from codemie.configs.customer_config import customer_config
-from codemie.core.exceptions import ValidationException
+from fastapi import status
+
+from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.mcp_config import MCPConfig
+from codemie.rest_api.models.mcp_restore import DisabledMcpServer
 from codemie.service.mcp.models import MCPServerConfig
 
 if TYPE_CHECKING:
@@ -68,8 +72,54 @@ def _labels(servers: list[MCPServerDetails]) -> str:
     return f"{names} and {extra} more" if extra > 0 else names
 
 
+@dataclass(frozen=True)
+class NodeAddress:
+    """Where an MCP server sits in a workflow: an assistant's list entry or a tool's single server."""
+
+    kind: Literal["assistant", "tool"]
+    index: int
+    server_index: int | None = None
+
+    def render(self) -> str:
+        if self.kind == "assistant":
+            return f"assistants[{self.index}].mcp_servers[{self.server_index}]"
+        return f"tools[{self.index}].mcp_server"
+
+
+UnavailableReason = Literal["missing", "inactive", "not_public"]
+
+
+_REASON_TEXT: dict[str, str] = {"missing": "not found", "inactive": "inactive", "not_public": "not public"}
+
+
+def is_enabled(server: MCPServerDetails) -> bool:
+    """True unless the server is explicitly disabled; a missing `enabled` counts as enabled."""
+    return getattr(server, "enabled", True) is not False
+
+
+def is_link(server: MCPServerDetails) -> bool:
+    """An enabled entry that points at a catalogue entry and does not use its own configuration.
+
+    Note: an enabled custom-config entry (use_custom_config) carrying an id is not a link here, while
+    management.py:582-603 counts it as one. EPMCDME-16490 decides which reading wins.
+    """
+    return is_enabled(server) and bool(server.mcp_config_id) and not server.use_custom_config
+
+
+def unavailable_reason(entry: MCPConfig | None) -> UnavailableReason | None:
+    """Why a catalogue entry cannot be used, or None when it is available."""
+    if entry is None:
+        return "missing"
+    if not entry.is_active:
+        return "inactive"
+    if not entry.is_public:
+        return "not_public"
+    return None
+
+
 def _restricted_violations(servers: list[MCPServerDetails]) -> tuple[list[MCPServerDetails], list[MCPServerDetails]]:
-    """(custom servers, catalogue servers that carry a custom configuration) among the given servers."""
+    """(custom servers, catalogue servers that carry a custom configuration) among the enabled given servers."""
+    servers = [s for s in servers if is_enabled(s)]
     custom = [s for s in servers if not s.mcp_config_id]
     overridden = [s for s in servers if s.mcp_config_id and (s.use_custom_config or _has_inline_config(s))]
     return custom, overridden
@@ -92,6 +142,30 @@ def _build_catalog_map(mcp_servers: list[MCPServerDetails]) -> dict[str, MCPConf
         if entry.id:
             result[entry.id] = entry
     return result
+
+
+def after_workflow_links_changed(workflow: WorkflowConfig) -> None:
+    """Seam called after a workflow was saved with MCP links that may differ from the stored ones. A no-op here.
+
+    Called today by workflow rollback and by preconfigured workflows (always after the save, not only when a link
+    was disabled). NOT called by workflow create, update or the workflow generator, and the MCP check
+    (`validate_workflow_mcp`) is likewise made by each caller itself. EPMCDME-16640 fills the seam in and must
+    cover those write paths too; it must not assume the seam already sees every workflow write.
+    """
+
+
+class CatalogLookupError(Exception):
+    """The catalogue could not be read, or (strict restore lookup) returned nothing for the requested entries."""
+
+
+def catalog_unavailable_error() -> ExtendedHTTPException:
+    """503 for a rollback whose MCP catalogue read failed; nothing was changed and a retry may succeed."""
+    return ExtendedHTTPException(
+        code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        message="MCP catalogue is temporarily unavailable.",
+        details="The restored configuration could not be checked against the MCP catalogue.",
+        help="Try the rollback again in a moment.",
+    )
 
 
 class MCPAccessControlService:
@@ -131,17 +205,11 @@ class MCPAccessControlService:
             config_id = server.mcp_config_id
             if not config_id:
                 continue
-            entry = catalog_map.get(config_id)
-            if entry is None:
-                reason = "not found"
-            elif not entry.is_active:
-                reason = "inactive"
-            elif not entry.is_public:
-                reason = "not public"
-            else:
+            reason = unavailable_reason(catalog_map.get(config_id))
+            if reason is None:
                 continue
             # The exact reason stays in the log; users get one message, so they cannot probe which entries exist.
-            logger.warning(f"MCP server {server.name!r} refused: catalog entry {config_id!r} is {reason}")
+            logger.warning(f"MCP server {server.name!r} refused: catalog entry {config_id!r} is {_REASON_TEXT[reason]}")
             unavailable.append(server)
         if unavailable:
             raise ValidationException(
@@ -150,26 +218,35 @@ class MCPAccessControlService:
             )
 
     @staticmethod
-    def validate_on_save(mcp_servers: list[MCPServerDetails]) -> None:
-        """Validate MCP servers before persisting. Raises ValidationException on violation."""
-        if not mcp_servers:
-            return
-
-        if customer_config.is_component_enabled("mcpCustomServersDisabled"):
-            MCPAccessControlService._validate_restricted_mode(mcp_servers)
-
-        catalog_refs = [s for s in mcp_servers if s.mcp_config_id]
-        if not catalog_refs:
-            return
-
-        all_config_ids = [s.mcp_config_id for s in catalog_refs]
-        if len(all_config_ids) != len(set(all_config_ids)):
-            duplicates = sorted({cid for cid in all_config_ids if all_config_ids.count(cid) > 1 and cid is not None})
+    def check_duplicates(links: list[MCPServerDetails]) -> None:
+        config_ids = [s.mcp_config_id for s in links]
+        if len(config_ids) != len(set(config_ids)):
+            duplicates = sorted({cid for cid in config_ids if config_ids.count(cid) > 1 and cid is not None})
             logger.warning(f"Duplicate MCP catalog entries refused: {duplicates}")
             raise ValidationException("The same MCP server from the catalogue was added more than once. Keep only one.")
 
-        catalog_map = _build_catalog_map(catalog_refs)
-        MCPAccessControlService._validate_catalog_entries(catalog_refs, catalog_map)
+    @staticmethod
+    def check_restricted(mcp_servers: list[MCPServerDetails]) -> None:
+        if customer_config.is_component_enabled("mcpCustomServersDisabled"):
+            MCPAccessControlService._validate_restricted_mode(mcp_servers)
+
+    @staticmethod
+    def check_catalog(links: list[MCPServerDetails]) -> None:
+        if links:
+            MCPAccessControlService._validate_catalog_entries(links, _build_catalog_map(links))
+
+    @staticmethod
+    def validate_on_save(mcp_servers: list[MCPServerDetails]) -> None:
+        """Validate MCP servers before persisting. Raises ValidationException on violation.
+
+        Duplicates and catalogue availability are checked over links only, so a disabled entry always saves.
+        """
+        if not mcp_servers:
+            return
+        MCPAccessControlService.check_restricted(mcp_servers)
+        links = [s for s in mcp_servers if is_link(s)]
+        MCPAccessControlService.check_duplicates(links)
+        MCPAccessControlService.check_catalog(links)
 
     @staticmethod
     def validate_on_restore(mcp_servers: list[MCPServerDetails] | None) -> None:
@@ -188,6 +265,56 @@ class MCPAccessControlService:
                 )
 
     @staticmethod
+    def _load_restore_catalog(servers: list[MCPServerDetails], strict_lookup: bool) -> dict[str, MCPConfig]:
+        """Catalogue entries for the links in `servers`.
+
+        A failed read always raises CatalogLookupError; with strict_lookup an empty result raises it too.
+        """
+        links = [s for s in servers if is_link(s) and s.mcp_config_id]
+        if not links:
+            return {}
+        try:
+            catalog = _build_catalog_map(links)
+        except Exception as e:
+            raise CatalogLookupError(f"MCP catalogue lookup failed: {e}") from e
+        if strict_lookup and not catalog:
+            raise CatalogLookupError("MCP catalogue returned no entries for the linked servers")
+        return catalog
+
+    @staticmethod
+    def restore_mcp_servers(
+        servers: list[MCPServerDetails],
+        addresses: list[str] | None = None,
+        strict_lookup: bool = False,
+    ) -> tuple[list[MCPServerDetails], list[DisabledMcpServer]]:
+        """Copy servers for a restore, disabling links whose catalogue entry is unavailable.
+
+        Returns (new_servers, report). Inputs are never mutated; non-links are returned as-is.
+        `addresses` is an optional parallel list giving each report item's address.
+        CatalogLookupError is raised when the catalogue read fails. With strict_lookup it is also raised when the
+        lookup returns no rows for a non-empty id set; a partial miss still disables the missing links.
+        """
+        catalog = MCPAccessControlService._load_restore_catalog(servers, strict_lookup)
+
+        new_servers: list[MCPServerDetails] = []
+        report: list[DisabledMcpServer] = []
+        for idx, server in enumerate(servers):
+            reason = unavailable_reason(catalog.get(server.mcp_config_id)) if is_link(server) else None
+            if reason is None:
+                new_servers.append(server)
+                continue
+            new_servers.append(server.model_copy(update={"enabled": False}))
+            report.append(
+                DisabledMcpServer(
+                    name=server.name,
+                    mcp_config_id=server.mcp_config_id,
+                    reason=reason,
+                    address=addresses[idx] if addresses is not None and idx < len(addresses) else None,
+                )
+            )
+        return new_servers, report
+
+    @staticmethod
     def _strip_one(server: MCPServerDetails) -> MCPServerDetails:
         return server
 
@@ -204,20 +331,45 @@ class MCPAccessControlService:
         return list(servers)
 
     @staticmethod
-    def collect_workflow_mcp_servers(workflow: WorkflowConfig) -> list[MCPServerDetails]:
-        """Collect all MCP server entries from a workflow's assistants and tools."""
-        servers: list[MCPServerDetails] = []
-        for assistant in workflow.assistants or []:
-            servers.extend(assistant.mcp_servers or [])
-        for tool in workflow.tools or []:
+    def collect_workflow_mcp_nodes(workflow: WorkflowConfig) -> list[tuple[NodeAddress, MCPServerDetails]]:
+        """Collect every MCP server entry from a workflow's assistants and tools, with its address."""
+        nodes: list[tuple[NodeAddress, MCPServerDetails]] = []
+        for i, assistant in enumerate(workflow.assistants or []):
+            for j, server in enumerate(assistant.mcp_servers or []):
+                nodes.append((NodeAddress("assistant", i, j), server))
+        for k, tool in enumerate(workflow.tools or []):
             if tool.mcp_server:
-                servers.append(tool.mcp_server)
-        return servers
+                nodes.append((NodeAddress("tool", k), tool.mcp_server))
+        return nodes
+
+    @classmethod
+    def collect_workflow_mcp_servers(cls, workflow: WorkflowConfig) -> list[MCPServerDetails]:
+        """Flat view of collect_workflow_mcp_nodes."""
+        return [server for _, server in cls.collect_workflow_mcp_nodes(workflow)]
+
+    @classmethod
+    def validate_workflow_mcp(cls, workflow: WorkflowConfig) -> None:
+        """Validate a workflow's MCP servers: duplicates per node, restricted mode and catalogue over all nodes.
+
+        The same catalogue entry may be used by several nodes; only a repeat inside one node is refused.
+        """
+        nodes = cls.collect_workflow_mcp_nodes(workflow)
+        if not nodes:
+            return
+        servers = [server for _, server in nodes]
+        cls.check_restricted(servers)
+        per_node: dict[tuple[str, int], list[MCPServerDetails]] = {}
+        for address, server in nodes:
+            if is_link(server):
+                per_node.setdefault((address.kind, address.index), []).append(server)
+        for links in per_node.values():
+            cls.check_duplicates(links)
+        cls.check_catalog([s for s in servers if is_link(s)])
 
     @classmethod
     def validate_and_strip_workflow_mcp_servers(cls, workflow: WorkflowConfig) -> None:
         """Validate a workflow's MCP servers before persisting, then strip inline overrides in-place."""
-        cls.validate_on_save(cls.collect_workflow_mcp_servers(workflow))
+        cls.validate_workflow_mcp(workflow)
         cls.strip_workflow_mcp_servers(workflow)
 
     @classmethod
@@ -247,8 +399,7 @@ class MCPAccessControlService:
             if not config_id:
                 logger.warning(f"MCP server {server.name!r} skipped: no mcp_config_id in restricted mode")
                 continue
-            entry = catalog_map.get(config_id)
-            if entry is None or not entry.is_active or not entry.is_public:
+            if unavailable_reason(catalog_map.get(config_id)) is not None:
                 logger.warning(f"MCP server {server.name!r} skipped: catalog config {config_id!r} is unavailable")
                 continue
             filtered.append(server)

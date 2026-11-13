@@ -209,6 +209,76 @@ def test_generate_persist_creates_workflow(
     mock_validate.assert_called_once()
 
 
+def _persist_with_mcp(mock_llm_svc, mock_tools_svc, mock_graph_class, mock_workflow_svc_class, validate_side_effect):
+    from codemie.core.exceptions import ValidationException
+    from codemie.service.workflow_generator_service import WorkflowGeneratorService
+
+    mock_llm_svc.default_llm_model = "gpt-4o"
+    mock_tools_svc.get_tools_info.return_value = []
+    mock_graph = Mock()
+    mock_graph.run.return_value = {"result": _make_create_request(), "error": None, "validation_errors": []}
+    mock_graph_class.return_value = mock_graph
+    persisted = Mock()
+    persisted.id = "wf-1"
+    mock_workflow_svc = Mock()
+    mock_workflow_svc.create_workflow.return_value = persisted
+    mock_workflow_svc_class.return_value = mock_workflow_svc
+
+    with (
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch(
+            "codemie.service.workflow_generator_service.MCPAccessControlService.validate_workflow_mcp",
+            side_effect=validate_side_effect,
+        ) as mock_mcp,
+    ):
+        try:
+            return (
+                WorkflowGeneratorService.generate(nl_query="t", user=_make_user(), persist=True),
+                mock_workflow_svc,
+                mock_mcp,
+            )
+        except (WorkflowGenerationError, ValidationException) as exc:
+            return exc, mock_workflow_svc, mock_mcp
+
+
+@patch("codemie.service.workflow_generator_service.WorkflowService")
+@patch("codemie.service.workflow_generator_service.GuardrailService")
+@patch("codemie.service.workflow_generator_service.WorkflowGeneratorGraph")
+@patch("codemie.service.workflow_generator_service.ToolsInfoService")
+@patch("codemie.service.workflow_generator_service.llm_service")
+def test_generate_persist_refuses_unavailable_catalog_mcp(
+    mock_llm_svc, mock_tools_svc, mock_graph_class, mock_guardrail_svc, mock_workflow_svc_class
+):
+    from codemie.core.exceptions import ValidationException
+
+    result, workflow_svc, mock_mcp = _persist_with_mcp(
+        mock_llm_svc, mock_tools_svc, mock_graph_class, mock_workflow_svc_class, ValidationException("not available")
+    )
+
+    # The governance reason reaches the caller as-is, not wrapped into the generic "Failed to generate workflow".
+    assert isinstance(result, ValidationException)
+    assert "not available" in str(result)
+    mock_mcp.assert_called_once()
+    workflow_svc.create_workflow.assert_not_called()
+
+
+@patch("codemie.service.workflow_generator_service.WorkflowService")
+@patch("codemie.service.workflow_generator_service.GuardrailService")
+@patch("codemie.service.workflow_generator_service.WorkflowGeneratorGraph")
+@patch("codemie.service.workflow_generator_service.ToolsInfoService")
+@patch("codemie.service.workflow_generator_service.llm_service")
+def test_generate_persist_validates_mcp_then_persists(
+    mock_llm_svc, mock_tools_svc, mock_graph_class, mock_guardrail_svc, mock_workflow_svc_class
+):
+    result, workflow_svc, mock_mcp = _persist_with_mcp(
+        mock_llm_svc, mock_tools_svc, mock_graph_class, mock_workflow_svc_class, None
+    )
+
+    assert result.workflow_id == "wf-1"
+    mock_mcp.assert_called_once()
+    workflow_svc.create_workflow.assert_called_once()
+
+
 @patch("codemie.service.workflow_generator_service.WorkflowGeneratorGraph")
 @patch("codemie.service.workflow_generator_service.ToolsInfoService")
 @patch("codemie.service.workflow_generator_service.llm_service")

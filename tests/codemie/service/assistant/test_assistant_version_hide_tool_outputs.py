@@ -96,7 +96,7 @@ def test_rollback_restores_flag_from_target_config():
         patch.object(Assistant, 'refresh_marketplace_columns_from_db'),
         patch.object(Assistant, 'update'),
     ):
-        new_config = AssistantVersionService.rollback_to_version(
+        new_config, _ = AssistantVersionService.rollback_to_version(
             assistant=assistant, target_version_number=1, user=_user()
         )
     assert new_config.hide_tool_outputs is True

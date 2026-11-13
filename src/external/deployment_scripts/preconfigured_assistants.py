@@ -26,7 +26,7 @@ from codemie.rest_api.models.index import IndexInfo
 from codemie.service.assistant.assistant_service import assistant_service
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.guardrail.guardrail_service import GuardrailService
-from codemie.service.mcp.access_control import MCPAccessControlService
+from codemie.service.mcp.access_control import CatalogLookupError, MCPAccessControlService
 from codemie.service.mcp_config_service import MCPConfigService
 from external.deployment_scripts.index_util import create_index_from_dump
 
@@ -147,6 +147,28 @@ def get_all_contexts(assistant_slug: str, assistant_template: Assistant) -> list
     return list(contexts_by_name.values())
 
 
+def _disable_unavailable_links(servers: list, slug: str) -> list:
+    """Disable catalogue links that are inactive/not public so the template still seeds.
+
+    Strict lookup: the catalogue may not be populated yet at seed time, so if it cannot be read or returns nothing
+    for the linked ids, the servers are returned untouched and sanitize_for_save decides as before. A partial miss
+    still disables the missing links.
+    """
+    if not servers:
+        return servers
+    try:
+        new_servers, report = MCPAccessControlService.restore_mcp_servers(servers, strict_lookup=True)
+    except CatalogLookupError as e:
+        logger.warning(f"MCP links of preconfigured assistant '{slug}' not checked, saving as written: {e}")
+        return servers
+    if report:
+        logger.warning(
+            f"Disabled {len(report)} unavailable MCP link(s) in preconfigured assistant '{slug}': "
+            f"{', '.join(item.name for item in report)}"
+        )
+    return new_servers
+
+
 def update_assistant_content(
     existing_assistant: Assistant, assistant_template: Assistant, context: list[Context] | None = None
 ):
@@ -154,7 +176,9 @@ def update_assistant_content(
     if assistant_template.mcp_servers:
         if error := assistant_template._validate_mcp_server_names():
             raise ValidationException(f"MCP validation failed for template '{existing_assistant.slug}': {error}")
-        validated_mcp_servers = MCPAccessControlService.sanitize_for_save(assistant_template.mcp_servers)
+        validated_mcp_servers = MCPAccessControlService.sanitize_for_save(
+            _disable_unavailable_links(assistant_template.mcp_servers, existing_assistant.slug)
+        )
 
     fields_to_check = {
         'description': assistant_template.description,
@@ -232,7 +256,9 @@ def create_preconfigured_assistant(assistant_slug: str, project_name: str = CODE
     if assistant_template.mcp_servers:
         if error := assistant_template.validate_fields():
             raise ValidationException(f"MCP validation failed for template '{assistant_slug}': {error}")
-        validated_mcp_servers = MCPAccessControlService.sanitize_for_save(assistant_template.mcp_servers)
+        validated_mcp_servers = MCPAccessControlService.sanitize_for_save(
+            _disable_unavailable_links(assistant_template.mcp_servers, assistant_slug)
+        )
 
     # Create the new preconfigured assistant using details from assistant template
     preconfigured_assistant = Assistant(

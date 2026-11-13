@@ -519,7 +519,7 @@ def _workflow_patches(stack: ExitStack, stored: WorkflowConfig):
         f"{WORKFLOW}.GuardrailService.sync_guardrail_assignments_for_entity",
         f"{WORKFLOW}.GuardrailService.get_entity_guardrail_assignments",
         f"{WORKFLOW}._consumer_slot_warnings_sync",
-        f"{WORKFLOW}.MCPAccessControlService.validate_on_save",
+        f"{WORKFLOW}.MCPAccessControlService.validate_workflow_mcp",
         "codemie.service.workflow_service.WorkflowService.validate_for_update",
         "codemie.service.workflow_service.WorkflowService.save_workflow_schema",
         "codemie.service.workflow_service.WorkflowService.create_workflow",

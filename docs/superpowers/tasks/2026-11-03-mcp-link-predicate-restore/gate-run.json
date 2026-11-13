@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16489_mcp-link-predicate-restore",
+  "head": "3990017dc8b34d91017bb2f5647a4f8ce961525f",
+  "runner": "poetry",
+  "started_at": "2026-11-03T16:30:00Z",
+  "completed_at": "2026-11-03T16:55:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "First run failed (missing header in tests/codemie/rest_api/routers/test_sub_assistant_mcp_validation.py); make license-fix added it, rerun passed. File is now modified and unstaged."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "make target fails on Windows (cygdrive docker path); ran the same docker command directly: no leaks found."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "command": "make test (poetry run pytest tests/ --skip-enterprise -n auto)",
+      "exit_code": 1,
+      "notes": "Full native-Windows run (PYTHONUTF8=1, --skip-enterprise, -n auto): 167 failed, 204 errors, 27704 passed, 1451 skipped. Without PYTHONUTF8 collection fails with UnicodeDecodeError. Failures not attributed to the branch (e.g. marketplace/publish tests erroring); all 26 changed test files pass (405 passed, 16 skipped). Project memory says tests belong in docker/WSL; WSL checkout is a different branch."
+    },
+    {
+      "id": "pre-commit-hooks",
+      "source": "hook",
+      "status": "N/A",
+      "command": "scripts/git-hooks/pre_commit.sh, pre_push.sh (sonar-local)",
+      "notes": "Hooks cover ruff/license (run above), gitleaks (run), pytest (run), sonar-local needs credentials/network; not run. CI (.gitlab-ci.yml) only has pre-ci-guard templates."
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "command": "make sonar-local",
+      "notes": "Needs Sonar credentials/network; owed to CI/pre-push."
+    }
+  ],
+  "failures": {
+    "unit": "Full native-Windows run (PYTHONUTF8=1, --skip-enterprise, -n auto): 167 failed, 204 errors, 27704 passed, 1451 skipped. Without PYTHONUTF8 collection fails with UnicodeDecodeError. Failures not attributed to the branch (e.g. marketplace/publish tests erroring); all 26 changed test files pass (405 passed, 16 skipped). Project memory says tests belong in docker/WSL; WSL checkout is a different branch."
+  }
+}

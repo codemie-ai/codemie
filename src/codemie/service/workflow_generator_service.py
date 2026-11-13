@@ -21,12 +21,13 @@ from typing import Optional
 from codemie.configs import config
 from codemie.configs.logger import current_username, logger, logging_user_id
 from codemie.core.dependecies import get_project_for_metric
-from codemie.core.exceptions import WorkflowGenerationError
+from codemie.core.exceptions import ValidationException, WorkflowGenerationError
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem, GuardrailMode, GuardrailSource
 from codemie.rest_api.models.workflow_generator import WorkflowGeneratorResponse, WorkflowRefineResponse
 from codemie.rest_api.security.user import User
 from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.llm_service.llm_service import llm_service
+from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.service.monitoring.base_monitoring_service import emit_llm_token_metric, send_log_metric
 from codemie.service.monitoring.metrics_constants import (
     WORKFLOW_AI_REFINE_TOTAL_METRIC,
@@ -114,6 +115,7 @@ class WorkflowGeneratorService:
                     from codemie.workflows.workflow import WorkflowExecutor
 
                     workflow_config = WorkflowConfig(**workflow_request.model_dump())
+                    MCPAccessControlService.validate_workflow_mcp(workflow_config)
                     WorkflowExecutor.validate_workflow(workflow_config=workflow_config, user=user)
                     workflow_config = WorkflowService().create_workflow(workflow_config, user)
                     GuardrailService.sync_guardrail_assignments_for_entity(
@@ -141,7 +143,7 @@ class WorkflowGeneratorService:
                     workflow_id=workflow_id,
                 )
 
-            except WorkflowGenerationError:
+            except (WorkflowGenerationError, ValidationException):
                 raise
             except Exception as exc:
                 logger.error(f"Failed to generate workflow: {exc}", exc_info=True)

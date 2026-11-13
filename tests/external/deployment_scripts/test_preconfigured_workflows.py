@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from codemie.core.workflow_models import WorkflowConfigTemplate
+from codemie.core.workflow_models import WorkflowAssistant, WorkflowConfigTemplate
 from external.deployment_scripts.preconfigured_workflows import (
     patch_template_with_real_assistant_ids,
     create_preconfigured_workflow,
@@ -147,10 +148,18 @@ class TestCreatePreconfiguredWorkflow:
         # Verify get_prebuilt_workflow_by_slug was called with correct slug
         mock_workflow_service.get_prebuilt_workflow_by_slug.assert_called_once_with("missing-slug")
 
+    @patch('external.deployment_scripts.preconfigured_workflows.after_workflow_links_changed')
+    @patch('external.deployment_scripts.preconfigured_workflows.disable_dead_links_in_yaml')
     @patch('external.deployment_scripts.preconfigured_workflows.patch_template_with_real_assistant_ids')
     @patch('external.deployment_scripts.preconfigured_workflows.UserEntity')
     def test_create_workflow_success(
-        self, mock_user_entity, mock_patch_template, mock_workflow_service, mock_index_service
+        self,
+        mock_user_entity,
+        mock_patch_template,
+        mock_disable,
+        mock_after,
+        mock_workflow_service,
+        mock_index_service,
     ):
         """Test successfully creating a flow."""
         # Setup mocks
@@ -165,6 +174,9 @@ class TestCreatePreconfiguredWorkflow:
 
         # Setup mock to return the workflow config when model_dump is called on the template
         mock_template.model_dump.return_value = {}
+        mock_template.name = "Test Flow"
+        mock_template.yaml_config = "assistants: []"
+        mock_disable.return_value = ("assistants: []", [SimpleNamespace(address="tools[0].mcp_server", name="s")])
 
         # Setup mock user entity
         mock_user = MagicMock()
@@ -193,3 +205,136 @@ class TestCreatePreconfiguredWorkflow:
 
         # Verify save was called on the workflow config
         mock_workflow_config.save.assert_called_once_with(refresh=True)
+        mock_disable.assert_called_once_with(mock_template.yaml_config, strict_lookup=True)
+        mock_after.assert_called_once_with(mock_workflow_config)
+
+
+_GET_BY_IDS = "codemie.service.mcp.access_control.MCPConfig.get_by_ids"
+_MODULE = "external.deployment_scripts.preconfigured_workflows"
+
+_YAML = """\
+assistants:
+  - id: a1
+    model: gpt
+    mcp_servers:
+      - name: srv
+        mcp_config_id: cfg-1
+        enabled: true
+"""
+
+_YAML_TWO = (
+    _YAML
+    + """\
+      - name: srv2
+        mcp_config_id: cfg-2
+        enabled: true
+"""
+)
+
+
+def _entry(entry_id: str, active: bool = True, public: bool = True):
+    return SimpleNamespace(id=entry_id, is_active=active, is_public=public)
+
+
+def _template(yaml_text: str):
+    template = MagicMock(spec=WorkflowConfigTemplate)
+    template.name = "Tmpl"
+    template.yaml_config = yaml_text
+    template.assistants = [WorkflowAssistant(id="a1")]
+    template.tools = []
+    template.model_dump.return_value = {}
+    return template
+
+
+def _run(template, get_by_ids):
+    saved = MagicMock()
+    with (
+        patch(f'{_MODULE}.WorkflowConfigIndexService') as index_service,
+        patch(f'{_MODULE}.workflow_service') as service,
+        patch(f'{_MODULE}.patch_template_with_real_assistant_ids'),
+        patch(f'{_MODULE}.WorkflowConfig', return_value=saved),
+        patch(f'{_MODULE}.after_workflow_links_changed') as after,
+        patch(f'{_MODULE}.logger') as log,
+        patch(_GET_BY_IDS, **get_by_ids),
+    ):
+        index_service.find_workflows_by_filters.return_value = []
+        service.get_prebuilt_workflow_by_slug.return_value = template
+        create_preconfigured_workflow("slug", "Flow", "proj")
+    return saved, after, log
+
+
+class TestPreconfiguredWorkflowMcpLinks:
+    def test_inactive_link_saved_disabled_and_warned(self):
+        template = _template(_YAML)
+
+        saved, after, log = _run(template, {"return_value": [_entry("cfg-1", active=False)]})
+
+        assert "enabled: false" in template.yaml_config
+        assert template.assistants[0].mcp_servers[0].enabled is False
+        saved.save.assert_called_once_with(refresh=True)
+        after.assert_called_once_with(saved)
+        warning = log.warning.call_args[0][0]
+        assert "Tmpl" in warning and "1" in warning
+
+    def test_one_missing_among_several_still_disables_and_warns(self):
+        template = _template(_YAML_TWO)
+
+        saved, after, log = _run(template, {"return_value": [_entry("cfg-1")]})
+
+        assert template.yaml_config.count("enabled: false") == 1
+        assert template.assistants[0].mcp_servers[1].enabled is False
+        saved.save.assert_called_once_with(refresh=True)
+        after.assert_called_once_with(saved)
+        log.warning.assert_called_once()
+
+    def test_null_assistants_and_tools_keys_do_not_crash(self):
+        template = _template(_YAML + "tools:\n")
+
+        saved, _, log = _run(template, {"return_value": [_entry("cfg-1", active=False)]})
+
+        saved.save.assert_called_once_with(refresh=True)
+        log.error.assert_called()
+
+    def test_template_rebuild_failure_falls_back_to_unedited_template(self):
+        template = _template(_YAML)
+
+        with patch(f'{_MODULE}.WorkflowAssistant', side_effect=TypeError("bad shape")):
+            saved, _, log = _run(template, {"return_value": [_entry("cfg-1", active=False)]})
+
+        assert template.yaml_config == _YAML
+        saved.save.assert_called_once_with(refresh=True)
+        log.error.assert_called()
+
+    def test_empty_lookup_for_non_empty_ids_saves_as_written(self):
+        template = _template(_YAML)
+
+        saved, _, log = _run(template, {"return_value": []})
+
+        assert template.yaml_config == _YAML
+        saved.save.assert_called_once_with(refresh=True)
+        log.error.assert_called_once()
+
+    def test_lookup_raising_saves_as_written(self):
+        template = _template(_YAML)
+
+        saved, _, log = _run(template, {"side_effect": RuntimeError("db down")})
+
+        assert template.yaml_config == _YAML
+        saved.save.assert_called_once_with(refresh=True)
+        assert "Tmpl" in log.error.call_args[0][0]
+
+    def test_seam_runs_even_when_nothing_was_disabled(self):
+        template = _template(_YAML)
+
+        saved, after, _ = _run(template, {"return_value": [_entry("cfg-1")]})
+
+        after.assert_called_once_with(saved)
+
+    def test_available_link_left_untouched(self):
+        template = _template(_YAML)
+
+        saved, _, log = _run(template, {"return_value": [_entry("cfg-1")]})
+
+        assert template.yaml_config == _YAML
+        log.warning.assert_not_called()
+        saved.save.assert_called_once_with(refresh=True)

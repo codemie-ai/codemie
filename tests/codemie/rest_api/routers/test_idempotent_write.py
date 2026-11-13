@@ -366,7 +366,7 @@ def workflow_env(db):
     targets = (
         f"{WORKFLOW}.project_access_check",
         f"{WORKFLOW}._consumer_slot_warnings_sync",
-        f"{WORKFLOW}.MCPAccessControlService.validate_on_save",
+        f"{WORKFLOW}.MCPAccessControlService.validate_workflow_mcp",
         f"{WORKFLOW_SERVICE}.validate_for_update",
         f"{WORKFLOW_SERVICE}.save_workflow_schema",
         "codemie.service.monitoring.workflow_monitoring_service.WorkflowMonitoringService.send_update_workflow_metric",

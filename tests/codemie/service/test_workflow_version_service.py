@@ -171,7 +171,9 @@ class TestRollbackToVersion:
     def test_rolls_back_to_revision_index_from_later_page(self, user_entity):
         from codemie.service.workflow.workflow_version_service import WorkflowVersionService
 
-        workflow = _make_workflow(yaml_config="current: yaml", history=_make_history(5))
+        # Rollback parses the stored YAML, so every revision must be a mapping.
+        history = [_make_entry(f"rev: {i}") for i in range(5)]
+        workflow = _make_workflow(yaml_config="current: yaml", history=history)
         mock_user = MagicMock()
         mock_user.as_user_model.return_value = user_entity
         entry = WorkflowVersionService.get_version_history(workflow, page=1, per_page=2).revisions[1]
@@ -179,7 +181,7 @@ class TestRollbackToVersion:
         WorkflowVersionService.rollback_to_version(workflow, revision_index=entry.revision_index, user=mock_user)
 
         assert entry.revision_index == 3
-        assert workflow.yaml_config == entry.yaml_config == "rev-3"
+        assert workflow.yaml_config == entry.yaml_config == "rev: 3"
 
     def test_raises_400_when_history_is_empty(self, user):
         from codemie.service.workflow.workflow_version_service import WorkflowVersionService
@@ -261,9 +263,10 @@ class TestRollbackToVersion:
         mock_user = MagicMock()
         mock_user.as_user_model.return_value = user_entity
 
-        result = WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
+        result, disabled = WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
 
         assert result is workflow
+        assert disabled == []
 
     def test_reparses_execution_config_and_sets_updated_by(self, user_entity):
         from unittest.mock import patch
@@ -412,7 +415,7 @@ class TestRollbackToVersion:
 
         with (
             patch.object(WorkflowConfig, "update", return_value=None) as mock_update,
-            patch("codemie.service.mcp.access_control.MCPAccessControlService.validate_on_save") as mock_mcp,
+            patch("codemie.service.mcp.access_control.MCPAccessControlService.validate_workflow_mcp") as mock_mcp,
             patch(
                 "codemie.service.mcp.access_control.MCPAccessControlService.strip_inline_config",
                 side_effect=lambda servers: servers,
@@ -465,7 +468,7 @@ class TestRollbackToVersion:
 
         with (
             patch.object(WorkflowConfig, "update", return_value=None),
-            patch("codemie.service.mcp.access_control.MCPAccessControlService.validate_on_save") as mock_mcp,
+            patch("codemie.service.mcp.access_control.MCPAccessControlService.validate_workflow_mcp") as mock_mcp,
             patch(
                 "codemie.service.mcp.access_control.MCPAccessControlService.strip_inline_config",
                 side_effect=lambda servers: servers,
@@ -479,7 +482,9 @@ class TestRollbackToVersion:
             WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
 
         mock_mcp.assert_called_once()
-        passed_servers = mock_mcp.call_args.args[0]
+        from codemie.service.mcp.access_control import MCPAccessControlService
+
+        passed_servers = MCPAccessControlService.collect_workflow_mcp_servers(mock_mcp.call_args.args[0])
         assert [server.name for server in passed_servers] == ["catalog_mcp", "tool_mcp"]
         assert [server.mcp_config_id for server in passed_servers] == ["mcp-config-123", "mcp-config-456"]
 
@@ -527,7 +532,7 @@ class TestRollbackToVersion:
         mock_user.as_user_model.return_value = user_entity
 
         with patch(
-            "codemie.service.mcp.access_control.MCPAccessControlService.validate_on_save",
+            "codemie.service.mcp.access_control.MCPAccessControlService.validate_workflow_mcp",
             side_effect=ValidationException("duplicate mcp"),
         ):
             with pytest.raises(ValidationException, match="duplicate mcp"):
@@ -703,3 +708,134 @@ class TestRollbackToVersion:
                 WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
 
         workflow.update.assert_not_called()
+
+
+_DEAD_LINK_YAML = (
+    "assistants:\n"
+    "  - id: restored_asst\n"
+    "    assistant_id: restored_asst\n"
+    "    name: Restored\n"
+    "    model: test_model\n"
+    "    mcp_servers:\n"
+    "      - name: gone_mcp\n"
+    "        mcp_config_id: deleted-config\n"
+    "tools: []\n"
+    "states: []\n"
+)
+
+
+class TestRollbackDisablesUnavailableMcpLinks:
+    @pytest.fixture(autouse=True)
+    def _stub_catalog_and_graph(self):
+        with (
+            patch("codemie.service.mcp.access_control.MCPConfig.get_by_ids", return_value=[]),
+            patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        ):
+            yield
+
+    @staticmethod
+    def _workflow():
+        from codemie.core.workflow_models.workflow_config import WorkflowConfig
+
+        return WorkflowConfig(
+            id="workflow-123",
+            name="Test Workflow",
+            description="desc",
+            yaml_config="assistants: []\ntools: []\nstates: []\n",
+            yaml_config_history=[_make_entry(_DEAD_LINK_YAML)],
+        )
+
+    def test_stores_edited_yaml_rederives_columns_and_reports(self, user_entity):
+        from codemie.core.workflow_models.workflow_config import WorkflowConfig
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        workflow = self._workflow()
+        mock_user = MagicMock()
+        mock_user.as_user_model.return_value = user_entity
+
+        with (
+            patch.object(WorkflowConfig, "update", return_value=None) as mock_update,
+            patch("codemie.service.workflow.workflow_version_service.after_workflow_links_changed") as seam,
+        ):
+            result, disabled = WorkflowVersionService.rollback_to_version(workflow, 0, mock_user)
+
+        assert result is workflow
+        assert "enabled: false" in workflow.yaml_config
+        assert workflow.assistants[0].mcp_servers[0].enabled is False
+        assert [(d.mcp_config_id, d.reason, d.address) for d in disabled] == [
+            ("deleted-config", "missing", "assistants[0].mcp_servers[0]")
+        ]
+        history = mock_update.call_args.kwargs["yaml_config_history"]
+        assert len(history) == 2
+        assert history[0].yaml_config == "assistants: []\ntools: []\nstates: []\n"
+        assert history[1].yaml_config == _DEAD_LINK_YAML
+        seam.assert_called_once_with(workflow)
+
+    def test_editor_failure_leaves_workflow_untouched(self, user_entity):
+        from codemie.core.exceptions import ExtendedHTTPException
+        from codemie.core.workflow_models.workflow_config import WorkflowConfig
+        from codemie.service.mcp.workflow_yaml_editor import WorkflowYamlEditError
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        workflow = self._workflow()
+        original = workflow.yaml_config
+        mock_user = MagicMock()
+        mock_user.as_user_model.return_value = user_entity
+
+        with (
+            patch.object(WorkflowConfig, "update", return_value=None) as mock_update,
+            patch(
+                "codemie.service.workflow.workflow_version_service.disable_dead_links_in_yaml",
+                side_effect=WorkflowYamlEditError("cannot edit"),
+            ),
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                WorkflowVersionService.rollback_to_version(workflow, 0, mock_user)
+
+        assert exc_info.value.code == 400
+        assert "cannot edit" in str(exc_info.value.details)
+        assert workflow.yaml_config == original
+        mock_update.assert_not_called()
+
+    def test_unexpected_editor_error_is_not_reported_as_catalogue_outage(self, user_entity):
+        from codemie.core.workflow_models.workflow_config import WorkflowConfig
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        workflow = self._workflow()
+        original = workflow.yaml_config
+        mock_user = MagicMock()
+        mock_user.as_user_model.return_value = user_entity
+
+        with (
+            patch.object(WorkflowConfig, "update", return_value=None) as mock_update,
+            patch(
+                "codemie.service.workflow.workflow_version_service.disable_dead_links_in_yaml",
+                side_effect=RuntimeError("editor bug"),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="editor bug"):
+                WorkflowVersionService.rollback_to_version(workflow, 0, mock_user)
+
+        assert workflow.yaml_config == original
+        mock_update.assert_not_called()
+
+    def test_catalogue_outage_maps_to_503_and_leaves_workflow_untouched(self, user_entity):
+        from codemie.core.exceptions import ExtendedHTTPException
+        from codemie.core.workflow_models.workflow_config import WorkflowConfig
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        workflow = self._workflow()
+        original = workflow.yaml_config
+        mock_user = MagicMock()
+        mock_user.as_user_model.return_value = user_entity
+
+        with (
+            patch.object(WorkflowConfig, "update", return_value=None) as mock_update,
+            patch("codemie.service.mcp.access_control.MCPConfig.get_by_ids", side_effect=RuntimeError("db down")),
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                WorkflowVersionService.rollback_to_version(workflow, 0, mock_user)
+
+        assert exc_info.value.code == 503
+        assert workflow.yaml_config == original
+        mock_update.assert_not_called()

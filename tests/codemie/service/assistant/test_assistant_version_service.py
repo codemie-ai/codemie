@@ -425,7 +425,7 @@ class TestRollbackToVersion:
         mock_config_class.return_value = mock_new_config
 
         # Execute
-        result = AssistantVersionService.rollback_to_version(
+        result, _ = AssistantVersionService.rollback_to_version(
             assistant=mock_assistant, target_version_number=1, user=mock_user
         )
 
@@ -604,6 +604,42 @@ class TestRollbackToVersion:
         if has_grants:
             uses_personal.assert_called_once_with(mock_config)
 
+    @patch('codemie.service.assistant.assistant_version_service.AssistantConfiguration')
+    @patch.object(AssistantVersionService, 'get_version')
+    def test_rollback_disables_link_with_deleted_catalog_config_and_reports_it(
+        self, mock_get_version, mock_config_class, mock_assistant, mock_user
+    ):
+        """A link whose catalogue entry is gone no longer blocks rollback: it comes back disabled and is reported."""
+        link = MCPServerDetails(name="gone", enabled=True, mcp_config_id="cfg-gone")
+        target = AssistantConfiguration(
+            assistant_id="assistant-123",
+            version_number=1,
+            description="d",
+            system_prompt="p",
+            llm_model_type="gpt-4",
+            mcp_servers=[link],
+        )
+        mock_assistant.version_count = 3
+        mock_get_version.return_value = target
+
+        with (
+            patch("codemie.service.mcp.access_control.MCPConfig.get_by_ids", return_value=[]),
+            patch("codemie.service.mcp.access_control.MCPAccessControlService.adjust_usage", create=True) as usage,
+        ):
+            new_config, report = AssistantVersionService.rollback_to_version(
+                assistant=mock_assistant, target_version_number=1, user=mock_user
+            )
+
+        new_servers = mock_config_class.call_args[1]['mcp_servers']
+        assert [(s.name, s.enabled) for s in new_servers] == [("gone", False)]
+        assert [(s.name, s.enabled) for s in mock_assistant.mcp_servers] == [("gone", False)]
+        assert [(r.name, r.mcp_config_id, r.reason) for r in report] == [("gone", "cfg-gone", "missing")]
+        # The loaded target version is never written
+        assert target.mcp_servers == [link]
+        assert link.enabled is True
+        usage.assert_not_called()
+        mock_assistant.update.assert_called_once()
+
     @patch.object(AssistantVersionService, 'get_version')
     def test_rollback_to_current_version_fails(self, mock_get_version, mock_assistant, mock_user):
         """Test rollback to current version raises exception"""
@@ -656,7 +692,7 @@ class TestRollbackToVersion:
         mock_config_class.return_value = mock_new_config
 
         # Execute
-        result = AssistantVersionService.rollback_to_version(
+        result, _ = AssistantVersionService.rollback_to_version(
             assistant=mock_assistant, target_version_number=1, user=mock_user, change_notes="Custom rollback reason"
         )
 
@@ -692,7 +728,7 @@ class TestRollbackToVersion:
         mock_config_class.return_value = mock_new_config
 
         # Execute
-        result = AssistantVersionService.rollback_to_version(
+        result, _ = AssistantVersionService.rollback_to_version(
             assistant=mock_assistant, target_version_number=1, user=mock_user
         )
 
