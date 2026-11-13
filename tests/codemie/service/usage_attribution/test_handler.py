@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from codemie.service.usage_attribution.analysis import AnalysisHandle, resolve_r
 from codemie.service.usage_attribution.constants import DEFAULT_FRAMEWORK_SKILL_REGEX
 from codemie.service.usage_attribution.sections import shard_of
 from codemie.service.usage_attribution.settings import SettingsError, build_defaults, build_effective, encode_overrides
+from codemie.service.usage_attribution.spend_widgets import SpendFigures, SpendTable
 
 NOW = datetime(2026, 10, 13, 15, 0, tzinfo=timezone.utc)
 ADMIN = SimpleNamespace(id="admin", is_admin=True, is_maintainer=False, is_auditor=False)
@@ -91,7 +93,84 @@ def setup(sections, overrides=None, period="last_30_days", total_spend=10_000.0)
     rng = resolve_range(period, None, None, 90, 30, now=NOW)
     # The period's Total Spend, which the % of Total Spend column divides by.
     sections = {"summary": {"tiles": {"total": total_spend}}, **sections}
-    return h.UsageAttributionHandler(ADMIN, FakeService(sections)), eff, rng
+    handler = h.UsageAttributionHandler(ADMIN, FakeService(sections))
+    echo_ledger(sections)
+    return handler, eff, rng
+
+
+def ledger_groups(total=None, platform=None, cli=None, embedding=None):
+    return SpendFigures(total=total, platform=platform, cli=cli, embedding=embedding)
+
+
+def ledger_table(**rows):
+    return SpendTable(rows)
+
+
+class FakeLedger:
+    """What the hourly ledger says: a test sets the async ``platform(start, end)``, ``people(start, end, uids)`` and
+    ``projects(start, end, names)`` the spend widgets answer through."""
+
+    platform = people = projects = None
+
+
+LEDGER = FakeLedger()
+
+
+def fake_widget(name):
+    class Widget:
+        def __init__(self, context):
+            self.context = context
+
+        async def read(self, *args):
+            return await getattr(LEDGER, name)(*args)
+
+    return Widget
+
+
+@pytest.fixture(autouse=True)
+def spend_widgets_say_what_the_test_says():
+    with (
+        patch.object(h.spend_widgets, "PlatformSpend", fake_widget("platform")),
+        patch.object(h.spend_widgets, "PeopleSpend", fake_widget("people")),
+        patch.object(h.spend_widgets, "ProjectSpend", fake_widget("projects")),
+    ):
+        yield
+
+
+def echo_ledger(sections):
+    """The hourly ledger answering what Elasticsearch answered, so a test about something else reads as before."""
+    tiles = sections["summary"]["tiles"]
+
+    async def platform(_start, _end):
+        return ledger_groups(
+            tiles.get("total"), tiles.get("web"), tiles.get("cli"), (tiles.get("web_types") or {}).get("datasource")
+        )
+
+    people = {r["uid"]: r for r in sections.get("people") or []}
+
+    async def person_figures(_start, _end, uids):
+        return SpendTable(
+            {
+                uid: ledger_groups(people[uid]["total"], people[uid]["platform"], people[uid]["cli"])
+                if uid in people
+                else ledger_groups()
+                for uid in uids
+            }
+        )
+
+    projects = {r["name"]: r for r in sections.get("shared") or []}
+
+    async def project_figures(_start, _end, names):
+        return SpendTable(
+            {
+                name: ledger_groups(None, projects[name]["platform"], projects[name]["cli"])
+                if name in projects
+                else ledger_groups()
+                for name in names
+            }
+        )
+
+    LEDGER.platform, LEDGER.people, LEDGER.projects = platform, person_figures, project_figures
 
 
 @pytest.mark.asyncio
@@ -428,48 +507,181 @@ async def test_elasticsearch_errors_do_not_reach_the_client():
     assert "localhost" not in str(raised.value.details) and "ConnectionError" not in str(raised.value.details)
 
 
-@pytest.mark.asyncio
-async def test_totals_are_computed_and_cached():
-    handler, eff, rng = setup({})
+TOTALS_RESP = {
+    "aggregations": {
+        "source": {
+            "buckets": {
+                "cli": {"spend": {"value": 100}, "who_pays": {"buckets": {
+                    "charged_back": {"spend": {"value": 30}}, "shared_no_budget": {"spend": {"value": 20}},
+                    "personal": {"spend": {"value": 45}}, "no_customer": {"spend": {"value": 5}}}}},
+                "other_proxy": {"spend": {"value": 7}},
+                "web_assistant": {"spend": {"value": 40}},
+                "web_workflow": {"spend": {"value": 10}},
+                "web_datasource": {"spend": {"value": 3}},
+            }
+        }
+    }
+}  # fmt: skip
+WEB_RESP = {
+    "aggregations": {
+        "fb": {"spend": {"value": 0}},
+        "personal": {"spend": {"value": 20}},
+        "shared": {"spend": {"value": 10}},
+    }
+}
+
+
+async def totals_with(handler, rng, ledger):
+    """``totals()`` over the Elasticsearch answers above, with the hourly ledger answering ``ledger``."""
     handler.service.cache = MagicMock()
     handler.service.cache.get = AsyncMock(return_value=None)
     handler.service.cache.set_many = AsyncMock()
-    totals_resp = {
-        "aggregations": {
-            "source": {
-                "buckets": {
-                    "cli": {"spend": {"value": 100}, "who_pays": {"buckets": {
-                        "charged_back": {"spend": {"value": 30}}, "shared_no_budget": {"spend": {"value": 20}},
-                        "personal": {"spend": {"value": 45}}, "no_customer": {"spend": {"value": 5}}}}},
-                    "other_proxy": {"spend": {"value": 7}},
-                    "web_assistant": {"spend": {"value": 40}},
-                    "web_workflow": {"spend": {"value": 10}},
-                    "web_datasource": {"spend": {"value": 0}},
-                }
-            }
-        }
-    }  # fmt: skip
-    web_resp = {
-        "aggregations": {
-            "fb": {"spend": {"value": 0}},
-            "personal": {"spend": {"value": 20}},
-            "shared": {"spend": {"value": 10}},
-        }
-    }
+    LEDGER.platform = AsyncMock(return_value=ledger)
     repo = MagicMock()
-    repo.execute_aggregation_query = AsyncMock(side_effect=[totals_resp, web_resp])
+    repo.execute_aggregation_query = AsyncMock(side_effect=[TOTALS_RESP, WEB_RESP])
     with (
         patch.object(h.app_db, "project_facts", AsyncMock(return_value={"shared": ["p"], "funding": {}})),
         patch("codemie.repository.metrics_elastic_repository.MetricsElasticRepository", return_value=repo),
     ):
-        data = await handler.totals(rng)
-    assert data["cli"]["total"] == 95  # billed: without the 5 that had no customer
-    assert data["web"]["total"] == 50
-    assert data["total"] == 145
-    assert data["who_pays"]["web"] == {"charged": 0, "shared": 10, "personal": 40}  # 20 more records without a project
+        return await handler.totals(rng)
+
+
+@pytest.mark.asyncio
+async def test_totals_are_computed_and_cached():
+    handler, _eff, rng = setup({})
+    data = await totals_with(handler, rng, ledger_groups(10.0, 4.0, 6.0, 1.0))
+    assert data["who_pays"]["web"] == {"charged": 0, "shared": 10, "personal": 43}  # 23 more records without a project
     assert data["charged_back"] == 30
     assert data["excluded"] == {"no_customer": 5, "other_proxy": 7}
     handler.service.cache.set_many.assert_awaited_once()
+    # The cached block is the Elasticsearch one: the ledger figures are laid over it when a response is built.
+    cached = json.loads(next(iter(handler.service.cache.set_many.await_args.args[0].values())))
+    assert (cached["total"], cached["cli"]["total"], cached["web"]["total"]) == (148, 95, 53)
+
+
+@pytest.mark.asyncio
+class TestTotalsFromTheLedger:
+    async def test_the_platform_figures_come_from_the_ledger(self):
+        handler, _eff, rng = setup({})
+        data = await totals_with(handler, rng, ledger_groups(10.0, 4.0, 6.0, 1.0))
+        assert data["total"] == 10.0
+        assert data["cli"] == {"total": 6.0}
+        assert (data["web"]["total"], data["web"]["datasource"]) == (4.0, 1.0)
+
+    async def test_the_other_figures_stay_on_elasticsearch(self):
+        handler, _eff, rng = setup({})
+        data = await totals_with(handler, rng, ledger_groups(10.0, 4.0, 6.0, 1.0))
+        assert (data["web"]["assistant"], data["web"]["workflow"]) == (40, 10)
+        assert data["charged_back"] == 30
+        assert data["who_pays"]["cli"] == {"charged": 30, "shared": 20, "personal": 45}
+        assert data["excluded"] == {"no_customer": 5, "other_proxy": 7}
+
+    async def test_below_the_floor_the_moved_figures_have_no_value_and_no_key_is_added(self):
+        handler, _eff, rng = setup({})
+        data = await totals_with(handler, rng, ledger_groups())
+        assert data["total"] is None and data["cli"]["total"] is None
+        assert data["web"]["total"] is None and data["web"]["datasource"] is None
+        cached = json.loads(next(iter(handler.service.cache.set_many.await_args.args[0].values())))
+        assert set(data) == set(cached)
+        assert set(data["web"]) == set(cached["web"]) and set(data["cli"]) == set(cached["cli"])
+
+    async def test_a_cache_hit_gets_the_ledger_figures_too(self):
+        handler, _eff, rng = setup({})
+        es = {"total": 148, "web": {"total": 53, "datasource": 3, "assistant": 40}, "cli": {"total": 95}}
+        handler.service.cache = MagicMock()
+        handler.service.cache.get = AsyncMock(return_value=json.dumps(es).encode("utf-8"))
+        LEDGER.platform = AsyncMock(return_value=ledger_groups(10.0, 4.0, 6.0, 1.0))
+        with patch.object(h.app_db, "project_facts", AsyncMock(return_value={"shared": [], "funding": {}})):
+            data = await handler.totals(rng)
+        assert (data["total"], data["cli"]["total"], data["web"]["total"], data["web"]["assistant"]) == (10, 6, 4, 40)
+        assert data["cache"] == "hit"
+
+
+SUMMARY = {
+    "tiles": {"total": 148.0, "web": 53.0, "cli": 95.0, "prod": 20.0, "uncl": 1.0, "uncl_parts": {},
+              "allocated": 0.0, "excluded": {"no_customer": 5}, "web_types": {"assistant": 40.0, "workflow": 10.0,
+              "datasource": 3.0}},
+    "pie": [{"id": "platform", "label": "Web Platform", "value": 53.0}, {"id": "production", "value": 20.0}],
+    "who_pays": {}, "categories": [], "reasons": [], "coverage": {}, "signals": [], "identity": {},
+    "folder_like": [], "confidence": {}, "db": {}, "counts": {},
+}  # fmt: skip
+
+
+@pytest.mark.asyncio
+class TestSummaryFromTheLedger:
+    async def test_cli_summary_tiles_and_pie(self):
+        summary = json.loads(json.dumps(SUMMARY))
+        handler, eff, rng = setup({"summary": summary})
+        LEDGER.platform = AsyncMock(return_value=ledger_groups(10.0, 4.0, 6.0, 1.0))
+        out = await handler.cli_summary(rng, eff)
+        tiles = out["tiles"]
+        assert (tiles["total"], tiles["cli"], tiles["web"], tiles["web_types"]["datasource"]) == (10, 6, 4, 1)
+        assert (tiles["prod"], tiles["web_types"]["assistant"], tiles["web_types"]["workflow"]) == (20, 40, 10)
+        assert out["pie"] == [{"id": "platform", "label": "Web Platform", "value": 4.0}, SUMMARY["pie"][1]]
+        assert summary == SUMMARY  # the cached section is not changed
+
+    async def test_cli_summary_below_the_floor(self):
+        handler, eff, rng = setup({"summary": json.loads(json.dumps(SUMMARY))})
+        LEDGER.platform = AsyncMock(return_value=ledger_groups())
+        out = await handler.cli_summary(rng, eff)
+        assert (out["tiles"]["total"], out["tiles"]["cli"], out["tiles"]["web"]) == (None, None, None)
+        assert out["tiles"]["web_types"]["datasource"] is None and out["pie"][0]["value"] is None
+        assert set(out["tiles"]) == set(SUMMARY["tiles"])
+
+    async def test_status_cli_tile(self):
+        summary = json.loads(json.dumps(SUMMARY))
+        handler, eff, rng = setup({"summary": summary})
+        LEDGER.platform = AsyncMock(return_value=ledger_groups(10.0, 4.0, 6.0, 1.0))
+        with patch.object(h, "schema_payload", return_value={"settings": []}):
+            out = await handler.status(rng, eff)
+        assert out["tiles"]["cli"] == 6.0 and out["tiles"]["uncl"] == 1.0
+        assert summary == SUMMARY
+
+
+class TestRowFigureLogic:
+    def test_a_threshold_is_never_met_by_no_figure_or_zero(self):
+        assert h._at_least(5.0, 5.0)
+        assert not h._at_least(None, 0.0)
+        assert not h._at_least(0.0, 0.0)
+
+    def test_a_project_without_a_part_has_no_spend(self):
+        assert h._project_spend({"platform": 1.0, "cli": 2.0}) == 3.0
+        assert h._project_spend({"platform": None, "cli": 2.0}) is None
+
+    def test_a_sum_adds_the_values_that_have_a_figure_in_cents(self):
+        assert h._sum_or_none([1.1, None, 2.2]) == 3.3
+
+    def test_a_sum_of_no_figure_at_all_is_none_not_zero(self):
+        assert h._sum_or_none([None, None]) is None
+        assert h._sum_or_none([]) is None
+
+
+@pytest.mark.asyncio
+class TestTheSpendWidgetsShareOneContext:
+    """The cache layer itself is tested in spend_widgets/; here, that the handler builds each widget over the one
+    context of its caller and the shared cache, and reads the range."""
+
+    async def test_every_widget_gets_the_one_context_of_the_caller_and_the_shared_cache(self):
+        handler, eff, rng = setup({"summary": json.loads(json.dumps(SUMMARY))})
+        seen, reads = [], []
+
+        class Recording:
+            def __init__(self, context):
+                seen.append(context)
+
+            async def read(self, *args):
+                reads.append(args)
+                return ledger_groups(10.0, 4.0, 6.0, 1.0)
+
+        with (
+            patch.object(h.spend_widgets, "PlatformSpend", Recording),
+            patch.object(h, "schema_payload", return_value={"settings": []}),
+        ):
+            await handler.status(rng, eff)
+            await handler.status(rng, eff)
+        assert len(seen) == 2 and seen[0] is seen[1]
+        assert seen[0].user is ADMIN and seen[0].cache is handler.service.cache
+        assert reads == [(rng.start, rng.end)] * 2
 
 
 @pytest.mark.asyncio
@@ -508,3 +720,115 @@ async def test_totals_charge_back_the_funded_web_platform_spend():
     # uA has an allocation of the active budget for the whole range; uB has none and paid personally.
     assert data["who_pays"]["web"] == {"charged": 60, "shared": 40, "personal": 0}
     assert data["charged_back"] == 60
+
+
+@pytest.mark.asyncio
+class TestPeopleFromTheLedger:
+    async def test_a_row_shows_the_ledger_figures_and_keeps_the_elasticsearch_ones(self):
+        es = person_row("a", 5.0, platform=2.0, prod_ncb=1.0, charged_back=0.5)
+        handler, eff, rng = setup({"people": [es]})
+        LEDGER.platform = AsyncMock(return_value=ledger_groups(total=70.0))
+        LEDGER.people = AsyncMock(return_value=SpendTable({"a": ledger_groups(7.0, 3.0, 4.0)}))
+        (row,) = (await handler.people(rng, eff, "all", None, 0, 10, None, "desc"))["rows"]
+        assert (row["total"], row["platform"], row["cli"]) == (7.0, 3.0, 4.0)
+        assert (row["ncb"], row["prod"], row["prod_ncb"], row["charged_back"]) == (0.0, 0.0, 1.0, 0.5)
+        assert row["share"] == 10.0  # 7 of the ledger's 70
+        assert set(row) == {*es, "share", "exp_highlight", "candidate"}
+        assert es["total"] == 5.0  # the cached section row is not changed
+
+    async def test_a_person_without_a_ledger_figure_sorts_last(self):
+        rows = [person_row("a", 900, platform=400), person_row("b", 100, platform=50), person_row("c", 500)]
+        handler, eff, rng = setup({"people": rows})
+        LEDGER.people = AsyncMock(
+            return_value=SpendTable(
+                {"a": ledger_groups(), "b": ledger_groups(1.0, 0.5, 0.5), "c": ledger_groups(2.0, 0.0, 2.0)}
+            )
+        )
+        for order in ("desc", "asc"):
+            out = await handler.people(rng, eff, "all", None, 0, 10, "total", order)
+            assert [r["uid"] for r in out["rows"]][-1] == "a", order
+        out = await handler.people(rng, eff, "all", None, 0, 10, None, "desc")
+        assert out["rows"][-1]["share"] is None and out["rows"][-1]["total"] is None
+
+    async def test_a_person_without_a_ledger_figure_fails_the_platform_filter(self):
+        rows = [person_row("a", 900, platform=800), person_row("b", 900, platform=800)]
+        handler, eff, rng = setup({"people": rows})
+        LEDGER.people = AsyncMock(
+            return_value=SpendTable({"a": ledger_groups(), "b": ledger_groups(900.0, 800.0, 100.0)})
+        )
+        out = await handler.people(rng, eff, "platform", None, 0, 10, None, "desc")
+        assert [r["uid"] for r in out["rows"]] == ["b"] and out["counts"]["platform"] == 1
+
+    async def test_below_the_floor_there_is_no_share(self):
+        handler, eff, rng = setup({"people": [person_row("a", 900)]})
+        LEDGER.platform = AsyncMock(return_value=ledger_groups())
+        LEDGER.people = AsyncMock(return_value=SpendTable({"a": ledger_groups()}))
+        (row,) = (await handler.people(rng, eff, "all", None, 0, 10, None, "desc"))["rows"]
+        assert (row["total"], row["platform"], row["cli"], row["share"]) == (None, None, None, None)
+
+    async def test_the_person_popup_row_matches_the_table_row(self):
+        es = person_row("a", 5.0, platform=2.0)
+        handler, eff, rng = setup({"people": [es], f"pdetail:{shard_of('a')}": {"a": {"row": es, "detail": {}}},
+                                   "pwork": []})  # fmt: skip
+        LEDGER.people = AsyncMock(return_value=SpendTable({"a": ledger_groups(7.0, 3.0, 4.0)}))
+        handler._person_live = AsyncMock(return_value={})
+        popup = (await handler.person(rng, eff, "a"))["row"]
+        table = (await handler.people(rng, eff, "all", None, 0, 10, None, "desc"))["rows"][0]
+        assert (popup["total"], popup["platform"], popup["cli"]) == (table["total"], table["platform"], table["cli"])
+        assert popup["total"] == 7.0 and es["total"] == 5.0
+
+
+@pytest.mark.asyncio
+class TestSharedProjectsFromTheLedger:
+    async def test_a_row_shows_the_ledger_figures_and_keeps_the_elasticsearch_ones(self):
+        es = shared_row("a", 1500, platform=3.0, cli=2.0)
+        handler, eff, rng = setup({"shared": [es]})
+        LEDGER.platform = AsyncMock(return_value=ledger_groups(total=50.0))
+        LEDGER.projects = AsyncMock(return_value=SpendTable({"a": ledger_groups(5.0, 4.0, 1.0)}))
+        out = await handler.shared_projects(rng, eff, "all", None, 0, 10, None, "desc")
+        (row,) = out["rows"]
+        assert (row["platform"], row["cli"]) == (4.0, 1.0)
+        assert (row["ncb"], row["cli_sh"], row["web_sh"]) == (1500, 2.0, 3.0)
+        assert row["share"] == 10.0  # (4 + 1) of the ledger's 50
+        assert set(row) == {*es, "share", "candidate"}
+        assert es["platform"] == 3.0  # the cached section row is not changed
+
+    async def test_the_footer_adds_the_ledger_figures(self):
+        rows = [shared_row("a", 1500, platform=3.0, cli=2.0), shared_row("b", 1200, platform=1.0, cli=1.0)]
+        handler, eff, rng = setup({"shared": rows})
+        LEDGER.platform = AsyncMock(return_value=ledger_groups(total=100.0))
+        LEDGER.projects = AsyncMock(
+            return_value=SpendTable({"a": ledger_groups(5.0, 4.0, 1.0), "b": ledger_groups(None, None, 6.0)})
+        )
+        out = await handler.shared_projects(rng, eff, "all", None, 0, 10, None, "desc")
+        totals = out["totals"]
+        assert (totals["platform"], totals["cli"]) == (4.0, 7.0)
+        assert (totals["ncb"], totals["cli_sh"], totals["web_sh"]) == (2700, 3.0, 4.0)
+        assert {r["name"]: r["share"] for r in out["rows"]} == {"a": 5.0, "b": None}
+        assert totals["share"] == 5.0
+        assert set(totals) == {"ncb", "platform", "cli", "cli_sh", "web_sh", "share"}
+
+    async def test_below_the_floor_a_project_has_no_figures(self):
+        handler, eff, rng = setup({"shared": [shared_row("a", 1500, platform=3.0, cli=2.0)]})
+        LEDGER.platform = AsyncMock(return_value=ledger_groups())
+        LEDGER.projects = AsyncMock(return_value=SpendTable({"a": ledger_groups()}))
+        out = await handler.shared_projects(rng, eff, "all", None, 0, 10, "platform", "desc")
+        (row,) = out["rows"]
+        assert (row["platform"], row["cli"], row["share"]) == (None, None, None)
+        assert (out["totals"]["platform"], out["totals"]["cli"], out["totals"]["share"]) == (None, None, None)
+
+    async def test_repository_group_shares_keep_the_elasticsearch_total(self):
+        handler, eff, rng = setup({"groups": [group_row("g-1", 3000)]})  # spend 3010 of the ES 10,000
+        LEDGER.platform = AsyncMock(return_value=ledger_groups(total=50.0))
+        out = await handler.repository_groups(rng, eff, "all", None, 0, 10, None, "desc")
+        assert out["rows"][0]["share"] == 30.1 and out["totals"]["share"] == 30.1
+
+    async def test_the_project_popup_row(self):
+        es = shared_row("a", 1500, platform=3.0, cli=2.0)
+        handler, eff, rng = setup({f"sdetail:{shard_of('a')}": {"a": {"row": es, "detail": {"models": []}}}})
+        LEDGER.projects = AsyncMock(return_value=SpendTable({"a": ledger_groups(5.0, 4.0, 1.0)}))
+        handler._project_web = AsyncMock(return_value={})
+        out = await handler.shared_project(rng, eff, "a")
+        assert (out["row"]["platform"], out["row"]["cli"], out["row"]["ncb"]) == (4.0, 1.0, 1500)
+        assert out["detail"]["models"] == [] and es["platform"] == 3.0
+        LEDGER.projects.assert_awaited_once_with(rng.start, rng.end, ["a"])

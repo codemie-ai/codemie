@@ -1,0 +1,62 @@
+{
+  "decision": "request-changes",
+  "rationale": "No-spec round (acceptance lens not dispatched), so confidence is low; blind, edge-case and verification-gap lenses ran and every candidate was verified against source. Four blocking findings remain: the ledger read cache stores degraded all-None answers for the full TTL, the cache-key isolation and legacy below-floor switch tests are ineffective, and the code-quality Module Cohesion standard is partially violated by the inline ledger cache layer in handler.py. 0 deferred; 16 dismissed (owner-sanctioned clipped window and per-figure source mixing, None-safe people/sort paths, groups always co-present per row, port-level failure degradation, deterministic AccessScope hashing, speculative cache-shape drift, perf-only notes, leftover summary load).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 4 subjects follow 'EPMCDME-####: Description'; branch name matches ticket-first rule"},
+    {"kind": "code-quality", "status": "partial", "notes": "ledger_figures.py conforms; handler.py (1174 lines) gains ledger read-cache and overlay helpers inline (Module Cohesion); some loose Any annotations"},
+    {"kind": "security", "status": "pass", "notes": "access scope derived via AnalyticsQueryPipeline and passed to every spend read; cache key hashes the caller's scope; no secrets or logging added"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/usage_attribution/handler.py",
+      "line": 451,
+      "title": "Ledger cache layer added inline to oversized handler",
+      "problem": "code-quality.md Module Cohesion forbids adding a nameable new concern to a ~500+ line file when it is not its core responsibility. handler.py (1174 lines) gains the hourly-ledger read cache (_ledger_cached, its cache-key format, _encode_figures/_decode_figures, _one_row) and the ledger overlay helpers (_ledger_totals/_ledger_tiles/_ledger_pie/_ledger_project/_ledger_person, r2n, _at_least, _project_spend) at handler.py:420-505 and 1130-1144, instead of in the ledger_figures module this same change created.",
+      "impact": "Module Cohesion is a documented project code-quality standard and code-quality is a blocking standard for the review gate; the handler keeps accreting unrelated concerns.",
+      "recommendation": "Move the ledger cache layer and the figure encode/decode/overlay helpers into ledger_figures.py (or a sibling such as ledger_cache.py) and keep only the call sites in handler.py."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/usage_attribution/handler.py",
+      "line": 487,
+      "title": "Degraded ledger answers cached for full TTL",
+      "problem": "_ledger_cached caches whatever the read returns for _TOTALS_TTL_S (15 min). spend_service._ask turns any ledger failure into SpendResult.no_figure for every group, and ledger_figures._figures drops the port's unavailable qualification, so a transient ledger outage above the coverage floor returns all-None figures that are written to the shared cache as if they were a real answer.",
+      "impact": "After the ledger recovers, Total, CLI, Web Platform, datasource, people and shared-project figures (and the shares derived from them) keep showing as unavailable on /totals, /cli-summary, /people, /shared-projects, their detail popups and /status for up to 15 minutes, for every caller with the same scope and window. Unlike the Elasticsearch path, which raises and caches nothing, the failure is silent and persisted.",
+      "recommendation": "Do not cache a ledger answer whose figures are unavailable: keep the port's unavailable flag through the read (or check render_spend(...).unavailable) and skip cache.set_many when any figure in the payload is unavailable, e.g. only cache when every figure was rendered as available; add a test that an all-None answer above the floor is not cached."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/usage_attribution/test_handler.py",
+      "line": 626,
+      "title": "Ledger cache-key isolation has no test",
+      "problem": "Broken verification: test_the_figures_are_cached_per_window_and_access, test_the_people_figures_are_read_once_per_window_access_and_people and test_the_project_figures_are_read_once_per_window_access_and_projects patch access_scope to the constant 'scope', use one window and one names list, and assert only that the reader ran once and a single key carries the view prefix. No test makes a second call with a different access scope, window or names list. Every other handler test replaces _ledger_platform/_ledger_people/_ledger_projects (echo_ledger), so none reach the key. The key itself is currently correct (stable_hash json-dumps the AccessScope dataclass with default=str, which includes user_id and project tuples).",
+      "impact": "Consumers are GET /totals, /cli-summary, /people, /people/{user_id}, /shared-projects, /shared-projects/{project_name} and /status. If access_scope, names or the window were dropped from the key, a restricted caller would be served the admin's cached platform, per-person or per-project figures for the 15-minute TTL and all three tests would still pass.",
+      "recommendation": "In each of the three caching tests add a second call with access_scope patched to a different AccessScope (and separately a different window or names list) and assert read.await_count == 2 and two distinct keys in the store."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/usage_attribution/test_ledger_figures.py",
+      "line": 88,
+      "title": "Legacy below-floor switch test is vacuous",
+      "problem": "test_the_legacy_below_floor_switch_does_not_widen_the_window sets SPEND_LEDGER_LEGACY_BELOW_FLOOR=False, the value under which the window would not be widened anyway, so it cannot prove what its name claims: that turning the legacy below-floor switch on still never extends the ledger window below the floor.",
+      "impact": "The owner requirement that a ledger-supplied figure never gets an Elasticsearch fill below the coverage floor has no effective regression guard for the switch that would enable such a fill; a future change wiring the switch into ledger_window would pass this test.",
+      "recommendation": "Set SPEND_LEDGER_LEGACY_BELOW_FLOOR=True in this test (optionally parametrize over True/False) and keep the assertion that ledger_window returns TimeRange(FLOOR, END) and pre_floor_boundary is never called."
+    }
+  ]
+}

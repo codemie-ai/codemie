@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17194_user-attribution-litellm-only",
+  "head": "fd32e7b83ad100b8adace17207c97634f1c1ddd5",
+  "runner": "poetry",
+  "started_at": "2026-11-13T11:22:32.310145+00:00",
+  "completed_at": "2026-11-13T11:22:32.310145+00:00",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1878,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Repo-wide; 3628 files unchanged, no tracked files modified."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1766,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "3306 files checked, 0 missing headers."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8319,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 18887,
+      "command": "poetry run pytest tests/codemie/service/usage_attribution/",
+      "exit_code": 0,
+      "notes": "Scoped to the affected area: 720 passed. Full suite (make test) not run by request."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 2867,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "Mirrors CI check-alembic-heads and pre-push hook; used local origin/main ref, no fetch."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Needs Docker; not run per instructions. Unverified; also enforced by codemie-gitleaks pre-commit hook."
+    },
+    {
+      "id": "test-full",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test",
+      "exit_code": null,
+      "notes": "Out of scope by request; scoped unit gate run instead."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Excluded by request; needs docker stack and credentials. Required in MR description."
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Excluded by request; needs Sonar config/credentials/network. Runs in opt-in pre-push hook and only CI-side."
+    }
+  ],
+  "failures": {}
+}

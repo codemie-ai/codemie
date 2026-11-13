@@ -25,12 +25,12 @@ import json
 import logging
 import time
 from collections import Counter, OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from typing import Any
 
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.service.usage_attribution import app_db, funding, parsing, queries
+from codemie.service.usage_attribution import app_db, funding, parsing, queries, spend_widgets
 from codemie.service.usage_attribution.analysis import (
     AnalysisHandle,
     AnalysisService,
@@ -260,19 +260,44 @@ def _matches(text: str, search: str | None) -> bool:
     return not search or search.strip().lower() in text.lower()
 
 
-def with_shares(rows: list[dict], spend: Callable[[dict], float], total: float) -> list[dict]:
-    """Copies of the rows with ``share``: their spend as a percentage of all spend in the period (Total Spend)."""
-    return [dict(r, share=round(spend(r) / total * 100.0, 4) if total > 0 else None) for r in rows]
+def with_shares(rows: list[dict], spend: Callable[[dict], float | None], total: float | None) -> list[dict]:
+    """Copies of the rows with ``share``: their spend as a percentage of all spend in the period (Total Spend).
+
+    No share when either side has no value (a ledger figure below the coverage floor), or nothing was spent."""
+
+    def share(r: dict) -> float | None:
+        value = spend(r)
+        return round(value / total * 100.0, 4) if value is not None and total is not None and total > 0 else None
+
+    return [dict(r, share=share(r)) for r in rows]
 
 
-def share_total(rows: list[dict], total: float) -> float | None:
+def share_total(rows: list[dict], total: float | None) -> float | None:
     """The shares of the rows added up: the part of all spend in the period that they cover."""
-    return round(sum(r["share"] for r in rows), 2) if total > 0 else None
+    if total is None or total <= 0:
+        return None
+    return round(sum(r["share"] for r in rows if r["share"] is not None), 2)
 
 
 def _learning_over(r: dict, exp_thr: float) -> bool:
     """Learning and experiments paid from a personal budget over the highlight: the column People shows."""
     return r["personal_learning"] >= exp_thr and r["personal_learning"] > 0
+
+
+def _at_least(value: float | None, threshold: float) -> bool:
+    """A threshold check a value with no figure never meets."""
+    return value is not None and value >= threshold and value > 0
+
+
+def _project_spend(row: dict) -> float | None:
+    """A project's Web Platform and CLI spend, with no value when either part has none."""
+    return None if row["platform"] is None or row["cli"] is None else row["platform"] + row["cli"]
+
+
+def _sum_or_none(values: Iterable[float | None]) -> float | None:
+    """The values that have a figure added up, in cents, or None when none of them has one."""
+    present = [v for v in values if v is not None]
+    return round(sum(present), 2) if present else None
 
 
 def _people_predicates(candidates: set[str], exp_thr: float, web_thr: float) -> dict[str, Callable[[dict], bool]]:
@@ -282,7 +307,7 @@ def _people_predicates(candidates: set[str], exp_thr: float, web_thr: float) -> 
         "prod": lambda r: r["prod_ncb"] > 0.5,
         "exp": lambda r: _learning_over(r, exp_thr),
         "shared": lambda r: r["shared_no_budget"] > 0.5,
-        "platform": lambda r: r["platform"] >= web_thr and r["platform"] > 0,
+        "platform": lambda r: _at_least(r["platform"], web_thr),
     }
 
 
@@ -295,6 +320,7 @@ class UsageAttributionHandler:
         self.service = service or get_analysis_service()
         # CLI analytics reader for the Postgres skill names; resolved lazily when not injected.
         self._reader = reader
+        self._widgets: spend_widgets.WidgetContext | None = None
 
     # ------------------------------------------------------------------ analysis
     async def _analysis(self, rng: RangeInfo, eff: EffectiveSettings) -> AnalysisHandle:
@@ -349,6 +375,17 @@ class UsageAttributionHandler:
     # ------------------------------------------------------------------ fast totals
     async def totals(self, rng: RangeInfo) -> dict[str, Any]:
         """Total, Web Platform, CLI, Charged Back and Who Pays, without the analysis (A1)."""
+        data = await self._elastic_totals(rng)
+        figures = await spend_widgets.PlatformSpend(self._widget_context()).read(rng.start, rng.end)
+        return {
+            **data,
+            "total": figures.total,
+            "cli": {**data["cli"], "total": figures.cli},
+            "web": {**data["web"], "total": figures.platform, "datasource": figures.embedding},
+        }
+
+    async def _elastic_totals(self, rng: RangeInfo) -> dict[str, Any]:
+        """The totals the analysis side answers, cached; the hourly ledger's figures are laid in by ``totals``."""
         facts = await app_db.project_facts()
         shared = facts["shared"]
         fplan = funding.plan(funding.funded_intervals(facts["funding"], rng.start, rng.end), rng.start, rng.end)
@@ -397,13 +434,29 @@ class UsageAttributionHandler:
         await self.service.cache.set_many({key: json.dumps(data).encode("utf-8")}, _TOTALS_TTL_S)
         return data
 
+    # ------------------------------------------------------------------ hourly ledger
+    def _widget_context(self) -> spend_widgets.WidgetContext:
+        """This caller's context for the spend widgets, built once over the shared cache."""
+        if self._widgets is None:
+            self._widgets = spend_widgets.WidgetContext(self.user, self.service.cache)
+        return self._widgets
+
     # ------------------------------------------------------------------ analysis views
     async def cli_summary(self, rng: RangeInfo, eff: EffectiveSettings) -> dict[str, Any]:
         handle = await self._analysis(rng, eff)
         summary = (await self.service.load_sections(handle, [SECTION_SUMMARY]))[SECTION_SUMMARY]
+        figures = await spend_widgets.PlatformSpend(self._widget_context()).read(rng.start, rng.end)
+        tiles = {
+            **summary["tiles"],
+            "total": figures.total,
+            "cli": figures.cli,
+            "web": figures.platform,
+            "web_types": {**(summary["tiles"].get("web_types") or {}), "datasource": figures.embedding},
+        }
+        pie = [dict(item, value=figures.platform) if item.get("id") == "platform" else item for item in summary["pie"]]
         return {
-            "tiles": summary["tiles"],
-            "pie": summary["pie"],
+            "tiles": tiles,
+            "pie": pie,
             "who_pays": summary["who_pays"],
             "categories": summary["categories"],
             "reasons": summary["reasons"],
@@ -424,18 +477,23 @@ class UsageAttributionHandler:
         sort_order: str,
     ) -> dict[str, Any]:
         handle = await self._analysis(rng, eff)
-        sections = await self.service.load_sections(handle, [SECTION_SHARED, SECTION_SUMMARY])
-        rows, spend_total = sections[SECTION_SHARED], sections[SECTION_SUMMARY]["tiles"]["total"]
+        es_rows = (await self.service.load_sections(handle, [SECTION_SHARED]))[SECTION_SHARED]
+        figures, platform = await _gather(
+            spend_widgets.ProjectSpend(self._widget_context()).read(rng.start, rng.end, [r["name"] for r in es_rows]),
+            spend_widgets.PlatformSpend(self._widget_context()).read(rng.start, rng.end),
+        )
+        rows = [dict(r, platform=figures.of(r["name"]).platform, cli=figures.of(r["name"]).cli) for r in es_rows]
+        spend_total = platform.total
         threshold = self.display(eff, rng)["shared_project_threshold"]
         over = [r for r in rows if r["ncb"] >= threshold]
         base = over if scope != "all" else rows
         # A project's spend is its Web Platform and CLI spend.
-        matched = with_shares(
-            [r for r in base if _matches(r["name"], search)], lambda r: r["platform"] + r["cli"], spend_total
-        )
+        matched = with_shares([r for r in base if _matches(r["name"], search)], _project_spend, spend_total)
         ordered = sort_rows(matched, sort_by, sort_order, SHARED_SORTS, "ncb")
         page_rows, pagination = paginate(ordered, page, per_page)
-        totals = {k: r2(sum(r[k] for r in matched)) for k in ("ncb", "platform", "cli", "cli_sh", "web_sh")}
+        totals: dict[str, Any] = {k: r2(sum(r[k] for r in matched)) for k in ("ncb", "cli_sh", "web_sh")}
+        for k in ("platform", "cli"):
+            totals[k] = _sum_or_none(r[k] for r in matched)
         totals["share"] = share_total(matched, spend_total)
         return {
             "rows": [dict(r, candidate=r["ncb"] >= threshold) for r in page_rows],
@@ -519,7 +577,21 @@ class UsageAttributionHandler:
     ) -> dict[str, Any]:
         handle = await self._analysis(rng, eff)
         sections = await self.service.load_sections(handle, [SECTION_PEOPLE, SECTION_SUMMARY])
-        rows, spend_total = sections[SECTION_PEOPLE], sections[SECTION_SUMMARY]["tiles"]["total"]
+        es_rows = sections[SECTION_PEOPLE]
+        figures, platform = await _gather(
+            spend_widgets.PeopleSpend(self._widget_context()).read(rng.start, rng.end, [r["uid"] for r in es_rows]),
+            spend_widgets.PlatformSpend(self._widget_context()).read(rng.start, rng.end),
+        )
+        rows = [
+            dict(
+                r,
+                total=figures.of(r["uid"]).total,
+                platform=figures.of(r["uid"]).platform,
+                cli=figures.of(r["uid"]).cli,
+            )
+            for r in es_rows
+        ]
+        spend_total = platform.total
         display = self.display(eff, rng)
         exp_thr, web_thr = display["experiments_highlight"], display["platform_people_filter"]
         candidates = candidate_ids(rows, display["candidate_production_days"])
@@ -708,7 +780,7 @@ class UsageAttributionHandler:
                 "uncl_parts": summary["tiles"]["uncl_parts"],
                 "allocated": summary["tiles"]["allocated"],
                 "excluded": summary["tiles"]["excluded"],
-                "cli": summary["tiles"]["cli"],
+                "cli": (await spend_widgets.PlatformSpend(self._widget_context()).read(rng.start, rng.end)).cli,
             },
             "coverage": summary["coverage"],
             "reasons": summary["reasons"],
@@ -789,7 +861,15 @@ class UsageAttributionHandler:
     async def shared_project(self, rng: RangeInfo, eff: EffectiveSettings, project: str) -> dict[str, Any]:
         item, handle = await self._detail(rng, eff, SECTION_SHARED_DETAIL, project)
         threshold = self.display(eff, rng)["shared_project_threshold"]
-        row = dict(item["row"], candidate=item["row"]["ncb"] >= threshold)
+        figures = (await spend_widgets.ProjectSpend(self._widget_context()).read(rng.start, rng.end, [project])).of(
+            project
+        )
+        row = dict(
+            item["row"],
+            platform=figures.platform,
+            cli=figures.cli,
+            candidate=item["row"]["ncb"] >= threshold,
+        )
         detail = dict(item["detail"])
         detail.update(await self._project_web(rng, project))
         models: Counter = Counter()
@@ -803,8 +883,13 @@ class UsageAttributionHandler:
     async def person(self, rng: RangeInfo, eff: EffectiveSettings, uid: str) -> dict[str, Any]:
         item, handle = await self._detail(rng, eff, SECTION_PERSON_DETAIL, uid)
         display = self.display(eff, rng)
+        figures = (await spend_widgets.PeopleSpend(self._widget_context()).read(rng.start, rng.end, [uid])).of(uid)
         row = dict(
-            item["row"], exp_highlight=item["row"]["exp"] >= display["experiments_highlight"] and item["row"]["exp"] > 0
+            item["row"],
+            total=figures.total,
+            platform=figures.platform,
+            cli=figures.cli,
+            exp_highlight=item["row"]["exp"] >= display["experiments_highlight"] and item["row"]["exp"] > 0,
         )
         detail = dict(item["detail"])
         detail.update(await self._person_live(rng, eff, uid, detail))

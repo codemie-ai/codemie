@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-11-13",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "ledger_figures.py (cached ledger reads and overlay helpers for totals, tiles, pie, people and shared-project rows) and handler.py wiring; all reads go through the existing spend_service port and ledger_coverage, so no new abstraction and no new response keys." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the prior EPMCDME-17194 hourly-ledger commits. New risk is limited to the per-view cache key (window, access scope, names), never caching an incomplete ledger answer, and null-below-floor semantics. The caller's access scope is applied on every read, so the security aspect is covered by the existing pattern. The edge cases are covered by the new tests." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
