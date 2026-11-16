@@ -1794,3 +1794,203 @@ class TestCliSpendingByUsersFromLedger:
             "rows": [ReportFilter(users=(UserTerm(user_id="u-ada", aliases=frozenset({"ada"})),), projects=("alpha",))],
             "footer": ReportFilter(projects=("alpha",)),
         }
+
+
+@pytest.mark.usefixtures("unresolved_identities")
+class TestUsersActivityCliCostFromLedger:
+    """Users activity's "CLI Cost ($)" is each user's ledger CLI figure, the one CLI Insights shows."""
+
+    @staticmethod
+    def _bucket(user: str, *, metric_cli_cost: float = 99.0) -> dict:
+        # The metric documents' CLI sum, deliberately unlike the ledger: no row may read it.
+        return {
+            "key": user,
+            "doc_count": 5,
+            "1-bucket": {"1-metric": {"value": 120.0}},
+            "cli_cost_bucket": {"cli_cost": {"value": metric_cli_cost}},
+        }
+
+    @staticmethod
+    def _cli_costs(result: dict) -> dict[str, float | None]:
+        return {row["user_email"]: row["cli_cost"] for row in result["data"]["rows"]}
+
+    @pytest.mark.asyncio
+    async def test_each_users_cli_cost_is_their_own_ledger_cli_figure(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada"), self._bucket("bob")])
+        port = _group_port(
+            {
+                "u-ada": {SpendGroup.CLI: _exact("1.5"), SpendGroup.PLATFORM: _exact("70")},
+                "u-bob": {SpendGroup.CLI: _exact("2.25")},
+            }
+        )
+
+        with _patched_group_port(port):
+            result = await handler.get_users_activity(projects=["alpha"])
+
+        assert self._cli_costs(result) == {"ada": 1.5, "bob": 2.25}
+        assert port.rows.await_args.kwargs["report_filters"] == [
+            ReportFilter(users=(UserTerm(user_id="u-ada", aliases=frozenset({"ada"})),), projects=("alpha",)),
+            ReportFilter(users=(UserTerm(user_id="u-bob", aliases=frozenset({"bob"})),), projects=("alpha",)),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_user_the_ledger_has_no_cli_figure_for_reads_null_not_zero(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+
+        with _patched_group_port(_group_port({})):
+            result = await handler.get_users_activity()
+
+        assert self._cli_costs(result) == {"ada": None}
+
+    @pytest.mark.asyncio
+    async def test_a_partial_cli_figure_is_the_bare_amount(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+
+        with _patched_group_port(_group_port({"u-ada": {SpendGroup.CLI: _SHORT}})):
+            result = await handler.get_users_activity()
+
+        (row,) = result["data"]["rows"]
+        assert row["cli_cost"] == 1.25
+        assert not {"spend_unavailable", "spend_partial", "spend_missing_amount"} & set(row)
+
+    @pytest.mark.asyncio
+    async def test_the_ledger_is_read_by_the_elasticsearch_user_id_before_rows_are_renamed(
+        self, handler, mock_repository
+    ):
+        async def _rename(rows, key):
+            for row in rows:
+                row[key] = f"{row[key]}@example.com"
+
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+        port = _group_port({"u-ada": {SpendGroup.CLI: _exact("1.5")}})
+
+        with (
+            _patched_group_port(port),
+            patch(
+                "codemie.service.analytics.handlers.user_handler.UserIdentityResolver.resolve_rows",
+                new=AsyncMock(side_effect=_rename),
+            ),
+        ):
+            result = await handler.get_users_activity()
+
+        assert self._cli_costs(result) == {"ada@example.com": 1.5}
+
+    def test_no_cli_money_is_summed_in_elasticsearch(self, handler):
+        agg_body = handler._build_users_activity_aggregation({"bool": {"filter": []}}, fetch_size=20)
+
+        assert "cli_cost_bucket" not in agg_body["aggs"]["paginated_results"]["aggs"]
+
+
+@pytest.mark.usefixtures("unresolved_identities")
+class TestUsersActivityRowsAddUpAroundTheLedgerCliCost:
+    """With CLI Cost from the ledger, each row's Total, the order and the footer are built around that figure."""
+
+    @staticmethod
+    def _bucket(user: str, *, assistant: float = 3.0, workflow: float = 4.0, datasource: float = 5.0) -> dict:
+        # "1-bucket" is the metric documents' total, CLI money included - deliberately unlike the row's parts.
+        return {
+            "key": user,
+            "doc_count": 5,
+            "1-bucket": {"1-metric": {"value": 120.0}},
+            "assistant_cost_bucket": {"assistant_cost": {"value": assistant}},
+            "workflow_cost_bucket": {"workflow_cost": {"value": workflow}},
+            "datasource_cost_bucket": {"datasource_cost": {"value": datasource}},
+        }
+
+    @staticmethod
+    def _rows(result: dict) -> list[dict]:
+        return result["data"]["rows"]
+
+    @pytest.mark.asyncio
+    async def test_each_rows_total_is_its_four_cost_columns(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+
+        with _patched_group_port(_group_port({"u-ada": {SpendGroup.CLI: _exact("1.5")}})):
+            (row,) = self._rows(await handler.get_users_activity())
+
+        assert row["cli_cost"] == 1.5
+        assert row["total_cost"] == row["assistant_cost"] + row["workflow_cost"] + row["datasource_cost"] + 1.5 == 13.5
+
+    @pytest.mark.asyncio
+    async def test_an_unavailable_cli_figure_is_null_and_the_total_is_the_known_parts(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+
+        with _patched_group_port(_group_port({})):
+            (row,) = self._rows(await handler.get_users_activity())
+
+        assert row["cli_cost"] is None
+        assert row["total_cost"] == 12.0
+
+    @pytest.mark.asyncio
+    async def test_a_measured_zero_cli_figure_is_a_zero_and_adds_nothing(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+
+        with _patched_group_port(_group_port({"u-ada": {SpendGroup.CLI: _exact("0")}})):
+            (row,) = self._rows(await handler.get_users_activity())
+
+        assert row["cli_cost"] == 0.0
+        assert row["total_cost"] == 12.0
+
+    @pytest.mark.asyncio
+    async def test_rows_are_ordered_by_the_total_they_show(self, handler, mock_repository):
+        # Elasticsearch lists ada first by the metric documents' money; bob's ledger CLI spend puts him first.
+        _answer_buckets(mock_repository, [self._bucket("ada"), self._bucket("bob", assistant=1.0)])
+        port = _group_port({"u-ada": {SpendGroup.CLI: _exact("1")}, "u-bob": {SpendGroup.CLI: _exact("500")}})
+
+        with _patched_group_port(port):
+            rows = self._rows(await handler.get_users_activity())
+
+        assert [row["user_email"] for row in rows] == ["bob", "ada"]
+        assert [row["total_cost"] for row in rows] == [510.0, 13.0]
+
+    @pytest.mark.asyncio
+    async def test_the_footer_sums_the_cells_of_every_candidate_row_not_only_the_page(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada"), self._bucket("bob"), self._bucket("eve")])
+        port = _group_port({"u-ada": {SpendGroup.CLI: _exact("42.5")}, "u-bob": {SpendGroup.CLI: _exact("18")}})
+
+        with _patched_group_port(port):
+            result = await handler.get_users_activity(per_page=1)
+
+        totals = result["data"]["totals"]
+        assert len(self._rows(result)) == 1
+        assert totals["cli_cost"] == 60.5
+        assert totals["total_cost"] == 54.5 + 30.0 + 12.0
+        assert totals["assistant_cost"] == 9.0
+
+    @pytest.mark.asyncio
+    async def test_a_failed_ledger_read_flags_every_rows_cli_and_total_and_the_footer(self, handler, mock_repository):
+        # A failed batch reaches the table as no figure for every row: the port's own answer to a ledger that fails.
+        _answer_buckets(mock_repository, [self._bucket("ada"), self._bucket("bob")])
+
+        with _patched_group_port(_group_port({})):
+            result = await handler.get_users_activity()
+
+        for row in self._rows(result):
+            assert row["cli_cost"] is None
+            assert row["cli_cost_spend_unavailable"] is True
+            assert row["total_cost"] == 12.0, "the Total still shows the parts it knows"
+            assert row["total_cost_spend_unavailable"] is True
+            assert row["total_cost_spend_partial"] is True
+        totals = result["data"]["totals"]
+        assert "cli_cost" not in totals
+        assert totals["cli_cost_spend_unavailable"] is True
+        assert totals["total_cost"] == 24.0
+        assert totals["total_cost_spend_unavailable"] is True
+        assert totals["total_cost_spend_partial"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_exact_ledger_read_flags_no_cell_and_no_footer(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+
+        with _patched_group_port(_group_port({"u-ada": {SpendGroup.CLI: _exact("1.5")}})):
+            result = await handler.get_users_activity()
+
+        (row,) = self._rows(result)
+        flags = {
+            f"{column}_{flag}"
+            for column in ("cli_cost", "total_cost")
+            for flag in ("spend_unavailable", "spend_partial")
+        }
+        assert {key: row[key] for key in flags} == dict.fromkeys(flags, False)
+        assert {key: result["data"]["totals"][key] for key in flags} == dict.fromkeys(flags, False)
+        assert (row["cli_cost"], row["total_cost"]) == (1.5, 13.5)

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Make the CLI Insights user-details Total Cost and Est. Monthly figures reconcile with the spend-ledger CLI cost shown in the filtered overview and user row (same identity/project/date filters), qualifying or hiding them when unreliable, with regression tests.",
+  "generated": "2026-11-13T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "CLI Insights detail payload and key-metric cards in the insights handler, the coupled classification/rule-reason and repository-cost path (classification engine), read-only reuse of the shared ledger group-spend and report-filter utilities, plus the UI tab-to-modal identity hand-off and card presentation in the sibling codemie-ui repo: 3-4 components across 2-3 layers with shared utilities involved." },
+    { "dimension": "file_change_estimate", "reason": "Backend: insights handler, possibly classification engine and CLI constants, analytics service delegation, and the large CLI handler test module; UI: CLIInsightsTab, user-details modal, detail-param helpers, detail hook and their tests. Roughly 8-10 modified files across 3+ directories spanning two repos, 0-2 new." },
+    { "dimension": "technical_risk", "reason": "Scored M, not S: the exact per-user CLI ledger read pattern exists (_cli_spend_by_user) and the RenderedSpend/spend_* qualification vocabulary and forecast-state tests already exist, so no auto-bump for security or edge-case test gaps; but behaviour depends on the ledger coverage floor, detail spend also drives classification/rule reasons, and 8 detail endpoints each recomputing the payload risk multiplying ledger reads." },
+    { "dimension": "requirements_clarity", "reason": "Acceptance criteria are concrete (reconcile to ledger, same filters/identity, hide-or-qualify, estimate distinguished, regression tests), but open decisions remain: hide vs mark unavailable, whether classification and repository cost follow the new source, and how the backend/UI split is drawn." },
+    { "dimension": "calibration", "reason": "Consistent with the bundled M example epmcdme-10203 (total 15, three-layer change on established pattern); this task scores higher on component scope and file count because of the cross-repo UI hand-off and coupled classification path." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

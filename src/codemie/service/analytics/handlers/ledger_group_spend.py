@@ -188,6 +188,46 @@ async def read_group_spend(
     ]
 
 
+async def group_spend_by_user(
+    period: TimeRange | None,
+    access: AccessScope,
+    identifiers: Sequence[str],
+    projects: Sequence[str] | None,
+    group: SpendGroup,
+) -> list[RenderedSpend]:
+    """Each user's figure for one group under the dashboard's projects filter, in order, from one batched read.
+
+    The one composition of "this person's figure on this dashboard" every per-user table uses - CLI Insights,
+    the Analytics spending and activity tables - so the same person reads the same figure on each of them.
+    An unreadable window resolves nobody and asks the port nothing.
+    """
+    table = (
+        await user_report_filters(identifiers, projects)
+        if period is not None and identifiers
+        else TableFilters.naming_nobody(len(identifiers))
+    )
+    return await read_group_spend(period, access, table.common, table.rows, group)
+
+
+async def group_spend_by_project(
+    period: TimeRange | None,
+    access: AccessScope,
+    names: Sequence[str],
+    users: Sequence[str] | None,
+    group: SpendGroup,
+) -> list[RenderedSpend]:
+    """Each project's figure for one group under the dashboard's users filter, in order: `group_spend_by_user`'s twin.
+
+    A row with no project name - the unattributed bucket - names nobody and gets no figure.
+    """
+    table = (
+        await project_report_filters(names, users)
+        if period is not None and names
+        else TableFilters.naming_nobody(len(names))
+    )
+    return await read_group_spend(period, access, table.common, table.rows, group)
+
+
 def _carries_common_term(report_filter: ReportFilter, common_filter: ReportFilter) -> bool:
     carries_users = not common_filter.users or report_filter.users == common_filter.users
     carries_projects = not common_filter.projects or (

@@ -28,7 +28,11 @@ import pytest
 
 from codemie.service.spend.coverage import Portion, SpendDimension, SpendResult, TimeRange
 from codemie.service.spend.rendering import (
+    RenderedSpend,
+    column_cell_spend,
+    column_money_cells,
     combine_rendered_spend,
+    money_cell,
     render_budget_spend,
     render_spend,
     report_period_or_none,
@@ -122,6 +126,57 @@ class TestTheRowFields:
         fields = spend_row_fields(SpendResult(figure=Decimal("1"), unavailable=PERIOD))
         assert fields["spend_unavailable"] is True
         assert fields["spend_partial"] is False
+
+
+class TestTheMoneyCell:
+    """The value every money cell holds, whether its flags sit beside it unprefixed or keyed by its column."""
+
+    def test_an_exact_figure_is_its_amount(self) -> None:
+        assert money_cell(render_spend(SpendResult(figure=Decimal("12.5")))) == 12.5
+
+    def test_a_measured_zero_is_a_zero(self) -> None:
+        assert money_cell(render_spend(SpendResult(figure=Decimal("0")))) == 0.0
+
+    def test_a_partial_figure_is_the_bare_amount(self) -> None:
+        partial = SpendResult(figure=Decimal("3"), partial={SpendDimension.IDENTITY_BRIDGE: Portion(None, None)})
+        assert money_cell(render_spend(partial)) == 3.0
+
+    def test_a_figure_truncated_at_the_coverage_floor_is_the_bare_amount(self) -> None:
+        """The amount CLI Insights shows for the same figure - never a dash beside it on another table."""
+        assert money_cell(render_spend(SpendResult(figure=Decimal("9"), unavailable=PERIOD))) == 9.0
+
+    def test_no_figure_is_none_and_never_a_zero(self) -> None:
+        assert money_cell(render_spend(SpendResult.no_figure(PERIOD))) is None
+
+
+class TestTheColumnMoneyCells:
+    """A row with several money columns keys each column's flags by that column, as a footer does."""
+
+    def test_the_cell_and_its_three_flags_are_keyed_by_the_column(self) -> None:
+        rendered = render_spend(SpendResult(figure=Decimal("9"), unavailable=PERIOD))
+
+        assert column_money_cells("cli_cost", rendered) == {
+            "cli_cost": 9.0,
+            "cli_cost_spend_unavailable": True,
+            "cli_cost_spend_partial": False,
+            "cli_cost_spend_missing_amount": None,
+        }
+
+    def test_no_figure_is_a_none_cell_flagged_unavailable(self) -> None:
+        cells = column_money_cells("cli_cost", render_spend(SpendResult.no_figure(PERIOD)))
+
+        assert cells["cli_cost"] is None
+        assert cells["cli_cost_spend_unavailable"] is True
+
+    def test_the_cells_read_back_as_the_figure_they_were_written_from(self) -> None:
+        partial = SpendResult(
+            figure=Decimal("3"), partial={SpendDimension.IDENTITY_BRIDGE: Portion(spend=Decimal("2"), rows=4)}
+        )
+        row = {"other": 1, **column_money_cells("total_cost", render_spend(partial))}
+
+        assert column_cell_spend(row, "total_cost") == RenderedSpend(
+            figure=3.0, unavailable=False, partial=True, missing_amount=2.0
+        )
 
 
 class TestTheFooter:

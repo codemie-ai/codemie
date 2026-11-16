@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17180_cli-insights-user-id",
+  "head": "9d9c0e8f9f265142f118b9214853baed3c201ef4",
+  "runner": "custom",
+  "started_at": "2026-11-13T16:37:40Z",
+  "completed_at": "2026-11-13T17:31:55Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 227303,
+      "command": "npm run lint",
+      "exit_code": 0,
+      "notes": "Re-run after npm ci. Run with npm_config_script_shell=\"C:/Program Files/Git/bin/bash.exe\" set only for this command. No eslint output. The earlier openapi-typescript import/no-unresolved error is gone because node_modules/openapi-typescript is now installed. Auto-fix was not needed."
+    },
+    {
+      "id": "typecheck",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 160813,
+      "command": "npm run typecheck",
+      "exit_code": 0,
+      "notes": "No tsc output. Script shell: C:/Program Files/Git/bin/bash.exe."
+    },
+    {
+      "id": "unit-tests",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1461893,
+      "command": "npm run test:unit:slnt",
+      "exit_code": 0,
+      "notes": "Test Files  906 passed (906); Tests  9477 passed | 1 skipped (9478). Gates ran one at a time, with no lint or gitleaks running at the same time. The Popup stacked-dialog focus-trap test that failed last run passed this time."
+    },
+    {
+      "id": "integration-tests",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 714066,
+      "command": "npm run test:integration:slnt",
+      "exit_code": 0,
+      "notes": "Test Files  84 passed (84); Tests  905 passed | 1 skipped (906)"
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 209790,
+      "command": "npm run secrets:check",
+      "exit_code": 0,
+      "notes": "Also enforced by .husky/pre-commit. Attempts 1 and 2 used script shell C:/Program Files/Git/bin/bash.exe and exited 1 with 'Docker daemon is not running'. The daemon was in fact up ('docker info' reported Server Version 23.0.6). Git's bin/bash.exe is a login-shell wrapper that moves ~/bin ahead of the Rancher Desktop path that was put first on PATH, so the script's 'where docker' found the ~/bin/docker shim instead of docker.exe. Attempt 3 used the non-login script shell C:/Program Files/Git/usr/bin/bash.exe, so Rancher's docker.exe stayed first. Gitleaks then ran: 'scanned ~119024750 bytes (119.02 MB) in 3m19s' / 'no leaks found'. Scans the working tree only, not git history. No npmrc was changed."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 17343,
+      "command": "npm run license-check",
+      "exit_code": 0,
+      "notes": "Run with npm_config_script_shell=\"C:/Program Files/Git/bin/bash.exe\" set only for this command (no npmrc change). Under cmd.exe the single-quoted --onlyAllow list is mangled, which caused the earlier false rejection of @adobe/css-tools (MIT). The licence summary printed (MIT: 1014, ISC: 50, Apache-2.0: 35, ...) with no 'Found error' on stderr."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 4050,
+      "command": "npm run sonar-local",
+      "exit_code": 0,
+      "notes": "Also enforced by .husky/pre-commit. Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' To run it locally, set SONAR_TOKEN and make sure the Sonar host is reachable; the scan would also run test:coverage. Only CI can settle this check."
+    },
+    {
+      "id": "ui",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "",
+      "exit_code": null,
+      "notes": "UI surface changed but no configured UI test script; browser verification is a separate caller decision."
+    },
+    {
+      "id": "lint-staged-prettier",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 6905,
+      "command": "npx prettier --check src/pages/analytics/components/CLIInsightsTab.tsx src/pages/analytics/components/__tests__/CLIInsightsTab.test.tsx src/pages/analytics/components/cliInsights/CLIInsightsUserDetailsModal.tsx src/pages/analytics/components/cliInsights/__tests__/CLIInsightsUserDetailsModal.test.tsx",
+      "exit_code": 0,
+      "notes": "'All matched files use Prettier code style!' This replaces the 'prettier --write' step of the .husky/pre-commit 'npx lint-staged' with a check that changes nothing, run on the 4 changed files. The lint-staged steps 'eslint --fix', 'tsc --noEmit' and the license-header fix are covered by the lint, typecheck and license-headers gates."
+    },
+    {
+      "id": "license-headers",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 5607,
+      "command": "npm run license-headers:check",
+      "exit_code": 0,
+      "notes": "Checked 2786 files, 0 missing license headers"
+    },
+    {
+      "id": "wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml::wait-ci-init (extends .wait-ci-init-template from epm-cdme/codemie-gitlab-templates@0.1.2)",
+      "exit_code": null,
+      "notes": "Waits for the external ci-pipeline and compliance-report contexts on a GitLab MR to main. This needs GitLab MR infrastructure and cannot be run locally; only CI can settle it."
+    }
+  ],
+  "failures": {}
+}

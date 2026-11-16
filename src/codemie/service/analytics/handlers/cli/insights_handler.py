@@ -19,7 +19,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable
 from datetime import datetime
+from typing import Any
 
 from codemie.clients.postgres import get_async_session
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
@@ -31,11 +33,11 @@ from codemie.service.analytics.handlers.field_constants import (
     USER_EMAIL_KEYWORD_FIELD,
 )
 from codemie.service.analytics.handlers.ledger_group_spend import (
-    project_report_filters,
-    read_group_spend,
-    user_report_filters,
+    dashboard_group_spend,
+    group_spend_by_project,
+    group_spend_by_user,
 )
-from codemie.service.analytics.handlers.money_coverage import money_coverage_aggs, read_money_coverage
+from codemie.service.analytics.handlers.money_coverage import money_coverage_aggs
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters
@@ -45,6 +47,7 @@ from codemie.service.spend.rendering import (
     RenderedSpend,
     apply_spend_cells,
     combine_rendered_spend,
+    render_spend,
     spend_fields,
     time_range_or_none,
 )
@@ -80,8 +83,10 @@ from .constants import (
     USER_ID_KEYWORD_FIELD,
     USER_NAME_KEYWORD_FIELD,
 )
+from .detail_request import CLIUserDetailRequest
 
 logger = logging.getLogger(__name__)
+
 
 #: Money column id shared by every CLI insight table, so a row's figure and the three values that
 #: qualify it are never written under two spellings on two tables.
@@ -100,19 +105,25 @@ def _spend_order(spend: RenderedSpend) -> tuple[bool, float]:
     return spend.figure is not None, spend.figure or 0.0
 
 
-def _projected_monthly_spend(spend: RenderedSpend, analysis_days: int) -> RenderedSpend:
-    """A 20-working-day projection of one window's spend, qualified exactly as its input is.
+#: The estimate's month: 20 x the daily average over the period, as the card's label says.
+_PROJECTED_MONTH_DAYS = 20
 
-    **A projection from a subtotal is a subtotal projected.** It is its input scaled by a count of
-    days, so it inherits its input's state and adds nothing: no figure from no figure - never
-    `$0.00`, which on a forecast card is the concrete claim *this person will cost nothing next
-    month* - and `partial` from `partial`, because scaling a figure that is short by an unknown
-    amount leaves it short by twenty-twentieths of an unknown amount.
+
+def _projected_monthly_spend(spend: RenderedSpend, start_dt: datetime, end_dt: datetime) -> RenderedSpend:
+    """20 x the daily average over the period, qualified exactly as the period's figure is.
+
+    The period counts its whole days, and a period shorter than a day counts as one.
+
+    **Whatever figure Total Cost has is projected** (product decision): a partial or truncated figure
+    projects to an estimate in the same state, so the card says what Total Cost beside it says. No
+    figure projects to no figure - never `$0.00`, which on a forecast card is the concrete claim
+    *this person will cost nothing next month*.
     """
     if spend.figure is None:
         return spend
+    period_days = max((end_dt - start_dt).days, 1)
     return RenderedSpend(
-        figure=round((spend.figure / analysis_days) * 20, 2),
+        figure=round((spend.figure / period_days) * _PROJECTED_MONTH_DAYS, 2),
         unavailable=spend.unavailable,
         partial=spend.partial,
         missing_amount=None,
@@ -163,18 +174,31 @@ class CLIInsightsHandler(CLIBaseHandler):
         metric document never received. The caller's boundary and the dashboard's projects filter
         narrow every figure, because the rows beside it were narrowed by them.
         """
-        table = await user_report_filters(user_ids, projects)
-        return await read_group_spend(
-            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, table.common, table.rows, SpendGroup.CLI
+        return await group_spend_by_user(
+            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, user_ids, projects, SpendGroup.CLI
+        )
+
+    async def _cli_spend_of_user(
+        self, user_id: str | None, start_dt: datetime, end_dt: datetime, projects: list[str] | None
+    ) -> RenderedSpend:
+        """One user's CLI spend, read with that user in the ledger query - the read the overview card makes.
+
+        Equal to that user's slot in `_cli_spend_by_user`, which scans the whole boundary to answer a
+        table; one person's details have no table to amortise that scan over. No id is no figure, and is
+        never asked: the one-user read takes an empty user list as everyone.
+        """
+        if not user_id:
+            return render_spend(None)
+        return await dashboard_group_spend(
+            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, [user_id], projects, SpendGroup.CLI
         )
 
     async def _cli_spend_by_project(
         self, project_names: list[str], start_dt: datetime, end_dt: datetime, users: list[str] | None
     ) -> list[RenderedSpend]:
         """Each project's CLI spend from the spend port's CLI group, in the order of `project_names`."""
-        table = await project_report_filters(project_names, users)
-        return await read_group_spend(
-            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, table.common, table.rows, SpendGroup.CLI
+        return await group_spend_by_project(
+            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, project_names, users, SpendGroup.CLI
         )
 
     async def get_cli_insights_weekday_pattern(
@@ -449,6 +473,7 @@ class CLIInsightsHandler(CLIBaseHandler):
 
     async def get_cli_insights_user_detail(
         self,
+        *,
         user_name: str,
         user_id: str | None = None,
         time_period: str | None = None,
@@ -458,7 +483,7 @@ class CLIInsightsHandler(CLIBaseHandler):
         projects: list[str] | None = None,
     ) -> dict:
         """Get drilldown detail for a single CLI user."""
-        detail = await self._get_cli_insights_user_detail_payload(
+        request = CLIUserDetailRequest(
             user_name=user_name,
             user_id=user_id,
             time_period=time_period,
@@ -467,167 +492,141 @@ class CLIInsightsHandler(CLIBaseHandler):
             users=users,
             projects=projects,
         )
-        return self._format_custom_detail_response(
-            detail=detail,
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-        )
+        detail = await self._get_cli_insights_user_charged_payload(request)
+        return self._format_custom_detail_response(detail=detail, **self._cli_user_detail_filters(request))
 
     async def get_cli_insights_user_key_metrics(self, **kwargs) -> dict:
         """Get key metrics widget data for a CLI user detail modal."""
-        detail = await self._get_cli_insights_user_detail_payload(**kwargs)
-        return self._format_custom_summary_response(
-            metrics=detail["key_metrics"]["data"]["metrics"],
-            time_period=kwargs.get("time_period"),
-            start_date=kwargs.get("start_date"),
-            end_date=kwargs.get("end_date"),
-            users=kwargs.get("users"),
-            projects=kwargs.get("projects"),
-        )
+        request = CLIUserDetailRequest(**kwargs)
+        detail = await self._get_cli_insights_user_charged_payload(request)
+        return self._format_cli_user_detail_summary(request, detail["key_metrics"])
 
     async def get_cli_insights_user_tools(self, **kwargs) -> dict:
         """Get tools donut widget data for a CLI user detail modal."""
-        detail = await self._get_cli_insights_user_detail_payload(**kwargs)
-        tools_chart = detail["tools_chart"]
-        rows = tools_chart["data"]["rows"]
-        columns = tools_chart["data"]["columns"]
-        return self._format_custom_tabular_response(
-            rows=rows,
-            columns=columns,
-            time_period=kwargs.get("time_period"),
-            start_date=kwargs.get("start_date"),
-            end_date=kwargs.get("end_date"),
-            users=kwargs.get("users"),
-            projects=kwargs.get("projects"),
-            page=0,
-            per_page=max(len(rows), 1),
-        )
+        request = CLIUserDetailRequest(**kwargs)
+        detail = await self._get_cli_insights_user_usage_payload(request)
+        return self._format_cli_user_detail_table(request, detail["tools_chart"])
 
     async def get_cli_insights_user_models(self, **kwargs) -> dict:
         """Get models donut widget data for a CLI user detail modal."""
-        detail = await self._get_cli_insights_user_detail_payload(**kwargs)
-        models_chart = detail["models_chart"]
-        rows = models_chart["data"]["rows"]
-        columns = models_chart["data"]["columns"]
-        return self._format_custom_tabular_response(
-            rows=rows,
-            columns=columns,
-            time_period=kwargs.get("time_period"),
-            start_date=kwargs.get("start_date"),
-            end_date=kwargs.get("end_date"),
-            users=kwargs.get("users"),
-            projects=kwargs.get("projects"),
-            page=0,
-            per_page=max(len(rows), 1),
-        )
+        request = CLIUserDetailRequest(**kwargs)
+        detail = await self._get_cli_insights_user_usage_payload(request)
+        return self._format_cli_user_detail_table(request, detail["models_chart"])
 
     async def get_cli_insights_user_workflow_intent(self, **kwargs) -> dict:
         """Get workflow intent widget data for a CLI user detail modal."""
-        detail = await self._get_cli_insights_user_detail_payload(**kwargs)
-        return self._format_custom_summary_response(
-            metrics=detail["workflow_intent_metrics"]["data"]["metrics"],
-            time_period=kwargs.get("time_period"),
-            start_date=kwargs.get("start_date"),
-            end_date=kwargs.get("end_date"),
-            users=kwargs.get("users"),
-            projects=kwargs.get("projects"),
-        )
+        request = CLIUserDetailRequest(**kwargs)
+        detail = await self._get_cli_insights_user_usage_payload(request)
+        return self._format_cli_user_detail_summary(request, detail["workflow_intent_metrics"])
 
     async def get_cli_insights_user_classification_detail(self, **kwargs) -> dict:
         """Get classification widget data for a CLI user detail modal."""
-        detail = await self._get_cli_insights_user_detail_payload(**kwargs)
-        return self._format_custom_summary_response(
-            metrics=detail["classification_metrics"]["data"]["metrics"],
-            time_period=kwargs.get("time_period"),
-            start_date=kwargs.get("start_date"),
-            end_date=kwargs.get("end_date"),
-            users=kwargs.get("users"),
-            projects=kwargs.get("projects"),
-        )
+        request = CLIUserDetailRequest(**kwargs)
+        detail = await self._get_cli_insights_user_charged_payload(request)
+        return self._format_cli_user_detail_summary(request, detail["classification_metrics"])
 
     async def get_cli_insights_user_category_breakdown(self, **kwargs) -> dict:
         """Get category breakdown widget data for a CLI user detail modal."""
-        detail = await self._get_cli_insights_user_detail_payload(**kwargs)
-        category_breakdown_chart = detail["category_breakdown_chart"]
-        rows = category_breakdown_chart["data"]["rows"]
-        columns = category_breakdown_chart["data"]["columns"]
-        return self._format_custom_tabular_response(
-            rows=rows,
-            columns=columns,
-            time_period=kwargs.get("time_period"),
-            start_date=kwargs.get("start_date"),
-            end_date=kwargs.get("end_date"),
-            users=kwargs.get("users"),
-            projects=kwargs.get("projects"),
-            page=0,
-            per_page=max(len(rows), 1),
-        )
+        request = CLIUserDetailRequest(**kwargs)
+        detail = await self._get_cli_insights_user_usage_payload(request)
+        return self._format_cli_user_detail_table(request, detail["category_breakdown_chart"])
 
     async def get_cli_insights_user_repositories(self, **kwargs) -> dict:
         """Get repositories table widget data for a CLI user detail modal."""
-        detail = await self._get_cli_insights_user_detail_payload(**kwargs)
-        repositories_table = detail["repositories_table"]
-        rows = repositories_table["data"]["rows"]
-        columns = repositories_table["data"]["columns"]
-        return self._format_custom_tabular_response(
-            rows=rows,
-            columns=columns,
-            time_period=kwargs.get("time_period"),
-            start_date=kwargs.get("start_date"),
-            end_date=kwargs.get("end_date"),
-            users=kwargs.get("users"),
-            projects=kwargs.get("projects"),
-            page=0,
-            per_page=max(len(rows), 1),
+        request = CLIUserDetailRequest(**kwargs)
+        detail = await self._get_cli_insights_user_usage_payload(request)
+        return self._format_cli_user_detail_table(request, detail["repositories_table"])
+
+    @staticmethod
+    def _cli_user_detail_filters(request: CLIUserDetailRequest) -> dict[str, Any]:
+        """The dashboard filters a details response reports, as the formatters' keyword arguments."""
+        return {
+            "time_period": request.time_period,
+            "start_date": request.start_date,
+            "end_date": request.end_date,
+            "users": request.users,
+            "projects": request.projects,
+        }
+
+    def _format_cli_user_detail_summary(self, request: CLIUserDetailRequest, section: dict[str, Any]) -> dict[str, Any]:
+        """One details summary widget, reported under the request's filters."""
+        return self._format_custom_summary_response(
+            metrics=section["data"]["metrics"], **self._cli_user_detail_filters(request)
         )
 
-    async def _get_cli_insights_user_detail_payload(
-        self,
-        user_name: str,
-        user_id: str | None = None,
-        time_period: str | None = None,
-        start_date: datetime | None = None,
-        end_date: datetime | None = None,
-        users: list[str] | None = None,
-        projects: list[str] | None = None,
-    ) -> dict:
-        """Build the full CLI user detail payload used by user detail widgets."""
+    def _format_cli_user_detail_table(self, request: CLIUserDetailRequest, section: dict[str, Any]) -> dict[str, Any]:
+        """One details table or chart widget, whole on one page, reported under the request's filters."""
+        rows = section["data"]["rows"]
+        return self._format_custom_tabular_response(
+            rows=rows,
+            columns=section["data"]["columns"],
+            page=0,
+            per_page=max(len(rows), 1),
+            **self._cli_user_detail_filters(request),
+        )
+
+    async def _get_cli_insights_user_usage_payload(self, request: CLIUserDetailRequest) -> dict[str, Any]:
+        """The detail modal's usage section: Elasticsearch usage only, no user-level money, no classification.
+
+        The tools, models, workflow-intent, category and repository widgets read only this, so none of
+        them reads the ledger.
+        """
+        _user_id, _start_dt, _end_dt, detail_query = await self._prepare_cli_user_detail(request)
+        aggregation_result, tool_docs_result = await asyncio.gather(*self._cli_user_detail_es_reads(detail_query))
+        return self._parse_cli_insights_user_usage_result(request.user_name, aggregation_result, tool_docs_result)
+
+    async def _get_cli_insights_user_charged_payload(self, request: CLIUserDetailRequest) -> dict[str, Any]:
+        """The usage section plus the money and the labels that money decides.
+
+        The user's figure is the ledger's CLI figure for that id under the dashboard's projects and
+        window - the figure their CLI Insights row and the overview card show - so they cannot disagree.
+        No resolvable id is no figure rather than everyone's spend.
+        """
+        resolved_id, start_dt, end_dt, detail_query = await self._prepare_cli_user_detail(request)
+        aggregation_result, tool_docs_result, user_spend = await asyncio.gather(
+            *self._cli_user_detail_es_reads(detail_query),
+            self._cli_spend_of_user(resolved_id, start_dt, end_dt, request.projects),
+        )
+        usage = self._parse_cli_insights_user_usage_result(request.user_name, aggregation_result, tool_docs_result)
+        return self._with_cli_user_charged_section(
+            usage,
+            spend=user_spend,
+            period=(start_dt, end_dt),
+        )
+
+    async def _prepare_cli_user_detail(
+        self, request: CLIUserDetailRequest
+    ) -> tuple[str | None, datetime, datetime, dict[str, Any]]:
+        """The user id (resolved from the name when absent), the window and the details' entity query."""
+        user_id = request.user_id
         if not user_id:
             user_id = await self._resolve_cli_insights_user_id(
-                entity_name=user_name,
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
+                entity_name=request.user_name,
+                time_period=request.time_period,
+                start_date=request.start_date,
+                end_date=request.end_date,
+                users=request.users,
+                projects=request.projects,
             )
-        start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
+        start_dt, end_dt = TimeParser.parse(request.time_period, request.start_date, request.end_date)
         detail_query = self._build_cli_insights_entity_query(
             start_dt,
             end_dt,
-            users,
-            projects,
-            entity_name=user_name,
+            request.users,
+            request.projects,
+            entity_name=request.user_name,
             entity_id=user_id,
         )
-        aggregation_result, tool_docs_result = await asyncio.gather(
+        return user_id, start_dt, end_dt, detail_query
+
+    def _cli_user_detail_es_reads(
+        self, detail_query: dict[str, Any]
+    ) -> tuple[Awaitable[dict[str, Any]], Awaitable[dict[str, Any]]]:
+        """The two Elasticsearch reads behind every detail section, as awaitables for one `gather`."""
+        return (
             self.repository.execute_aggregation_query(self._build_cli_insights_user_detail_aggregation(detail_query)),
-            self.repository.execute_search_query(
-                self._build_cli_insights_tool_docs_query(detail_query),
-                size=10000,
-            ),
+            self.repository.execute_search_query(self._build_cli_insights_tool_docs_query(detail_query), size=10000),
         )
-        detail = self._parse_cli_insights_user_detail_result(
-            user_name=user_name,
-            result=aggregation_result,
-            tool_docs_result=tool_docs_result,
-            start_dt=start_dt,
-            end_dt=end_dt,
-        )
-        return detail
 
     async def _resolve_cli_insights_user_id(
         self,
@@ -1307,10 +1306,6 @@ class CLIInsightsHandler(CLIBaseHandler):
                 "proxy_usage": {
                     "filter": proxy_filter,
                     "aggs": {
-                        "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
-                        # The detail modal's Total Cost card and its Est. Monthly projection both come
-                        # from this sum, so it is read with its coverage. Already proxy-only.
-                        **money_coverage_aggs(MONEY_SPENT_FIELD),
                         "input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
                         "output_tokens": {"sum": {"field": OUTPUT_TOKENS_FIELD}},
                         "cache_read_tokens": {"sum": {"field": CACHE_READ_INPUT_TOKENS_FIELD}},
@@ -1379,29 +1374,17 @@ class CLIInsightsHandler(CLIBaseHandler):
             },
         }
 
-    def _extract_cli_user_detail_core_metrics(
-        self,
-        *,
-        user_name: str,
-        aggs: dict,
-        start_dt: datetime,
-        end_dt: datetime,
-    ) -> dict:
-        """Extract scalar user detail metrics from aggregation buckets.
+    def _extract_cli_user_detail_core_metrics(self, *, user_name: str, aggs: dict[str, Any]) -> dict[str, Any]:
+        """Extract scalar usage metrics from aggregation buckets.
 
-        `spend` and `est_monthly_spend` are qualified figures rather than floats. The proxy sum skips
-        every request whose cost never settled, so `... or 0` gave the modal a Total Cost card reading
-        `$0.00` *and* an Est. Monthly card projecting that zero forward - a forecast asserting the
-        person will cost nothing next month, from a window nobody has a cost for.
-
-        Prompts, commands, files, sessions and active days are counts and stay counts.
+        No money: the user's charged figure is the ledger's, read by the charged section. Prompts,
+        commands, files, sessions and active days are counts and stay counts.
         """
         usage_aggs = aggs.get("tool_usage", {})
         session_aggs = aggs.get("session_usage", {})
         completed_session_aggs = aggs.get("completed_sessions", {})
         proxy_aggs = aggs.get("proxy_usage", {})
         total_sessions = int(session_aggs.get("total_sessions", {}).get("value", 0) or 0)
-        spend = read_money_coverage(proxy_aggs, MONEY_COLUMN)
         total_prompts = int(usage_aggs.get("total_prompts", {}).get("value", 0) or 0)
         total_lines_added = int(usage_aggs.get("total_lines_added", {}).get("value", 0) or 0)
         total_lines_removed = int(usage_aggs.get("total_lines_removed", {}).get("value", 0) or 0)
@@ -1410,13 +1393,11 @@ class CLIInsightsHandler(CLIBaseHandler):
             float(completed_session_aggs.get("avg_duration_ms", {}).get("value", 0) or 0) / 60000,
             2,
         )
-        analysis_days = max((end_dt - start_dt).days or 0, 1)
         resolved_user_name = self._extract_top_metric(aggs, "user_name", USER_NAME_KEYWORD_FIELD) or user_name
         return {
             "resolved_user_name": resolved_user_name,
             "user_email": self._extract_top_metric(aggs, "user_email", USER_EMAIL_KEYWORD_FIELD) or resolved_user_name,
             "total_sessions": total_sessions,
-            "spend": spend,
             "total_prompts": total_prompts,
             "total_commands": int(usage_aggs.get("total_commands", {}).get("value", 0) or 0),
             "net_lines": total_lines_added - total_lines_removed,
@@ -1426,7 +1407,6 @@ class CLIInsightsHandler(CLIBaseHandler):
             "active_days": active_days,
             "avg_session_duration_min": avg_session_duration_min,
             "prompts_per_session": round(total_prompts / total_sessions, 2) if total_sessions else 0.0,
-            "est_monthly_spend": _projected_monthly_spend(spend, analysis_days),
             "unique_repositories": int(usage_aggs.get("unique_repositories", {}).get("value", 0) or 0),
             "proxy_aggs": proxy_aggs,
         }
@@ -1448,81 +1428,17 @@ class CLIInsightsHandler(CLIBaseHandler):
             ],
         }
 
-    def _build_cli_user_detail_widgets(
-        self,
-        *,
-        metrics: dict,
-        classification: str,
-        category_breakdown: list[dict],
-        category_spend: list[RenderedSpend],
-        repository_classifications: list[dict],
-        repository_spend: list[RenderedSpend],
-        tools: list[dict],
-        models: list[dict],
-        tool_profile: dict,
-    ) -> dict:
-        """Build widget-ready sections for the CLI user detail modal."""
-        return {
-            "key_metrics": self._build_cli_user_detail_key_metrics(
-                spend=metrics["spend"],
-                est_monthly_spend=metrics["est_monthly_spend"],
-                total_sessions=metrics["total_sessions"],
-                total_prompts=metrics["total_prompts"],
-                net_lines=metrics["net_lines"],
-                files_modified=metrics["files_modified"],
-                active_days=metrics["active_days"],
-                avg_session_duration_min=metrics["avg_session_duration_min"],
-            ),
-            "tools_chart": self._build_cli_user_detail_tools_chart(tools),
-            "models_chart": self._build_cli_user_detail_models_chart(models),
-            "workflow_intent_metrics": self._build_cli_user_detail_workflow_metrics(
-                primary_intent_label=tool_profile.get("primary_intent_label") or "Unknown",
-                intent_scores=tool_profile.get("intent_scores") or {},
-            ),
-            "classification_metrics": self._build_cli_user_detail_classification_metrics(
-                primary_category=classification,
-                is_multi_category=len(category_breakdown) > 1,
-                category_diversity_score=CLIClassificationEngine._calculate_cli_category_diversity_score(
-                    category_breakdown
-                ),
-                unique_repositories=metrics["unique_repositories"],
-            ),
-            "category_breakdown_chart": self._build_cli_user_detail_category_breakdown_chart(
-                category_breakdown, category_spend
-            ),
-            "repositories_table": self._build_cli_user_detail_repositories_table(
-                repository_classifications, repository_spend
-            ),
-        }
-
-    def _parse_cli_insights_user_detail_result(
-        self,
-        user_name: str,
-        result: dict,
-        tool_docs_result: dict,
-        start_dt: datetime,
-        end_dt: datetime,
-    ) -> dict:
-        """Parse CLI user detail aggregation into modal payload."""
+    def _parse_cli_insights_user_usage_result(
+        self, user_name: str, result: dict[str, Any], tool_docs_result: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Parse the detail aggregation into the usage section: no user-level money, no classification."""
         aggs = result.get("aggregations", {})
-        metrics = self._extract_cli_user_detail_core_metrics(
-            user_name=user_name,
-            aggs=aggs,
-            start_dt=start_dt,
-            end_dt=end_dt,
-        )
+        metrics = self._extract_cli_user_detail_core_metrics(user_name=user_name, aggs=aggs)
         collections = self._extract_cli_user_detail_collections(aggs)
-
-        classification, _confidence = CLIClassificationEngine._classify_cli_entity(
-            repositories=collections["repositories"],
-            branches=collections["branches_used"],
-            project_name=collections["unique_projects"][0] if collections["unique_projects"] else None,
-            spend=metrics["spend"],
-        )
         repository_classifications, repository_spend = CLIClassificationEngine._build_cli_repository_classifications(
             aggs.get("repositories_data", {}).get("repositories", {}).get("buckets", []),
         )
-        category_breakdown, category_spend = CLIClassificationEngine._build_cli_category_breakdown(
+        category_breakdown, _category_spend = CLIClassificationEngine._build_cli_category_breakdown(
             repository_classifications, repository_spend
         )
         tool_counts = CLIClassificationEngine._extract_cli_tool_counts(tool_docs_result)
@@ -1533,31 +1449,23 @@ class CLIInsightsHandler(CLIBaseHandler):
             if bucket["key"]
         ]
         tool_profile = CLIClassificationEngine._build_cli_tool_profile(tool_counts)
-        widgets = self._build_cli_user_detail_widgets(
-            metrics=metrics,
-            classification=classification,
-            category_breakdown=category_breakdown,
-            category_spend=category_spend,
-            repository_classifications=repository_classifications,
-            repository_spend=repository_spend,
-            tools=tools,
-            models=models,
-            tool_profile=tool_profile,
-        )
+        widgets = {
+            "tools_chart": self._build_cli_user_detail_tools_chart(tools),
+            "models_chart": self._build_cli_user_detail_models_chart(models),
+            "workflow_intent_metrics": self._build_cli_user_detail_workflow_metrics(
+                primary_intent_label=tool_profile.get("primary_intent_label") or "Unknown",
+                intent_scores=tool_profile.get("intent_scores") or {},
+            ),
+            "category_breakdown_chart": self._build_cli_user_detail_category_breakdown_chart(category_breakdown),
+            "repositories_table": self._build_cli_user_detail_repositories_table(repository_classifications),
+        }
 
         return {
             "user_name": metrics["resolved_user_name"],
             "user_email": metrics["user_email"],
-            "classification": classification,
-            "primary_category": classification,
             "total_sessions": metrics["total_sessions"],
             "total_commands": metrics["total_commands"],
             "unique_repositories": metrics["unique_repositories"],
-            # One triple qualifies both money fields: the projection is this figure scaled, so it
-            # carries the same state and a second copy would say nothing the first does not.
-            MONEY_COLUMN: metrics["spend"].figure,
-            "est_monthly_20d": metrics["est_monthly_spend"].figure,
-            **spend_fields(metrics["spend"]),
             "total_prompts": metrics["total_prompts"],
             "net_lines": metrics["net_lines"],
             "files_created": metrics["files_created"],
@@ -1570,22 +1478,70 @@ class CLIInsightsHandler(CLIBaseHandler):
             "category_diversity_score": CLIClassificationEngine._calculate_cli_category_diversity_score(
                 category_breakdown
             ),
-            "rule_reasons": CLIClassificationEngine._build_cli_rule_reasons(
-                repositories=collections["repositories"],
-                branches=collections["branches_used"],
-                spend=metrics["spend"],
-                total_sessions=metrics["total_sessions"],
-                active_days=metrics["active_days"],
-                net_lines=metrics["net_lines"],
-            ),
             "unique_projects": collections["unique_projects"],
             "branches_used": collections["branches_used"],
+            "repositories": collections["repositories"],
             "category_breakdown": category_breakdown,
             "repository_classifications": repository_classifications,
             "tools": tools,
             "models": models,
             "tool_profile": tool_profile,
             **widgets,
+        }
+
+    def _with_cli_user_charged_section(
+        self,
+        usage: dict[str, Any],
+        *,
+        spend: RenderedSpend,
+        period: tuple[datetime, datetime],
+    ) -> dict[str, Any]:
+        """The usage section plus the ledger figure and everything it decides.
+
+        Total Cost, its projection, the classification and the rule reasons all take the one ledger
+        figure, so an unavailable or partial cost is handled here exactly as the user list handles it.
+        The other classification inputs are the usage section's own repositories, branches and projects.
+        """
+        est_monthly_spend = _projected_monthly_spend(spend, *period)
+        classification, _confidence = CLIClassificationEngine._classify_cli_entity(
+            repositories=usage["repositories"],
+            branches=usage["branches_used"],
+            project_name=usage["unique_projects"][0] if usage["unique_projects"] else None,
+            spend=spend,
+        )
+        return {
+            **usage,
+            "classification": classification,
+            "primary_category": classification,
+            # The triple qualifies `total_cost`. The projection needs none of its own: it is this
+            # figure scaled, in the same state, or no figure at all.
+            MONEY_COLUMN: spend.figure,
+            "est_monthly_20d": est_monthly_spend.figure,
+            **spend_fields(spend),
+            "rule_reasons": CLIClassificationEngine._build_cli_rule_reasons(
+                repositories=usage["repositories"],
+                branches=usage["branches_used"],
+                spend=spend,
+                total_sessions=usage["total_sessions"],
+                active_days=usage["active_days"],
+                net_lines=usage["net_lines"],
+            ),
+            "key_metrics": self._build_cli_user_detail_key_metrics(
+                spend=spend,
+                est_monthly_spend=est_monthly_spend,
+                total_sessions=usage["total_sessions"],
+                total_prompts=usage["total_prompts"],
+                net_lines=usage["net_lines"],
+                files_modified=usage["files_modified"],
+                active_days=usage["active_days"],
+                avg_session_duration_min=usage["avg_session_duration_min"],
+            ),
+            "classification_metrics": self._build_cli_user_detail_classification_metrics(
+                primary_category=classification,
+                is_multi_category=usage["is_multi_category"],
+                category_diversity_score=usage["category_diversity_score"],
+                unique_repositories=usage["unique_repositories"],
+            ),
         }
 
     def _build_cli_user_detail_key_metrics(
@@ -1603,8 +1559,8 @@ class CLIInsightsHandler(CLIBaseHandler):
         """Build widget-ready key metrics section for the CLI user detail modal.
 
         Each money card carries its annotation beside its number, because a subtotal renders
-        indistinguishably from a whole figure otherwise - and on the forecast card that mistake is
-        compounded twenty-fold before the reader sees it.
+        indistinguishably from a whole figure otherwise. The forecast card carries the state of the
+        figure it projects.
         """
         return ResponseFormatter.format_summary_response(
             metrics=[
@@ -1774,29 +1730,25 @@ class CLIInsightsHandler(CLIBaseHandler):
             total_count=len(models[:8]),
         )
 
-    def _build_cli_user_detail_category_breakdown_chart(
-        self, category_breakdown: list[dict], category_spend: list[RenderedSpend]
-    ) -> dict:
+    def _build_cli_user_detail_category_breakdown_chart(self, category_breakdown: list[dict]) -> dict:
         """Build widget-ready category breakdown chart section.
 
-        The chart's rows are rebuilt from selected keys, so the money annotation is re-emitted
-        explicitly: a currency cell that leaves it behind is a subtotal rendered as a total.
+        The chart shows no cost (product decision): the per-category figure is summed from usage
+        metrics, not the ledger Total Cost shows, so it is left off rather than shown beside it.
+        The share is derived from sessions and stays.
         """
         rows = [
             {
                 "category": item["category"],
                 "percentage": item["percentage"] / 100,
-                "cost": spend.figure,
                 "sessions": item["sessions"],
-                **spend_fields(spend),
             }
-            for item, spend in zip(category_breakdown, category_spend, strict=True)
+            for item in category_breakdown
         ]
         return ResponseFormatter.format_tabular_response(
             columns=[
                 {"id": "category", "label": "Category", "type": "string"},
                 {"id": "percentage", "label": "Share", "type": "number", "format": "percentage"},
-                {"id": "cost", "label": "Cost", "type": "number", "format": "currency"},
                 {"id": "sessions", "label": "Sessions", "type": "number", "format": "number"},
             ],
             rows=rows,
@@ -1807,13 +1759,11 @@ class CLIInsightsHandler(CLIBaseHandler):
             total_count=len(rows),
         )
 
-    def _build_cli_user_detail_repositories_table(
-        self, repository_rows: list[dict], repository_spend: list[RenderedSpend]
-    ) -> dict:
-        """Build widget-ready repositories table section, money annotation included.
+    def _build_cli_user_detail_repositories_table(self, repository_rows: list[dict]) -> dict:
+        """Build widget-ready repositories table section.
 
-        The `classification` column beside the cost is decided partly by that cost, so a repository
-        whose spend never settled shows no figure here *and* was classified without a cost signal.
+        The table shows no cost (product decision): the per-repository figure is summed from usage
+        metrics, not the ledger Total Cost shows, so it is left off rather than shown beside it.
         """
         rows = [
             {
@@ -1822,11 +1772,9 @@ class CLIInsightsHandler(CLIBaseHandler):
                 "classification": row["classification"],
                 "client": row.get("client", ""),
                 "sessions": row["sessions"],
-                "cost": spend.figure,
                 "net_lines": row["net_lines"],
-                **spend_fields(spend),
             }
-            for row, spend in zip(repository_rows, repository_spend, strict=True)
+            for row in repository_rows
         ]
         return ResponseFormatter.format_tabular_response(
             columns=[
@@ -1835,7 +1783,6 @@ class CLIInsightsHandler(CLIBaseHandler):
                 {"id": "classification", "label": "Category", "type": "string"},
                 {"id": "client", "label": "Client", "type": "string"},
                 {"id": "sessions", "label": "Sessions", "type": "number", "format": "number"},
-                {"id": "cost", "label": "Cost", "type": "number", "format": "currency"},
                 {"id": "net_lines", "label": NET_LINES_LABEL, "type": "number", "format": "number"},
             ],
             rows=rows,

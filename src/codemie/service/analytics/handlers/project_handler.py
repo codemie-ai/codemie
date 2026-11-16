@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
@@ -28,7 +29,12 @@ from codemie.service.analytics.handlers.money_coverage import (
     read_money_coverage,
     split_at_floor,
 )
-from codemie.service.analytics.handlers.ledger_group_spend import project_filters_within, read_group_spend
+from codemie.service.analytics.handlers.activity_cost import activity_cost_rows
+from codemie.service.analytics.handlers.ledger_group_spend import (
+    group_spend_by_project,
+    project_filters_within,
+    read_group_spend,
+)
 from codemie.service.analytics.handlers.report_filter import report_filter_for
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import (
@@ -46,6 +52,7 @@ from codemie.service.spend.rendering import (
     combine_rendered_spend,
     render_spend,
     report_period_or_none,
+    time_range_or_none,
 )
 from codemie.service.spend.spend_group import SpendGroup
 
@@ -564,11 +571,12 @@ class ProjectHandler:
         """
         logger.info("Requesting projects-activity analytics")
 
-        return await self._pipeline.execute_tabular_query(
+        return await self._pipeline.execute_enriched_tabular_query(
             agg_builder=lambda query, fetch_size: self._build_projects_activity_aggregation(query, fetch_size),
             result_parser=self._parse_projects_activity_result,
             columns=self._get_projects_activity_columns(),
             group_by_field=PROJECT_KEYWORD_FIELD,
+            row_enricher=lambda rows, start_dt, end_dt: self._enrich_activity_cost(rows, start_dt, end_dt, users),
             filters=AnalyticsQueryFilters(
                 metric_filters=MetricName.to_list_from_group(MetricName.ACTIVITY_METRICS),
                 time_period=time_period,
@@ -579,8 +587,23 @@ class ProjectHandler:
                 page=page,
                 per_page=per_page,
             ),
-            use_bucket_selector=True,
         )
+
+    async def _enrich_activity_cost(
+        self, rows: list[dict[str, Any]], start_dt: datetime, end_dt: datetime, users: list[str] | None
+    ) -> EnrichedRows:
+        """Every candidate row's CLI Cost from the ledger - the figure CLI Insights shows that project - and its Total.
+
+        One batched read for every candidate project, each inside the dashboard's users filter and the
+        caller's boundary; `activity_cost_rows` then builds each Total from the row's parts and orders and
+        foots the table by it. The `unknown` bucket is not a project, so it is not asked about and has no
+        CLI figure.
+        """
+        names = ["" if row["project_name"] == UNATTRIBUTED_PROJECT_KEY else row["project_name"] for row in rows]
+        cli_spend = await group_spend_by_project(
+            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, names, users, SpendGroup.CLI
+        )
+        return activity_cost_rows(rows, cli_spend)
 
     def _build_projects_activity_aggregation(self, query: dict, fetch_size: int) -> dict:
         """Build terms aggregation for projects activity with fetch-and-slice.
@@ -629,18 +652,6 @@ class ProjectHandler:
                 "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.DATASOURCE_TOKENS_USAGE.value}},
                 "aggs": {"datasource_cost": {"sum": {"field": MONEY_SPENT_FIELD}}},
             },
-            # CLI costs (use NEW LiteLLM proxy metric)
-            "cli_cost_bucket": {
-                "filter": {
-                    "bool": {
-                        "filter": [
-                            {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            {"term": {CLI_REQUEST_FIELD: True}},
-                        ]
-                    }
-                },
-                "aggs": {"cli_cost": {"sum": {"field": MONEY_SPENT_FIELD}}},
-            },
             # Assistant tokens (input + output)
             "assistant_tokens_bucket": {
                 "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CONVERSATION_ASSISTANT_USAGE.value}},
@@ -665,8 +676,9 @@ class ProjectHandler:
                     "output": {"sum": {"field": OUTPUT_TOKENS_FIELD}},
                 },
             },
-            # Total cost aggregation (sum of Assistant + Workflow + Datasource + CLI)
-            # Note: CLI uses NEW LiteLLM proxy metric for accurate server-side tracking
+            # The metric documents' money, CLI included: only the order in which Elasticsearch lists the
+            # candidates under the fetch cap. The row's Total Cost is the sum of its four cost columns,
+            # CLI from the ledger, and the rows are ordered by it - see `activity_cost`.
             "1-bucket": {
                 "filter": {
                     "bool": {
@@ -728,13 +740,11 @@ class ProjectHandler:
             project_name = bucket["key"]
 
             unique_users = bucket.get("2", {}).get("unique_users", {}).get("value", 0)
-            total_cost = bucket.get("1-bucket", {}).get("1-metric", {}).get("value", 0.0)
 
             # Extract separate costs for each metric type (calculated in ES)
             assistant_cost = bucket.get("assistant_cost_bucket", {}).get("assistant_cost", {}).get("value", 0) or 0
             workflow_cost = bucket.get("workflow_cost_bucket", {}).get("workflow_cost", {}).get("value", 0) or 0
             datasource_cost = bucket.get("datasource_cost_bucket", {}).get("datasource_cost", {}).get("value", 0) or 0
-            cli_cost = bucket.get("cli_cost_bucket", {}).get("cli_cost", {}).get("value", 0) or 0
 
             # Calculate separate tokens for each metric type (sum input + output)
             assistant_input = bucket.get("assistant_tokens_bucket", {}).get("input", {}).get("value", 0) or 0
@@ -763,8 +773,9 @@ class ProjectHandler:
                     "assistant_cost": round(assistant_cost, 2),
                     "workflow_cost": round(workflow_cost, 2),
                     "datasource_cost": round(datasource_cost, 2),
-                    "cli_cost": round(cli_cost, 2),
-                    "total_cost": round(total_cost, 2),
+                    # Both filled by `_enrich_activity_cost`: CLI from the ledger, Total from the four parts.
+                    "cli_cost": None,
+                    "total_cost": None,
                     "assistant_tokens": assistant_tokens,
                     "workflow_tokens": workflow_tokens,
                     "datasource_tokens": datasource_tokens,

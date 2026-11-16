@@ -26,6 +26,8 @@ import pytest
 from codemie.service.analytics.handlers import ledger_group_spend
 from codemie.service.analytics.handlers.ledger_group_spend import (
     dashboard_group_spend,
+    group_spend_by_project,
+    group_spend_by_user,
     project_filters_within,
     project_report_filters,
     TableFilters,
@@ -329,5 +331,71 @@ class TestDashboardGroupSpend:
 
         assert figure.figure is None
         assert figure.unavailable is True
+        build.assert_not_awaited()
+        port.assert_not_awaited()
+
+
+class TestGroupSpendPerHolder:
+    """One user's or one project's figure under the dashboard's filter: the read every per-holder table shares."""
+
+    @staticmethod
+    def _port() -> AsyncMock:
+        async def _call(period, *, access, common_filter, report_filters):
+            return {
+                report_filter: {group: SpendResult.no_figure(period) for group in SpendGroup}
+                | {SpendGroup.CLI: SpendResult(figure=Decimal(len(report_filter.users) + len(report_filter.projects)))}
+                for report_filter in report_filters
+            }
+
+        return AsyncMock(side_effect=_call)
+
+    @pytest.mark.asyncio
+    async def test_each_user_is_read_as_one_person_inside_the_dashboards_projects_filter(self):
+        port = self._port()
+
+        with (
+            patch(f"{_MODULE}.report_filter_for", new=_fake_report_filter_for()),
+            patch(f"{_MODULE}.spend_service.aggregate_by_spend_group_per_filter", new=port),
+        ):
+            figures = await group_spend_by_user(PERIOD, ACCESS, ["ada", "", "bob"], ["alpha"], SpendGroup.CLI)
+
+        assert [figure.figure for figure in figures] == [2.0, None, 2.0]
+        assert port.await_args.kwargs["common_filter"] == ReportFilter(projects=("alpha",), personal_project_owners=())
+        assert [f.users for f in port.await_args.kwargs["report_filters"]] == [(_term("ada"),), (_term("bob"),)]
+        assert port.await_args.kwargs["access"] == ACCESS
+
+    @pytest.mark.asyncio
+    async def test_each_project_is_read_as_one_project_inside_the_dashboards_users_filter(self):
+        port = self._port()
+
+        with (
+            patch(f"{_MODULE}.report_filter_for", new=_fake_report_filter_for()),
+            patch(f"{_MODULE}.get_async_session", _fake_session),
+            patch.object(
+                ledger_group_spend.application_repository,
+                "aget_personal_project_owners_by_name",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(f"{_MODULE}.spend_service.aggregate_by_spend_group_per_filter", new=port),
+        ):
+            figures = await group_spend_by_project(PERIOD, ACCESS, ["alpha", ""], ["bob"], SpendGroup.CLI)
+
+        assert [figure.figure for figure in figures] == [2.0, None]
+        assert [f.projects for f in port.await_args.kwargs["report_filters"]] == [("alpha",)]
+        assert port.await_args.kwargs["common_filter"].users == (_term("bob"),)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("read", [group_spend_by_user, group_spend_by_project])
+    async def test_an_unreadable_window_resolves_nobody_and_asks_the_port_nothing(self, read):
+        build = AsyncMock()
+        port = AsyncMock()
+
+        with (
+            patch(f"{_MODULE}.report_filter_for", new=build),
+            patch(f"{_MODULE}.spend_service.aggregate_by_spend_group_per_filter", new=port),
+        ):
+            figures = await read(None, ACCESS, ["ada"], None, SpendGroup.CLI)
+
+        assert [figure.figure for figure in figures] == [None]
         build.assert_not_awaited()
         port.assert_not_awaited()

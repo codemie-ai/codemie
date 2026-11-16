@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-11-13T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 7,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "7 files changed across two repos (3 backend: CLI constants, CLIInsightsHandler, its test module; 4 UI: CLIInsightsTab, CLIInsightsUserDetailsModal and their tests). That maps to L on the 7-10 file band. Churn is concentrated in the backend handler and its tests (+525/-196); the UI change is small (+81/-9)." },
+    { "dimension": "component_scope", "reason": "Three real components: the CLIInsightsHandler user-detail path (split into usage and charged payloads, a CLIUserDetailRequest object, projected and average spend helpers), the CLIInsightsTab row-to-modal hand-off and the user-details modal. The constants change is label-only. The handler reuses the existing spend port (_cli_spend_by_user, RenderedSpend, combine_rendered_spend) without modifying it, so the pattern is clear and no shared utility is altered." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the CLI Insights user rows, which already read money through _cli_spend_by_user, so the detail figure copies an existing read. The risk is correctness rather than security: the absent, partial and no-resolvable-id states have to propagate into the Total Cost KPI and the 20-day projection without producing a fabricated $0.00. The existing test_cli_handler spend tests cover these error-path states, so no auto-bump applies." },
+    { "dimension": "requirements_clarity", "reason": "The target was clear (the detail figure must equal the user row and the filtered overview). Some decisions were left open: how the projection is qualified when its input is a subtotal, how usage-metric cost columns are labelled next to the charged figure, and the user_id hand-off fallback. Later commits that relabel the estimate and the cost columns reflect those decisions." },
+    { "dimension": "affected_layers", "reason": "UI (tab and modal pass user_id), Service (handler) and a read-only ledger read through the existing spend port. There is no schema change and no new external integration, so this is a standard full-stack path. Multi-repo changes with distinct content across 2 repos — scope scored additively." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

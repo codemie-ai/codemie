@@ -1466,3 +1466,220 @@ class TestTheTwoLegsMeasureTimeOnTwoDifferentClocks:
         assert cell["total_cost_usd"] == 1.0, "KNOWN LIMITATION: 0.50 spent once, claimed by both legs"
         assert kept[0]["spend_unavailable"] is False, "KNOWN LIMITATION: a doubled figure presents as a correct one"
         assert kept[0]["spend_partial"] is False
+
+
+class TestProjectsActivityCliCostFromLedger:
+    """Projects activity's "CLI Cost ($)" is each project's ledger CLI figure, as CLI Insights reads it."""
+
+    @staticmethod
+    def _bucket(project: str) -> dict:
+        # The metric documents' CLI sum, deliberately unlike the ledger: no row may read it.
+        return {
+            "key": project,
+            "doc_count": 5,
+            "1-bucket": {"1-metric": {"value": 120.0}},
+            "cli_cost_bucket": {"cli_cost": {"value": 99.0}},
+        }
+
+    @staticmethod
+    def _answer(mock_repository, *buckets: dict) -> None:
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={"aggregations": {"paginated_results": {"buckets": list(buckets)}}}
+        )
+
+    @staticmethod
+    def _port(**cli_by_project: SpendResult) -> AsyncMock:
+        async def _rows(period, *, access, common_filter, report_filters):
+            assert access == _EXPECTED_SCOPE, "every read must be narrowed by the caller's own boundary"
+            no_figure = {group: SpendResult.no_figure(period) for group in SpendGroup}
+            return {
+                report_filter: no_figure
+                | (
+                    {SpendGroup.CLI: cli_by_project[report_filter.projects[0]]}
+                    if report_filter.projects[0] in cli_by_project
+                    else {}
+                )
+                for report_filter in report_filters
+            }
+
+        return AsyncMock(side_effect=_rows)
+
+    @staticmethod
+    def _cli_costs(result: dict) -> dict[str, float | None]:
+        return {row["project_name"]: row["cli_cost"] for row in result["data"]["rows"]}
+
+    @pytest.mark.asyncio
+    async def test_each_projects_cli_cost_is_its_own_ledger_cli_figure(self, handler, mock_repository):
+        self._answer(mock_repository, self._bucket("alpha"), self._bucket("beta"))
+        port = self._port(alpha=SpendResult(figure=Decimal("1.5")), beta=SpendResult(figure=Decimal("2.25")))
+
+        with _patched_projects_port(port):
+            result = await handler.get_projects_activity()
+
+        assert self._cli_costs(result) == {"alpha": 1.5, "beta": 2.25}
+        assert [f.projects for f in port.await_args.kwargs["report_filters"]] == [("alpha",), ("beta",)]
+
+    @pytest.mark.asyncio
+    async def test_a_project_the_ledger_has_no_cli_figure_for_reads_null_not_zero(self, handler, mock_repository):
+        self._answer(mock_repository, self._bucket("alpha"))
+
+        with _patched_projects_port(self._port()):
+            result = await handler.get_projects_activity()
+
+        assert self._cli_costs(result) == {"alpha": None}
+
+    @pytest.mark.asyncio
+    async def test_a_partial_cli_figure_is_the_bare_amount(self, handler, mock_repository):
+        self._answer(mock_repository, self._bucket("alpha"))
+        partial = SpendResult(
+            figure=Decimal("1.25"), partial={SpendDimension.IDENTITY_BRIDGE: Portion(spend=None, rows=None)}
+        )
+
+        with _patched_projects_port(self._port(alpha=partial)):
+            result = await handler.get_projects_activity()
+
+        (row,) = result["data"]["rows"]
+        assert row["cli_cost"] == 1.25
+        assert not {"spend_unavailable", "spend_partial", "spend_missing_amount"} & set(row)
+
+    @pytest.mark.asyncio
+    async def test_the_unattributed_bucket_is_not_asked_about_and_reads_null(self, handler, mock_repository):
+        self._answer(mock_repository, self._bucket(UNATTRIBUTED_PROJECT_KEY), self._bucket("alpha"))
+        port = self._port(unknown=SpendResult(figure=Decimal("5")), alpha=SpendResult(figure=Decimal("1")))
+
+        with _patched_projects_port(port):
+            result = await handler.get_projects_activity()
+
+        assert self._cli_costs(result) == {UNATTRIBUTED_PROJECT_KEY: None, "alpha": 1.0}
+        assert [f.projects for f in port.await_args.kwargs["report_filters"]] == [("alpha",)]
+
+    @pytest.mark.asyncio
+    async def test_the_ledger_read_is_narrowed_by_the_dashboards_users_filter(self, handler, mock_repository):
+        """A table filtered to one user must read that user's CLI spend, not every member's."""
+        self._answer(mock_repository, self._bucket("alpha"))
+        asked = ReportFilter(users=(UserTerm("bob-id", frozenset({"bob@example.com"})),))
+        build = AsyncMock(return_value=asked)
+        port = self._port(alpha=SpendResult(figure=Decimal("1.5")))
+
+        with (
+            _patched_projects_port(port),
+            patch("codemie.service.analytics.handlers.ledger_group_spend.report_filter_for", new=build),
+        ):
+            result = await handler.get_projects_activity(users=["bob@example.com"])
+
+        build.assert_awaited_once_with(["bob@example.com"], None)
+        assert port.await_args.kwargs["common_filter"].users == asked.users
+        assert [f.users for f in port.await_args.kwargs["report_filters"]] == [asked.users]
+        assert self._cli_costs(result) == {"alpha": 1.5}
+
+    def test_no_cli_money_is_summed_in_elasticsearch(self, handler):
+        agg_body = handler._build_projects_activity_aggregation({"bool": {"filter": []}}, fetch_size=20)
+
+        assert "cli_cost_bucket" not in agg_body["aggs"]["paginated_results"]["aggs"]
+
+
+class TestProjectsActivityRowsAddUpAroundTheLedgerCliCost:
+    """With CLI Cost from the ledger, each row's Total, the order and the footer are built around that figure."""
+
+    @staticmethod
+    def _bucket(project: str, *, assistant: float = 3.0) -> dict:
+        # "1-bucket" is the metric documents' total, CLI money included - deliberately unlike the row's parts.
+        return {
+            "key": project,
+            "doc_count": 5,
+            "1-bucket": {"1-metric": {"value": 120.0}},
+            "assistant_cost_bucket": {"assistant_cost": {"value": assistant}},
+            "workflow_cost_bucket": {"workflow_cost": {"value": 4.0}},
+            "datasource_cost_bucket": {"datasource_cost": {"value": 5.0}},
+        }
+
+    @staticmethod
+    def _answer(mock_repository, *buckets: dict) -> None:
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={"aggregations": {"paginated_results": {"buckets": list(buckets)}}}
+        )
+
+    _port = staticmethod(TestProjectsActivityCliCostFromLedger._port)
+
+    @pytest.mark.asyncio
+    async def test_each_rows_total_is_its_four_cost_columns(self, handler, mock_repository):
+        self._answer(mock_repository, self._bucket("alpha"))
+
+        with _patched_projects_port(self._port(alpha=SpendResult(figure=Decimal("1.5")))):
+            (row,) = (await handler.get_projects_activity())["data"]["rows"]
+
+        assert row["total_cost"] == row["assistant_cost"] + row["workflow_cost"] + row["datasource_cost"] + 1.5 == 13.5
+
+    @pytest.mark.asyncio
+    async def test_the_unattributed_bucket_has_no_cli_figure_and_totals_its_known_parts(self, handler, mock_repository):
+        self._answer(mock_repository, self._bucket(UNATTRIBUTED_PROJECT_KEY))
+
+        with _patched_projects_port(self._port()):
+            (row,) = (await handler.get_projects_activity())["data"]["rows"]
+
+        assert row["cli_cost"] is None
+        assert row["total_cost"] == 12.0
+
+    @pytest.mark.asyncio
+    async def test_rows_are_ordered_by_the_total_they_show(self, handler, mock_repository):
+        self._answer(mock_repository, self._bucket("alpha"), self._bucket("beta", assistant=1.0))
+        port = self._port(alpha=SpendResult(figure=Decimal("1")), beta=SpendResult(figure=Decimal("500")))
+
+        with _patched_projects_port(port):
+            rows = (await handler.get_projects_activity())["data"]["rows"]
+
+        assert [row["project_name"] for row in rows] == ["beta", "alpha"]
+        assert [row["total_cost"] for row in rows] == [510.0, 13.0]
+
+    @pytest.mark.asyncio
+    async def test_the_footer_sums_the_cells_of_every_candidate_row_not_only_the_page(self, handler, mock_repository):
+        self._answer(
+            mock_repository, self._bucket("alpha"), self._bucket("beta"), self._bucket(UNATTRIBUTED_PROJECT_KEY)
+        )
+        port = self._port(alpha=SpendResult(figure=Decimal("42.5")), beta=SpendResult(figure=Decimal("18")))
+
+        with _patched_projects_port(port):
+            result = await handler.get_projects_activity(per_page=1)
+
+        totals = result["data"]["totals"]
+        assert len(result["data"]["rows"]) == 1
+        assert totals["cli_cost"] == 60.5
+        assert totals["total_cost"] == 54.5 + 30.0 + 12.0
+
+    @pytest.mark.asyncio
+    async def test_a_failed_ledger_read_flags_every_rows_cli_and_total_and_the_footer(self, handler, mock_repository):
+        # A failed batch reaches the table as no figure for every row: the port's own answer to a ledger that fails.
+        self._answer(mock_repository, self._bucket("alpha"), self._bucket("beta"))
+
+        with _patched_projects_port(self._port()):
+            result = await handler.get_projects_activity()
+
+        for row in result["data"]["rows"]:
+            assert row["cli_cost"] is None
+            assert row["cli_cost_spend_unavailable"] is True
+            assert row["total_cost"] == 12.0, "the Total still shows the parts it knows"
+            assert row["total_cost_spend_unavailable"] is True
+            assert row["total_cost_spend_partial"] is True
+        totals = result["data"]["totals"]
+        assert "cli_cost" not in totals
+        assert totals["cli_cost_spend_unavailable"] is True
+        assert totals["total_cost"] == 24.0
+        assert totals["total_cost_spend_unavailable"] is True
+        assert totals["total_cost_spend_partial"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_exact_ledger_read_flags_no_cell_and_no_footer(self, handler, mock_repository):
+        self._answer(mock_repository, self._bucket("alpha"))
+
+        with _patched_projects_port(self._port(alpha=SpendResult(figure=Decimal("1.5")))):
+            result = await handler.get_projects_activity()
+
+        (row,) = result["data"]["rows"]
+        flags = {
+            f"{column}_{flag}"
+            for column in ("cli_cost", "total_cost")
+            for flag in ("spend_unavailable", "spend_partial")
+        }
+        assert {key: row[key] for key in flags} == dict.fromkeys(flags, False)
+        assert {key: result["data"]["totals"][key] for key in flags} == dict.fromkeys(flags, False)
+        assert (row["cli_cost"], row["total_cost"]) == (1.5, 13.5)

@@ -16,7 +16,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import inspect
+from dataclasses import MISSING, fields
 from datetime import datetime, timezone
+from decimal import Decimal
+from typing import get_type_hints
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,13 +29,14 @@ import pytest
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.cli.classification_engine import CLIClassificationEngine
-from codemie.service.analytics.handlers.cli.insights_handler import CLIInsightsHandler
+from codemie.service.analytics.handlers.cli.detail_request import CLIUserDetailRequest
+from codemie.service.analytics.handlers.cli.insights_handler import CLIInsightsHandler, _projected_monthly_spend
 from codemie.service.analytics.handlers.cli_handler import CLIHandler
-from codemie.service.analytics.handlers.ledger_group_spend import TableFilters
+from codemie.service.analytics.handlers.ledger_group_spend import dashboard_group_spend
 from codemie.service.analytics.time_parser import TimeParser
-from codemie.service.spend.coverage import TimeRange
+from codemie.service.spend.coverage import Portion, SpendDimension, SpendResult, TimeRange
 from codemie.service.spend.ledger import ReportFilter, UserTerm
-from codemie.service.spend.rendering import RenderedSpend, combine_rendered_spend
+from codemie.service.spend.rendering import RenderedSpend, combine_rendered_spend, time_range_or_none
 from codemie.service.spend.spend_group import SpendGroup
 
 
@@ -1742,6 +1748,8 @@ class TestCLIInsightsHelpers:
                 }
             }
         )
+        # The user's money is the ledger's, never the metric documents' 1210.894 above.
+        handler._cli_spend_of_user = AsyncMock(return_value=_exact(1150.0))
 
         response = await handler.get_cli_insights_user_detail(
             user_name="Pavlo Chaikivskyi",
@@ -1810,6 +1818,8 @@ class TestCLIInsightsHelpers:
         assert response["data"]["tool_profile"]["primary_intent_label"]
         assert response["data"]["category_breakdown"]
         assert response["data"]["key_metrics"]["data"]["metrics"][0]["label"] == "Total Cost"
+        assert response["data"]["key_metrics"]["data"]["metrics"][0]["value"] == 1150.0
+        assert response["data"]["total_cost"] == 1150.0
         assert response["data"]["tools_chart"]["data"]["columns"][0]["id"] == "tool_name"
         assert response["data"]["models_chart"]["data"]["columns"][0]["id"] == "model_name"
         assert response["data"]["workflow_intent_metrics"]["data"]["metrics"][0]["id"] == "primary_intent"
@@ -1850,6 +1860,14 @@ class TestCLIInsightsHelpers:
         }
         assert aggregation["aggs"]["proxy_usage"]["filter"] == {
             "term": {"metric_name.keyword": "codemie_litellm_proxy_usage"}
+        }
+        # The user's money is read from the ledger, so the usage section sums none.
+        assert set(aggregation["aggs"]["proxy_usage"]["aggs"]) == {
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "models",
         }
         status_filters = aggregation["aggs"]["completed_sessions"]["filter"]["bool"]["filter"]
         assert {"term": {"metric_name.keyword": "codemie_cli_session_total"}} in status_filters
@@ -1918,8 +1936,6 @@ def _cost_bucket(total: float | None, settled: int, unsettled: int) -> dict:
 
 
 NOTHING_SETTLED = _cost_bucket(0.0, 0, 812)
-SOME_UNSETTLED = _cost_bucket(42.5, 300, 12)
-ALL_SETTLED = _cost_bucket(42.5, 312, 0)
 MEASURED_ZERO = _cost_bucket(0.0, 312, 0)
 
 #: Repository signals worth production 1.5 and experimental 1.5 — a deliberate tie, so that the
@@ -2044,39 +2060,73 @@ class TestForecastCardIsNeverAProjectionOfNothing:
         return CLIInsightsHandler(mock_user, mock_repository)
 
     @staticmethod
-    def _core_metrics(handler, proxy_bucket: dict) -> dict:
-        # A ten-day window, so the 20-working-day projection is exactly twice the window's spend.
-        return handler._extract_cli_user_detail_core_metrics(
-            user_name="Ada",
-            aggs={"proxy_usage": {**proxy_bucket, "models": {"buckets": []}}},
-            start_dt=datetime(2026, 3, 1, tzinfo=timezone.utc),
-            end_dt=datetime(2026, 3, 11, tzinfo=timezone.utc),
+    async def _estimate_card(handler, mock_repository, ledger_spend: RenderedSpend) -> dict:
+        # A ten-day window, so 20 x the daily average over the period is exactly twice the window's spend.
+        mock_repository.execute_aggregation_query = AsyncMock(return_value={"aggregations": {}})
+        mock_repository.execute_search_query = AsyncMock(return_value={"hits": {"hits": []}})
+        handler._cli_spend_of_user = AsyncMock(return_value=ledger_spend)
+        detail = await handler._get_cli_insights_user_charged_payload(
+            CLIUserDetailRequest(
+                user_name="Ada",
+                user_id="u-ada",
+                start_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                end_date=datetime(2026, 3, 11, tzinfo=timezone.utc),
+            )
         )
+        return next(card for card in detail["key_metrics"]["data"]["metrics"] if card["id"] == "est_monthly_20d")
 
-    def test_nothing_settled_projects_to_no_figure(self, handler):
-        metrics = self._core_metrics(handler, NOTHING_SETTLED)
+    @pytest.mark.asyncio
+    async def test_nothing_settled_projects_to_no_figure(self, handler, mock_repository):
+        card = await self._estimate_card(handler, mock_repository, _absent())
 
-        assert metrics["spend"].figure is None
-        assert metrics["est_monthly_spend"].figure is None
-        assert metrics["est_monthly_spend"].unavailable is True
+        assert card["value"] is None
+        assert card["spend_unavailable"] is True
 
-    def test_a_subtotal_projects_to_a_subtotal(self, handler):
-        metrics = self._core_metrics(handler, SOME_UNSETTLED)
+    @pytest.mark.asyncio
+    async def test_a_subtotal_projects_to_a_subtotal(self, handler, mock_repository):
+        # Product decision: the estimate is shown whenever Total Cost has a figure, qualified as that figure is.
+        card = await self._estimate_card(handler, mock_repository, _partial(42.5))
 
-        assert metrics["est_monthly_spend"].figure == 85.0
-        assert metrics["est_monthly_spend"].partial is True
+        assert card["value"] == 85.0
+        assert (card["spend_unavailable"], card["spend_partial"]) == (False, True)
 
-    def test_a_whole_figure_projects_to_a_whole_figure(self, handler):
-        metrics = self._core_metrics(handler, ALL_SETTLED)
+    @pytest.mark.asyncio
+    async def test_a_truncated_total_projects_to_a_truncated_estimate(self, handler, mock_repository):
+        truncated = RenderedSpend(figure=42.5, unavailable=True, partial=False, missing_amount=None)
 
-        assert metrics["est_monthly_spend"].figure == 85.0
-        assert metrics["est_monthly_spend"].is_exact
+        card = await self._estimate_card(handler, mock_repository, truncated)
 
-    def test_a_measured_zero_projects_to_an_unqualified_zero(self, handler):
-        metrics = self._core_metrics(handler, MEASURED_ZERO)
+        assert card["value"] == 85.0
+        assert (card["spend_unavailable"], card["spend_partial"]) == (True, False)
 
-        assert metrics["est_monthly_spend"].figure == 0.0
-        assert metrics["est_monthly_spend"].is_exact
+    @pytest.mark.asyncio
+    async def test_a_whole_figure_projects_to_a_whole_figure(self, handler, mock_repository):
+        card = await self._estimate_card(handler, mock_repository, _exact(42.5))
+
+        assert card["value"] == 85.0
+        assert (card["spend_unavailable"], card["spend_partial"]) == (False, False)
+
+    @pytest.mark.asyncio
+    async def test_a_measured_zero_projects_to_an_unqualified_zero(self, handler, mock_repository):
+        card = await self._estimate_card(handler, mock_repository, _exact(0.0))
+
+        assert card["value"] == 0.0
+        assert (card["spend_unavailable"], card["spend_partial"]) == (False, False)
+
+    def test_the_projection_is_twenty_times_the_daily_average_over_the_period(self):
+        start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+        projected = _projected_monthly_spend(_exact(45.0), start, datetime(2026, 8, 31, tzinfo=timezone.utc))
+
+        assert projected.figure == 30.0
+        assert projected.is_exact
+
+    def test_a_period_shorter_than_a_day_averages_over_one_day(self):
+        start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+        projected = _projected_monthly_spend(_exact(2.5), start, datetime(2026, 8, 1, 5, tzinfo=timezone.utc))
+
+        assert projected.figure == 50.0
 
     def test_both_money_cards_carry_the_annotation_beside_the_number(self, handler):
         cards = handler._build_cli_user_detail_key_metrics(
@@ -2383,52 +2433,35 @@ class TestCliSpendIsReadFromTheLedgerPerRow:
     BOB = UserTerm(user_id="u-bob", aliases=frozenset({"bob"}))
 
     @pytest.mark.asyncio
-    async def test_user_spend_is_one_cli_group_read_for_every_user_inside_the_dashboards_filter(self, handler):
+    async def test_user_spend_is_the_shared_per_user_cli_group_read_inside_the_dashboards_filter(self, handler):
         module = "codemie.service.analytics.handlers.cli.insights_handler"
-        rows = [
-            ReportFilter(users=(self.ADA,), projects=("alpha",)),
-            ReportFilter(users=(self.BOB,), projects=("alpha",)),
-        ]
-        table = TableFilters(common=self.ALPHA, rows=rows)
-        with (
-            patch(f"{module}.user_report_filters", new=AsyncMock(return_value=table)) as filters,
-            patch(f"{module}.read_group_spend", new=AsyncMock(return_value=[_exact(1.0), _exact(2.0)])) as read,
-        ):
+        with patch(f"{module}.group_spend_by_user", new=AsyncMock(return_value=[_exact(1.0), _exact(2.0)])) as read:
             spends = await handler._cli_spend_by_user(["u-ada", "u-bob"], self.START, self.END, ["alpha"])
 
         assert [spend.figure for spend in spends] == [1.0, 2.0]
-        filters.assert_awaited_once_with(["u-ada", "u-bob"], ["alpha"])
         read.assert_awaited_once_with(
-            TimeRange(self.START, self.END), handler._pipeline.access_scope, self.ALPHA, rows, SpendGroup.CLI
+            TimeRange(self.START, self.END),
+            handler._pipeline.access_scope,
+            ["u-ada", "u-bob"],
+            ["alpha"],
+            SpendGroup.CLI,
         )
 
     @pytest.mark.asyncio
-    async def test_project_spend_is_one_cli_group_read_for_every_project_inside_the_dashboards_filter(self, handler):
+    async def test_project_spend_is_the_shared_per_project_cli_group_read_inside_the_dashboards_filter(self, handler):
         module = "codemie.service.analytics.handlers.cli.insights_handler"
-        common = ReportFilter(users=(self.ADA,))
-        rows = [ReportFilter(users=(self.ADA,), projects=("alpha",))]
-        with (
-            patch(
-                f"{module}.project_report_filters", new=AsyncMock(return_value=TableFilters(common, rows))
-            ) as filters,
-            patch(f"{module}.read_group_spend", new=AsyncMock(return_value=[_exact(3.0)])) as read,
-        ):
+        with patch(f"{module}.group_spend_by_project", new=AsyncMock(return_value=[_exact(3.0)])) as read:
             spends = await handler._cli_spend_by_project(["alpha"], self.START, self.END, ["ada"])
 
         assert [spend.figure for spend in spends] == [3.0]
-        filters.assert_awaited_once_with(["alpha"], ["ada"])
         read.assert_awaited_once_with(
-            TimeRange(self.START, self.END), handler._pipeline.access_scope, common, rows, SpendGroup.CLI
+            TimeRange(self.START, self.END), handler._pipeline.access_scope, ["alpha"], ["ada"], SpendGroup.CLI
         )
 
     @pytest.mark.asyncio
     async def test_a_window_the_port_cannot_accept_is_passed_on_as_no_period(self, handler):
         module = "codemie.service.analytics.handlers.cli.insights_handler"
-        table = TableFilters(common=ReportFilter(), rows=[ReportFilter(users=(self.ADA,))])
-        with (
-            patch(f"{module}.user_report_filters", new=AsyncMock(return_value=table)),
-            patch(f"{module}.read_group_spend", new=AsyncMock(return_value=[_absent()])) as read,
-        ):
+        with patch(f"{module}.group_spend_by_user", new=AsyncMock(return_value=[_absent()])) as read:
             await handler._cli_spend_by_user(["u-ada"], self.END, self.START, None)
 
         assert read.await_args.args[0] is None
@@ -2581,3 +2614,421 @@ class TestRepositoryAndCategoryMoneyInTheDetailModal:
 
         assert [row["repository"] for row in rows] == ["Org/web"]
         assert combine_rendered_spend(rendered).figure == 25.0
+
+
+_LEDGER_MODULE = "codemie.service.analytics.handlers.ledger_group_spend"
+#: The one-user ledger read behind the details' charged section, as `insights_handler` imports it.
+_DETAIL_SPEND_READ = "codemie.service.analytics.handlers.cli.insights_handler.dashboard_group_spend"
+
+
+def _ledger_answering(cli_by_user: dict[str, SpendResult]) -> contextlib.ExitStack:
+    """Fake the spend port behind every CLI ledger read, answering each one-person filter by its user id.
+
+    Patched below `ledger_group_spend`, so the overview card, the user rows and the details all go
+    through their real filter-building and rendering code and differ only in what they ask.
+    """
+
+    async def _report_filter_for(users, projects):
+        terms = tuple(
+            UserTerm(user_id=user, aliases=frozenset({user})) for user in dict.fromkeys(u for u in users or () if u)
+        )
+        return ReportFilter(users=terms, projects=tuple(projects or ()), personal_project_owners=())
+
+    def _groups(report_filter: ReportFilter, period: TimeRange) -> dict:
+        groups = {group: SpendResult.no_figure(period) for group in SpendGroup}
+        if len(report_filter.users) == 1 and report_filter.users[0].user_id in cli_by_user:
+            groups[SpendGroup.CLI] = cli_by_user[report_filter.users[0].user_id]
+        return groups
+
+    async def _aggregate(period, *, access, report_filter):
+        return _groups(report_filter, period)
+
+    async def _aggregate_per_filter(period, *, access, common_filter, report_filters):
+        return {report_filter: _groups(report_filter, period) for report_filter in report_filters}
+
+    stack = contextlib.ExitStack()
+    stack.enter_context(patch(f"{_LEDGER_MODULE}.report_filter_for", new=AsyncMock(side_effect=_report_filter_for)))
+    stack.enter_context(
+        patch(f"{_LEDGER_MODULE}.spend_service.aggregate_by_spend_group", new=AsyncMock(side_effect=_aggregate))
+    )
+    stack.enter_context(
+        patch(
+            f"{_LEDGER_MODULE}.spend_service.aggregate_by_spend_group_per_filter",
+            new=AsyncMock(side_effect=_aggregate_per_filter),
+        )
+    )
+    return stack
+
+
+def _detail_aggregations(*, proxy_cost: float) -> dict:
+    """One self-matching user's detail aggregation: the same sessions, lines and repository as their row."""
+    client = {
+        "key": "CLI",
+        "usage": {
+            "lines_added": {"value": 100},
+            "lines_removed": {"value": 10},
+            "projects": {"buckets": [{"key": "alpha"}]},
+        },
+        "sessions": {"count": {"value": 4}},
+        "proxy": _cost_bucket(7.0, 10, 0),
+    }
+    repository = {
+        "key": "Acme/payments",
+        "branches": {"buckets": [{"key": "release/1.0", "clients": {"buckets": [client]}}]},
+    }
+    return {
+        "aggregations": {
+            "user_name": {"top": [{"metrics": {"attributes.user_name.keyword": "ada@example.com"}}]},
+            "user_email": {"top": [{"metrics": {"attributes.user_email.keyword": "ada@example.com"}}]},
+            "tool_usage": {
+                "total_prompts": {"value": 20},
+                "total_commands": {"value": 5},
+                "total_lines_added": {"value": 100},
+                "total_lines_removed": {"value": 10},
+                "files_created": {"value": 1},
+                "files_modified": {"value": 2},
+                "files_deleted": {"value": 0},
+                "unique_repositories": {"value": 1},
+                "projects": {"buckets": [{"key": "alpha"}]},
+                "branches": {"buckets": [{"key": "release/1.0"}]},
+            },
+            "session_usage": {
+                "total_sessions": {"value": 4},
+                "active_days": {"buckets": [{"key_as_string": "2026-08-03"}, {"key_as_string": "2026-08-04"}]},
+            },
+            "completed_sessions": {"avg_duration_ms": {"value": 60000}},
+            # A metric-document sum that disagrees with the ledger on purpose: no charged figure may come from it.
+            "proxy_usage": {
+                "total_cost": {"value": proxy_cost},
+                "money_settled": {"value": 10},
+                "money_unsettled": {"doc_count": 0},
+                "models": {"buckets": [{"key": "claude-sonnet-4-6", "doc_count": 10}]},
+            },
+            "repositories_data": {"repositories": {"buckets": [repository]}},
+        }
+    }
+
+
+class TestDetailsCostReconcilesWithTheRow:
+    """The details' charged figure is the row's own ledger read, for one user under a projects filter."""
+
+    START = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    END = datetime(2026, 8, 31, tzinfo=timezone.utc)
+    PROJECTS = ["alpha"]
+    USAGE_ENDPOINTS = (
+        "get_cli_insights_user_tools",
+        "get_cli_insights_user_models",
+        "get_cli_insights_user_workflow_intent",
+        "get_cli_insights_user_category_breakdown",
+        "get_cli_insights_user_repositories",
+    )
+    CHARGED_ENDPOINTS = (
+        "get_cli_insights_user_detail",
+        "get_cli_insights_user_key_metrics",
+        "get_cli_insights_user_classification_detail",
+    )
+
+    @pytest.fixture
+    def handler(self, mock_user, mock_repository):
+        mock_repository.execute_aggregation_query = AsyncMock(side_effect=self._answer_es)
+        mock_repository.execute_search_query = AsyncMock(return_value={"hits": {"hits": []}})
+        return CLIInsightsHandler(mock_user, mock_repository)
+
+    @pytest.fixture(autouse=True)
+    def _no_identity_lookup(self):
+        with patch(
+            "codemie.service.analytics.handlers.cli.insights_handler.UserIdentityResolver.resolve_rows",
+            new_callable=AsyncMock,
+        ):
+            yield
+
+    @staticmethod
+    async def _answer_es(body: dict) -> dict:
+        if "users" in body.get("aggs", {}):
+            bucket = _user_bucket("u-ada", "ada@example.com", repositories=["Acme/payments"], branches=["release/1.0"])
+            return {"aggregations": {"users": {"buckets": [bucket]}}}
+        return _detail_aggregations(proxy_cost=99.0)
+
+    def _window(self) -> dict:
+        return {"start_date": self.START, "end_date": self.END, "projects": self.PROJECTS}
+
+    async def _row(self, handler) -> dict:
+        rows, _rendered = await handler._get_cli_insights_user_rows(None, self.START, self.END, None, self.PROJECTS)
+        return next(row for row in rows if row["user_id"] == "u-ada")
+
+    async def _detail(self, handler, user_id: str | None = "u-ada") -> dict:
+        response = await handler.get_cli_insights_user_detail(
+            user_name="ada@example.com", user_id=user_id, **self._window()
+        )
+        return response["data"]
+
+    @staticmethod
+    def _card(detail: dict, card_id: str) -> dict:
+        return next(card for card in detail["key_metrics"]["data"]["metrics"] if card["id"] == card_id)
+
+    @staticmethod
+    def _flags(item: dict) -> tuple:
+        return item["spend_unavailable"], item["spend_partial"], item["spend_missing_amount"]
+
+    @pytest.mark.asyncio
+    async def test_overview_row_card_and_meta_carry_one_exact_figure(self, handler, mock_user, mock_repository):
+        overview_handler = CLIHandler(mock_user, mock_repository)
+        overview_handler._pipeline.execute_summary_query = AsyncMock(
+            side_effect=[{"data": {"metrics": []}}, {"data": {"metrics": []}}, {"data": {"metrics": []}}]
+        )
+
+        with _ledger_answering({"u-ada": SpendResult(figure=Decimal("12.34"))}):
+            summary = await overview_handler.get_cli_summary(users=["u-ada"], **self._window())
+            row = await self._row(handler)
+            detail = await self._detail(handler)
+
+        overview = next(metric for metric in summary["data"]["metrics"] if metric["id"] == "cli_cost")
+        card = self._card(detail, "total_cost")
+        assert overview["value"] == row["total_cost"] == card["value"] == detail["total_cost"] == 12.34
+        assert self._flags(overview) == self._flags(row) == self._flags(card) == self._flags(detail)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ledger",
+        [
+            pytest.param(
+                SpendResult(
+                    figure=Decimal("12.34"),
+                    partial={SpendDimension.IDENTITY_BRIDGE: Portion(spend=None, rows=None)},
+                ),
+                id="partial",
+            ),
+            pytest.param(None, id="unavailable"),
+        ],
+    )
+    async def test_details_carry_the_rows_partial_or_unavailable_state(self, handler, ledger):
+        answers = {} if ledger is None else {"u-ada": ledger}
+
+        with _ledger_answering(answers):
+            row = await self._row(handler)
+            detail = await self._detail(handler)
+
+        card = self._card(detail, "total_cost")
+        estimate = self._card(detail, "est_monthly_20d")
+        assert card["value"] == detail["total_cost"] == row["total_cost"]
+        assert self._flags(card) == self._flags(detail) == self._flags(row)
+        # The estimate is projected from whatever figure Total Cost has and carries the same state.
+        assert estimate["value"] == detail["est_monthly_20d"]
+        assert (estimate["spend_unavailable"], estimate["spend_partial"]) == (
+            card["spend_unavailable"],
+            card["spend_partial"],
+        )
+        if ledger is None:
+            assert card["value"] is None
+            assert card["spend_unavailable"] is True
+            assert estimate["value"] is None
+        else:
+            assert card["value"] == 12.34
+            assert card["spend_partial"] is True
+            # A 30-day window: 12.34 / 30 x 20.
+            assert estimate["value"] == 8.23
+
+    @pytest.mark.asyncio
+    async def test_no_resolved_id_never_asks_the_ledger_and_shows_no_figure(self, handler):
+        # The one-user read treats an empty user list as everyone, so no id must not reach it at all.
+        handler._resolve_cli_insights_user_id = AsyncMock(return_value=None)
+
+        with (
+            _ledger_answering({"u-ada": SpendResult(figure=Decimal("12.34"))}),
+            patch(_DETAIL_SPEND_READ, new=AsyncMock(wraps=dashboard_group_spend)) as one_user_read,
+        ):
+            detail = await self._detail(handler, user_id=None)
+
+        one_user_read.assert_not_awaited()
+        card = self._card(detail, "total_cost")
+        assert card["value"] is None
+        assert card["spend_unavailable"] is True
+        assert detail["total_cost"] is None
+
+    @pytest.mark.asyncio
+    async def test_estimate_and_classification_follow_the_ledger_figure(self, handler):
+        classify = MagicMock(wraps=CLIClassificationEngine._classify_cli_entity)
+        reasons = MagicMock(wraps=CLIClassificationEngine._build_cli_rule_reasons)
+
+        with (
+            _ledger_answering({"u-ada": SpendResult(figure=Decimal("45.0"))}),
+            patch.object(CLIClassificationEngine, "_classify_cli_entity", classify),
+            patch.object(CLIClassificationEngine, "_build_cli_rule_reasons", reasons),
+        ):
+            detail = await self._detail(handler)
+
+        # A 30-day window: 45 / 30 x 20.
+        assert self._card(detail, "est_monthly_20d")["value"] == 30.0
+        assert detail["est_monthly_20d"] == 30.0
+        # The repository rows classify on their own metric cost (7.0); the user is classified on the
+        # ledger figure, and the metric documents' 99.0 decides nothing.
+        classified_on = [call.kwargs["spend"].figure for call in classify.call_args_list]
+        assert 45.0 in classified_on
+        assert 99.0 not in classified_on
+        assert [call.kwargs["spend"].figure for call in reasons.call_args_list] == [45.0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("endpoint", USAGE_ENDPOINTS)
+    async def test_usage_only_endpoints_make_no_ledger_read(self, handler, endpoint):
+        handler._cli_spend_by_user = AsyncMock(return_value=[_exact(1.0)])
+
+        with patch(_DETAIL_SPEND_READ, new=AsyncMock(return_value=_exact(1.0))) as one_user_read:
+            await getattr(handler, endpoint)(user_name="ada@example.com", user_id="u-ada", **self._window())
+
+        one_user_read.assert_not_awaited()
+        handler._cli_spend_by_user.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("endpoint", CHARGED_ENDPOINTS)
+    async def test_charged_endpoints_read_only_that_user_from_the_ledger(self, handler, endpoint):
+        # The batched table read scans every user under the boundary; one user's details name the user.
+        handler._cli_spend_by_user = AsyncMock(return_value=[_exact(1.0)])
+
+        with patch(_DETAIL_SPEND_READ, new=AsyncMock(return_value=_exact(1.0))) as one_user_read:
+            await getattr(handler, endpoint)(user_name="ada@example.com", user_id="u-ada", **self._window())
+
+        start, end = TimeParser.parse(None, self.START, self.END)
+        one_user_read.assert_awaited_once_with(
+            time_range_or_none(start, end), handler._pipeline.access_scope, ["u-ada"], self.PROJECTS, SpendGroup.CLI
+        )
+        handler._cli_spend_by_user.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_users_read_equals_that_users_slot_in_a_table_read(self, handler):
+        ledger = {
+            "u-bob": SpendResult(figure=Decimal("3.0")),
+            "u-ada": SpendResult(figure=Decimal("12.34")),
+            "u-cy": SpendResult(figure=Decimal("8.0")),
+        }
+
+        with _ledger_answering(ledger):
+            alone = await handler._cli_spend_of_user("u-ada", self.START, self.END, self.PROJECTS)
+            in_table = await handler._cli_spend_by_user(["u-bob", "u-ada", "u-cy"], self.START, self.END, self.PROJECTS)
+
+        assert alone == in_table[1]
+
+    @pytest.mark.asyncio
+    async def test_a_self_matching_users_usage_equals_their_row(self, handler):
+        # The row emits no repositories field, so read the list it aggregated from its user bucket at
+        # the one place it consumes it: the classifier call that decides the row's classification.
+        classify = CLIClassificationEngine._classify_cli_entity
+        with _ledger_answering({"u-ada": SpendResult(figure=Decimal("12.34"))}):
+            with patch.object(CLIClassificationEngine, "_classify_cli_entity", wraps=classify) as row_classify:
+                row = await self._row(handler)
+            detail = await self._detail(handler)
+
+        row_repositories = set(row_classify.call_args.kwargs["repositories"])
+        assert row_repositories
+        assert detail["total_sessions"] == row["total_sessions"]
+        assert detail["net_lines"] == row["net_lines"]
+        assert detail["unique_repositories"] == len(row_repositories)
+        assert {item["repository"] for item in detail["repository_classifications"]} == row_repositories
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("endpoint", USAGE_ENDPOINTS + CHARGED_ENDPOINTS)
+    async def test_every_details_endpoint_reports_the_requests_filters(self, handler, endpoint):
+        with _ledger_answering({"u-ada": SpendResult(figure=Decimal("12.34"))}):
+            response = await getattr(handler, endpoint)(
+                user_name="ada@example.com", user_id="u-ada", users=["u-ada"], **self._window()
+            )
+
+        expected = handler._build_filters_applied(None, self.START, self.END, ["u-ada"], self.PROJECTS)
+        assert response["metadata"]["filters_applied"] == expected
+
+    def test_a_details_table_is_formatted_from_the_request_alone(self, handler):
+        request = CLIUserDetailRequest(user_name="ada@example.com", projects=self.PROJECTS, **self._period())
+        section = {"data": {"rows": [{"a": 1}, {"a": 2}], "columns": [{"id": "a"}]}}
+
+        response = handler._format_cli_user_detail_table(request, section)
+
+        assert response["data"]["rows"] == [{"a": 1}, {"a": 2}]
+        assert response["metadata"]["filters_applied"] == handler._build_filters_applied(
+            None, self.START, self.END, None, self.PROJECTS
+        )
+
+    def _period(self) -> dict:
+        return {"start_date": self.START, "end_date": self.END}
+
+    @pytest.mark.asyncio
+    async def test_the_charged_section_classifies_on_the_usage_sections_collections(self, handler):
+        classify = MagicMock(wraps=CLIClassificationEngine._classify_cli_entity)
+        with _ledger_answering({}):
+            usage = await handler._get_cli_insights_user_usage_payload(
+                CLIUserDetailRequest(user_name="ada@example.com", user_id="u-ada", **self._window())
+            )
+        assert usage["repositories"] == ["Acme/payments"]
+        usage = {**usage, "repositories": ["Org/tmp"], "branches_used": ["feature/x"], "unique_projects": ["beta"]}
+
+        with patch.object(CLIClassificationEngine, "_classify_cli_entity", classify):
+            handler._with_cli_user_charged_section(usage, spend=_exact(1.0), period=(self.START, self.END))
+
+        assert classify.call_args.kwargs["repositories"] == ["Org/tmp"]
+        assert classify.call_args.kwargs["branches"] == ["feature/x"]
+        assert classify.call_args.kwargs["project_name"] == "beta"
+
+    @pytest.mark.asyncio
+    async def test_detail_cost_labels_are_the_originals(self, handler):
+        # Product decision: the modal keeps the labels it had before this work.
+        handler._cli_spend_of_user = AsyncMock(return_value=_exact(45.0))
+        kwargs = {"user_name": "ada@example.com", "user_id": "u-ada", **self._window()}
+
+        key_metrics = await handler.get_cli_insights_user_key_metrics(**kwargs)
+
+        estimate = next(card for card in key_metrics["data"]["metrics"] if card["id"] == "est_monthly_20d")
+        assert estimate["label"] == "Est. Monthly (20 days)"
+        assert "description" not in estimate
+
+    @pytest.mark.asyncio
+    async def test_the_repositories_table_shows_no_cost(self, handler):
+        # Product decision: the usage-metric cost is not shown per repository; the other columns stay.
+        handler._cli_spend_of_user = AsyncMock(return_value=_exact(45.0))
+        kwargs = {"user_name": "ada@example.com", "user_id": "u-ada", **self._window()}
+
+        repositories = await handler.get_cli_insights_user_repositories(**kwargs)
+
+        assert [column["id"] for column in repositories["data"]["columns"]] == [
+            "repository",
+            "branch",
+            "classification",
+            "client",
+            "sessions",
+            "net_lines",
+        ]
+        assert repositories["data"]["rows"]
+        for row in repositories["data"]["rows"]:
+            assert set(row) == {"repository", "branch", "classification", "client", "sessions", "net_lines"}
+
+    @pytest.mark.asyncio
+    async def test_the_category_breakdown_shows_no_cost(self, handler):
+        # Product decision: the usage-metric cost is not shown per category; the shares and sessions stay.
+        handler._cli_spend_of_user = AsyncMock(return_value=_exact(45.0))
+        kwargs = {"user_name": "ada@example.com", "user_id": "u-ada", **self._window()}
+
+        categories = await handler.get_cli_insights_user_category_breakdown(**kwargs)
+
+        assert [(column["id"], column["label"]) for column in categories["data"]["columns"]] == [
+            ("category", "Category"),
+            ("percentage", "Share"),
+            ("sessions", "Sessions"),
+        ]
+        assert categories["data"]["rows"]
+        for row in categories["data"]["rows"]:
+            assert set(row) == {"category", "percentage", "sessions"}
+
+
+class TestTheUserDetailEndpointKeepsItsTypedSignature:
+    """The public user-detail call names and types each request field, so a caller's typo fails at the call."""
+
+    def test_it_takes_each_request_field_as_a_typed_keyword_only_parameter(self):
+        signature = inspect.signature(CLIInsightsHandler.get_cli_insights_user_detail, eval_str=True)
+        hints = get_type_hints(CLIUserDetailRequest)
+
+        assert [(p.name, p.kind, p.annotation, p.default) for p in list(signature.parameters.values())[1:]] == [
+            (
+                field.name,
+                inspect.Parameter.KEYWORD_ONLY,
+                hints[field.name],
+                inspect.Parameter.empty if field.default is MISSING else field.default,
+            )
+            for field in fields(CLIUserDetailRequest)
+        ]

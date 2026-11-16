@@ -59,7 +59,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from decimal import Decimal
-from typing import cast
+from typing import Any, cast
 from datetime import datetime, timezone
 
 from codemie.configs import logger
@@ -69,7 +69,10 @@ __all__ = [
     "MissingPortion",
     "RenderedSpend",
     "apply_spend_cells",
+    "column_cell_spend",
+    "column_money_cells",
     "combine_rendered_spend",
+    "money_cell",
     "render_budget_spend",
     "render_spend",
     "spend_fields",
@@ -271,6 +274,45 @@ def combine_rendered_spend(rendered: list[RenderedSpend]) -> RenderedSpend:
     )
 
 
+def money_cell(spend: RenderedSpend) -> float | None:
+    """The value a money cell holds, the one rule for every table - flagged or not.
+
+    The figure whenever one exists: an exact one, a partial one, and one truncated at the coverage floor
+    alike, because a screen shows a qualified amount bare (the product convention of EPMCDME-16846/16942).
+    `None` - shown as a dash - only when there is no figure at all, never a zero for a figure nobody has.
+    Every table writes its flags beside this value - unprefixed (`apply_spend_cells`) or keyed by the
+    column (`column_money_cells`) - so no two tables disagree on the amount.
+    """
+    return spend.figure
+
+
+def column_money_cells(column: str, rendered: RenderedSpend) -> dict[str, object]:
+    """A money cell with its qualification keyed by the column, as `spend_footer` keys a footer's.
+
+    Prefixed because a row with several money columns carries independent figures: an unprefixed triple
+    would say *something on this row is short* without naming which column.
+    """
+    return {
+        column: money_cell(rendered),
+        **{f"{column}_{key}": value for key, value in spend_fields(rendered).items()},
+    }
+
+
+def column_cell_spend(row: dict[str, Any], column: str) -> RenderedSpend:
+    """Read back the figure `column_money_cells` wrote, so a footer is combined from exactly what the rows show.
+
+    The holes' identities are not on the row, so a footer combined from read-back cells cannot tell one
+    shared hole from several and leaves its missing amount unsized whenever a cell is partial. A caller
+    still holding the rendered figures foots those instead.
+    """
+    return RenderedSpend(
+        figure=row[column],
+        unavailable=row[f"{column}_{FIELD_UNAVAILABLE}"],
+        partial=row[f"{column}_{FIELD_PARTIAL}"],
+        missing_amount=row[f"{column}_{FIELD_MISSING}"],
+    )
+
+
 def apply_spend_cells(rows: list[dict], rendered: list[RenderedSpend], column: str) -> None:
     """Write each row's money cell and the three values that qualify it.
 
@@ -279,7 +321,7 @@ def apply_spend_cells(rows: list[dict], rendered: list[RenderedSpend], column: s
     truncated or dimension-incomplete total cannot reach a screen looking like a whole one.
     """
     for row, spend in zip(rows, rendered, strict=True):
-        row[column] = spend.figure
+        row[column] = money_cell(spend)
         row[FIELD_UNAVAILABLE] = spend.unavailable
         row[FIELD_PARTIAL] = spend.partial
         row[FIELD_MISSING] = spend.missing_amount

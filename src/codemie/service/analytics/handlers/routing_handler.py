@@ -28,10 +28,9 @@ from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline, EnrichedRows
 from codemie.service.analytics.response_formatter import ResponseFormatter
 from codemie.service.spend.rendering import (
-    FIELD_MISSING,
-    FIELD_PARTIAL,
-    FIELD_UNAVAILABLE,
     RenderedSpend,
+    column_cell_spend,
+    column_money_cells,
     spend_fields,
     spend_footer,
 )
@@ -97,25 +96,6 @@ def _read_money(bucket: dict, name: str) -> RenderedSpend:
     return rendered.with_figure(0.0) if rendered.figure == 0 else rendered
 
 
-def _money_cells(column: str, rendered: RenderedSpend) -> dict[str, Any]:
-    """A money cell with its qualification keyed by the column, as `spend_footer` keys a footer's.
-
-    Prefixed because one row carries three independent figures: an unprefixed triple would say
-    *something on this row is short* without naming which column.
-    """
-    return {column: rendered.figure, **{f"{column}_{key}": value for key, value in spend_fields(rendered).items()}}
-
-
-def _cell_spend(row: dict[str, Any], column: str) -> RenderedSpend:
-    """Read back the figure `_money_cells` wrote, so a footer is combined from exactly what the rows show."""
-    return RenderedSpend(
-        figure=row[column],
-        unavailable=row[f"{column}_{FIELD_UNAVAILABLE}"],
-        partial=row[f"{column}_{FIELD_PARTIAL}"],
-        missing_amount=row[f"{column}_{FIELD_MISSING}"],
-    )
-
-
 async def _foot_routing_paths(rows: list[dict], _start_dt: datetime, _end_dt: datetime) -> EnrichedRows:
     """Foot the money columns from their qualified cells, keeping the rows and their order as they are.
 
@@ -125,7 +105,7 @@ async def _foot_routing_paths(rows: list[dict], _start_dt: datetime, _end_dt: da
     """
     totals: dict[str, Any] = {}
     for column in PATH_MONEY_COLUMNS:
-        totals.update(spend_footer(column, [_cell_spend(row, column) for row in rows]))
+        totals.update(spend_footer(column, [column_cell_spend(row, column) for row in rows]))
     return EnrichedRows(rows=rows, columns=tuple(PATH_MONEY_COLUMNS), totals=totals)
 
 
@@ -391,7 +371,7 @@ class RoutingHandler:
                         "request_count": tier_bucket.get("doc_count", 0),
                     }
                     for column in PATH_MONEY_COLUMNS:
-                        row.update(_money_cells(column, _read_money(tier_bucket, column)))
+                        row.update(column_money_cells(column, _read_money(tier_bucket, column)))
                     rows.append(row)
         return rows
 
