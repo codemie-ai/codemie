@@ -315,6 +315,9 @@ class AIToolsAgent(WorkspaceAwareAgent):
 
         policy = ProjectModelPolicy.for_project(self.assistant.project, self.assistant.is_global)
         resolved_model = policy.choose([self.llm_model], context="assistant_agent") or self.llm_model
+        resolved_model = llm_service.resolve_disabled_model(
+            resolved_model, self.assistant.project, is_global=self.assistant.is_global
+        )
         self._resolved_llm_model = resolved_model
         return self._resolved_llm_model
 

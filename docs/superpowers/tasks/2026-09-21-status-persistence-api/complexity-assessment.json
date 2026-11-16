@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "task": "Persist a tri-state admin-set model status (Enable/Disable/Deprecated) per LLM model in a CodeMie-owned table, merge it into LLMService's live LiteLLM/DIAL catalog reload path, and expose admin-only endpoints to read and set it.",
+  "generated": "2026-09-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 25,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New DB table/migration, a persistence/repository layer, merge logic in LLMService, and a new admin-only endpoint span 4 layers (provider-integration, service, API/router, DB-persistence) with a genuinely new abstraction (persisted-status-merged-with-live-catalog) not extending any existing pattern." },
+    { "dimension": "requirements_clarity", "reason": "Base scope (tri-state enum, that it must survive reload) is clear, but several concrete decisions remain open per Section 9: wire values for the status enum, the model-identity key (base_name vs deployment_name), the admin endpoint request/response shapes, whether status appears on the public GET /v1/llm_models payload, and — most significantly — the runtime semantics of Deprecated (visible-but-flagged vs hidden-for-new-use vs blocking), which has no analog anywhere in the codebase today." },
+    { "dimension": "technical_risk", "reason": "No exact precedent exists for a CodeMie-owned persisted model attribute merged into a live provider-refreshed cache. The existing `enabled` boolean is provider-sourced and risks silent overwrite on reload if conflated with the new admin status; correctness of the merge-on-reload step is the crux of the story and has no existing test scaffold to build from." },
+    { "dimension": "file_change_estimate", "reason": "Touches litellm/models.py (mapping), llm_service.py (merge + filter logic), admin.py (new endpoint(s)), llm_models.py (possible payload change), plus a new DB model/repository and an Alembic migration and new tests — spanning 4+ directories (enterprise/litellm, service/llm_service, rest_api/routers, db/migrations)." },
+    { "dimension": "affected_layers", "reason": "Provider-integration, service, API/router, and DB-persistence are all touched, and the DB-persistence layer requires a net-new table and migration rather than an extension of an existing schema." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utility (LLMService feeds get_allowed_chat_models/embedding/router-option/image-generation across the platform)",
+    "Technical Risk bumped from L to XL: changes database schema significantly (new CodeMie-owned status table, no existing precedent for merge-on-reload correctness)",
+    "Affected Layers bumped from L to XL: changes database schema significantly (new table/migration alongside provider-integration/service/API layers)"
+  ],
+  "split_recommendation": null
+}

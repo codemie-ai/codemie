@@ -289,6 +289,15 @@ class WorkflowGenerationError(Exception):
         super().__init__(message)
 
 
+class ModelNotSelectableError(Exception):
+    """Raised when a model cannot be selected for new work (deprecated or unavailable)."""
+
+    def __init__(self, base_name: str, reason: str):
+        self.base_name = base_name
+        self.reason = reason
+        super().__init__(f"Model '{base_name}' is not selectable: {reason}")
+
+
 class TokenLimitExceededException(ValueError):
     """
     Raised when LLM response is truncated due to max_tokens limit during tool calling.

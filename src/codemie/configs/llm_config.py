@@ -78,6 +78,14 @@ class ModelType(str, Enum):
     AUDIO_TRANSCRIPTION = "audio_transcription"
 
 
+class ModelStatus(str, Enum):
+    """Enum to define the CodeMie-owned persisted status of an LLM model"""
+
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+    DEPRECATED = "deprecated"
+
+
 class ModelConfigurationSection(BaseModel):
     """Additional configuration options for the model that will be passed directly to providers"""
 
@@ -196,6 +204,7 @@ class LlmRouterOption(BaseModel):
     # Always True for enabled routers (get_allowed_router_options only returns enabled ones).
     # Clients (e.g. codemie-code) gate on this field to decide whether to show the model.
     enabled: bool = True
+    status: ModelStatus | None = None
     provider: LLMProvider | None = None
     multimodal: bool | None = None
     supports_tools: bool | None = None
@@ -261,6 +270,8 @@ class LLMModel(BaseModel):
     # Set only when a premium_models budget is configured; True if base_name matches LITELLM_PREMIUM_MODELS_ALIASES
     is_premium: Optional[bool] = None
     stt_config: SttConfig | None = None
+    # CodeMie-owned persisted tri-state status, layered on top of the provider-sourced `enabled` signal
+    status: ModelStatus = ModelStatus.ENABLED
 
     @model_validator(mode='after')
     def populate_default_field(self):

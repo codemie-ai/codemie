@@ -304,6 +304,9 @@ def _turn(master, conversation, tree, versioned=None):
             f"{_ASK}.AssistantVersionService.apply_version_to_assistant",
             side_effect=versioned or (lambda assistant, version: assistant),
         ),
+        # The assistant fixture is a bare MagicMock, not an Owned instance; model-selection
+        # validation on resume checks access to it, which Ability can't evaluate on a mock.
+        patch("codemie.core.ability.Ability.can", return_value=True),
     ):
         handler = StandardAssistantHandler(master, User(id="user_1", username="tester", name="Tester"), "uuid_1")
         raw_request = MagicMock()

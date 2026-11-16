@@ -29,10 +29,12 @@ from codemie.rest_api.models.assistant import VirtualIdeAssistant
 from codemie.rest_api.models.ide import IdeConfigurationResponse, IdeConfigurationRequest
 from codemie.rest_api.handlers.assistant_handlers import get_request_handler
 from codemie.rest_api.routers.assistant.execution import ask_assistant_by_id
+from codemie.rest_api.routers.assistant._model_selection import get_authorized_conversation, validate_model_selection
 from codemie.rest_api.routers.conversation.crud import create_conversation
 from codemie.rest_api.routers.utils import get_assistant_by_id_or_raise, validate_run_attributes_and_raise
 from codemie.service.settings.settings import SettingsService
 from codemie.service.monitoring.agent_monitoring_service import AgentMonitoringService
+from codemie.service.llm_service.llm_service import llm_service
 from fastapi import APIRouter, status, Request, Depends, BackgroundTasks
 from codemie.service.assistant.assistant_user_interaction_service import assistant_user_interaction_service
 from codemie.service.request_summary_manager import request_summary_manager
@@ -91,6 +93,37 @@ def create_virtual_conversation(
     return create_conversation(request, user)
 
 
+def _can_adopt_legacy_ide_model(conversation: Conversation | None, request: VirtualIdeChatRequest) -> bool:
+    """Trust only the migration's snapshot of existing IDE work, never client history."""
+    return bool(
+        conversation
+        and conversation.legacy_ide_model_selection_pending
+        and not conversation.llm_model
+        and conversation.history
+        and not conversation.import_source
+        and conversation.initial_assistant_id == _get_formatted_virtual_assistant_id(request.virtual_assistant_id)
+        and request.llm_model.strip()
+    )
+
+
+def _prepare_virtual_ide_models(request: VirtualIdeChatRequest, user: User) -> None:
+    """Resolve one model selection for validation, execution, and history persistence."""
+    conversation = get_authorized_conversation(request.conversation_id, user)
+    previous_model = conversation.llm_model if conversation else None
+    previous_image_model = conversation.image_generation_model if conversation else None
+
+    # Omission retains the conversation selection; an explicit empty value uses the default.
+    model_name = request.llm_model if "llm_model" in request.model_fields_set else previous_model
+    model_name = (model_name or "").strip() or llm_service.default_llm_model
+    validate_model_selection(
+        model_name,
+        previous_model_name=previous_model,
+        allow_deprecated=_can_adopt_legacy_ide_model(conversation, request),
+    )
+    validate_model_selection(request.image_generation_model, previous_model_name=previous_image_model)
+    request.llm_model = model_name
+
+
 @router.post(
     "/inference/virtual",
     dependencies=[Depends(require_core)],
@@ -105,6 +138,7 @@ async def inference_virtual(
     user: User = Depends(authenticate),
 ):
     await asyncio.to_thread(validate_run_attributes_and_raise, request, user)
+    _prepare_virtual_ide_models(request, user)
     asyncio.create_task(raw_request.state.wait_for_disconnect())
     try:
         assistant = VirtualIdeAssistant(

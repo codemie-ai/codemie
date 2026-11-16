@@ -33,6 +33,7 @@ from codemie.rest_api.models.assistant_generator import (
     RefineGeneratorResponse,
     RefineRequestBody,
 )
+from codemie.rest_api.routers.assistant._model_selection import validate_model_selection
 from codemie.service.assistant_generator_service import AssistantGeneratorService, AssistantToolkit, RefinePromptDetails
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
@@ -70,6 +71,7 @@ def generate_assistant(raw_request: Request, request: AssistantGeneratorRequest,
     Generate assistant details from user input text.
     Returns assistant name, description, conversation starters, and comprehensive system prompt.
     """
+    validate_model_selection(request.llm_model)
     try:
         request_id = raw_request.state.uuid
         set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
@@ -109,6 +111,7 @@ def generate_assistant_prompt(
     Returns assistant name, description, conversation starters, and comprehensive system prompt.
     Automatically includes available datasources from the user's project.
     """
+    validate_model_selection(request.llm_model)
     try:
         request_id = raw_request.state.uuid
         set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
@@ -149,6 +152,7 @@ def refine_with_ai(
     """
     Accepts assistant draft fields and returns LLM recommendations and datasource assessments.
     """
+    validate_model_selection(request.llm_model)
     try:
         request_id = raw_request.state.uuid
         set_logging_info(uuid=request_id, user_id=user.id, username=user.username)

@@ -662,8 +662,12 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         # The result is passed explicitly; neither the assistant nor the request is changed.
         # A builtin clone runs on the parent's resolved model, whose substitution the parent already reported.
         # Read via the safe helper: a DB-loaded assistant has no Pydantic private storage, so getattr raises.
+        # path. Saved selections and explicit API overrides are validated at their entry points.
+        # Calling the guard unconditionally during inference would break existing conversations
+        # whose model was deprecated after the conversation was created.
         is_builtin_clone = LangGraphAssistantBuilder._safe_get_runtime_attr(assistant, "_runtime_builtin_subagent")
         llm_model = resolve_assistant_model(assistant, user_pick, report_fallback=is_builtin_clone is None)
+        llm_model = llm_service.resolve_disabled_model(llm_model, assistant.project, is_global=assistant.is_global)
         # The LiteLLM budget scope is decided for the model the agent actually runs on: a conversation override can
         # move it to another budget category than the saved model, and models built below fix their billing headers.
         set_llm_context(assistant, None, user, llm_model)
@@ -840,6 +844,9 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             raise ValueError(f"Assistant wasn't found in database. AssistantId: {workflow_assistant.assistant_id}")
 
         # Apply workflow-specific overrides
+        # assert_model_selectable is NOT called here — validation already runs at workflow
+        # create/update time via _assert_assistant_model_selections_selectable. Calling it during execution
+        # would break workflows whose model was deprecated after the workflow was saved.
         if workflow_assistant.model:
             assistant.llm_model_type = workflow_assistant.model
 
@@ -941,7 +948,10 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             if not workflow_assistant.assistant_id:
                 billing_asset = assistant
 
-        llm_model = assistant.llm_model_type
+        llm_model = llm_service.resolve_disabled_model(
+            assistant.llm_model_type, assistant.project, is_global=assistant.is_global
+        )
+        assistant.llm_model_type = llm_model
         is_react = assistant.is_react
 
         logger.info(

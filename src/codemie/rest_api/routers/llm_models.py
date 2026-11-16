@@ -19,7 +19,7 @@ from typing import Dict, List, Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from codemie.clients.postgres import get_session
-from codemie.configs.llm_config import LLMModel, LlmRouterOption, ModelCategory
+from codemie.configs.llm_config import LLMModel, LlmRouterOption, ModelCategory, ModelStatus
 from codemie.core.models import Application
 from codemie.enterprise.litellm import proxy_router, register_proxy_endpoints  # noqa: F401 (proxy_router used by main.py)
 from codemie.repository.application_repository import application_repository
@@ -32,6 +32,51 @@ router = APIRouter(
     prefix="/v1",
     dependencies=[],
 )
+
+ChatChoice = Union[LLMModel, LlmRouterOption]
+
+
+def _get_accessible_chat_choices(user: User, include_all: bool, project: Application | None = None) -> list[ChatChoice]:
+    """Use the same user-scoped projections for catalog and default responses."""
+    models: list[ChatChoice] = list(llm_service.get_allowed_chat_models(user, include_all=include_all, project=project))
+    models.extend(llm_service.get_allowed_router_options(include_all=include_all, project=project, user=user))
+
+    if project and project.default_model:
+        return _apply_project_default(models, project.default_model)
+    return models
+
+
+def _apply_project_default(models: list[ChatChoice], default_name: str) -> list[ChatChoice]:
+    """Give models and routers one consistent effective project default."""
+    selectable = [m for m in models if m.enabled and m.status in (None, ModelStatus.ENABLED)]
+    selected = next(
+        (m for m in selectable if default_name in (m.base_name, getattr(m, "deployment_name", None))),
+        None,
+    ) or _default_for_category(selectable, ModelCategory.GLOBAL)
+    return [
+        m.model_copy(
+            update=llm_service._global_default_fields(
+                m.default_for_categories, selected is not None and m.base_name == selected.base_name
+            )
+        )
+        for m in models
+    ]
+
+
+def _default_for_category(choices: list[ChatChoice], category: ModelCategory) -> ChatChoice | None:
+    selectable = [
+        choice
+        for choice in choices
+        if choice.enabled and getattr(choice, "status", None) in (None, ModelStatus.ENABLED)
+    ]
+    if category != ModelCategory.GLOBAL:
+        specific = next((choice for choice in selectable if category in choice.default_for_categories), None)
+        if specific is not None:
+            return specific
+    global_default = next((choice for choice in selectable if choice.default), None) or next(
+        (choice for choice in selectable if ModelCategory.GLOBAL in choice.default_for_categories), None
+    )
+    return global_default or next(iter(selectable), None)
 
 
 def get_project_from_id(project_id: str | None = Query(None)) -> Application | None:
@@ -74,26 +119,7 @@ def get_llm_models(
     Returns:
         List of available LLM models and router options
     """
-    models: list[Union[LLMModel, LlmRouterOption]] = list(
-        llm_service.get_allowed_chat_models(user, include_all=include_all, project=project)
-    )
-    models.extend(llm_service.get_allowed_router_options(include_all=include_all, project=project))
-
-    # Apply project default model to response
-    if project and getattr(project, "default_model", None):
-        default_name = project.default_model
-
-        patched: list[Union[LLMModel, LlmRouterOption]] = []
-        for m in models:
-            if isinstance(m, LLMModel):
-                patched.append(
-                    m.model_copy(update={"default": (m.base_name == default_name or m.deployment_name == default_name)})
-                )
-            else:
-                patched.append(m)
-        models = patched
-
-    return models
+    return _get_accessible_chat_choices(user, include_all, project)
 
 
 @router.get(
@@ -135,7 +161,7 @@ def get_default_models() -> Dict[str, LLMModel]:
 @router.get(
     "/default_models/{category_id}",
     description="Returns the default LLM model for a specific category",
-    response_model=LLMModel,
+    response_model=ChatChoice,
     response_model_exclude_none=True,
 )
 def get_default_model_for_category(
@@ -143,7 +169,7 @@ def get_default_model_for_category(
     user: User = Depends(authenticate),
     include_all: bool = False,
     project: Application | None = Depends(get_project_from_id),
-) -> LLMModel:
+) -> ChatChoice:
     """
     Return the default LLM model for a specific category, filtered by user access and visibility.
 
@@ -156,16 +182,11 @@ def get_default_model_for_category(
     Returns:
         Default LLM model for the specified category
     """
-    allowed_models = llm_service.get_allowed_chat_models(user, include_all=include_all, project=project)
-
-    for model in allowed_models:
-        if model.is_default_for(ModelCategory(category_id)):
-            return model
-
-    if allowed_models:
-        return allowed_models[0]
-
-    raise HTTPException(404, f"No accessible models found for category {category_id}")
+    choices = _get_accessible_chat_choices(user, include_all, project)
+    default = _default_for_category(choices, ModelCategory(category_id))
+    if default is None:
+        raise HTTPException(404, f"No accessible models found for category {category_id}")
+    return default
 
 
 @router.get(

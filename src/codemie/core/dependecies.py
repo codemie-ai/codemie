@@ -48,7 +48,7 @@ T = TypeVar("T")
 
 
 def get_embeddings_model(
-    embedding_model: str = llm_service.default_embedding_model,
+    embedding_model: str | None = None,
     request_id: Optional[str] = None,
 ) -> Any:
     """Return an embeddings model instance for the given embedding model name.
@@ -59,6 +59,10 @@ def get_embeddings_model(
     - If provider is AWS Bedrock, return BedrockEmbeddings.
     - Otherwise, default to AzureOpenAIEmbeddings.
     """
+    # Resolved lazily rather than as a default argument: default_embedding_model reads the embedding
+    # catalog, which is database-backed, and a default argument would run that query at import time.
+    if embedding_model is None:
+        embedding_model = llm_service.default_embedding_model
     from codemie.enterprise.litellm import get_litellm_embedding_model
 
     llm_model_details = llm_service.get_model_details(embedding_model)
@@ -114,8 +118,9 @@ def get_embeddings_model(
         )
 
 
-def get_elasticsearch(index_name, embeddings_model: str = llm_service.default_embedding_model) -> ElasticsearchStore:
+def get_elasticsearch(index_name, embeddings_model: str | None = None) -> ElasticsearchStore:
     elastic_client = ElasticSearchClient.get_client()
+    # get_embeddings_model resolves None to the default itself, so no import-time query is needed here.
     embeddings = get_embeddings_model(embeddings_model)
 
     return ElasticsearchStore(
@@ -349,8 +354,25 @@ def enforce_allowed_model(
     return policy.choose([requested_model], context="enforce_allowed_model") or ""
 
 
+def _resolve_chat_model_details(
+    llm_model: str | None,
+    project: Application | None,
+    fallback_to_default: bool,
+) -> tuple[str, LLMModel]:
+    """Resolve the lazy default and keep the model name aligned with any fallback."""
+    # Resolve at call time: the database-backed catalog must not be read during module import.
+    if llm_model is None:
+        llm_model = llm_service.default_llm_model
+    llm_model_details = llm_service.get_model_details(
+        llm_model, project=project, fallback_to_default=fallback_to_default
+    )
+    if llm_model not in (llm_model_details.base_name, llm_model_details.deployment_name):
+        llm_model = llm_model_details.base_name
+    return llm_model, llm_model_details
+
+
 def get_llm_by_credentials(
-    llm_model: str = llm_service.default_llm_model,
+    llm_model: str | None = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
@@ -362,9 +384,7 @@ def get_llm_by_credentials(
     llm_model = enforce_allowed_model(llm_model, project)
     from codemie.enterprise.litellm import get_litellm_chat_model
 
-    llm_model_details = llm_service.get_model_details(
-        llm_model, project=project, fallback_to_default=fallback_to_default
-    )
+    llm_model, llm_model_details = _resolve_chat_model_details(llm_model, project, fallback_to_default)
 
     context = litellm_context.get(None)
     username = _resolve_username(current_username.get())
@@ -460,12 +480,16 @@ def format_headers_for_openai_api(default_headers: dict) -> None:
 
 
 def get_llm_by_credentials_raw(
-    llm_model: str = llm_service.default_llm_model,
+    llm_model: str | None = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
 ):
     """Get LLM instance based on current context credentials"""
+    # Resolved lazily rather than as a default argument: default_llm_model reads the model catalog,
+    # which is database-backed, and a default argument would run that query at module-import time.
+    if llm_model is None:
+        llm_model = llm_service.default_llm_model
     creds = dial_credentials.get(None)
     llm_model_details = llm_service.get_model_details(llm_model)
     logger.debug(f"Init llm. Model Details={llm_model_details}")
@@ -620,8 +644,9 @@ def get_anthropic_llm(
 
 
 def get_elasticsearch_retriever(
-    index_name: str, top_k: int = 10, embeddings_model: str = llm_service.default_embedding_model
+    index_name: str, top_k: int = 10, embeddings_model: str | None = None
 ) -> VectorStoreRetriever:
+    # get_elasticsearch resolves None to the default itself, so no import-time query is needed here.
     elastic_search = get_elasticsearch(index_name, embeddings_model)
     search_kwargs = ElasticSearchKwargs(k=top_k).model_dump()
 

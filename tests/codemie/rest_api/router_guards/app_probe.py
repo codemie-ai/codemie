@@ -71,6 +71,9 @@ def _import_app() -> Any:
         stack.enter_context(patch("codemie.rest_api.utils.state_import.StateImportService.import_indexes"))
         # main.py from-imports is_litellm_enabled, so it has to be patched before main is imported.
         stack.enter_context(patch("codemie.enterprise.litellm.is_litellm_enabled", return_value=True))
+        # Proxy registration uses its own bound import. Enable it independently
+        # of whether the optional enterprise package is installed on this host.
+        stack.enter_context(patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=True))
         import codemie.rest_api.main as main
 
     return main.app

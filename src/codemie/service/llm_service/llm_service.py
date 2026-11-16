@@ -11,11 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from enum import Enum
-from typing import TYPE_CHECKING, List, Literal, Optional
 
+from __future__ import annotations
+
+from contextlib import suppress
+from dataclasses import dataclass
+from enum import Enum
+from threading import Lock
+from time import monotonic
+from typing import TYPE_CHECKING, Literal, Optional
+
+from codemie.clients.postgres import get_session
 from codemie.configs import config, logger
 from codemie.configs.customer_config import customer_config
+from codemie.core.exceptions import ModelNotSelectableError, ValidationException
 from codemie.service.llm_service.stt_models import (
     LegacySttModel,
     build_legacy_stt_model,
@@ -30,19 +39,32 @@ from codemie.configs.llm_config import (
     LLMRouter,
     LlmRouterOption,
     ModelCategory,
+    ModelStatus,
+    ModelType,
     RouterTier,
     RouterTiers,
     build_switchyard_routers,
     is_positive_token_limit,
     llm_config,
 )
+from codemie.repository.admin_global_default_repository import AdminGlobalDefaultRepository
+from codemie.repository.llm_model_status_repository import LLMModelStatusRepository
 
 if TYPE_CHECKING:
     from codemie.core.models import Application
+    from codemie.rest_api.models.admin_global_default import AdminGlobalDefault
     from codemie.rest_api.security.user import User
 
 
+@dataclass(frozen=True)
+class GlobalDefaultResolution:
+    model: LLMModel | None
+    source: str | None
+    saved_base_name: str | None
+
+
 class LLMService:
+    PERSISTED_SETTINGS_CACHE_TTL_SECONDS = 5
     BASE_NAME_GPT_41 = "gpt-4.1"
     BASE_NAME_GPT_41_MINI = "gpt-4.1-mini"
     BASE_NAME_GEMINI = "gemini"
@@ -50,27 +72,46 @@ class LLMService:
 
     def __init__(self, llm_config: LLMConfig):
         self.llm_config = llm_config
-        self._default_litellm_models: List[LLMModel] = []
-        self._default_litellm_embeddings: List[LLMModel] = []
+        self._default_litellm_models: list[LLMModel] = []
+        self._default_litellm_embeddings: list[LLMModel] = []
         self._default_litellm_audio_transcription_models: list[LLMModel] = []
         self._litellm_route_costs: dict[str, CostConfig] = {}
+        # Last successfully-loaded persisted status overrides, keyed by base_name. Reused when the
+        # database is briefly unreachable so an outage cannot silently re-enable a model an admin
+        # disabled or deprecated. See _merge_persisted_status.
+        self._status_override_cache: dict[str, str] | None = None
+        self._admin_global_default_cache: AdminGlobalDefault | None = None
+        # Separate deadlines also cache empty results and failed attempts. Keep the last
+        # successful values after expiry so an outage cannot re-enable retired models.
+        self._status_cache_expires_at = 0.0
+        self._default_cache_expires_at = 0.0
+        self._status_cache_lock = Lock()
+        self._default_cache_lock = Lock()
+        self._status_load_failed = False
+        self._default_load_failed = False
 
-    def get_model_info(self, models: List[LLMModel]) -> List[LLMModel]:
+    def get_model_info(self, models: list[LLMModel]) -> list[LLMModel]:
         """Retrieve all labels and base names from models."""
         return [model for model in models if model.enabled]
 
-    def get_all_llm_model_info(self) -> List[LLMModel]:
+    def get_all_llm_model_info(self) -> list[LLMModel]:
         """Retrieve all labels and base names from LLM models across all providers.
 
         When LLM_PROXY_ENABLED is True and LiteLLM models are initialized,
         returns models from LiteLLM. Otherwise, returns models from YAML config.
         """
-        # If LiteLLM proxy is enabled and models are initialized, use them as source of truth
+        # If LiteLLM proxy is enabled and models are initialized, use them as source of truth.
+        # Re-merge cached overrides so status changes take effect without a catalog reload.
         if self.catalog_source() == "litellm":
+            self._merge_persisted_status(self._default_litellm_models)
             return self._default_litellm_models
 
-        # Otherwise, use traditional YAML-based models
-        return self.get_model_info(self.llm_config.llm_models)
+        # Otherwise, use traditional YAML-based models. This is the default configuration
+        # (LLM_PROXY_ENABLED=False), so the persisted status override must be merged here too -
+        # otherwise disabled/deprecated enforcement silently no-ops for it.
+        models = self.get_model_info(self.llm_config.llm_models)
+        self._merge_persisted_status(models)
+        return models
 
     def catalog_source(self) -> Literal["litellm", "yaml"]:
         """Name the source get_all_llm_model_info reads the chat models from."""
@@ -88,22 +129,28 @@ class LLMService:
             return {}
         return dict(self._litellm_route_costs)
 
-    def get_all_embedding_model_info(self) -> List[LLMModel]:
+    def get_all_embedding_model_info(self) -> list[LLMModel]:
         """Retrieve all labels and base names from embedding models across all providers.
 
         When LLM_PROXY_ENABLED is True and LiteLLM embedding models are initialized,
         returns embedding models from LiteLLM. Otherwise, returns embedding models from YAML config.
         """
-        # If LiteLLM proxy is enabled and embedding models are initialized, use them as source of truth
+        # If LiteLLM proxy is enabled and embedding models are initialized, use them as source of
+        # truth. Refresh persisted status on reads after admin changes.
         if config.LLM_PROXY_ENABLED and self._default_litellm_embeddings:
+            self._merge_persisted_status(self._default_litellm_embeddings)
             return self._default_litellm_embeddings
 
-        # Otherwise, use traditional YAML-based embedding models
-        return self.get_model_info(self.llm_config.embeddings_models)
+        # Otherwise, use traditional YAML-based embedding models - merge persisted status here too
+        # for the same reason as get_all_llm_model_info above.
+        models = self.get_model_info(self.llm_config.embeddings_models)
+        self._merge_persisted_status(models)
+        return models
 
     def get_all_audio_transcription_model_info(self) -> list[LLMModel]:
         """Speech-to-text models from the LiteLLM catalog (model_info.mode=audio_transcription)."""
         if config.LLM_PROXY_ENABLED:
+            self._merge_persisted_status(self._default_litellm_audio_transcription_models)
             return self._default_litellm_audio_transcription_models
         return []
 
@@ -113,6 +160,32 @@ class LLMService:
 
     def is_legacy_stt_model(self, model: LLMModel) -> bool:
         return isinstance(model, LegacySttModel)
+
+    def get_admin_model_catalog(self) -> list[tuple[ModelType, LLMModel | LlmRouterOption]]:
+        """Platform catalog for administration, independent of the requesting user's access.
+
+        Provider-unavailable models are excluded; CodeMie-disabled models remain
+        manageable. Synthetic Switchyard routers retain their computed status.
+        """
+        models = [
+            (model_type, model.model_copy())
+            for model_type, catalog in (
+                (ModelType.CHAT, self.get_all_llm_model_info()),
+                (ModelType.EMBEDDING, self.get_all_embedding_model_info()),
+                (ModelType.AUDIO_TRANSCRIPTION, self.get_all_audio_transcription_model_info()),
+            )
+            for model in catalog
+            if model.enabled
+        ]
+        self._apply_premium_flags([model for _, model in models])
+        return [
+            *models,
+            *(
+                (ModelType.CHAT, router)
+                for router in self.get_allowed_router_options(include_all=True)
+                if router.router_type == "switchyard"
+            ),
+        ]
 
     def get_llm_routers(self) -> list[LLMRouter]:
         """Return the effective Switchyard router catalog.
@@ -237,12 +310,25 @@ class LLMService:
         capable = by_name.get(router.switchyard.capable_model)
         efficient = by_name.get(router.switchyard.efficient_model)
 
+        if not include_all and (
+            (capable is not None and capable.status == ModelStatus.DISABLED)
+            or (efficient is not None and efficient.status == ModelStatus.DISABLED)
+        ):
+            return None
+
         multimodal: bool | None = None
         supports_tools: bool | None = None
         tiers: RouterTiers | None = None
+        router_status: ModelStatus | None = None
         if capable is not None and efficient is not None:
             multimodal, supports_tools = self._compute_router_capabilities(capable, efficient)
             tiers = self._switchyard_tiers(capable, efficient)
+            if ModelStatus.DISABLED in (capable.status, efficient.status):
+                router_status = ModelStatus.DISABLED
+            elif ModelStatus.DEPRECATED in (capable.status, efficient.status):
+                router_status = ModelStatus.DEPRECATED
+            else:
+                router_status = ModelStatus.ENABLED
 
         return LlmRouterOption(
             base_name=router.base_name,
@@ -251,6 +337,7 @@ class LLMService:
             multimodal=multimodal,
             supports_tools=supports_tools,
             is_premium=is_premium_model(router.base_name) if premium_enabled else None,
+            status=router_status,
             router_type="switchyard",
             strategy=router.switchyard.mode,
             tiers=tiers,
@@ -271,6 +358,8 @@ class LLMService:
             return None
         if not include_all and model.forbidden_for_web:
             return None
+        if not include_all and model.status == ModelStatus.DISABLED:
+            return None
 
         from codemie.enterprise.litellm.dependencies import is_premium_model
 
@@ -284,6 +373,7 @@ class LLMService:
             multimodal=model.multimodal,
             supports_tools=model.features.tools if model.features is not None else None,
             is_premium=is_premium_model(model.base_name) if premium_enabled else None,
+            status=model.status,
             default=model.default,  # Propagate the default flag from model_info
             default_for_categories=model.default_for_categories,  # Propagate default categories
             router_type="litellm_auto",
@@ -295,7 +385,7 @@ class LLMService:
         )
 
     def get_allowed_router_options(
-        self, include_all: bool = False, project: 'Application | None' = None
+        self, include_all: bool = False, project: Application | None = None, user: User | None = None
     ) -> list[LlmRouterOption]:
         from codemie.enterprise.litellm.dependencies import is_premium_models_enabled
         from codemie.service.llm.model_availability_service import PROJECT_MODEL_OVERRIDE_FEATURE
@@ -303,23 +393,38 @@ class LLMService:
         if project and not customer_config.is_feature_enabled(PROJECT_MODEL_OVERRIDE_FEATURE):
             project = None
 
-        all_models = self.get_all_llm_model_info()
-        by_name: dict[str, LLMModel] = {m.base_name: m for m in all_models}
+        source_models = self.get_allowed_models(user).chat_models if user is not None else self.get_all_llm_model_info()
+        all_models = self._filter_models_by_visibility(source_models, include_all)
+        all_models = [model for model in all_models if model.enabled]
+        by_name: dict[str, LLMModel] = {m.base_name: m for m in source_models}
+        visible_names = {model.base_name for model in all_models}
         premium_enabled = is_premium_models_enabled()
+        selected = self.resolve_global_default(all_models).model
+        selected_name = selected.base_name if selected else None
 
         switchyard_options = (
             self._build_switchyard_router_option(router, by_name, include_all, premium_enabled)
             for router in self.get_llm_routers()
+            if user is None
+            or (router.switchyard.capable_model in visible_names and router.switchyard.efficient_model in visible_names)
         )
         litellm_auto_options = (
             self._build_litellm_auto_router_option(model, by_name, include_all, premium_enabled) for model in all_models
         )
         options = [option for option in (*switchyard_options, *litellm_auto_options) if option is not None]
-        return self._filter_router_options_by_project(options, project)
+        options = self._filter_router_options_by_project(options, project)
+        return [
+            option.model_copy(
+                update=self._global_default_fields(option.default_for_categories, option.base_name == selected_name)
+            )
+            if option.router_type == "litellm_auto"
+            else option
+            for option in options
+        ]
 
     @staticmethod
     def _filter_router_options_by_project(
-        options: list[LlmRouterOption], project: 'Application | None'
+        options: list[LlmRouterOption], project: Application | None
     ) -> list[LlmRouterOption]:
         """Filter router options based on project's allowed_models list.
 
@@ -336,11 +441,19 @@ class LLMService:
         policy = ProjectModelPolicy.for_application(project, require_default=False)
         return [option for option in options if policy.allows(option.base_name)]
 
+    @staticmethod
+    def _global_default_fields(categories: list[ModelCategory], selected: bool) -> dict:
+        """Rebuild global metadata for a response without changing catalog configuration."""
+        projected_categories = [category for category in categories if category != ModelCategory.GLOBAL]
+        if selected:
+            projected_categories.append(ModelCategory.GLOBAL)
+        return {"default": selected, "default_for_categories": projected_categories}
+
     def is_router_model(self, model_name: str) -> bool:
         """Return True if *model_name* is a configured and enabled Switchyard router."""
         return any(router.base_name == model_name and router.enabled for router in self.get_llm_routers())
 
-    def get_deployment_name(self, model_name: str, models: List[LLMModel], default_name: str) -> str:
+    def get_deployment_name(self, model_name: str, models: list[LLMModel], default_name: str) -> str:
         """Retrieve the deployment name for a model based on its base name."""
         if not model_name:
             return self.get_deployment_name(default_name, models, default_name)
@@ -413,7 +526,7 @@ class LLMService:
         )
 
     def _resolve_model_not_found(
-        self, model_name: str, active_llm_models: list, project: 'Application | None', fallback_to_default: bool
+        self, model_name: str, active_llm_models: list, project: Application | None, fallback_to_default: bool
     ) -> LLMModel:
         """Handle the not-found case for get_model_details: fall back to default or raise."""
         from codemie.core.exceptions import ModelNotAllowedException
@@ -435,7 +548,7 @@ class LLMService:
         self,
         model_name: str,
         active_llm_models: list,
-        project: 'Application | None',
+        project: Application | None,
         fallback_to_default: bool,
     ) -> LLMModel:
         """Handle the not-allowed-for-project case for get_model_details: fall back or raise.
@@ -465,7 +578,7 @@ class LLMService:
         raise ModelNotWhitelistedException(model_id=model_name, project_name=project.id, details=details)
 
     def get_model_details(
-        self, model_name: str, project: 'Application | None' = None, fallback_to_default: bool = False
+        self, model_name: str, project: Application | None = None, fallback_to_default: bool = False
     ) -> LLMModel:
         """Retrieve model details by name, enforcing project narrowing.
 
@@ -493,6 +606,7 @@ class LLMService:
         if project and not project.id:
             raise ValueError("Project object must have a non-None id for model validation")
 
+        execution_project = project
         if project and not customer_config.is_feature_enabled(PROJECT_MODEL_OVERRIDE_FEATURE):
             project = None
 
@@ -507,11 +621,101 @@ class LLMService:
         if not found_model:
             return self._resolve_model_not_found(model_name, active_llm_models, project, fallback_to_default)
 
+        if self._is_disabled_for_execution(model_name, active_llm_models):
+            return self._execution_fallback(model_name, active_llm_models, execution_project)
+
         # Check project narrowing
         if not self._filter_models_by_project([found_model], project):
             return self._resolve_model_not_allowed(model_name, active_llm_models, project, fallback_to_default)
 
         return found_model
+
+    def _is_disabled_for_execution(self, model_name: str | None, models: list[LLMModel]) -> bool:
+        model_name = model_name.strip() if model_name else model_name
+        model = next((m for m in models if model_name in (m.base_name, m.deployment_name)), None)
+        if model is not None:
+            return model.status == ModelStatus.DISABLED
+        router = next((r for r in build_switchyard_routers(models) if r.base_name == model_name), None)
+        if router is None:
+            return False
+        tier_names = {router.switchyard.capable_model, router.switchyard.efficient_model}
+        return any(m.base_name in tier_names and m.status == ModelStatus.DISABLED for m in models)
+
+    def _execution_fallback(
+        self, requested_model: str, models: list[LLMModel], project: Application | None
+    ) -> LLMModel:
+        selected = self._execution_fallback_choice(requested_model, models, project)
+        if isinstance(selected, LLMModel):
+            return selected
+        # Callers of get_model_details need concrete provider configuration.
+        target = self._find_model_or_router_target(selected.base_name, models, [])
+        if target is None:
+            raise ModelNotSelectableError(requested_model, "no selectable fallback model is available")
+        return target
+
+    def _execution_fallback_choice(
+        self, requested_model: str, models: list[LLMModel], project: Application | None
+    ) -> LLMModel | LlmRouterOption:
+        """Keep fallback choices within the project, including its configured router."""
+        candidates = self._filter_models_by_project([m for m in models if self._is_selectable(m)], project)
+        choices = [
+            *candidates,
+            *(
+                router
+                for router in self.get_allowed_router_options(include_all=True, project=project)
+                if router.enabled and router.status in (None, ModelStatus.ENABLED)
+            ),
+        ]
+        project_default = next(
+            (
+                m
+                for m in choices
+                if project
+                and project.default_model
+                and project.default_model in (m.base_name, getattr(m, "deployment_name", None))
+            ),
+            None,
+        )
+        selected = project_default or self.resolve_global_default(candidates).model or next(iter(choices), None)
+        if selected is None:
+            raise ModelNotSelectableError(requested_model, "no selectable fallback model is available")
+        logger.info(
+            "model_availability_event=fallback_applied reason=unavailable requested_model=%r fallback_model=%r",
+            requested_model,
+            selected.base_name,
+        )
+        return selected
+
+    def resolve_disabled_model(
+        self,
+        model_name: str | None,
+        project_name: str | None = None,
+        *,
+        is_global: bool = False,
+        allow_deprecated: bool = True,
+    ) -> str | None:
+        """Keep existing enabled/deprecated selections; replace disabled ones at execution time.
+
+        Load project settings only when a disabled selection actually needs a replacement.
+        Global assets always use the global default, regardless of their owning project.
+        Newly chosen defaults and fallbacks must also exclude deprecated models.
+        """
+        models = self.get_all_llm_model_info()
+        needs_fallback = self._is_disabled_for_execution(model_name, models)
+        if not needs_fallback and not allow_deprecated:
+            try:
+                self.assert_model_selectable(model_name)
+            except ModelNotSelectableError:
+                needs_fallback = True
+        if not needs_fallback:
+            return model_name
+        project = None
+        if project_name and not is_global:
+            from codemie.core.models import Application
+
+            with suppress(KeyError):
+                project = Application.get_by_id(project_name)
+        return self._execution_fallback_choice(model_name, models, project).base_name
 
     def get_model_label(self, model_name: str) -> Optional[str]:
         """Return the configured label for a model identified by base_name or deployment_name."""
@@ -565,7 +769,7 @@ class LLMService:
         }
         return by_base.get(model_id, model_id)
 
-    def get_multimodal_llms(self) -> List[str]:
+    def get_multimodal_llms(self) -> list[str]:
         # Get the active model source (LiteLLM or YAML)
         active_models = self.get_all_llm_model_info()
         return [model.deployment_name for model in active_models if model.multimodal]
@@ -575,7 +779,7 @@ class LLMService:
         multimodal_models = [model for model in self.get_all_llm_model_info() if model.multimodal]
         return {name for model in multimodal_models for name in (model.base_name, model.deployment_name)}
 
-    def get_react_llms(self) -> List[str]:
+    def get_react_llms(self) -> list[str]:
         # Get the active model source (LiteLLM or YAML)
         active_models = self.get_all_llm_model_info()
         return [model.base_name for model in active_models if model.react_agent]
@@ -616,9 +820,14 @@ class LLMService:
 
     def create_model_types_enum(self):
         """Dynamically create an Enum with model deployment names from the configuration."""
-        # Get the active model sources (LiteLLM or YAML)
-        active_llm_models = self.get_all_llm_model_info()
-        active_embedding_models = self.get_all_embedding_model_info()
+        # Read the raw, unmerged model list rather than get_all_llm_model_info/
+        # get_all_embedding_model_info: this method only needs base_name/deployment_name to build
+        # an Enum and never reads .status, so it must not pay for (or depend on the availability of)
+        # the persisted-status database merge. This also runs at module-import time via
+        # core/constants.py's module-level ModelTypes assignment, where a database call would be a
+        # startup-ordering hazard.
+        active_llm_models = self.get_model_info(self.llm_config.llm_models)
+        active_embedding_models = self.get_model_info(self.llm_config.embeddings_models)
 
         enum_dict = {}
         for model in active_llm_models:
@@ -695,14 +904,19 @@ class LLMService:
         active_models = self.get_all_llm_model_info()
 
         # First try to find a model explicitly marked as default for this category
-        category_default = next(
-            (model for model in active_models if model.enabled and model.is_default_for(category)), None
+        category_default = (
+            next(
+                (model for model in active_models if self._is_selectable(model) and model.is_default_for(category)),
+                None,
+            )
+            if category != ModelCategory.GLOBAL
+            else None
         )
         if category_default:
             return category_default
 
         # If no category-specific default found, fall back to GLOBAL in default_for_categories
-        return self._get_global_default_model()
+        return self.resolve_global_default(active_models).model
 
     def get_default_models_by_category(self) -> dict:
         """Returns a dictionary mapping all categories to their default models.
@@ -714,22 +928,25 @@ class LLMService:
         Returns:
             Dictionary with category values as keys and LLMModel objects as values.
         """
-        category_models = self._get_specific_category_defaults()
-        global_default = self._get_global_default_model()
+        active_models = self.get_all_llm_model_info()
+        category_models = self._get_specific_category_defaults(active_models)
+        global_default = self.resolve_global_default(active_models).model
 
         if global_default:
+            category_models[ModelCategory.GLOBAL.value] = global_default
             self._populate_missing_categories_with_global_default(category_models, global_default)
 
         return category_models
 
-    def _get_specific_category_defaults(self) -> dict:
+    def _get_specific_category_defaults(self, active_models: list[LLMModel] | None = None) -> dict:
         """Retrieve specific default models for categories."""
         # Get the active model source (LiteLLM or YAML)
-        active_models = self.get_all_llm_model_info()
+        if active_models is None:
+            active_models = self.get_all_llm_model_info()
 
         specific_defaults = {}
         for model in active_models:
-            if model.enabled:
+            if self._is_selectable(model):
                 for category in model.default_for_categories:
                     if model.is_default_for(category):
                         specific_defaults[category] = model
@@ -737,15 +954,73 @@ class LLMService:
 
     def _get_global_default_model(self) -> Optional[LLMModel]:
         """Retrieve the global default model for the GLOBAL category, if available."""
-        # Get the active model source (LiteLLM or YAML)
-        active_models = self.get_all_llm_model_info()
-
-        return self._prefer_litellm_router(
-            [model for model in active_models if model.enabled and model.is_default_for(ModelCategory.GLOBAL)]
-        )
+        return self.resolve_global_default(self.get_all_llm_model_info()).model
 
     @staticmethod
-    def _prefer_litellm_router(models: List[LLMModel]) -> Optional[LLMModel]:
+    def _is_selectable(model: LLMModel) -> bool:
+        return model.enabled and model.status == ModelStatus.ENABLED
+
+    def get_admin_global_default_choice(self) -> AdminGlobalDefault | None:
+        """Read the TTL-cached choice, retaining the last successful value during an outage."""
+        with self._default_cache_lock:
+            if monotonic() < self._default_cache_expires_at:
+                return self._admin_global_default_cache
+            try:
+                with get_session() as session:
+                    choice = AdminGlobalDefaultRepository.get(session)
+            except Exception:
+                if not self._default_load_failed:
+                    logger.warning("Failed to load admin global default; reusing last known choice.")
+                self._default_load_failed = True
+            else:
+                self._admin_global_default_cache = choice
+                self._default_load_failed = False
+            self._default_cache_expires_at = monotonic() + self.PERSISTED_SETTINGS_CACHE_TTL_SECONDS
+            return self._admin_global_default_cache
+
+    def set_admin_global_default(self, base_name: str, admin_id: str, admin_name: str) -> AdminGlobalDefault:
+        """Save a known and currently selectable model or auto-router by base name."""
+        model = next((m for m in self.get_all_llm_model_info() if m.base_name == base_name), None)
+        if model is None:
+            raise ValidationException(f"Unknown LLM model or router: {base_name}")
+        if not self._is_selectable(model):
+            reason = "model is deprecated" if model.status == ModelStatus.DEPRECATED else "model is not available"
+            raise ModelNotSelectableError(base_name, reason)
+        # Serialize the write with refreshes so an older read cannot overwrite this choice.
+        with self._default_cache_lock:
+            with get_session() as session:
+                choice = AdminGlobalDefaultRepository.replace(session, base_name, admin_id, admin_name)
+            self._admin_global_default_cache = choice
+            self._default_cache_expires_at = monotonic() + self.PERSISTED_SETTINGS_CACHE_TTL_SECONDS
+            self._default_load_failed = False
+        return choice
+
+    def clear_admin_global_default(self) -> None:
+        with self._default_cache_lock:
+            with get_session() as session:
+                AdminGlobalDefaultRepository.clear(session)
+            self._admin_global_default_cache = None
+            self._default_cache_expires_at = monotonic() + self.PERSISTED_SETTINGS_CACHE_TTL_SECONDS
+            self._default_load_failed = False
+
+    def resolve_global_default(self, models: list[LLMModel]) -> GlobalDefaultResolution:
+        """Choose the admin selection, configured global default, or a safe catalog fallback."""
+        choice = self.get_admin_global_default_choice()
+        saved_name = choice.base_name if choice else None
+        selectable = [model for model in models if self._is_selectable(model)]
+        if saved_name:
+            saved_model = next((model for model in selectable if model.base_name == saved_name), None)
+            if saved_model:
+                return GlobalDefaultResolution(saved_model, "admin", saved_name)
+        configured = self._prefer_litellm_router(
+            [model for model in selectable if model.default or model.is_default_for(ModelCategory.GLOBAL)]
+        )
+        if configured:
+            return GlobalDefaultResolution(configured, "configured", saved_name)
+        return GlobalDefaultResolution(next(iter(selectable), None), "fallback" if selectable else None, saved_name)
+
+    @staticmethod
+    def _prefer_litellm_router(models: list[LLMModel]) -> Optional[LLMModel]:
         """Pick the global default from candidate models: a LiteLLM auto-router wins over concrete models,
         otherwise the first candidate. Shared by every global-default lookup so they never disagree.
 
@@ -768,14 +1043,9 @@ class LLMService:
         Checks both concrete models and routers for default status. Routers are checked first
         since they provide intelligent routing capabilities.
         """
-        active_models = self.get_all_llm_model_info()
-        default_models = [model for model in active_models if model.default]
-
-        # Same router-first rule as the category lookups; disabled defaults are only a last resort.
-        default_model = self._prefer_litellm_router([model for model in default_models if model.enabled])
-        default_model = default_model or next(iter(default_models), None)
+        default_model = self.resolve_global_default(self.get_all_llm_model_info()).model
         if default_model is None:
-            raise ValueError("No global default LLM model is configured (no model with GLOBAL category).")
+            raise ValueError("No selectable LLM model is available for the global default.")
         return default_model.base_name
 
     @property
@@ -795,8 +1065,61 @@ class LLMService:
     def is_claude_models(self, model_name: str) -> bool:
         return model_name and self.BASE_NAME_CLAUDE in model_name
 
+    def get_model_status_overrides(self, *, force_refresh: bool = False) -> dict[str, str] | None:
+        """Cache overrides for a short TTL; admin writes force a refresh after committing.
+
+        Failed reads are throttled by the same TTL and retain the last successful snapshot.
+        Warn once per outage, resetting only after a successful read.
+        """
+        with self._status_cache_lock:
+            if not force_refresh and monotonic() < self._status_cache_expires_at:
+                return self._status_override_cache
+            try:
+                with get_session() as session:
+                    status_rows = LLMModelStatusRepository.get_all(session)
+                    status_by_base_name = {row.base_name: row.status for row in status_rows}
+            except Exception:
+                if not self._status_load_failed:
+                    if self._status_override_cache is None:
+                        logger.warning(
+                            "Failed to load persisted LLM model status overrides and no cached overrides "
+                            "are available; using unmerged catalog."
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to load persisted LLM model status overrides; reusing last known values."
+                        )
+                self._status_load_failed = True
+            else:
+                self._status_override_cache = status_by_base_name
+                self._status_load_failed = False
+            self._status_cache_expires_at = monotonic() + self.PERSISTED_SETTINGS_CACHE_TTL_SECONDS
+            return self._status_override_cache
+
+    def _merge_persisted_status(self, models: list[LLMModel]) -> None:
+        """Overlay CodeMie-owned persisted status onto the provider-sourced model catalog, in place."""
+        status_by_base_name = self.get_model_status_overrides()
+        if status_by_base_name is None:
+            return
+        for model in models:
+            persisted_status = status_by_base_name.get(model.base_name)
+            if not persisted_status:
+                model.status = ModelStatus.ENABLED
+                continue
+            try:
+                model.status = ModelStatus(persisted_status)
+            except ValueError:
+                logger.warning(
+                    f"Persisted status '{persisted_status}' for model '{model.base_name}' is not a "
+                    f"valid ModelStatus value; falling back to enabled."
+                )
+                model.status = ModelStatus.ENABLED
+
     def initialize_default_litellm_models(self, user_models: LiteLLMModels) -> None:
         self._apply_router_output_limits(user_models.chat_models)
+        # Merge in CodeMie-owned persisted status before storing the models
+        self._merge_persisted_status(user_models.chat_models)
+        self._merge_persisted_status(user_models.embedding_models)
 
         # Store the models
         self._default_litellm_models = user_models.chat_models
@@ -811,12 +1134,12 @@ class LLMService:
         )
 
     @property
-    def default_litellm_models(self) -> List[LLMModel]:
+    def default_litellm_models(self) -> list[LLMModel]:
         """Get default LiteLLM chat models initialized on startup"""
         return self._default_litellm_models
 
     @property
-    def default_litellm_embeddings(self) -> List[LLMModel]:
+    def default_litellm_embeddings(self) -> list[LLMModel]:
         """Get default LiteLLM embedding models initialized on startup"""
         return self._default_litellm_embeddings
 
@@ -825,7 +1148,7 @@ class LLMService:
         """Get default LiteLLM speech-to-text models initialized on startup"""
         return self._default_litellm_audio_transcription_models
 
-    def get_allowed_models(self, user: 'User') -> LiteLLMModels:
+    def get_allowed_models(self, user: User) -> LiteLLMModels:
         """
         Internal method to get allowed models for a user.
         Returns both chat and embedding models to avoid duplicate API calls.
@@ -877,7 +1200,13 @@ class LLMService:
                 audio_transcription_models=user_models.audio_transcription_models,
             )
 
-        # Return user-specific models
+        # Return user-specific models. These come from the org's own LiteLLM integration and were
+        # never passed through initialize_default_litellm_models, so the persisted status override
+        # must be merged here as well - otherwise an admin disabling/deprecating a model has no
+        # effect for external users with a LiteLLM integration.
+        self._merge_persisted_status(user_models.chat_models)
+        self._merge_persisted_status(user_models.embedding_models)
+
         logger.info(
             f"Returning user-specific LiteLLM models for {user.id}: "
             f"{len(user_models.chat_models)} chat, {len(user_models.embedding_models)} embedding, "
@@ -885,7 +1214,7 @@ class LLMService:
         )
         return user_models
 
-    def _filter_models_by_visibility(self, models: List[LLMModel], include_all: bool) -> List[LLMModel]:
+    def _filter_models_by_visibility(self, models: list[LLMModel], include_all: bool) -> list[LLMModel]:
         """
         Filter models based on web visibility settings.
 
@@ -902,7 +1231,11 @@ class LLMService:
 
         # Filter out models forbidden for web - only show models with forbidden_for_web != True
         # Handle None as False (visible) for backward compatibility
-        filtered_models = [model for model in models if model.forbidden_for_web is not True]
+        # Also drop models whose persisted status is DISABLED (narrower than the provider-sourced
+        # `enabled` signal, which is already applied upstream in get_model_info).
+        filtered_models = [
+            model for model in models if model.forbidden_for_web is not True and model.status != ModelStatus.DISABLED
+        ]
 
         logger.debug(
             f"Filtered models for web: {len(models)} total, "
@@ -911,7 +1244,7 @@ class LLMService:
 
         return filtered_models
 
-    def _filter_models_by_project(self, models: list[LLMModel], project: 'Application | None') -> list[LLMModel]:
+    def _filter_models_by_project(self, models: list[LLMModel], project: Application | None) -> list[LLMModel]:
         """Filter models based on project's allowed_models list.
 
         None allowed_models = no restriction (all models pass through).
@@ -933,7 +1266,7 @@ class LLMService:
 
         return filtered
 
-    def _select_default_model(self, allowed_models: list[LLMModel], project: 'Application | None') -> LLMModel | None:
+    def _select_default_model(self, allowed_models: list[LLMModel], project: Application | None) -> LLMModel | None:
         """Select a default model, respecting project-level allowed_models narrowing.
 
         When the project's allowed_models set excludes the platform default, this method
@@ -986,7 +1319,7 @@ class LLMService:
         return fallback
 
     def get_allowed_chat_models(
-        self, user: 'User', include_all: bool = False, project: 'Application | None' = None
+        self, user: User, include_all: bool = False, project: Application | None = None
     ) -> list[LLMModel]:
         """
         Get list of LLM models allowed for user, optionally filtering out web-forbidden models and by project.
@@ -1021,10 +1354,19 @@ class LLMService:
         models = self._filter_models_by_visibility(chat_models, include_all)
         models = self._filter_models_by_project(models, project)
 
-        return self._apply_premium_flags(models)
+        candidates = self._filter_models_by_visibility(user_models.chat_models, include_all)
+        selected = self.resolve_global_default(candidates).model
+        selected_name = selected.base_name if selected else None
+        projected = [
+            model.model_copy(
+                update=self._global_default_fields(model.default_for_categories, model.base_name == selected_name)
+            )
+            for model in models
+        ]
+        return self._apply_premium_flags(projected)
 
     @staticmethod
-    def _apply_premium_flags(models: List[LLMModel]) -> List[LLMModel]:
+    def _apply_premium_flags(models: list[LLMModel]) -> list[LLMModel]:
         """Set is_premium on each model when the premium-models budget feature is enabled.
 
         When no premium_models budget is configured the field stays None and is omitted
@@ -1037,18 +1379,25 @@ class LLMService:
                 model.is_premium = is_premium_model(model.base_name)
         return models
 
-    def get_allowed_image_generation_models(self, user: 'User', include_all: bool = False) -> List[LLMModel]:
+    def get_allowed_image_generation_models(self, user: User, include_all: bool = False) -> list[LLMModel]:
         """Get list of image generation models allowed for user.
 
         Image-generation models should remain selectable even when a model is
         hidden from the general web chat model picker via forbidden_for_web.
-        The include_all flag is therefore intentionally ignored here and kept
-        only for API compatibility.
+        The include_all flag is therefore intentionally ignored for that signal
+        and kept only for API compatibility. The enabled/persisted-status narrowing
+        that applies to every other get_allowed_* method still applies here -
+        a disabled or provider-disabled model must not remain selectable for
+        image generation either.
         """
         user_models = self.get_allowed_models(user)
-        return [model for model in user_models.chat_models if model.supports_image_generation]
+        return [
+            model
+            for model in user_models.chat_models
+            if model.supports_image_generation and model.enabled and model.status != ModelStatus.DISABLED
+        ]
 
-    def get_allowed_embedding_models(self, user: 'User', include_all: bool = False) -> List[LLMModel]:
+    def get_allowed_embedding_models(self, user: User, include_all: bool = False) -> list[LLMModel]:
         """
         Get list of embedding models allowed for user, optionally filtering out web-forbidden models.
 
@@ -1071,7 +1420,7 @@ class LLMService:
         user_models = self.get_allowed_models(user)
         return self._filter_models_by_visibility(user_models.embedding_models, include_all)
 
-    def get_allowed_audio_transcription_models(self, user: 'User') -> list[LLMModel]:
+    def get_allowed_audio_transcription_models(self, user: User) -> list[LLMModel]:
         """STT models allowed for the user: the env-configured model and the LiteLLM ones (see merge_stt_models)."""
         from codemie.core.constants import LLMProxyMode
 
@@ -1082,13 +1431,50 @@ class LLMService:
         )
         return merge_stt_models(build_legacy_stt_model(), litellm_models)
 
-    def resolve_stt_model(self, user: 'User', model_name: str | None = None) -> LLMModel | None:
+    def resolve_stt_model(self, user: User, model_name: str | None = None) -> LLMModel | None:
         """Pick the STT model for a request: the named one, or the first allowed model.
 
         Raises:
             UnknownSttModelError: if a name is given but is not among the models allowed for the user.
         """
         return pick_stt_model(self.get_allowed_audio_transcription_models(user), model_name)
+
+    def assert_model_selectable(
+        self, model_name: str, *, previous_model_name: str | None = None, allow_deprecated: bool = False
+    ) -> None:
+        """Raise ModelNotSelectableError if the model cannot be selected for new work.
+
+        Looks up catalog models by base_name or deployment_name, then router names using
+        their computed status. Unknown names are not guarded here - the caller's own
+        validation handles unknown models elsewhere.
+        An existing selection may be retained on edit, including through its other catalog name.
+        Legacy IDE adoption may allow deprecated models, but still rejects disabled models.
+        """
+        model_name = model_name.strip() if model_name else model_name
+        previous_model_name = previous_model_name.strip() if previous_model_name else None
+        if previous_model_name is not None and model_name == previous_model_name:
+            return
+        model = next(
+            (m for m in self.get_all_llm_model_info() if model_name in (m.base_name, m.deployment_name)),
+            None,
+        )
+        if model is not None and previous_model_name in (model.base_name, model.deployment_name):
+            return
+        if model is None:
+            model = next(
+                (
+                    router
+                    for router in self.get_allowed_router_options(include_all=True)
+                    if router.base_name == model_name
+                ),
+                None,
+            )
+        if model is None:
+            return
+        if model.status == ModelStatus.DEPRECATED and not allow_deprecated:
+            raise ModelNotSelectableError(model_name, "model is deprecated")
+        if not model.enabled or model.status == ModelStatus.DISABLED:
+            raise ModelNotSelectableError(model_name, "model is not available")
 
 
 llm_service = LLMService(llm_config)

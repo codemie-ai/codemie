@@ -20,7 +20,7 @@ import html
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, BinaryIO, List, Mapping, TYPE_CHECKING, Optional, NoReturn
+from typing import Any, BinaryIO, List, Mapping, TYPE_CHECKING, NoReturn
 
 from codemie_tools.base.utils import get_encoding
 from fastapi import BackgroundTasks, status
@@ -35,7 +35,13 @@ from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.core.event_loop import run_coroutine_blocking
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.core.models import AssistantChatRequest, UpdateConversationRequest, UpdateAiMessageRequest, TokensUsage
+from codemie.core.models import (
+    AssistantChatRequest,
+    UpdateConversationRequest,
+    UpdateAiMessageRequest,
+    TokensUsage,
+    VirtualIdeChatRequest,
+)
 from codemie.rest_api.utils.client_context import ClientSource
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import (
@@ -65,7 +71,7 @@ from codemie.service.agent_workspace_service import AgentWorkspaceService
 from codemie.service.assistant.assistant_repository import AssistantRepository, AssistantScope
 from codemie.service.chat_naming_service import ChatNamingService
 from codemie.service.conversation.history_materializer import materialize_workflow_conversation
-from codemie.service.llm_service.llm_service import LLMService
+from codemie.service.llm_service.llm_service import LLMService, llm_service
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
 from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
 from codemie.service.spend.coverage import SpendDimension, SpendResult, TimeRange
@@ -122,8 +128,8 @@ _CLIENT_TYPE_TO_IMPORT_SOURCE: dict[str, str] = {
 async def _composed_per_dimension_value(
     dimension: SpendDimension,
     values: List[str],
-    user_term: Optional[UserTerm],
-    project: Optional[str],
+    user_term: UserTerm | None,
+    project: str | None,
     project_owners: tuple[str, ...],
     period: TimeRange,
 ) -> dict[str, SpendResult]:
@@ -146,9 +152,9 @@ def _spend_per_dimension_value(
     dimension: SpendDimension,
     values: List[str],
     *,
-    user_term: Optional[UserTerm],
-    project: Optional[str],
-    period: Optional[TimeRange],
+    user_term: UserTerm | None,
+    project: str | None,
+    period: TimeRange | None,
     project_owners: tuple[str, ...] = (),
 ) -> List[RenderedSpend]:
     """Each value's own figure, read with the report's **whole** scope carried on every one of them.
@@ -183,7 +189,7 @@ def _spend_per_dimension_value(
     return [render_composed_spend(results.get(value)) for value in values]
 
 
-def _average_cost(figure: Optional[float], item_count: int) -> Optional[float]:
+def _average_cost(figure: float | None, item_count: int) -> float | None:
     """The per-item cost, or **nothing at all** where no such cost exists.
 
     Two absences used to arrive as `0.0`, and on a report a zero is a claim: *this dimension costs
@@ -208,15 +214,15 @@ class SpendingGroupBreakdown(BaseModel):
     dimension_type: str  # "assistant" or "workflow"
     dimension_id: str
     dimension_name: str
-    money_spent: Optional[float] = None
+    money_spent: float | None = None
     input_tokens: int
     output_tokens: int
-    conversation_count: Optional[int] = None  # For assistants
-    workflow_execution_count: Optional[int] = None  # For workflows
-    average_cost_per_item: Optional[float] = None
+    conversation_count: int | None = None  # For assistants
+    workflow_execution_count: int | None = None  # For workflows
+    average_cost_per_item: float | None = None
     spend_unavailable: bool = False
     spend_partial: bool = False
-    spend_missing_amount: Optional[float] = None
+    spend_missing_amount: float | None = None
 
 
 class SpendingAnalyticsResult(BaseModel):
@@ -262,14 +268,14 @@ class UpsertChatHistoryParams:
     user: User
     assistant_response: str = ""
     time_elapsed: float = 0.0
-    tokens_usage: Optional[TokensUsage] = None
+    tokens_usage: TokensUsage | None = None
     thoughts: List[Thought] = field(default_factory=list)
     status: ConversationStatus = ConversationStatus.SUCCESS
     user_message_received_at: datetime | None = None
     a2ui_envelopes: list[dict] | None = None
-    request_id: Optional[str] = None
+    request_id: str | None = None
     background_tasks: BackgroundTasks | None = None
-    llm_runs: Optional[List["LLMRun"]] = None
+    llm_runs: List["LLMRun"] | None = None
     in_progress: bool = False
     client_source: ClientSource | None = None
     # The model the agent runs on (agent.llm_model); falls back to the request pick, then the assistant's own model.
@@ -359,6 +365,18 @@ class ConversationService:
         return max_index + 1
 
     @staticmethod
+    def _apply_virtual_ide_model_retention(
+        request: AssistantChatRequest, conversation: Conversation, llm_model: str | None
+    ) -> None:
+        """Retain the resolved model selection on the conversation for CLI/IDE turns."""
+        if not isinstance(request, VirtualIdeChatRequest):
+            return
+        conversation.llm_model = llm_model or conversation.llm_model
+        if conversation.llm_model:
+            conversation.legacy_ide_model_selection_pending = False
+        conversation.image_generation_model = request.image_generation_model or conversation.image_generation_model
+
+    @staticmethod
     def _schedule_naming_background_task(
         background_tasks: BackgroundTasks | None,
         request: AssistantChatRequest,
@@ -392,8 +410,8 @@ class ConversationService:
         assistant: Assistant,
         conversation,
         tokens_usage: TokensUsage,
-        llm_runs: Optional[List["LLMRun"]],
-        request_id: Optional[str],
+        llm_runs: List["LLMRun"] | None,
+        request_id: str | None,
     ) -> None:
         """Emit one routing metric per LLM run, or a single collapsed one as a fallback.
 
@@ -430,7 +448,7 @@ class ConversationService:
 
     @staticmethod
     def _resolve_upsert_params(
-        params: Optional[UpsertChatHistoryParams],
+        params: UpsertChatHistoryParams | None,
         kwargs: dict,
     ) -> UpsertChatHistoryParams:
         if params is None:
@@ -506,7 +524,7 @@ class ConversationService:
     @classmethod
     def upsert_chat_history(
         cls,
-        params: Optional[UpsertChatHistoryParams] = None,
+        params: UpsertChatHistoryParams | None = None,
         **kwargs,
     ) -> None:
         """Upsert chat history for a completed or in-progress turn."""
@@ -526,6 +544,8 @@ class ConversationService:
             _guard_finished(conversation)
         if params.attributes and (should_create_conversation or not conversation.history):
             conversation.attributes = params.attributes
+
+        cls._apply_virtual_ide_model_retention(request, conversation, llm_model)
 
         request.history_index = cls._resolve_history_index(request, conversation)
         history_index = request.history_index
@@ -590,14 +610,14 @@ class ConversationService:
         request.mark_history_variant_persisted()
 
     @classmethod
-    def resolve_chat_import_source(cls, client_type: Optional[str], cli_header: Optional[str]) -> Optional[str]:
+    def resolve_chat_import_source(cls, client_type: str | None, cli_header: str | None) -> str | None:
         if client_type:
             return _CLIENT_TYPE_TO_IMPORT_SOURCE.get(client_type) or ("claude_code" if cli_header else None)
         return "claude_code" if cli_header else None
 
     @classmethod
     def upsert_conversation_with_history(
-        cls, conversation_id: str, request: UpsertHistoryRequest, user: User, import_source: Optional[str] = None
+        cls, conversation_id: str, request: UpsertHistoryRequest, user: User, import_source: str | None = None
     ) -> dict[str, Any]:
         """
         Upsert conversation with history (idempotent operation).
@@ -767,7 +787,7 @@ class ConversationService:
 
     @classmethod
     def _create_conversation_with_history(
-        cls, conversation_id: str, user: User, request: UpsertHistoryRequest, import_source: Optional[str] = None
+        cls, conversation_id: str, user: User, request: UpsertHistoryRequest, import_source: str | None = None
     ) -> Conversation:
         """
         Create a new conversation with provided history.
@@ -1448,10 +1468,16 @@ class ConversationService:
         if request.name:
             conversation.conversation_name = request.name
         if 'llm_model' in fields_set:
+            llm_service.assert_model_selectable(request.llm_model, previous_model_name=conversation.llm_model)
             conversation.llm_model = request.llm_model
+            conversation.legacy_ide_model_selection_pending = False
         if 'enable_image_generation' in fields_set:
             conversation.enable_image_generation = request.enable_image_generation
         if 'image_generation_model' in fields_set:
+            if request.image_generation_model:
+                llm_service.assert_model_selectable(
+                    request.image_generation_model, previous_model_name=conversation.image_generation_model
+                )
             conversation.image_generation_model = request.image_generation_model
         if request.pinned is not None:
             conversation.pinned = request.pinned
@@ -1481,6 +1507,8 @@ class ConversationService:
             for history_message in conversation.history
             if history_message.history_index is not history_index
         ]
+        if not conversation.history:
+            conversation.legacy_ide_model_selection_pending = False
         for history_message in conversation.history:
             current_index = history_message.history_index
             history_message.history_index = current_index if current_index < history_index else current_index - 1
@@ -1495,6 +1523,7 @@ class ConversationService:
 
         _guard_finished(conversation)
         conversation.history = []
+        conversation.legacy_ide_model_selection_pending = False
         conversation.update_conversation_assistants()
         # Persist the emptied history before deleting workflow executions.
         # Two-transaction split is deliberate: update() opens its own session, and
@@ -1554,10 +1583,10 @@ class ConversationService:
     @classmethod
     def get_conversation_metrics_with_filters(
         cls,
-        user_name: Optional[str] = None,
-        assistant_ids: Optional[List[str]] = None,
-        project: Optional[str] = None,
-        since_date: Optional[datetime] = None,
+        user_name: str | None = None,
+        assistant_ids: List[str] | None = None,
+        project: str | None = None,
+        since_date: datetime | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> ConversationMetricsResult:
@@ -1625,10 +1654,10 @@ class ConversationService:
     @classmethod
     def get_raw_conversations_with_filters(
         cls,
-        user_name: Optional[str] = None,
-        assistant_ids: Optional[List[str]] = None,
-        project: Optional[str] = None,
-        since_date: Optional[datetime] = None,
+        user_name: str | None = None,
+        assistant_ids: List[str] | None = None,
+        project: str | None = None,
+        since_date: datetime | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[int, List[Conversation]]:
@@ -1682,13 +1711,13 @@ class ConversationService:
     @classmethod
     def get_spending_analytics(
         cls,
-        assistant_id: Optional[str] = None,
-        project: Optional[str] = None,
-        since_date: Optional[datetime] = None,
+        assistant_id: str | None = None,
+        project: str | None = None,
+        since_date: datetime | None = None,
         include_breakdown: bool = False,
         *,
-        user_term: Optional[UserTerm] = None,
-        period: Optional[TimeRange] = None,
+        user_term: UserTerm | None = None,
+        period: TimeRange | None = None,
         project_owners: tuple[str, ...] = (),
     ) -> SpendingAnalyticsResult:
         """
@@ -1745,10 +1774,10 @@ class ConversationService:
     @classmethod
     def _get_conversation_metrics_data(
         cls,
-        user_id: Optional[str] = None,
-        assistant_id: Optional[str] = None,
-        project: Optional[str] = None,
-        since_date: Optional[datetime] = None,
+        user_id: str | None = None,
+        assistant_id: str | None = None,
+        project: str | None = None,
+        since_date: datetime | None = None,
     ) -> dict:
         """
         Get aggregated activity data from ConversationMetrics.
@@ -1805,12 +1834,12 @@ class ConversationService:
     @classmethod
     def _get_assistant_spending_breakdown(
         cls,
-        assistant_id: Optional[str] = None,
-        project: Optional[str] = None,
-        since_date: Optional[datetime] = None,
+        assistant_id: str | None = None,
+        project: str | None = None,
+        since_date: datetime | None = None,
         *,
-        user_term: Optional[UserTerm] = None,
-        period: Optional[TimeRange] = None,
+        user_term: UserTerm | None = None,
+        period: TimeRange | None = None,
         project_owners: tuple[str, ...] = (),
     ) -> List[SpendingGroupBreakdown]:
         """
@@ -1978,9 +2007,9 @@ class ConversationService:
     @classmethod
     def get_conversation_analytics_with_metrics(
         cls,
-        user_name: Optional[str] = None,
-        project: Optional[str] = None,
-        since_date: Optional[datetime] = None,
+        user_name: str | None = None,
+        project: str | None = None,
+        since_date: datetime | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[int, List[tuple]]:
@@ -2056,7 +2085,7 @@ class ConversationService:
         user_id: str,
         page: int,
         per_page: int,
-        is_finished: Optional[bool] = None,
+        is_finished: bool | None = None,
     ) -> List[ConversationListItem]:
         """DB-level paginated list of user conversations.
 
@@ -2148,7 +2177,7 @@ class ConversationService:
         conversation_id: str,
         page: int,
         per_page: int,
-        sort_order: Optional[SortOrder] = None,
+        sort_order: SortOrder | None = None,
     ) -> tuple[Conversation | None, int, datetime | None, datetime | None]:
         """
         Retrieves a DB-level paginated and optionally sorted slice of conversation history.

@@ -48,6 +48,7 @@ from codemie.rest_api.routers.assistant._ask import (
 from codemie.rest_api.routers.assistant._shared import (
     _get_assistant_by_slug_or_raise,
 )
+from codemie.rest_api.routers.assistant._model_selection import validate_model_selection
 from codemie.rest_api.routers.utils import (
     check_user_can_access_assistant,
     get_assistant_by_id_or_raise,
@@ -95,6 +96,8 @@ async def ask_virtual_assistant(
     asyncio.create_task(raw_request.state.wait_for_disconnect())
 
     mcp_servers = MCPAccessControlService.sanitize_for_save(request.mcp_servers)
+    validate_model_selection(request.llm_model_type)
+    llm_model_type = request.llm_model_type or llm_service.default_llm_model
 
     assistant = Assistant.model_construct(
         id=None,
@@ -102,7 +105,7 @@ async def ask_virtual_assistant(
         description='',
         project=user.current_project,
         system_prompt=request.system_prompt,
-        llm_model_type=request.llm_model_type or llm_service.default_llm_model,
+        llm_model_type=llm_model_type,
         temperature=request.temperature,
         top_p=request.top_p,
         tools_tokens_size_limit=request.tools_tokens_size_limit,
@@ -129,6 +132,8 @@ async def ask_virtual_assistant(
 
     chat_request = AssistantChatRequest.model_construct(
         conversation_id=request.conversation_id,
+        # Inline definitions have no saved model selection to restore from a conversation.
+        llm_model=llm_model_type,
         text=request.text,
         content_raw=request.content_raw,
         file_names=request.file_names,
@@ -194,7 +199,7 @@ async def ask_assistant_by_id(
     assistant = get_assistant_by_id_or_raise(assistant_id)
 
     # Prepare assistant for execution (current config or specific version)
-    execution_assistant = _prepare_assistant_for_execution(assistant, request)
+    execution_assistant = _prepare_assistant_for_execution(assistant, request, user)
 
     result = await asyncio.to_thread(
         _ask_assistant,
@@ -305,7 +310,7 @@ def ask_assistant_by_slug(
     assistant = _get_assistant_by_slug_or_raise(assistant_slug, project)
 
     # Prepare assistant for execution (current config or specific version)
-    execution_assistant = _prepare_assistant_for_execution(assistant, request)
+    execution_assistant = _prepare_assistant_for_execution(assistant, request, user)
 
     return _ask_assistant(
         execution_assistant,
@@ -342,6 +347,7 @@ def evaluate_assistant(
 
     # Check if user can access the assistant
     check_user_can_access_assistant(user, assistant, "view", Action.READ)
+    validate_model_selection(request.llm_model)
     # Use the dedicated evaluation service to process the evaluation asynchronously
     evaluation_response = AssistantEvaluationService.evaluate_assistant(
         assistant=assistant,

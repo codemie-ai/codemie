@@ -679,10 +679,6 @@ def test_tc_anc_010_agent_context_generation(
     assert context["extra_param"] == "extra_value"
 
 
-@patch(
-    "codemie.workflows.nodes.agent_node.customer_config",
-    is_feature_enabled=MagicMock(return_value=True),
-)
 @patch("codemie.workflows.nodes.agent_node.initialize_assistant")
 @patch("codemie.workflows.nodes.agent_node.find_assistant_by_id")
 @patch("codemie.workflows.nodes.base_node.ModelAvailabilityService.resolve_model_for_execution")
@@ -690,7 +686,6 @@ def test_init_assistant_fails_open_when_model_resolution_raises(
     mock_resolve,
     mock_find_assistant,
     mock_initialize_assistant,
-    _mock_customer_config,
     mock_workflow_execution_service,
     mock_thought_queue,
     mock_callbacks,

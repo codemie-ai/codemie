@@ -346,6 +346,12 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
     conversation_id: str = SQLField(index=True)
     conversation_name: Optional[str] = None
     llm_model: Optional[str] = None
+    legacy_ide_model_selection_pending: bool = SQLField(
+        default=False,
+        exclude=True,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+        description="Migration-set allowance to adopt a model once for a pre-release IDE conversation",
+    )
     enable_image_generation: Optional[bool] = None
     image_generation_model: Optional[str] = None
     folder: Optional[str] = None

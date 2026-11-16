@@ -14,10 +14,13 @@
 
 from datetime import datetime
 
-from fastapi import APIRouter, status, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
 
+from codemie.clients.postgres import get_session
 from codemie.rest_api.dependencies.core import require_core
 from codemie.configs import config
+from codemie.configs.llm_config import ModelStatus
+from codemie.core.exceptions import ModelNotSelectableError, ValidationException
 from codemie.core.models import (
     Application,
     ApplicationInfo,
@@ -26,8 +29,13 @@ from codemie.core.models import (
     BaseResponse,
     BaseResponseWithData,
     LLMBulkRetirementRequest,
+    LLMModelStatusBulkUpdateRequest,
+    LLMModelStatusUpdateRequest,
     LLMRetirementRequest,
 )
+from codemie.repository.llm_model_status_repository import LLMModelStatusRepository
+from codemie.rest_api.models.admin_global_default_api import AdminGlobalDefaultRequest, AdminGlobalDefaultResponse
+from codemie.rest_api.models.admin_llm_model_api import AdminLLMModelResponse
 from codemie.rest_api.models.conversation import (
     Conversation,
     FinalOperatorFeedback,
@@ -40,11 +48,61 @@ from codemie.rest_api.security.authentication import (
     admin_or_maintainer_or_auditor_access,
 )
 from codemie.rest_api.security.user import User
+from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.monitoring.project_monitoring_service import ProjectMonitoringService
 from codemie.service.platform.platform_indexing_service import PlatformIndexingService
 from codemie.configs.logger import logger
 
 router = APIRouter(tags=["Admin"], prefix="/v1", dependencies=[Depends(authenticate)])
+
+
+def _admin_global_default_response() -> AdminGlobalDefaultResponse:
+    choice = llm_service.get_admin_global_default_choice()
+    resolution = llm_service.resolve_global_default(llm_service.get_all_llm_model_info())
+    return AdminGlobalDefaultResponse(
+        saved_base_name=choice.base_name if choice else None,
+        updated_by_id=choice.updated_by_id if choice else None,
+        updated_by_name=choice.updated_by_name if choice else None,
+        updated_at=choice.updated_at if choice else None,
+        effective_base_name=resolution.model.base_name if resolution.model else None,
+        source=resolution.source,
+        temporary_fallback=choice is not None and resolution.source != "admin",
+    )
+
+
+@router.get(
+    "/admin/llm/default",
+    response_model=AdminGlobalDefaultResponse,
+    dependencies=[Depends(admin_access_only)],
+)
+def get_admin_llm_default() -> AdminGlobalDefaultResponse:
+    return _admin_global_default_response()
+
+
+@router.put(
+    "/admin/llm/default",
+    response_model=AdminGlobalDefaultResponse,
+    dependencies=[Depends(admin_access_only)],
+)
+def set_admin_llm_default(
+    request: AdminGlobalDefaultRequest,
+    admin: User = Depends(authenticate),
+) -> AdminGlobalDefaultResponse:
+    try:
+        llm_service.set_admin_global_default(request.base_name, admin.id, admin.name or admin.id)
+    except (ValidationException, ModelNotSelectableError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _admin_global_default_response()
+
+
+@router.delete(
+    "/admin/llm/default",
+    response_model=AdminGlobalDefaultResponse,
+    dependencies=[Depends(admin_access_only)],
+)
+def clear_admin_llm_default() -> AdminGlobalDefaultResponse:
+    llm_service.clear_admin_global_default()
+    return _admin_global_default_response()
 
 
 @router.get(
@@ -332,7 +390,7 @@ def retire_llm_model(
 )
 def retire_llm_models_bulk(
     request: LLMBulkRetirementRequest,
-    admin: User = Depends(authenticate),
+    admin: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection
 ) -> BaseResponseWithData:
     """
     Retire multiple deprecated LLM models in a single call.
@@ -373,5 +431,156 @@ def retire_llm_models_bulk(
                 }
                 for r in results
             ],
+        },
+    )
+
+
+@router.get(
+    "/admin/llm/status",
+    status_code=status.HTTP_200_OK,
+    response_model=BaseResponseWithData,
+    dependencies=[Depends(admin_access_only)],
+)
+def get_llm_model_status() -> BaseResponseWithData:
+    """
+    List platform chat and embedding models with status and display metadata.
+
+    Provider-unavailable models are excluded, while CodeMie-disabled and
+    deprecated models remain manageable. Synthetic routers have computed,
+    read-only statuses. The catalog is independent of the admin's personal access.
+    """
+    models = llm_service.get_admin_model_catalog()
+
+    with get_session() as session:
+        persisted_rows = LLMModelStatusRepository.get_all(session)
+
+    persisted_by_base_name = {row.base_name: row for row in persisted_rows}
+
+    data = []
+    for model_type, model in models:
+        item = AdminLLMModelResponse.from_catalog(model, model_type)
+        persisted = persisted_by_base_name.get(model.base_name)
+        if item.router_type != "switchyard":
+            item.status = ModelStatus(persisted.status) if persisted else ModelStatus.ENABLED
+            if persisted is not None:
+                item.updated_by_name = persisted.updated_by_name
+                item.updated_at = persisted.updated_at
+        data.append(item.model_dump(mode="json"))
+
+    return BaseResponseWithData(message="LLM model status list retrieved", data=data)
+
+
+def _llm_model_status_base_names() -> set[str]:
+    return {
+        model.base_name
+        for model in (
+            *llm_service.get_all_llm_model_info(),
+            *llm_service.get_all_embedding_model_info(),
+            *llm_service.get_all_audio_transcription_model_info(),
+        )
+    }
+
+
+@router.put(
+    "/admin/llm/{base_name}/status",
+    status_code=status.HTTP_200_OK,
+    response_model=BaseResponseWithData,
+    dependencies=[Depends(admin_access_only)],
+)
+def update_llm_model_status(
+    base_name: str,
+    request: LLMModelStatusUpdateRequest,
+    admin: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection
+) -> BaseResponseWithData:
+    """
+    Set the persisted status override for a single LLM model base name.
+    """
+    if base_name not in _llm_model_status_base_names():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{base_name}' was not found in the current catalog.",
+        )
+
+    logger.info(
+        f"LLM model status update triggered by admin '{admin.name or admin.id}': "
+        f"base_name='{base_name}', status='{request.status.value}'"
+    )
+
+    with get_session() as session:
+        LLMModelStatusRepository.upsert(session, base_name, request.status.value, admin.id, admin.name)
+
+    llm_service.get_model_status_overrides(force_refresh=True)
+
+    return BaseResponseWithData(
+        message=f"Successfully updated status for model '{base_name}' to '{request.status.value}'",
+        data={"base_name": base_name, "status": request.status.value},
+    )
+
+
+@router.post(
+    "/admin/llm/status/bulk",
+    status_code=status.HTTP_200_OK,
+    response_model=BaseResponseWithData,
+    dependencies=[Depends(admin_access_only)],
+)
+def bulk_update_llm_model_status(
+    request: LLMModelStatusBulkUpdateRequest,
+    admin: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection
+) -> BaseResponseWithData:
+    """
+    Set the persisted status override for multiple LLM model base names in a single call.
+
+    Each item is processed independently — a failure on one item does not
+    affect the others. Per-item results (including errors) are returned in
+    the response data.
+    """
+    logger.info(
+        f"Bulk LLM model status update triggered by admin '{admin.name or admin.id}': "
+        f"{len(request.updates)} item(s)"
+    )
+
+    known_base_names = _llm_model_status_base_names()
+    results = []
+    for item in request.updates:
+        if item.base_name not in known_base_names:
+            results.append(
+                {
+                    "base_name": item.base_name,
+                    "status": item.status.value,
+                    "success": False,
+                    "error": f"Model '{item.base_name}' was not found in the current catalog.",
+                }
+            )
+            continue
+        try:
+            with get_session() as session:
+                LLMModelStatusRepository.upsert(session, item.base_name, item.status.value, admin.id, admin.name)
+            results.append({"base_name": item.base_name, "status": item.status.value, "success": True, "error": None})
+        except Exception as e:
+            logger.error(
+                f"Bulk LLM model status update failed for base_name='{item.base_name}': {e}",
+                exc_info=True,
+            )
+            results.append(
+                {
+                    "base_name": item.base_name,
+                    "status": item.status.value,
+                    "success": False,
+                    "error": "Failed to update status for this model. See server logs for details.",
+                }
+            )
+
+    succeeded = sum(1 for r in results if r["success"])
+    failed = len(results) - succeeded
+    if succeeded:
+        llm_service.get_model_status_overrides(force_refresh=True)
+
+    return BaseResponseWithData(
+        message=f"Bulk status update complete: {succeeded} succeeded, {failed} failed",
+        data={
+            "total": len(results),
+            "succeeded": succeeded,
+            "failed": failed,
+            "results": results,
         },
     )

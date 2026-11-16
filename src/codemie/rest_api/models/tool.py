@@ -27,7 +27,9 @@ class InvokeParams(BaseModel):
 
 class ToolInvokeRequest(BaseModel):
     project: str
-    llm_model: str = Field(default=llm_service.default_llm_model)
+    # default_factory rather than default: default_llm_model reads the model catalog, which is
+    # database-backed, and a plain default is evaluated once at class-definition (import) time.
+    llm_model: str = Field(default_factory=lambda: llm_service.default_llm_model)
     tool_args: Dict[str, Any] = Field(default_factory=dict)
     tool_attributes: Dict[str, Any] = Field(default_factory=dict)
     tool_creds: Optional[Dict[str, Any]] = None
@@ -62,7 +64,9 @@ class CodeDatasourceSearchParams(BaseModel):
 
 class DatasourceSearchInvokeRequest(BaseModel):
     query: str
-    llm_model: str = Field(default=llm_service.default_llm_model)
+    # default_factory rather than default: default_llm_model reads the model catalog, which is
+    # database-backed, and a plain default is evaluated once at class-definition (import) time.
+    llm_model: str = Field(default_factory=lambda: llm_service.default_llm_model)
     code_search_params: Optional[CodeDatasourceSearchParams] = None
     params: Optional[InvokeParams] = None
     request_id: Optional[str] = None

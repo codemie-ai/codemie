@@ -13,7 +13,13 @@
 # limitations under the License.
 
 
-"""Run attributes on the IDE virtual inference route follow the chat contract without probing unreadable chats."""
+"""Run attributes on the IDE virtual inference route follow the chat contract without probing unreadable chats.
+
+The route's own attributes-consistency check never rejects on an inaccessible conversation (it
+just drops the attributes, same as the main chat contract). The model-retention check that runs
+right after it, however, does reject outright on an inaccessible conversation_id - see
+test_conversation_of_another_user_is_rejected_before_attributes_are_considered.
+"""
 
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -71,12 +77,13 @@ async def test_changed_attributes_are_rejected_before_anything_is_written(record
 @patch(f"{IDE}.request_summary_manager.create_request_summary")
 @patch(f"{IDE}.assistant_user_interaction_service.record_usage")
 async def test_later_message_without_attributes_skips_the_check(_record_usage, _create_summary, get_handler):
+    """No attributes means the attributes-consistency check itself never looks up the conversation;
+    the model-retention check still does its own lookup, independent of attributes."""
     request = _request(None)
 
-    with patch(FIND_CONVERSATION) as find_conversation:
+    with patch(FIND_CONVERSATION, return_value=_conversation()):
         await inference_virtual(_raw_request(), MagicMock(), request, User(id="owner"))
 
-    find_conversation.assert_not_called()
     assert get_handler.return_value.process_request.call_args.args[0].attributes is None
 
 
@@ -102,13 +109,18 @@ async def test_attributes_check_runs_off_the_event_loop():
 @patch(f"{IDE}.get_request_handler")
 @patch(f"{IDE}.request_summary_manager.create_request_summary")
 @patch(f"{IDE}.assistant_user_interaction_service.record_usage")
-async def test_conversation_of_another_user_neither_rejects_nor_takes_attributes(
+async def test_conversation_of_another_user_is_rejected_before_attributes_are_considered(
     _record_usage, _create_summary, get_handler, sent
 ):
+    """The attributes check itself never rejects for an inaccessible conversation (it just drops
+    the attributes), but the model-retention check that runs right after it does: accessing
+    someone else's conversation through this endpoint is rejected outright, regardless of
+    whether attributes were sent."""
     request = _request(sent)
 
     with patch(FIND_CONVERSATION, return_value=_conversation()):
-        await inference_virtual(_raw_request(), MagicMock(), request, User(id="intruder"))
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await inference_virtual(_raw_request(), MagicMock(), request, User(id="intruder"))
 
-    get_handler.return_value.process_request.assert_called_once()
-    assert request.attributes is None
+    assert exc_info.value.code == 403
+    get_handler.return_value.process_request.assert_not_called()

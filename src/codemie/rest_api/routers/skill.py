@@ -52,6 +52,7 @@ from codemie.service.skill_bundle_seed_policy import SeedLimits
 from codemie.rest_api.models.assistant import AssistantListResponse
 from codemie.rest_api.models.assistant_generator import RefineGeneratorResponse
 from codemie.rest_api.models.skill_generator import SkillGeneratorRequest, SkillGeneratorResponse, SkillRefineRequest
+from codemie.rest_api.routers.assistant._model_selection import validate_model_selection
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.rest_api.models.usage.assistant_user_interaction import ReactionType
@@ -778,6 +779,7 @@ def generate_skill(raw_request: Request, request: SkillGeneratorRequest, user: U
     from codemie.configs.logger import set_logging_info
     from codemie.service.llm_service.utils import set_llm_context
 
+    validate_model_selection(request.llm_model)
     request_id = raw_request.state.uuid
     set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
     set_llm_context(None, user.current_project, user)
@@ -806,6 +808,7 @@ def refine_skill(raw_request: Request, request: SkillRefineRequest, user: User =
     from codemie.configs.logger import set_logging_info
     from codemie.service.llm_service.utils import set_llm_context
 
+    validate_model_selection(request.llm_model)
     request_id = raw_request.state.uuid
     set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
     set_llm_context(None, user.current_project, user)
@@ -838,6 +841,7 @@ def generate_skill_instructions(
     Returns comprehensive instructions in Anthropic Claude-compatible format.
     Automatically refines existing instructions if provided.
     """
+    validate_model_selection(request.llm_model)
     try:
         request_id = raw_request.state.uuid
 

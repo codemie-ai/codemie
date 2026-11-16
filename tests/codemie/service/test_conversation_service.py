@@ -21,7 +21,7 @@ from fastapi import BackgroundTasks
 
 from datetime import datetime
 
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
 from codemie.core.models import AssistantChatRequest, UpdateConversationRequest, UpdateAiMessageRequest, TokensUsage
 from codemie.rest_api.models.assistant import Assistant
 from codemie.service.chat_naming_service import ChatNamingService
@@ -205,6 +205,72 @@ def test_update_conversation_folder_creates_when_missing(
     ConversationService.update_conversation_folder(user=mock_user, folder="Old", new_folder="New")
 
     mock_create_folder.assert_called_once_with("New", mock_user.id)
+
+
+@patch("codemie.service.conversation_service.llm_service.assert_model_selectable")
+@patch("codemie.service.conversation_service.Conversation.update")
+def test_conversation_service_update_raises_when_model_not_selectable(
+    mock_update, mock_assert_model_selectable, mock_update_request, mock_conversation
+):
+    mock_update.return_value = True
+    mock_assert_model_selectable.side_effect = ModelNotSelectableError("m1", "model is deprecated")
+    original_llm_model = mock_conversation.llm_model
+
+    with pytest.raises(ModelNotSelectableError):
+        ConversationService.update_conversation(
+            mock_conversation,
+            request=mock_update_request,
+        )
+
+    mock_assert_model_selectable.assert_called_once_with(
+        mock_update_request.llm_model, previous_model_name=original_llm_model
+    )
+    assert mock_conversation.llm_model == original_llm_model
+    mock_update.assert_not_called()
+
+
+@patch("codemie.service.conversation_service.llm_service.assert_model_selectable")
+@patch("codemie.service.conversation_service.Conversation.update")
+def test_conversation_service_update_raises_when_image_generation_model_not_selectable(
+    mock_update, mock_assert_model_selectable, mock_conversation
+):
+    """CR-011: image_generation_model must be guarded the same way llm_model is."""
+    mock_update.return_value = True
+    mock_assert_model_selectable.side_effect = ModelNotSelectableError("bad-image-model", "model is deprecated")
+    original_image_generation_model = mock_conversation.image_generation_model
+
+    request = UpdateConversationRequest(image_generation_model="bad-image-model")
+
+    with pytest.raises(ModelNotSelectableError):
+        ConversationService.update_conversation(
+            mock_conversation,
+            request=request,
+        )
+
+    mock_assert_model_selectable.assert_called_once_with(
+        "bad-image-model", previous_model_name=original_image_generation_model
+    )
+    assert mock_conversation.image_generation_model == original_image_generation_model
+    mock_update.assert_not_called()
+
+
+@patch("codemie.service.conversation_service.llm_service.assert_model_selectable")
+@patch("codemie.service.conversation_service.Conversation.update")
+def test_conversation_service_update_without_llm_model_skips_guard(
+    mock_update, mock_assert_model_selectable, mock_conversation
+):
+    mock_update.return_value = True
+
+    request = UpdateConversationRequest(name="New Name")
+
+    conversation = ConversationService.update_conversation(
+        mock_conversation,
+        request=request,
+    )
+
+    mock_assert_model_selectable.assert_not_called()
+    assert conversation.conversation_name == "New Name"
+    mock_update.assert_called()
 
 
 @patch("codemie.service.conversation_service.Conversation.update")

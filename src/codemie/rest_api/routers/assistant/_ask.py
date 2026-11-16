@@ -22,12 +22,15 @@ from starlette.responses import StreamingResponse
 from codemie.configs import logger
 from codemie.core.ability import Action
 from codemie.core.errors import ErrorDetailLevel
-from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
+from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException, ModelNotSelectableError
 from codemie.core.models import BaseModelResponse, AssistantChatRequest
 from codemie.rest_api.models.guardrail import GuardrailEntity, GuardrailSource
 from codemie.rest_api.handlers.assistant_handlers import get_request_handler, ChatHistoryData
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.base import ConversationStatus
+from codemie.service.llm.model_availability_service import resolve_assistant_model
+from codemie.service.llm_service.llm_service import llm_service
+from codemie.rest_api.routers.assistant._model_selection import validate_chat_model_selection
 from codemie.rest_api.routers.assistant._shared import _validate_remote_entities_and_raise
 from codemie.rest_api.routers.utils import check_user_can_access_assistant, validate_run_attributes_and_raise
 from codemie.rest_api.security.user import User
@@ -90,12 +93,30 @@ def _apply_version_or_default(assistant: Assistant, request: AssistantChatReques
     return assistant
 
 
+def _resolve_chosen_execution_model(assistant: Assistant, request: AssistantChatRequest) -> str | None:
+    """
+    Resolve "Assistant Default" model according to project rules:
+    - request.llm_model overrides everything when set
+    - otherwise use assistant.llm_model_type
+    - if assistant model is not allowed by project, fallback to project default
+    """
+    chosen_model = request.llm_model or assistant.llm_model_type
+    if not chosen_model:
+        return chosen_model
+
+    try:
+        picked = resolve_assistant_model(assistant, chosen_model, report_fallback=False)
+        return llm_service.resolve_disabled_model(picked, assistant.project, is_global=assistant.is_global)
+    except ModelNotSelectableError as exc:
+        raise ExtendedHTTPException(code=400, message="No available fallback model", details=str(exc)) from exc
+
+
 def _effective_hide_tool_outputs(master: Assistant, execution_assistant: Assistant) -> bool:
     """Fail closed: a version-pinned request cannot reveal tool outputs the master assistant hides."""
     return is_effectively_hidden(execution_assistant, master)
 
 
-def _prepare_assistant_for_execution(assistant: Assistant, request: AssistantChatRequest) -> Assistant:
+def _prepare_assistant_for_execution(assistant: Assistant, request: AssistantChatRequest, user: User) -> Assistant:
     """
     Prepares an assistant for execution, either using current configuration or a specific version.
     Ensures the assistant version is always populated for Langfuse trace tagging.
@@ -104,11 +125,13 @@ def _prepare_assistant_for_execution(assistant: Assistant, request: AssistantCha
     Args:
         assistant: The master assistant record
         request: The chat request containing optional version, sub_assistants_versions, and skill_ids
+        user: The caller whose conversation selection may be retained
 
     Returns:
         Assistant instance with configuration mapped from the specified version and merged skill_ids
     """
     assistant = _apply_version_or_default(assistant, request)
+    validate_chat_model_selection(assistant, request, user)
 
     # Merge request skill_ids with assistant's existing skill_ids if provided
     if request.skill_ids is not None:

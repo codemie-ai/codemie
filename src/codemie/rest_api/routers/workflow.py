@@ -24,14 +24,15 @@ from fastapi import APIRouter, status, Depends, Query, BackgroundTasks, Request
 
 from pydantic import BaseModel
 from codemie.rest_api.dependencies.core import require_core
+from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.workflow_generator import WorkflowGeneratorRequest, WorkflowGeneratorResponse
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.service.workflow_generator_service import WorkflowGeneratorService
+from codemie.service.llm_service.llm_service import llm_service
 
 from codemie.clients.postgres import get_session
 from codemie.configs.llm_config import LLMModel
 from codemie.repository.application_repository import application_repository
-from codemie.service.llm_service.llm_service import llm_service
 from codemie.configs import config, logger
 from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
@@ -53,6 +54,7 @@ from codemie.service.file_service.mermaid_service import (
 from codemie.core.exceptions import (
     ExtendedHTTPException,
     MissingPlaceholderVariablesException,
+    ModelNotSelectableError,
     NotFoundException,
     ValidationException,
     WorkflowGenerationError,
@@ -71,6 +73,7 @@ from codemie.core.workflow_models import (
 from codemie.core.workflow_models.workflow_config import WorkflowMode
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem, GuardrailEntity
 from codemie.rest_api.models.mcp_restore import DisabledMcpResponse, message_with_disabled
+from codemie.rest_api.routers.assistant._model_selection import validate_model_selection
 from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden, run_in_thread_pool, raise_not_found
 from codemie.workflows.validation.resources import collect_consumer_slot_integration_warnings
 from codemie.workflows.validation.tool_access import collect_tool_access_owner_integration_warnings
@@ -183,7 +186,58 @@ def _rewrite_yaml_config_from_objects(workflow_config: WorkflowConfig) -> None:
         workflow_config.yaml_config = yaml.safe_dump(original, sort_keys=False)
 
 
-def _run_pre_persist_update_validation(
+def _collect_workflow_mcp_servers(workflow_config: WorkflowConfig) -> list[MCPServerDetails]:
+    """Collect all MCP server entries from workflow assistants and tools."""
+    servers: list[MCPServerDetails] = []
+    for assistant in workflow_config.assistants or []:
+        servers.extend(assistant.mcp_servers or [])
+    for tool in workflow_config.tools or []:
+        if tool.mcp_server:
+            servers.append(tool.mcp_server)
+    return servers
+
+
+def _strip_workflow_mcp_servers(workflow_config: WorkflowConfig) -> None:
+    """Strip inline config fields from catalog-ref MCP servers in-place."""
+    for assistant in workflow_config.assistants or []:
+        if assistant.mcp_servers:
+            assistant.mcp_servers = MCPAccessControlService.strip_inline_config(assistant.mcp_servers)
+    for tool in workflow_config.tools or []:
+        if tool.mcp_server:
+            tool.mcp_server = MCPAccessControlService._strip_one(tool.mcp_server)
+
+
+def _assert_workflow_model_selections_selectable(
+    workflow_config: WorkflowConfig, previous_config: WorkflowConfig | None = None
+) -> None:
+    """Reject unavailable models newly selected for workflow assistants or custom nodes.
+
+    A stored deprecated model remains valid when its owning entry keeps the same model.
+    ``get_workflow()`` hydrates assistants and custom nodes from the persisted YAML, so
+    matching entries by their stable workflow id preserves that legacy selection on edit.
+    """
+    selection_groups = (
+        (workflow_config.assistants, previous_config.assistants if previous_config else None),
+        (workflow_config.custom_nodes, previous_config.custom_nodes if previous_config else None),
+    )
+    for selections, previous_selections in selection_groups:
+        previous_models = {item.id: item.model for item in previous_selections or []}
+        for selection in selections or []:
+            if not selection.model:
+                continue
+            try:
+                llm_service.assert_model_selectable(
+                    selection.model, previous_model_name=previous_models.get(selection.id)
+                )
+            except ModelNotSelectableError as e:
+                raise ExtendedHTTPException(
+                    code=status.HTTP_400_BAD_REQUEST,
+                    message="Model not selectable",
+                    details=str(e),
+                ) from e
+
+
+async def _run_pre_persist_update_validation(
     workflow: WorkflowConfig,
     proposed: WorkflowConfig,
     user: User,
@@ -619,6 +673,7 @@ def create_workflow(
     except Exception as e:
         logger.warning(f"Could not parse workflow yaml_config before model-id normalization: {e}")
     else:
+        _assert_workflow_model_selections_selectable(workflow_config)
         # Normalize model ids early so validation/save/execution use deployment ids
         _normalize_workflow_model_ids(workflow_config, user)
         _rewrite_yaml_config_from_objects(workflow_config)
@@ -664,6 +719,7 @@ async def update_workflow(
     try:
         updated_config = WorkflowConfig(**request.model_dump())
         updated_config.parse_execution_config()
+        _assert_workflow_model_selections_selectable(updated_config, workflow)
         if request.categories is None:
             # WorkflowConfig coerces None to []; keep None so an omitted field preserves stored categories
             updated_config.categories = None
@@ -671,6 +727,11 @@ async def update_workflow(
         # Normalize model ids before validation/save so YAML persists deployment ids
         _normalize_workflow_model_ids(updated_config, user)
         _rewrite_yaml_config_from_objects(updated_config)
+    except ExtendedHTTPException:
+        # _assert_workflow_model_selections_selectable raises a fully-populated ExtendedHTTPException
+        # (message + details). ExtendedHTTPException never calls super().__init__(), so re-wrapping
+        # it below via str(e) would silently discard that message/details - re-raise it as-is.
+        raise
     except Exception as e:
         raise ExtendedHTTPException(
             code=status.HTTP_400_BAD_REQUEST,
@@ -682,7 +743,9 @@ async def update_workflow(
     updated_config.id = workflow_id
     logger.debug(f"Update workflow. Request: {request}")
     was_global = bool(workflow.is_global)  # the request carries no is_global; the stored state decides
-    _run_pre_persist_update_validation(workflow, updated_config, user, error_format, request.guardrail_assignments)
+    await _run_pre_persist_update_validation(
+        workflow, updated_config, user, error_format, request.guardrail_assignments
+    )
     try:
         if request.categories is not None:
             updated_config.categories = request.categories = category_service.validate_category_ids(request.categories)
@@ -762,6 +825,10 @@ async def validate_workflow(
     try:
         proposed = WorkflowConfig(**request.model_dump())
         proposed.parse_execution_config()
+        _assert_workflow_model_selections_selectable(proposed, workflow)
+    except ExtendedHTTPException:
+        # Same as update_workflow: re-raise the guard's populated exception instead of re-wrapping it.
+        raise
     except Exception as e:
         raise ExtendedHTTPException(
             code=status.HTTP_400_BAD_REQUEST,
@@ -772,7 +839,7 @@ async def validate_workflow(
 
     proposed.id = workflow_id
 
-    _run_pre_persist_update_validation(workflow, proposed, user, error_format, request.guardrail_assignments)
+    await _run_pre_persist_update_validation(workflow, proposed, user, error_format, request.guardrail_assignments)
 
     warnings = await _consumer_slot_warnings(
         proposed, user, treat_as_global=bool(workflow.is_global) or bool(proposed.is_global)
@@ -939,6 +1006,7 @@ if config.WORKFLOW_GENERATION_ENABLED:
         user: User = Depends(authenticate),
     ):
         """Generate a workflow configuration from a natural language description."""
+        validate_model_selection(request.llm_model)
         request_id = raw_request.state.uuid
         set_llm_context(None, user.current_project, user)
 
@@ -981,6 +1049,7 @@ if config.WORKFLOW_GENERATION_ENABLED:
         if not Ability(user).can(Action.WRITE, workflow):
             raise_access_denied("refine")
 
+        validate_model_selection(request.llm_model)
         request_id = raw_request.state.uuid
         set_logging_info(uuid=request_id, user_id=user.id, username=user.username)
         set_llm_context(None, user.current_project, user)

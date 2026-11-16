@@ -52,6 +52,7 @@ from codemie.rest_api.models.tool import (
     ToolInvokeResponse,
     DatasourceSearchInvokeRequest,
 )
+from codemie.rest_api.routers.assistant._model_selection import validate_model_selection
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.rest_api.routers.utils import (
@@ -186,6 +187,7 @@ def invoke_datasource_search(
     if not Ability(user).can(Action.READ, kb_search_result):
         raise_access_denied("search")
 
+    validate_model_selection(request.llm_model)
     try:
         output = ToolExecutionService.invoke_datasource_search(kb_search_result, request)
         return ToolInvokeResponse(output=str(output))

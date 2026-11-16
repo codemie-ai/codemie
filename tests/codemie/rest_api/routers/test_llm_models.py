@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from codemie.rest_api.security.user import User
+from codemie.configs.llm_config import LlmRouterOption, ModelCategory, ModelStatus
 
 # Add src directory to sys.path
 sys.path.append(str(Path(__file__).resolve().parents[3] / 'src'))
@@ -50,6 +51,7 @@ def override_dependency(user):
 @pytest.fixture
 def mock_llm_service():
     with patch("codemie.rest_api.routers.llm_models.llm_service", autospec=True) as mock:
+        mock.get_default_models_by_category.return_value = {}
         yield mock
 
 
@@ -81,6 +83,7 @@ def test_get_llm_models(mock_llm_service):
             'supports_image_generation': False,
             'forbidden_for_web': False,
             'switchyard': [],
+            'status': 'enabled',
         },
         {
             'base_name': 'model-b',
@@ -101,6 +104,7 @@ def test_get_llm_models(mock_llm_service):
             'supports_image_generation': False,
             'forbidden_for_web': False,
             'switchyard': [],
+            'status': 'enabled',
         },
     ]
 
@@ -117,12 +121,27 @@ def test_get_llm_model_categories(mock_llm_service):
 
 
 def test_get_default_models(mock_llm_service):
-    mock_llm_service.get_default_models_by_category.return_value = {
-        "global": LLMModel(
-            base_name="default-global", deployment_name="default-global", enabled=True, label="Default Global"
+    models = [
+        LLMModel(
+            base_name="default-global",
+            deployment_name="default-global",
+            enabled=True,
+            default=True,
+            default_for_categories=[ModelCategory.GLOBAL],
         ),
-        "code": LLMModel(base_name="default-code", deployment_name="default-code", enabled=True, label="Default Code"),
-    }
+        LLMModel(
+            base_name="default-code",
+            deployment_name="default-code",
+            enabled=True,
+            default_for_categories=[ModelCategory.CODE],
+        ),
+    ]
+    mock_llm_service.get_default_models_by_category.return_value = {"global": models[0], "code": models[1]}
+    from codemie.rest_api.security.authentication import authenticate
+
+    app.dependency_overrides.pop(authenticate, None)
+    route = next(route for route in router.routes if route.path == "/v1/default_models")
+    assert authenticate not in [dependency.call for dependency in route.dependant.dependencies]
 
     response = client.get("/v1/default_models")
     assert response.status_code == 200
@@ -130,6 +149,127 @@ def test_get_default_models(mock_llm_service):
     assert "code" in response.json()
     assert response.json()["global"]["base_name"] == "default-global"
     assert response.json()["code"]["base_name"] == "default-code"
+    mock_llm_service.get_default_models_by_category.assert_called_once_with()
+    mock_llm_service.get_allowed_chat_models.assert_not_called()
+
+
+def test_global_default_agrees_across_public_endpoints(mock_llm_service, user):
+    old = LLMModel(
+        base_name="configured", deployment_name="configured", enabled=True, default_for_categories=[ModelCategory.CODE]
+    )
+    selected = LLMModel(
+        base_name="admin-choice",
+        deployment_name="admin-choice",
+        enabled=True,
+        default=True,
+        default_for_categories=[ModelCategory.GLOBAL],
+    )
+    mock_llm_service.get_allowed_chat_models.return_value = [old, selected]
+    mock_llm_service.get_allowed_router_options.return_value = []
+    mock_llm_service.get_default_models_by_category.return_value = {"global": selected, "code": old}
+
+    catalog = client.get("/v1/llm_models").json()
+    defaults = client.get("/v1/default_models").json()
+    single = client.get("/v1/default_models/global").json()
+
+    assert [item["base_name"] for item in catalog if item["default"]] == ["admin-choice"]
+    assert defaults["global"]["base_name"] == single["base_name"] == "admin-choice"
+    assert defaults["code"]["base_name"] == "configured"
+    assert client.get("/v1/default_models/code").json()["base_name"] == "configured"
+    assert mock_llm_service.get_allowed_router_options.call_count == 3
+    assert all(
+        call.kwargs == {"include_all": False, "project": None, "user": user}
+        for call in mock_llm_service.get_allowed_router_options.call_args_list
+    )
+
+
+def test_restricted_user_scoped_endpoints_do_not_expose_inaccessible_admin_choice(mock_llm_service, user):
+    scoped = LLMModel(
+        base_name="allowed",
+        deployment_name="allowed",
+        enabled=True,
+        default=True,
+        default_for_categories=[ModelCategory.GLOBAL],
+    )
+    mock_llm_service.get_allowed_chat_models.return_value = [scoped]
+    mock_llm_service.get_allowed_router_options.return_value = []
+
+    assert [item["base_name"] for item in client.get("/v1/llm_models").json()] == ["allowed"]
+    assert client.get("/v1/default_models/global").json()["base_name"] == "allowed"
+    assert all(call.kwargs["user"] is user for call in mock_llm_service.get_allowed_router_options.call_args_list)
+
+
+def test_auto_router_can_be_global_default(mock_llm_service):
+    mock_llm_service.get_default_models_by_category.return_value = {
+        "global": LLMModel(base_name="auto", deployment_name="auto", enabled=True, default=True)
+    }
+    mock_llm_service.get_allowed_chat_models.return_value = [
+        LLMModel(base_name="plain", deployment_name="plain", enabled=True)
+    ]
+    mock_llm_service.get_allowed_router_options.return_value = [
+        LlmRouterOption(
+            base_name="auto", router_type="litellm_auto", default=True, default_for_categories=[ModelCategory.GLOBAL]
+        )
+    ]
+
+    assert [item["base_name"] for item in client.get("/v1/llm_models").json() if item["default"]] == ["auto"]
+    assert client.get("/v1/default_models").json()["global"]["base_name"] == "auto"
+    assert client.get("/v1/default_models").json()["global"]["deployment_name"] == "auto"
+    assert "router_type" not in client.get("/v1/default_models").json()["global"]
+    assert client.get("/v1/default_models/global").json()["base_name"] == "auto"
+
+
+def test_public_defaults_skip_deprecated_code_model_and_router(mock_llm_service):
+    mock_llm_service.get_allowed_chat_models.return_value = [
+        LLMModel(base_name="fallback", deployment_name="fallback", enabled=True, default=True),
+        LLMModel(
+            base_name="old-code",
+            deployment_name="old-code",
+            enabled=True,
+            status=ModelStatus.DEPRECATED,
+            default_for_categories=[ModelCategory.CODE],
+        ),
+    ]
+    mock_llm_service.get_allowed_router_options.return_value = [
+        LlmRouterOption(
+            base_name="old-router",
+            router_type="litellm_auto",
+            status=ModelStatus.DEPRECATED,
+            default_for_categories=[ModelCategory.CODE],
+        )
+    ]
+    mock_llm_service.get_default_models_by_category.return_value = {
+        "code": mock_llm_service.get_allowed_chat_models.return_value[0]
+    }
+
+    assert client.get("/v1/default_models").json()["code"]["base_name"] == "fallback"
+    assert client.get("/v1/default_models/code").json()["base_name"] == "fallback"
+
+
+def test_public_defaults_skip_disabled_include_all_and_return_none_if_no_selectable(mock_llm_service):
+    mock_llm_service.get_allowed_chat_models.return_value = [
+        LLMModel(
+            base_name="disabled",
+            deployment_name="disabled",
+            enabled=True,
+            status=ModelStatus.DISABLED,
+            default=True,
+            default_for_categories=[ModelCategory.GLOBAL],
+        )
+    ]
+    mock_llm_service.get_allowed_router_options.return_value = []
+
+    assert client.get("/v1/default_models?include_all=true").json() == {}
+    assert client.get("/v1/default_models/global?include_all=true").status_code == 404
+
+
+def test_no_models_preserves_empty_defaults_and_404(mock_llm_service):
+    mock_llm_service.get_allowed_chat_models.return_value = []
+    mock_llm_service.get_allowed_router_options.return_value = []
+
+    assert client.get("/v1/llm_models").json() == []
+    assert client.get("/v1/default_models").json() == {}
+    assert client.get("/v1/default_models/global").status_code == 404
 
 
 def test_get_default_model_for_category(mock_llm_service):
@@ -225,6 +365,7 @@ def test_get_embeddings_models(mock_llm_service):
             'supports_image_generation': False,
             'forbidden_for_web': False,
             'switchyard': [],
+            'status': 'enabled',
         },
         {
             'base_name': 'embedding-b',
@@ -245,6 +386,7 @@ def test_get_embeddings_models(mock_llm_service):
             'supports_image_generation': False,
             'forbidden_for_web': False,
             'switchyard': [],
+            'status': 'enabled',
         },
     ]
 
@@ -282,6 +424,7 @@ def test_get_image_generation_models(mock_llm_service):
             'supports_image_generation': True,
             'forbidden_for_web': False,
             'switchyard': [],
+            'status': 'enabled',
         },
     ]
 
@@ -372,6 +515,18 @@ class TestIncludeAllParameter:
         call_args = mock_llm_service.get_allowed_chat_models.call_args
         assert call_args.kwargs['include_all'] is True
 
+    def test_all_category_defaults_keep_public_global_contract(self, mock_llm_service):
+        mock_llm_service.get_allowed_chat_models.return_value = []
+        mock_llm_service.get_allowed_router_options.return_value = []
+
+        response = client.get("/v1/default_models?include_all=true")
+
+        assert response.status_code == 200
+        assert response.json() == {}
+        mock_llm_service.get_default_models_by_category.assert_called_once_with()
+        mock_llm_service.get_allowed_chat_models.assert_not_called()
+        mock_llm_service.get_allowed_router_options.assert_not_called()
+
 
 def test_llm_models_is_premium_serialization(mock_llm_service):
     """is_premium appears in JSON only when set (response_model_exclude_none)."""
@@ -392,3 +547,28 @@ def test_llm_models_is_premium_serialization(mock_llm_service):
     payload = response.json()
     assert payload[0]["is_premium"] is True
     assert "is_premium" not in payload[1]
+
+
+def test_llm_models_status_serialization(mock_llm_service):
+    """status is serialized on GET /v1/llm_models: persisted value and default (enabled)."""
+    from codemie.configs.llm_config import ModelStatus
+
+    mock_llm_service.get_allowed_chat_models.return_value = [
+        LLMModel(
+            base_name="model-a",
+            deployment_name="model-a",
+            enabled=True,
+            label="Model A",
+            status=ModelStatus.DEPRECATED,
+        ),
+        LLMModel(base_name="model-b", deployment_name="model-b", enabled=True, label="Model B"),
+    ]
+
+    response = client.get("/v1/llm_models")
+
+    assert response.status_code == 200
+    payload = response.json()
+    # Explicitly persisted status survives serialization.
+    assert payload[0]["status"] == "deprecated"
+    # No persisted status falls back to the field default (enabled).
+    assert payload[1]["status"] == "enabled"

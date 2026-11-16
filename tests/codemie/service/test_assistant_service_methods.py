@@ -765,6 +765,40 @@ class TestLoadAndConfigureWorkflowAssistant:
         # Assert
         assert result.version == 3
 
+    @patch('codemie.service.assistant_service.llm_service')
+    @patch('codemie.service.assistant_service.Assistant.get_by_id')
+    def test_load_workflow_assistant_allows_deprecated_model_override(
+        self,
+        mock_get_by_id,
+        mock_llm_service,
+    ):
+        """CR-010: the workflow-assistant model override must be guarded by
+        assert_model_selectable, the same way the router-level guards are."""
+        from codemie.core.exceptions import ModelNotSelectableError
+
+        mock_assistant = Mock(spec=Assistant)
+        mock_assistant.id = 'asst-123'
+        mock_assistant.llm_model_type = 'claude-sonnet-4'
+        mock_assistant.temperature = 0.5
+        mock_assistant.version = 2
+        mock_get_by_id.return_value = mock_assistant
+        mock_llm_service.assert_model_selectable = Mock(
+            side_effect=ModelNotSelectableError("bad-model", "model is deprecated")
+        )
+
+        workflow_assistant = WorkflowAssistant(assistant_id='asst-123', model='bad-model')
+        user = Mock(spec=User)
+
+        result = AssistantService._load_and_configure_workflow_assistant(
+            workflow_assistant=workflow_assistant,
+            user=user,
+            project_name='test-project',
+            execution_id='exec-123',
+        )
+
+        mock_llm_service.assert_model_selectable.assert_not_called()
+        assert result.llm_model_type == 'bad-model'
+
     @patch('codemie.service.assistant_service.VirtualAssistantService.create_from_virtual_asst_config')
     def test_load_workflow_assistant_creates_virtual(
         self,
@@ -787,6 +821,7 @@ class TestLoadAndConfigureWorkflowAssistant:
         # Act
         with patch('codemie.service.assistant_service.llm_service') as mock_llm_service:
             mock_llm_service.default_llm_model = 'default-model'
+            mock_llm_service.assert_model_selectable = Mock()
 
             result = AssistantService._load_and_configure_workflow_assistant(
                 workflow_assistant=workflow_assistant,

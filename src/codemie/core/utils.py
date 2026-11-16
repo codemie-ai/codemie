@@ -188,7 +188,11 @@ def unpack_json_strings(obj):
     return obj
 
 
-def calculate_tokens(text: str, llm_model: str = llm_service.default_llm_model):
+def calculate_tokens(text: str, llm_model: str | None = None):
+    # Resolved lazily rather than as a default argument: default_llm_model reads the model catalog,
+    # which is database-backed, and a default argument would run that query at module-import time.
+    if llm_model is None:
+        llm_model = llm_service.default_llm_model
     encoding = get_encoding(llm_model)
     return len(encoding.encode(str(text), disallowed_special=()))
 

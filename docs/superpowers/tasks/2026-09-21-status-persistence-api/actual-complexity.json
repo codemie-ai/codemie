@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-09-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 30,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New LLMModelStatusRepository + LLMModelStatus persistence model, admin router endpoints (single + bulk status update), and status-aware checks wired into llm_service, assistant_generator_service, assistant_service, and conversation_service — a cross-cutting overlay touching admin API, LLM catalog service, and chat/workflow request paths, not a single self-contained component." },
+    { "dimension": "technical_risk", "reason": "Closest precedent is the existing llm_retirement_service DB-write pattern, but this adds a new table with a unique-constraint concurrency backstop (IntegrityError retry-as-update in LLMModelStatusRepository.upsert) and a persisted status overlay layered on top of config-sourced `enabled`, which has no exact prior implementation. Red flag: new table + Alembic migration (854f0f549445) bumps Technical Risk per the schema-change rule." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 30 files changed (2038 insertions), spanning new repository/model/migration, 4 router files, 4 service files, config, core exceptions/utils/models, and 9 test files — maps directly to the 16+ modified XXL band." },
+    { "dimension": "affected_layers", "reason": "Touches API (admin.py new endpoints), Service (llm_service, assistant_generator_service, assistant_service, conversation_service), and DB-Persistence (new llm_model_status table + Alembic migration) — 3 layers including a schema change, matching the L band criteria (3-4 layers including persistence with migration)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: new llm_model_status table with Alembic migration (854f0f549445_create_llm_model_status_table.py) constitutes a database schema change."
+  ],
+  "split_recommendation": null
+}

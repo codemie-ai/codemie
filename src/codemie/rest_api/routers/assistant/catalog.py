@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 
 from codemie.configs import logger
 from codemie.core.ability import Ability, Action
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
 from codemie.core.search_ranking import rank_by_search
 from codemie.rest_api.models.guardrail import GuardrailEntity
 from codemie.rest_api.models.assistant import (
@@ -46,6 +46,7 @@ from codemie.service.assistant.assistant_repository import AssistantScope, Assis
 from codemie.service.assistant.category_service import category_service
 from codemie.service.assistant.sensitive_prompt_variables import mask_sensitive_prompt_variables
 from codemie.service.guardrail.guardrail_service import GuardrailService
+from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.tools import ToolsInfoService
 
 
@@ -187,22 +188,36 @@ def _get_skills_data(assistant: Assistant, user: User) -> list[dict]:
     return [skill.to_basic_info().model_dump() for skill in skills]
 
 
-def _resolve_effective_llm_model(assistant: Assistant, response_data: dict) -> tuple[str, str]:
-    """Resolve the effective LLM model for an assistant, honoring project restrictions."""
+def _resolve_effective_llm_model(assistant: Assistant, response_data: dict) -> tuple[str | None, str]:
+    """Resolve the effective LLM model for an assistant, honoring project restrictions and platform fallbacks."""
     effective_llm_model = assistant.llm_model_type
     policy = ProjectModelPolicy.for_project(assistant.project, is_global=assistant.is_global)
     if policy.mode != PolicyMode.WHITELIST:
         # Unrestricted, or deny-all: display-only, so show the assistant's own model with no marker.
-        return effective_llm_model, "assistant"
+        picked, overridden = effective_llm_model, False
+    else:
+        # Display-only: no execution falls back here, so the substitution is not logged or counted.
+        picked = policy.choose([effective_llm_model], context="assistant_detail", report=False)
+        overridden = picked != effective_llm_model
 
-    # Display-only: no execution falls back here, so the substitution is not logged or counted.
-    picked = policy.choose([effective_llm_model], context="assistant_detail", report=False)
-    overridden = picked != effective_llm_model
+    try:
+        resolved = llm_service.resolve_disabled_model(picked, assistant.project, is_global=assistant.is_global)
+    except ModelNotSelectableError:
+        response_data["effective_llm_model_reason"] = "No available fallback model remains. Contact an administrator."
+        return None, "unavailable"
+
+    if resolved != picked:
+        response_data["llm_model_type"] = resolved
+        response_data["effective_llm_model_reason"] = "The configured model is disabled. An available fallback is used."
+        return resolved, "platform_fallback"
     if not overridden:
-        return effective_llm_model, "assistant"
+        return resolved, "assistant"
 
     # Ensure UI form doesn't display a disabled model
     response_data["llm_model_type"] = picked
+    response_data["effective_llm_model_reason"] = (
+        "The configured model is not available in this project. An available project fallback is used."
+    )
     return picked, "project_default"
 
 
@@ -249,7 +264,7 @@ def _build_assistant_detail_response(assistant: Assistant, user: User) -> JSONRe
     response_data = jsonable_encoder(assistant)
     response_data["skills"] = skills_data
 
-    # Add effective model (project restrictions)
+    # Add the effective model and explain any project or platform fallback.
     effective_llm_model, effective_llm_model_source = _resolve_effective_llm_model(assistant, response_data)
     response_data["effective_llm_model"] = effective_llm_model
     response_data["effective_llm_model_source"] = effective_llm_model_source

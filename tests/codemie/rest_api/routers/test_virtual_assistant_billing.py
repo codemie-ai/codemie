@@ -45,6 +45,9 @@ async def _ide_assistant(project: str | None):
         patch.object(ide.request_summary_manager, "create_request_summary"),
         patch.object(ide.asyncio, "to_thread", new=AsyncMock(return_value="ok")),
         patch.object(ide.asyncio, "create_task"),
+        # No saved conversation exists for the auto-generated conversation_id; model-retention's
+        # lookup must find nothing, not whatever a mocked DB session chain returns by default.
+        patch("codemie.rest_api.models.conversation.Conversation.find_by_id", return_value=None),
     ):
         await ide.inference_virtual(_raw_request(), MagicMock(), request, _user())
     return get_handler.call_args.args[0]

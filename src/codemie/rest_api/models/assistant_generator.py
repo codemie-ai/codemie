@@ -119,7 +119,9 @@ RefineRequestBody = Body(
                     {"name": "email_template", "context_type": "knowledge_base"},
                     {"name": "projectcodebase", "context_type": "code"},
                 ],
-                "llm_model": llm_service.default_llm_model,
+                # llm_model intentionally omitted: it is optional and defaults via
+                # default_factory on the model itself, so this static OpenAPI example dict
+                # never needs to evaluate the (database-backed) live default.
                 "include_context": True,
                 "include_tools": True,
                 "include_categories": True,
@@ -136,7 +138,7 @@ RefineRequestBody = Body(
                 ],
                 "toolkits": [{"toolkit": "Notification", "tools": [{"name": "Email", "label": "Email"}]}],
                 "context": [{"name": "email_template", "context_type": "knowledge_base"}],
-                "llm_model": llm_service.default_llm_model,
+                # llm_model intentionally omitted: see the comment on the sibling example above.
             }
         },
         "jira": {

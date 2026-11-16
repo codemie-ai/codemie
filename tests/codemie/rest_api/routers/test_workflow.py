@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
 
 from codemie.core.constants import DEMO_PROJECT
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
 from codemie.core.models import AssistantChatRequest
 from codemie.core.workflow_models import (
     WorkflowConfig,
@@ -32,6 +32,7 @@ from codemie.core.workflow_models import (
     WorkflowEvaluationRequest,
     WorkflowMode,
 )
+from codemie.core.workflow_models.workflow_models import WorkflowAssistant
 
 from codemie.configs import config
 from codemie.configs.llm_config import LLMModel
@@ -688,6 +689,68 @@ async def test_create_workflow_script_step_warning_is_advisory(
 
 
 @pytest.mark.asyncio
+@patch("codemie.rest_api.routers.workflow.llm_service.assert_model_selectable")
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_rejects_unselectable_model(
+    mock_get_guardrail_assignments, mock_assert_selectable, create_workflow_request, request_header
+):
+    """A create request whose assistant references an unselectable model is rejected with 400."""
+    mock_get_guardrail_assignments.return_value = None
+    mock_assert_selectable.side_effect = ModelNotSelectableError("bad-model", "model is deprecated")
+
+    request = create_workflow_request.model_copy(
+        update={"yaml_config": test_yaml_config.replace("gpt-4o-2024-11-20", "bad-model")}
+    )
+
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.create_workflow",
+            return_value=workflow_config_data,
+        ),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    response_json = response.json()
+    assert response_json["error"]["message"] == "Model not selectable"
+    assert "bad-model" in response_json["error"]["details"]
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_with_selectable_model_succeeds(
+    mock_get_guardrail_assignments, create_workflow_request, request_header
+):
+    """A create request whose assistant references a model that is not flagged unselectable still succeeds."""
+    mock_get_guardrail_assignments.return_value = None
+
+    request = create_workflow_request.model_copy(update={"assistants": [WorkflowAssistant(id="a1", model="gpt-4o")]})
+
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.create_workflow",
+            return_value=workflow_config_data,
+        ),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["message"] == "Workflow created successfully"
+
+
+@pytest.mark.asyncio
 async def test_create_autonomous_workflow(create_autonomous_workflow_request, request_header):
     with (
         patch(
@@ -740,6 +803,101 @@ async def test_update_workflow(
         assert result == "Workflow updated successfully"
         mock_validate.assert_called_once()
         assert response.json()["data"] == workflow_config_data.model_dump()
+
+
+@pytest.mark.asyncio
+@patch("codemie.rest_api.routers.workflow.llm_service.assert_model_selectable")
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_update_workflow_rejects_unselectable_model(
+    mock_get_wf, mock_ability, mock_assert_selectable, workflow_config, update_workflow_request, request_header
+):
+    """An update request whose yaml_config assistant references an unselectable model is rejected with 400,
+    preserving the "Model not selectable" message and the offending base_name in `details` - the same
+    contract create_workflow already provides (CR-009 fix: the guard's ExtendedHTTPException must be
+    re-raised as-is instead of being re-wrapped by the generic `except Exception` handler, which would
+    otherwise discard its message/details since ExtendedHTTPException never calls super().__init__()).
+    """
+    mock_get_wf.return_value = workflow_config
+    mock_ability.return_value = True
+    mock_assert_selectable.side_effect = ModelNotSelectableError("gpt-4o-2024-11-20", "model is deprecated")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.put(
+            f"/v1/workflows/{workflow_config.id}",
+            json=update_workflow_request.model_dump(),
+            headers=request_header,
+        )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert response.json()["error"]["message"] == "Model not selectable"
+    assert "gpt-4o-2024-11-20" in response.json()["error"]["details"]
+
+
+@pytest.mark.asyncio
+@patch("codemie.rest_api.routers.workflow.llm_service.assert_model_selectable")
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_rejects_unselectable_model(
+    mock_get_wf, mock_ability, mock_assert_selectable, workflow_config, update_workflow_request, request_header
+):
+    """The dry-run validate endpoint must reject an unselectable model the same way update_workflow does,
+    so a workflow that passes validation is not then rejected on save."""
+    mock_get_wf.return_value = workflow_config
+    mock_ability.return_value = True
+    mock_assert_selectable.side_effect = ModelNotSelectableError("gpt-4o-2024-11-20", "model is deprecated")
+
+    with patch("codemie.rest_api.routers.workflow._run_pre_persist_update_validation") as mock_pre_persist:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config.id}/validate",
+                json=update_workflow_request.model_dump(),
+                headers=request_header,
+            )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert response.json()["error"]["message"] == "Model not selectable"
+    assert "gpt-4o-2024-11-20" in response.json()["error"]["details"]
+    mock_pre_persist.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_update_workflow_with_selectable_model_succeeds(
+    mock_get_guardrail_assignments, mock_get_wf, mock_ability, workflow_config, update_workflow_request, request_header
+):
+    """An update request whose yaml_config assistant model is not flagged unselectable still succeeds."""
+    mock_get_guardrail_assignments.return_value = None
+    mock_get_wf.return_value = workflow_config
+    mock_ability.return_value = True
+
+    from unittest.mock import AsyncMock
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
+        patch(
+            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            new_callable=AsyncMock,
+        ),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}",
+                json=update_workflow_request.model_dump(),
+                headers=request_header,
+            )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["message"] == "Workflow updated successfully"
 
 
 @pytest.mark.asyncio

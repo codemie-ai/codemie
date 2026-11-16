@@ -23,12 +23,14 @@ from codemie_tools.git.toolkit import GitToolkit
 
 from codemie.agents.tools.code.code_toolkit import CodeToolkit
 from codemie.configs import config, logger
+from codemie.configs.llm_config import ModelStatus
 from codemie.core.dependecies import get_indexed_repo, get_llm_by_credentials
 from codemie.core.models import CodeFields, CodeRepoType, GitRepo, ToolConfig
 from codemie.repository.repository_factory import FileRepositoryFactory
 from codemie.rest_api.models.assistant import Assistant, ContextType
 from codemie.rest_api.models.index import CodeIndexInfo
 from codemie.rest_api.security.user import User
+from codemie.service.llm_service.llm_service import llm_service
 
 
 class ToolkitSettingService:
@@ -36,19 +38,28 @@ class ToolkitSettingService:
     def _resolve_image_generation_model(
         assistant: Optional[Assistant] = None, request: Optional[object] = None
     ) -> Optional[str]:
-        request_model = getattr(request, "image_generation_model", None)
-        if isinstance(request_model, str) and request_model.strip():
-            return request_model
+        """Use the first configured image model that is not administratively disabled."""
+        candidates = [
+            model
+            for model in (
+                getattr(request, "image_generation_model", None),
+                getattr(assistant, "image_generation_model", None),
+                config.IMAGE_GENERATION_MODEL,
+            )
+            if isinstance(model, str) and model.strip()
+        ]
+        if not candidates:
+            return None
 
-        assistant_model = getattr(assistant, "image_generation_model", None)
-        if isinstance(assistant_model, str) and assistant_model.strip():
-            return assistant_model
-
-        global_model = config.IMAGE_GENERATION_MODEL
-        if isinstance(global_model, str) and global_model.strip():
-            return global_model
-
-        return None
+        # Read persisted statuses through the shared cache, matching either catalog name.
+        # Legacy direct deployments absent from the catalog retain their existing behavior.
+        disabled_names = {
+            name.strip()
+            for model in llm_service.get_all_llm_model_info()
+            if model.status == ModelStatus.DISABLED
+            for name in (model.base_name, model.deployment_name)
+        }
+        return next((model for model in candidates if model.strip() not in disabled_names), None)
 
     @staticmethod
     def _build_image_generator(

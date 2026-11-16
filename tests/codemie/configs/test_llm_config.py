@@ -435,3 +435,12 @@ def test_litellm_router_config_parses_strategy_tiers_classifier_model():
     assert router.tiers.simple.label == "GPT-5 mini"
     assert router.tiers.reasoning.model == "gpt-5-pro"
     assert router.tiers.reasoning.label == "GPT-5 Pro"
+
+
+def test_llm_model_status_defaults_to_enabled():
+    from codemie.configs.llm_config import LLMModel, ModelStatus
+
+    model = LLMModel(base_name="x", deployment_name="x", enabled=True)
+
+    assert model.status == ModelStatus.ENABLED
+    assert ModelStatus("deprecated") == ModelStatus.DEPRECATED

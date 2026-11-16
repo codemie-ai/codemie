@@ -20,8 +20,6 @@ from codemie.enterprise.observability import get_observability_provider
 from codemie.core.exceptions import TaskException
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.rest_api.security.user import User
-from codemie.configs.customer_config import customer_config
-from codemie.service.llm.model_availability_service import PROJECT_MODEL_OVERRIDE_FEATURE
 from codemie.service.tools.dynamic_value_utils import process_string
 from codemie.service.workflow_execution import WorkflowExecutionService
 from codemie.workflows.callbacks.base_callback import BaseCallback
@@ -255,11 +253,7 @@ class AgentNode(BaseNode[AgentMessages]):
         # before its own try/except block starts. fail_open=True keeps a resolution
         # failure here from escaping uncaught and aborting the whole workflow execution
         # instead of just this node.
-        if (
-            workflow_assistant
-            and workflow_assistant.model
-            and customer_config.is_feature_enabled(PROJECT_MODEL_OVERRIDE_FEATURE)
-        ):
+        if workflow_assistant and workflow_assistant.model:
             resolved_model, _ = self.resolve_execution_model(workflow_assistant.model, fail_open=True)
             # Create a copy of the workflow_assistant with the resolved model
             workflow_assistant = workflow_assistant.model_copy(update={"model": resolved_model})

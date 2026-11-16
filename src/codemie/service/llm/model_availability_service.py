@@ -261,6 +261,27 @@ class ModelAvailabilityService:
         is_global: bool = False,
         fallback_model: str = "",
     ) -> tuple[str, bool]:
+        """Apply project availability rules, then replace any administratively disabled model."""
+        from codemie.service.llm_service.llm_service import llm_service
+
+        model, overridden = ModelAvailabilityService._resolve_project_model_for_execution(
+            requested_model, project_name, is_global, fallback_model
+        )
+        resolved = llm_service.resolve_disabled_model(
+            model,
+            project_name,
+            is_global=is_global,
+            allow_deprecated=bool(requested_model) and model == requested_model,
+        )
+        return resolved, overridden or resolved != model
+
+    @staticmethod
+    def _resolve_project_model_for_execution(
+        requested_model: str | None,
+        project_name: str,
+        is_global: bool = False,
+        fallback_model: str = "",
+    ) -> tuple[str, bool]:
         """
         Resolve actual model to use, with fallback to default.
 

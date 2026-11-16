@@ -19,6 +19,7 @@ from codemie_tools.base import toolkit_provider
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.tool import SchemaField, ToolInvokeRequest, ToolInvokeResponse, ToolSchemaResponse
+from codemie.rest_api.routers.assistant._model_selection import validate_model_selection
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.tools.step_config import get_step_config
@@ -120,6 +121,7 @@ def invoke_tool(request: ToolInvokeRequest, tool_name: str, raw_request: Request
             message=f"Direct invocation of '{tool_name}' via this endpoint is disabled.",
         )
 
+    validate_model_selection(request.llm_model)
     request.request_id = raw_request.state.uuid
     try:
         output = ToolExecutionService.invoke(request, tool_name, user)

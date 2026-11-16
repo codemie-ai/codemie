@@ -130,7 +130,7 @@ class AssistantGeneratorService:
         cls,
         text: str,
         user: User,
-        llm_model: Optional[str] = llm_service.default_llm_model,
+        llm_model: Optional[str] = None,
         include_tools: bool = True,
         include_categories: bool = True,
         request_id: Optional[str] = None,
@@ -145,6 +145,11 @@ class AssistantGeneratorService:
             AssistantGeneratorResponse: Generated assistant details
         """
         with spend_origin(TrafficOrigin.ASSISTANT_GENERATOR):
+            # Resolved lazily rather than as a default argument: default_llm_model reads the model
+            # catalog, which is database-backed, and a default argument would run that query at
+            # module-import time.
+            if llm_model is None:
+                llm_model = llm_service.default_llm_model
             try:
                 base_template = (
                     ASSISTANT_GENERATOR_TEMPLATE if include_tools else ASSISTANT_GENERATOR_TEMPLATE_WITHOUT_TOOLS
@@ -211,7 +216,7 @@ class AssistantGeneratorService:
         text: str | None = None,
         existing_prompt: str | None = None,
         project: str | None = None,
-        llm_model: str = llm_service.default_llm_model,
+        llm_model: str | None = None,
         request_id: str | None = None,
     ) -> PromptGeneratorResponse:
         """
@@ -233,6 +238,11 @@ class AssistantGeneratorService:
             PromptGeneratorResponse: Generated/refined system prompt
         """
         with spend_origin(TrafficOrigin.PROMPT_GENERATOR):
+            # Resolved lazily rather than as a default argument: default_llm_model reads the model
+            # catalog, which is database-backed, and a default argument would run that query at
+            # module-import time.
+            if llm_model is None:
+                llm_model = llm_service.default_llm_model
             try:
                 # Build chain with prompt refine template
                 chain = PromptGeneratorChain.from_prompt_template(
@@ -308,9 +318,14 @@ class AssistantGeneratorService:
         _include_tools: bool = False,
         include_context: bool = True,
         include_categories: bool = False,
-        llm_model: str = llm_service.default_llm_model,
+        llm_model: str | None = None,
     ) -> RefineGeneratorResponse:
         with spend_origin(TrafficOrigin.ASSISTANT_GENERATOR):
+            # Resolved lazily rather than as a default argument: default_llm_model reads the model
+            # catalog, which is database-backed, and a default argument would run that query at
+            # module-import time.
+            if llm_model is None:
+                llm_model = llm_service.default_llm_model
             try:
                 chain = PromptGeneratorChain.from_prompt_template(REFINE_PROMPT_TEMPLATE, request_id, llm_model)
 
@@ -409,7 +424,7 @@ class AssistantGeneratorService:
         assistant: Assistant,
         user: User,
         request_id: Optional[str] = None,
-        llm_model: str = llm_service.default_llm_model,
+        llm_model: str | None = None,
     ) -> QualityValidationResult:
         """
         Validate an assistant for marketplace publication using LangGraph workflow (v2).
@@ -433,6 +448,11 @@ class AssistantGeneratorService:
         # LangGraph copies the context into its parallel branches, so this one block covers every
         # validation node's model.
         with spend_origin(TrafficOrigin.MARKETPLACE_VALIDATION):
+            # Resolved lazily rather than as a default argument: default_llm_model reads the model
+            # catalog, which is database-backed, and a default argument would run that query at
+            # module-import time.
+            if llm_model is None:
+                llm_model = llm_service.default_llm_model
             try:
                 logger.info(f"Starting marketplace validation workflow for assistant: {assistant.name}")
 

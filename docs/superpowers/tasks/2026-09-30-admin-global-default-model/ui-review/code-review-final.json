@@ -1,0 +1,28 @@
+{
+  "decision": "request-changes",
+  "rationale": "Four reachable UI defects remain: selectable LiteLLM auto-routers cannot be chosen, a saved choice disappears from the clear action when its model leaves the catalog, status changes leave stale global labels, and already loaded user model data is not refreshed. One earlier commit-format issue was deferred to code-review-deferred.md; no candidate was dismissed.",
+  "confidence": "high",
+  "risk_flags": ["breaking-change", "public-api"],
+  "business_review": [
+    {"kind":"spec","item":"AC-1 — Admin control","status":"na","notes":"Backend behavior is outside the UI diff; UI read, set, and clear calls are present."},
+    {"kind":"spec","item":"AC-2 — Validation","status":"na","notes":"Backend validation is outside the UI diff; UI actions use model status and availability."},
+    {"kind":"spec","item":"AC-3 — Configured fallback","status":"na","notes":"Backend behavior is outside the UI diff."},
+    {"kind":"spec","item":"AC-4 — Consistent resolution","status":"na","notes":"Backend behavior is outside the UI diff."},
+    {"kind":"spec","item":"AC-5 — Consistent metadata","status":"partial","notes":"Status change refreshes the default summary but not catalog global labels."},
+    {"kind":"spec","item":"AC-6 — User permissions","status":"na","notes":"Backend behavior is outside the UI diff."},
+    {"kind":"spec","item":"AC-7 — Admin UI","status":"partial","notes":"Clear action is unavailable when the saved model is no longer in the catalog."},
+    {"kind":"spec","item":"AC-8 — Lifecycle","status":"na","notes":"Backend durability is outside the UI diff; UI set and clear refetch admin metadata."},
+    {"kind":"spec","item":"Non-goal — no admin management of code, CLI, or another category","status":"pass","notes":"Only global admin endpoint and controls were added."}
+  ],
+  "standards_review": [
+    {"kind":"commit-format","status":"partial","notes":"The git workflow requires EPMCDME-XXXX: Capital sentence. Seven subjects in the review range violate it: one catalog-status-surfacing subject lacks the ticket prefix, and six EPMCDME-15078 subjects begin with lowercase add or wire. The remaining subjects conform."},
+    {"kind":"code-quality","status":"na","notes":"The supplied .ai-run/guides/standards/code-quality.md path does not exist in codemie-ui; no code-quality standard was supplied for this row."},
+    {"kind":"security","status":"pass","notes":"The changed model-management UI and store use React text rendering and encoded model path segments. Review of the changed source paths found no new HTML sink, untrusted navigation, cross-window message, browser secret, or unexplained Sonar suppression."}
+  ],
+  "findings": [
+    {"id":"CR-001","kind":"code","severity":"major","triage":"patch","file":"src/store/adminModels.ts","line":77,"title":"Auto-routers cannot be selected","problem":"The backend's LiteLLM auto-router option omits status and enabled, but adminModels maps both directly. ModelActions requires model.enabled and status === enabled, so the Set as global default action is never offered for those entries.","impact":"The admin UI cannot select a LiteLLM auto-router despite the approved requirement allowing selectable auto-routers.","recommendation":"Normalize selectable auto-router status and availability from the router response or provide those fields in the API, then use that state to gate the action."},
+    {"id":"CR-002","kind":"code","severity":"major","triage":"patch","file":"src/store/adminModels.ts","line":111,"title":"User model catalog stays stale","problem":"setGlobalDefault and clearGlobalDefault refresh only adminModelsStore. The already loaded appInfoStore.llmModels and llmRouters retain their prior isDefault values; consumers read those values for selection.","impact":"A mounted consumer may continue showing or selecting the previous default until another model fetch occurs; reachability across navigation and mounted views is not fully confirmed.","recommendation":"Refresh the user model catalog after a successful set or clear, or invalidate it so every default consumer refetches."},
+    {"id":"CR-003","kind":"code","severity":"major","triage":"patch","file":"src/pages/settings/administration/ModelsManagementPage.tsx","line":140,"title":"Status change leaves global label stale","problem":"handleStatusChange calls setModelStatus and fetchGlobalDefault, but never refetches catalog rows. setModelStatus patches status only; defaultForCategories is mapped only by indexModels.","impact":"After disabling or deprecating an effective default, the summary can show the fallback while the table still labels the old model global.","recommendation":"Refetch the catalog after a successful status update so Default for reflects the backend's effective assignment."},
+    {"id":"CR-004","kind":"code","severity":"major","triage":"patch","file":"src/pages/settings/administration/ModelsManagementPage.tsx","line":208,"title":"Orphaned choice cannot be cleared","problem":"Clear global default is rendered only in a model-row action. When the saved model is removed from a refreshed catalog, no row has that base name, although the saved name remains in the summary.","impact":"Admins cannot clear an unavailable saved choice from the Model management page, leaving the temporary fallback as the only effective value.","recommendation":"Render a Clear global default control beside the saved-choice summary whenever saved_base_name is present, independently of catalog rows."}
+  ]
+}

@@ -31,7 +31,9 @@ import codemie.rest_api.routers.conversation as conversation_router
 import codemie.rest_api.routers.conversation.history as history
 from unittest.mock import patch, MagicMock
 from pydantic import ValidationError
+from codemie.configs.llm_config import LLMModel, ModelStatus
 from codemie.rest_api.models.assistant import Assistant
+from codemie.service.llm_service.llm_service import llm_service
 
 
 client = TestClient(app)
@@ -425,6 +427,140 @@ async def test_update_conversation_with_image_generation_fields(user):
     body = response.json()
     assert body["enable_image_generation"] is True
     assert body["image_generation_model"] == "gpt-image-1"
+
+
+@pytest.mark.asyncio
+async def test_update_conversation_raises_400_when_model_not_selectable(user):
+    from codemie.core.exceptions import ModelNotSelectableError
+
+    conversation = Conversation(
+        id="456",
+        conversation_id="456",
+        name="Test Conversation",
+    )
+
+    with (
+        patch("codemie.rest_api.routers.conversation.crud.Conversation.get_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.crud.Ability.can", return_value=True),
+        patch(
+            "codemie.rest_api.routers.conversation.crud.ConversationService.update_conversation",
+            side_effect=ModelNotSelectableError("m1", "model is deprecated"),
+        ),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                "/v1/conversations/456",
+                json={"llm_model": "m1"},
+                headers={"Authorization": "Bearer testtoken"},
+            )
+
+    assert response.status_code == 400
+
+
+@pytest.fixture
+def conversation_model_update():
+    """Use the real service and selection guard; replace persistence and access boundaries."""
+    stored = Conversation(
+        id="456",
+        conversation_id="456",
+        conversation_name="Before",
+        llm_model="old-chat",
+        image_generation_model="old-image",
+    )
+    models = {
+        "llm_model": LLMModel(base_name="old-chat", deployment_name="dep-chat", enabled=True),
+        "image_generation_model": LLMModel(base_name="old-image", deployment_name="dep-image", enabled=True),
+    }
+    with (
+        patch("codemie.rest_api.routers.conversation.crud.Conversation.get_by_id", return_value=stored),
+        patch("codemie.rest_api.routers.conversation.crud.Ability.can", return_value=True),
+        patch.object(llm_service, "get_all_llm_model_info", return_value=list(models.values())),
+        patch.object(Conversation, "update") as persist,
+    ):
+        yield stored, models, persist
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["llm_model", "image_generation_model"])
+@pytest.mark.parametrize("model_status", [ModelStatus.DEPRECATED, ModelStatus.DISABLED])
+@pytest.mark.parametrize(
+    "stored_attr,requested_attr",
+    [
+        ("base_name", "base_name"),
+        ("base_name", "deployment_name"),
+        ("deployment_name", "base_name"),
+    ],
+)
+async def test_update_conversation_retains_unavailable_selection(
+    conversation_model_update,
+    field,
+    model_status,
+    stored_attr,
+    requested_attr,
+):
+    stored, models, persist = conversation_model_update
+    model = models[field]
+    model.status = model_status
+    setattr(stored, field, getattr(model, stored_attr))
+    requested = getattr(model, requested_attr)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
+        response = await ac.put(
+            "/v1/conversations/456",
+            json={
+                "name": "Renamed",
+                "folder": "Archive",
+                field: requested,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()[field] == requested
+    assert stored.conversation_name == "Renamed"
+    assert stored.folder == "Archive"
+    persist.assert_called_once_with(touch_timestamp=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["llm_model", "image_generation_model"])
+async def test_update_conversation_rejects_a_different_deprecated_selection(conversation_model_update, field):
+    stored, models, persist = conversation_model_update
+    previous = getattr(stored, field)
+    # A model selected for the other purpose is not an existing selection for this field.
+    other_field = "image_generation_model" if field == "llm_model" else "llm_model"
+    target = models[other_field]
+    target.status = ModelStatus.DEPRECATED
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
+        response = await ac.put("/v1/conversations/456", json={field: target.deployment_name})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == "Model not selectable"
+    assert "deprecated" in response.json()["error"]["details"]
+    assert getattr(stored, field) == previous
+    persist.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_conversation_can_clear_deprecated_selections(conversation_model_update):
+    stored, models, persist = conversation_model_update
+    for model in models.values():
+        model.status = ModelStatus.DEPRECATED
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
+        response = await ac.put(
+            "/v1/conversations/456",
+            json={
+                "llm_model": None,
+                "image_generation_model": None,
+            },
+        )
+
+    assert response.status_code == 200
+    assert stored.llm_model is None
+    assert stored.image_generation_model is None
+    persist.assert_called_once_with(touch_timestamp=False)
 
 
 CONVETSATION_MSG_EXPORT_PATH = "/v1/conversations/123/history/0/0/export?export_format=pdf"

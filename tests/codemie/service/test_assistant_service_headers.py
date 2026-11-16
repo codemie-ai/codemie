@@ -21,6 +21,7 @@ request_headers to the ToolkitService for MCP header propagation.
 
 from unittest.mock import Mock, patch
 
+import pytest
 
 from codemie.service.tools.agent_tools_result import AgentToolsResult
 from codemie.core.models import AssistantChatRequest
@@ -73,6 +74,7 @@ class TestAssistantServiceBuildAgentWithHeaders:
         mock_get_tools.return_value = AgentToolsResult(tools=[])
         mock_llm_service.get_react_llms.return_value = []
         mock_llm_service.default_llm_model = 'claude-sonnet-4'
+        mock_llm_service.assert_model_selectable = Mock()
         mock_config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False
         mock_aitools_agent.return_value = Mock()
 
@@ -132,6 +134,97 @@ class TestAssistantServiceBuildAgentWithHeaders:
     @patch('codemie.service.assistant_service.build_unique_file_objects')
     @patch('codemie.service.assistant_service.AssistantService.drop_missing_context', return_value=[])
     @patch('codemie.service.assistant_service.BedrockOrchestratorService.is_bedrock_assistant')
+    @pytest.mark.parametrize(
+        "requested_model,resolved_model",
+        [("deprecated-model", "deprecated-model"), ("disabled-model", "project-default")],
+    )
+    def test_build_agent_resolves_model_status_without_a_selection_guard(
+        self,
+        mock_is_bedrock_assistant,
+        mock_drop_missing_context,
+        mock_build_file_objects,
+        mock_set_llm_context,
+        mock_llm_service,
+        mock_get_tools,
+        mock_config,
+        mock_langgraph_agent,
+        mock_aitools_agent,
+        mock_find_by_id,
+        mock_get_application_by_id,
+        requested_model,
+        resolved_model,
+    ):
+        """The provider boundary gets the resolved model while inference avoids new-selection guards."""
+        from codemie.core.exceptions import ModelNotSelectableError
+
+        mock_get_application_by_id.return_value = None
+        mock_find_by_id.return_value = None
+        mock_is_bedrock_assistant.return_value = False
+        mock_build_file_objects.return_value = {}
+        mock_get_tools.return_value = AgentToolsResult(tools=[])
+        mock_llm_service.get_react_llms.return_value = []
+        mock_llm_service.default_llm_model = 'claude-sonnet-4'
+        mock_llm_service.assert_model_selectable = Mock(
+            side_effect=ModelNotSelectableError("bad-model", "model is deprecated")
+        )
+        mock_llm_service.resolve_disabled_model.return_value = resolved_model
+        mock_config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False
+
+        assistant = Mock(spec=Assistant)
+        assistant.tool_permissions = None
+        assistant.id = 'asst-123'
+        assistant.name = 'Test Assistant'
+        assistant.description = 'Test Description'
+        assistant.system_prompt = 'You are a helpful assistant'
+        assistant.context = []
+        assistant.toolkits = []
+        assistant.llm_model_type = 'claude-sonnet-4'
+        assistant.temperature = 0.7
+        assistant.top_p = 0.9
+        assistant.project = 'test-project'
+        assistant.bedrock = None
+        assistant.smart_tool_selection_enabled = False
+        assistant.prompt_variables = []
+        assistant.is_global = False
+        assistant.mcp_servers = []
+
+        request = AssistantChatRequest(text='Hello', file_names=[], llm_model=requested_model)
+        user = Mock(spec=User)
+        user.id = 'user-123'
+        user.name = 'Test User'
+        user.full_name = "Test User Full Name"
+        user.username = "test@email.com"
+
+        AssistantService.build_agent(
+            assistant=assistant,
+            request=request,
+            user=user,
+            request_uuid='req-123',
+            thread_generator=None,
+            tool_callbacks=None,
+        )
+
+        mock_llm_service.assert_model_selectable.assert_not_called()
+        mock_llm_service.resolve_disabled_model.assert_called_once_with(
+            requested_model, 'test-project', is_global=False
+        )
+        # Resolution is passed explicitly to the agent; neither the assistant nor the request is mutated.
+        assert assistant.llm_model_type == 'claude-sonnet-4'
+        mock_aitools_agent.assert_called_once()
+        assert mock_aitools_agent.call_args.kwargs['llm_model'] == resolved_model
+        assert mock_aitools_agent.call_args.kwargs['request'].llm_model == requested_model
+
+    @patch('codemie.service.llm.model_availability_service.Application.get_by_id')
+    @patch('codemie.service.assistant_service.Conversation.find_by_id')
+    @patch('codemie.service.assistant_service.AIToolsAgent')
+    @patch('codemie.service.assistant_service.LangGraphAgent')
+    @patch('codemie.service.assistant_service.config')
+    @patch('codemie.service.assistant_service.ToolkitService.collect_agent_tools')
+    @patch('codemie.service.assistant_service.llm_service')
+    @patch('codemie.service.assistant_service.set_llm_context')
+    @patch('codemie.service.assistant_service.build_unique_file_objects')
+    @patch('codemie.service.assistant_service.AssistantService.drop_missing_context', return_value=[])
+    @patch('codemie.service.assistant_service.BedrockOrchestratorService.is_bedrock_assistant')
     def test_build_agent_without_request_headers(
         self,
         mock_is_bedrock_assistant,
@@ -162,6 +255,7 @@ class TestAssistantServiceBuildAgentWithHeaders:
         mock_get_tools.return_value = AgentToolsResult(tools=[])
         mock_llm_service.get_react_llms.return_value = []
         mock_llm_service.default_llm_model = 'claude-sonnet-4'
+        mock_llm_service.assert_model_selectable = Mock()
         mock_config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False
         mock_aitools_agent.return_value = Mock()
 
@@ -247,6 +341,7 @@ class TestAssistantServiceBuildAgentForWorkflowWithHeaders:
         mock_get_tools.return_value = AgentToolsResult(tools=[])
         mock_llm_service.get_react_llms.return_value = []
         mock_llm_service.default_llm_model = 'claude-sonnet-4'
+        mock_llm_service.assert_model_selectable = Mock()
         mock_config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False
         mock_aitools_agent.return_value = Mock()
 
@@ -343,6 +438,7 @@ class TestAssistantServiceBuildAgentForWorkflowWithHeaders:
         mock_get_tools.return_value = AgentToolsResult(tools=[])
         mock_llm_service.get_react_llms.return_value = []
         mock_llm_service.default_llm_model = 'claude-sonnet-4'
+        mock_llm_service.assert_model_selectable = Mock()
         mock_config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False
         mock_aitools_agent.return_value = Mock()
 

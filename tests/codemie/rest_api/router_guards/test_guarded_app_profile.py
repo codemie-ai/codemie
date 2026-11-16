@@ -39,6 +39,7 @@ def dump() -> dict[str, Any]:
         pytest.param(
             "get", "/v1/provisioning/projects", "provisioning router (PROVISIONING_API_ENABLED)", id="provisioning"
         ),
+        pytest.param("post", "/v1/chat/completions", "LLM proxy router", id="llm-proxy"),
     ],
 )
 def test_conditional_route_is_in_the_guarded_openapi(dump, method, path, enabled_by):

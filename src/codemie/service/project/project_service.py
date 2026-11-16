@@ -26,7 +26,7 @@ from sqlmodel import Session, select
 from codemie.clients.postgres import get_session
 from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
 from codemie.core.models import Application
 from codemie.repository.application_repository import application_repository
 from codemie.repository.budget_repository import budget_repository
@@ -949,6 +949,14 @@ class ProjectService:
             cls.validate_default_model(effective_default_model, validated_models)
             if validated_models is None and default_model is not None:
                 cls.ensure_default_model_available(default_model)
+
+            if effective_default_model:
+                try:
+                    llm_service.assert_model_selectable(
+                        effective_default_model, previous_model_name=project.default_model
+                    )
+                except ModelNotSelectableError as exc:
+                    raise ExtendedHTTPException(code=400, message="Model not selectable", details=str(exc)) from exc
 
             if validated_models is not None and effective_default_model is None:
                 raise ExtendedHTTPException(

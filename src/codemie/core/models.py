@@ -37,6 +37,7 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 from codemie.configs import config
+from codemie.configs.llm_config import ModelStatus
 from codemie.core.ability import Owned
 from codemie.core.constants import CodeIndexType, ChatRole, BackgroundTaskStatus, DatasourceTypes
 from codemie.core.routing_info import RoutingInfo
@@ -377,6 +378,26 @@ class LLMRetirementRequest(LLMRetirementPair):
 class LLMBulkRetirementRequest(ConfiguredModel):
     retirements: list[LLMRetirementPair] = Field(..., min_length=1, max_length=100)
     check_models_existence: bool = True
+
+
+class LLMModelStatusUpdateRequest(ConfiguredModel):
+    status: ModelStatus
+
+
+class LLMModelStatusBulkUpdateItem(ConfiguredModel):
+    base_name: str
+    status: ModelStatus
+
+
+class LLMModelStatusBulkUpdateRequest(ConfiguredModel):
+    updates: list[LLMModelStatusBulkUpdateItem] = Field(..., min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def no_duplicate_base_names(self) -> "LLMModelStatusBulkUpdateRequest":
+        base_names = [u.base_name for u in self.updates]
+        if len(set(base_names)) != len(base_names):
+            raise ValueError("updates must not contain duplicate base_name entries")
+        return self
 
 
 class Application(BaseModelWithSQLSupport, Owned, table=True):

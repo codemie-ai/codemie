@@ -552,6 +552,106 @@
         "title": "ActivityEventListItem",
         "type": "object"
       },
+      "AdminGlobalDefaultRequest": {
+        "properties": {
+          "base_name": {
+            "minLength": 1,
+            "title": "Base Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_name"
+        ],
+        "title": "AdminGlobalDefaultRequest",
+        "type": "object"
+      },
+      "AdminGlobalDefaultResponse": {
+        "properties": {
+          "effective_base_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Base Name"
+          },
+          "saved_base_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Base Name"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "temporary_fallback": {
+            "title": "Temporary Fallback",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By Id"
+          },
+          "updated_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By Name"
+          }
+        },
+        "required": [
+          "saved_base_name",
+          "updated_by_id",
+          "updated_by_name",
+          "updated_at",
+          "effective_base_name",
+          "source",
+          "temporary_fallback"
+        ],
+        "title": "AdminGlobalDefaultResponse",
+        "type": "object"
+      },
       "AdminPasswordChangeRequest": {
         "description": "Request body for admin password change",
         "properties": {
@@ -9652,7 +9752,6 @@
             ]
           },
           "llm_model": {
-            "default": "gpt-4.1",
             "title": "Llm Model",
             "type": "string"
           },
@@ -15284,6 +15383,10 @@
             ],
             "title": "React Agent"
           },
+          "status": {
+            "$ref": "#/components/schemas/ModelStatus",
+            "default": "enabled"
+          },
           "stt_config": {
             "anyOf": [
               {
@@ -15313,6 +15416,53 @@
           "enabled"
         ],
         "title": "LLMModel",
+        "type": "object"
+      },
+      "LLMModelStatusBulkUpdateItem": {
+        "properties": {
+          "baseName": {
+            "title": "Basename",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ModelStatus"
+          }
+        },
+        "required": [
+          "baseName",
+          "status"
+        ],
+        "title": "LLMModelStatusBulkUpdateItem",
+        "type": "object"
+      },
+      "LLMModelStatusBulkUpdateRequest": {
+        "properties": {
+          "updates": {
+            "items": {
+              "$ref": "#/components/schemas/LLMModelStatusBulkUpdateItem"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Updates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "updates"
+        ],
+        "title": "LLMModelStatusBulkUpdateRequest",
+        "type": "object"
+      },
+      "LLMModelStatusUpdateRequest": {
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ModelStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "LLMModelStatusUpdateRequest",
         "type": "object"
       },
       "LLMProvider": {
@@ -15749,6 +15899,16 @@
           "router_type": {
             "title": "Router Type",
             "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "strategy": {
             "anyOf": [
@@ -20611,6 +20771,16 @@
         },
         "title": "ModelConfigurationSection",
         "type": "object"
+      },
+      "ModelStatus": {
+        "description": "Enum to define the CodeMie-owned persisted status of an LLM model",
+        "enum": [
+          "enabled",
+          "disabled",
+          "deprecated"
+        ],
+        "title": "ModelStatus",
+        "type": "string"
       },
       "ModelSwitchyard": {
         "description": "One fully self-configuring Switchyard router declaration, living on the capable\nmodel. Unlike the previous `efficient + modes[]` shape (which forced a fixed\n\"<capable>-switchyard-<efficient>-<mode>\" base_name / \"SY (<Mode>) <label>\" label,\nauto-generated per mode), each entry here stands entirely on its own: a capable model can\ndeclare any number of these, each pointing at its own efficient target, mode, and identity\n\u2014 enabling e.g. two routers to different efficient targets, or custom naming, without\ncollision.",
@@ -30314,7 +30484,6 @@
             "title": "Datasource Id"
           },
           "llm_model": {
-            "default": "gpt-4.1",
             "title": "Llm Model",
             "type": "string"
           },
@@ -40822,6 +40991,109 @@
         ]
       }
     },
+    "/v1/admin/llm/default": {
+      "delete": {
+        "operationId": "clear_admin_llm_default_v1_admin_llm_default_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminGlobalDefaultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Clear Admin Llm Default",
+        "tags": [
+          "Admin"
+        ]
+      },
+      "get": {
+        "operationId": "get_admin_llm_default_v1_admin_llm_default_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminGlobalDefaultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Admin Llm Default",
+        "tags": [
+          "Admin"
+        ]
+      },
+      "put": {
+        "operationId": "set_admin_llm_default_v1_admin_llm_default_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminGlobalDefaultRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminGlobalDefaultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Set Admin Llm Default",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
     "/v1/admin/llm/reload": {
       "get": {
         "description": "Reload LLM models from LiteLLM proxy without restarting the container.\n\nThis endpoint is admin-only and allows reloading of LLM models from the LiteLLM proxy.\nIt clears the models cache and reinitializes models from the proxy, making new models\nor configuration changes available without requiring a container restart.\n\nThis is useful when:\n- New models are added to the LiteLLM proxy\n- Model configurations are updated\n- Model availability changes\n\nReturns:\n    BaseResponse with success message and model counts",
@@ -40947,6 +41219,147 @@
           }
         ],
         "summary": "Retire Llm Models Bulk",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/v1/admin/llm/status": {
+      "get": {
+        "description": "List platform chat and embedding models with status and display metadata.\n\nProvider-unavailable models are excluded, while CodeMie-disabled and\ndeprecated models remain manageable. Synthetic routers have computed,\nread-only statuses. The catalog is independent of the admin's personal access.",
+        "operationId": "get_llm_model_status_v1_admin_llm_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponseWithData"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Llm Model Status",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/v1/admin/llm/status/bulk": {
+      "post": {
+        "description": "Set the persisted status override for multiple LLM model base names in a single call.\n\nEach item is processed independently \u2014 a failure on one item does not\naffect the others. Per-item results (including errors) are returned in\nthe response data.",
+        "operationId": "bulk_update_llm_model_status_v1_admin_llm_status_bulk_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LLMModelStatusBulkUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponseWithData"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Bulk Update Llm Model Status",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/v1/admin/llm/{base_name}/status": {
+      "put": {
+        "description": "Set the persisted status override for a single LLM model base name.",
+        "operationId": "update_llm_model_status_v1_admin_llm__base_name__status_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "base_name",
+            "required": true,
+            "schema": {
+              "title": "Base Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LLMModelStatusUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponseWithData"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Update Llm Model Status",
         "tags": [
           "Admin"
         ]
@@ -61786,7 +62199,6 @@
                     "include_categories": true,
                     "include_context": true,
                     "include_tools": true,
-                    "llm_model": "gpt-4.1",
                     "name": "Email",
                     "system_prompt": "You help write emails",
                     "toolkits": [
@@ -61825,7 +62237,6 @@
                       "Review my email draft for clarity and tone",
                       "Compose an email to request information from a client"
                     ],
-                    "llm_model": "gpt-4.1",
                     "name": "Professional Email Assistant",
                     "toolkits": [
                       {
@@ -66460,7 +66871,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LLMModel"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LLMModel"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LlmRouterOption"
+                    }
+                  ],
+                  "title": "Response Get Default Model For Category V1 Default Models  Category Id  Get"
                 }
               }
             },

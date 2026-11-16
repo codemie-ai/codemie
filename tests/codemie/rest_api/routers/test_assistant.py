@@ -18,8 +18,9 @@ from unittest.mock import patch, MagicMock
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from codemie.configs.llm_config import LLMModel, ModelStatus
 from codemie.core.constants import SENSITIVE_VALUE_MASK
-from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
+from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException, ModelNotSelectableError
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant
@@ -520,7 +521,7 @@ class TestAskAssistantWithGuardrails:
 class TestPrepareAssistantForExecutionWithSkills:
     """Tests for _prepare_assistant_for_execution with runtime skill_ids."""
 
-    def test_runtime_skill_ids_do_not_modify_original_assistant(self):
+    def test_runtime_skill_ids_do_not_modify_original_assistant(self, mock_user):
         """
         Test that runtime skill_ids from request are not persisted to the original assistant object.
 
@@ -558,7 +559,7 @@ class TestPrepareAssistantForExecutionWithSkills:
         )
 
         # Call the function
-        execution_assistant = _prepare_assistant_for_execution(original_assistant, request)
+        execution_assistant = _prepare_assistant_for_execution(original_assistant, request, mock_user)
 
         # Verify that the execution assistant has merged skill_ids
         assert "skill-1" in execution_assistant.skill_ids
@@ -575,7 +576,7 @@ class TestPrepareAssistantForExecutionWithSkills:
         # Verify that execution_assistant is a different object
         assert execution_assistant is not original_assistant
 
-    def test_no_skill_ids_in_request_preserves_original(self):
+    def test_no_skill_ids_in_request_preserves_original(self, mock_user):
         """Test that when no skill_ids are in the request, the original assistant is used."""
         from codemie.rest_api.routers.assistant._ask import _prepare_assistant_for_execution
 
@@ -587,14 +588,14 @@ class TestPrepareAssistantForExecutionWithSkills:
         # Create a request without skill_ids
         request = AssistantChatRequest(text="Test request", skill_ids=None)
 
-        execution_assistant = _prepare_assistant_for_execution(original_assistant, request)
+        execution_assistant = _prepare_assistant_for_execution(original_assistant, request, mock_user)
 
         # When no skill_ids are in the request, the original object should be returned
         assert execution_assistant is original_assistant
         assert execution_assistant.skill_ids == ["skill-1", "skill-2"]
 
     @patch("codemie.rest_api.routers.assistant._ask.AssistantVersionService.apply_version_to_assistant")
-    def test_version_request_with_skill_ids_creates_copy(self, mock_apply_version):
+    def test_version_request_with_skill_ids_creates_copy(self, mock_apply_version, mock_user):
         """Test that when a version is requested AND skill_ids are provided, a copy is created."""
         from codemie.rest_api.routers.assistant._ask import _prepare_assistant_for_execution
 
@@ -628,7 +629,7 @@ class TestPrepareAssistantForExecutionWithSkills:
         # Create a request with version and skill_ids
         request = AssistantChatRequest(text="Test request", version=2, skill_ids=["skill-2", "skill-3"])
 
-        execution_assistant = _prepare_assistant_for_execution(original_assistant, request)
+        execution_assistant = _prepare_assistant_for_execution(original_assistant, request, mock_user)
 
         # Verify version service was called
         mock_apply_version.assert_called_once_with(original_assistant, 2)
@@ -1486,7 +1487,7 @@ class TestResolveModelProjectLookup:
 
         assert model == "picked-model"
 
-    def test_prepare_assistant_for_execution_keeps_configured_model(self):
+    def test_prepare_assistant_for_execution_keeps_configured_model(self, mock_user):
         """The router no longer pre-resolves the model; build_agent resolves it without mutation."""
         from codemie.rest_api.routers.assistant._ask import _prepare_assistant_for_execution
 
@@ -1502,8 +1503,9 @@ class TestResolveModelProjectLookup:
                 "codemie.service.llm.model_availability_service.Application.get_by_id",
                 return_value=MagicMock(allowed_models=["gpt-4"], default_model="gpt-4"),
             ),
+            patch("codemie.core.ability.Ability.can", return_value=True),
         ):
-            execution_assistant = _prepare_assistant_for_execution(assistant, request)
+            execution_assistant = _prepare_assistant_for_execution(assistant, request, mock_user)
 
         assert execution_assistant.llm_model_type == "own-model"
         assert request.llm_model == "picked-model"
@@ -2206,6 +2208,10 @@ class TestAssistantIconLocalizationWiring:
         existing = MagicMock(spec=Assistant)
         existing.project = "demo"
         existing.icon_url = "https://h/api/v1/files/STORED"
+        # Unchanged from the request's own model: the selectability guard's "retained
+        # selection" short-circuit applies, so this icon-focused test never has to care
+        # about the real model catalog's current status for "gpt-4o".
+        existing.llm_model_type = "gpt-4o"
         repo = MagicMock()
         with (
             patch(f"{self._MGMT}.project_access_check"),
@@ -2265,3 +2271,292 @@ class TestAssistantIconLocalizationWiring:
         mock_localize.assert_not_called()
         assert "icon_url" not in request.model_fields_set
         repo.update.assert_called_once()
+
+
+class TestCreateAssistantModelSelectability:
+    """create_assistant must reject an unselectable llm_model_type with a 400."""
+
+    def _build_request(self, llm_model_type="gpt-4o"):
+        from codemie.rest_api.models.assistant import AssistantRequest
+
+        return AssistantRequest(
+            name="Model Guard Assistant",
+            description="Test Description",
+            system_prompt="Test Prompt",
+            project="demo",
+            slug="model-guard-assistant",
+            llm_model_type=llm_model_type,
+            skip_integration_validation=True,
+        )
+
+    def _patches(self):
+        return [
+            patch("codemie.rest_api.routers.assistant.management.project_access_check"),
+            patch("codemie.rest_api.routers.assistant.management.ensure_application_exists"),
+            patch("codemie.service.assistant.assistant_version_service.AssistantVersionService.create_initial_version"),
+            patch(
+                "codemie.rest_api.routers.assistant.management.GuardrailService.sync_guardrail_assignments_for_entity"
+            ),
+            patch("codemie.rest_api.routers.assistant.management._track_mcp_usage_on_create"),
+            patch("codemie.rest_api.routers.assistant.management._track_assistant_management_metric"),
+        ]
+
+    def _run_create(self, request):
+        from codemie.rest_api.routers.assistant.management import create_assistant
+
+        def fake_save(self, *args, **kwargs):
+            return MagicMock()
+
+        user = MagicMock(spec=User)
+        user.id = "user-123"
+        user.username = "testuser"
+        user.name = "Test User"
+
+        ctx_managers = self._patches()
+        for cm in ctx_managers:
+            cm.start()
+        try:
+            with patch.object(Assistant, "save", new=fake_save):
+                return create_assistant(request, user=user)
+        finally:
+            for cm in ctx_managers:
+                cm.stop()
+
+    @patch("codemie.rest_api.routers.assistant.management.llm_service.assert_model_selectable")
+    def test_unselectable_model_raises_400_naming_model(self, mock_assert):
+        mock_assert.side_effect = ModelNotSelectableError("bad-model", "model is deprecated")
+        request = self._build_request(llm_model_type="bad-model")
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            self._run_create(request)
+
+        assert exc_info.value.code == 400
+        assert "bad-model" in exc_info.value.details
+
+    @pytest.mark.parametrize("model_name", ["retired-model", "dep-retired-model-2025"])
+    @pytest.mark.parametrize("model_status", [ModelStatus.DEPRECATED, ModelStatus.DISABLED])
+    def test_real_guard_rejects_base_and_deployment_names(self, model_name, model_status):
+        model = LLMModel(
+            base_name="retired-model", deployment_name="dep-retired-model-2025", enabled=True, status=model_status
+        )
+        with patch(
+            "codemie.rest_api.routers.assistant.management.llm_service.get_all_llm_model_info", return_value=[model]
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                self._run_create(self._build_request(llm_model_type=model_name))
+
+        assert exc_info.value.code == 400
+        assert model_name in exc_info.value.details
+
+    @patch("codemie.rest_api.routers.assistant.management.llm_service.assert_model_selectable")
+    def test_selectable_model_still_returns_normal_response(self, mock_assert):
+        mock_assert.return_value = None
+        request = self._build_request(llm_model_type="gpt-4o")
+
+        response = self._run_create(request)
+
+        mock_assert.assert_called_once_with("gpt-4o")
+        assert response.message == "Specified assistant saved"
+
+
+class TestUpdateAssistantModelSelectability:
+    """update_assistant must reject an unselectable llm_model_type with a 400,
+    but only when the request changes the selected model."""
+
+    def _build_assistant(self):
+        assistant = Assistant(
+            id="assistant-123",
+            name="Test Assistant",
+            description="Test Description",
+            project="demo",
+            system_prompt="Test Prompt",
+            slug="test-assistant",
+            llm_model_type="gpt-4o",
+        )
+        assistant.is_global = False
+        assistant.context = None
+        assistant.mcp_servers = []
+        return assistant
+
+    def _build_request(self, llm_model_type="gpt-4o", set_llm_model_type=True):
+        from codemie.rest_api.models.assistant import AssistantRequest
+
+        request = AssistantRequest(
+            name="Test Assistant",
+            description="Test Description",
+            system_prompt="Test Prompt",
+            project="demo",
+            llm_model_type=llm_model_type,
+            skip_integration_validation=True,
+        )
+        if not set_llm_model_type:
+            # Simulate a PUT payload that never touched llm_model_type: llm_model_type is
+            # required by AssistantRequest validation when type is Codemie, so we can't omit
+            # it from construction — instead drop it from model_fields_set directly, which is
+            # exactly what the guard inspects to decide whether the field was part of the request.
+            request.__pydantic_fields_set__.discard("llm_model_type")
+        return request
+
+    def _patches(self, assistant):
+        self.repository = MagicMock()
+        return [
+            patch("codemie.rest_api.routers.assistant.management.project_access_check"),
+            patch("codemie.rest_api.routers.assistant.management.get_assistant_by_id_or_raise", return_value=assistant),
+            patch("codemie.rest_api.routers.assistant.management.check_user_can_access_assistant"),
+            patch("codemie.rest_api.routers.assistant.management._validate_remote_entities_and_raise"),
+            patch("codemie.rest_api.routers.assistant.management.AssistantRepository", return_value=self.repository),
+            patch("codemie.rest_api.routers.assistant.management.category_service.validate_category_ids"),
+            patch(
+                "codemie.rest_api.routers.assistant.management.GuardrailService.sync_guardrail_assignments_for_entity"
+            ),
+            patch("codemie.rest_api.routers.assistant.management._track_mcp_usage_changes"),
+            patch("codemie.rest_api.routers.assistant.management._track_assistant_management_metric"),
+        ]
+
+    def _run_update(self, request, assistant=None):
+        from codemie.rest_api.routers.assistant.management import update_assistant
+
+        assistant = assistant or self._build_assistant()
+        user = MagicMock(spec=User)
+        user.id = "user-123"
+        user.username = "testuser"
+        user.name = "Test User"
+
+        ctx_managers = self._patches(assistant)
+        for cm in ctx_managers:
+            cm.start()
+        try:
+            return update_assistant(
+                assistant_id="assistant-123",
+                request=request,
+                background_tasks=MagicMock(),
+                user=user,
+            )
+        finally:
+            for cm in ctx_managers:
+                cm.stop()
+
+    @patch("codemie.rest_api.routers.assistant.management.llm_service.assert_model_selectable")
+    def test_unselectable_model_raises_400_naming_model(self, mock_assert):
+        mock_assert.side_effect = ModelNotSelectableError("bad-model", "model is deprecated")
+        assistant = self._build_assistant()
+        request = self._build_request(llm_model_type="bad-model")
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            self._run_update(request, assistant=assistant)
+
+        assert exc_info.value.code == 400
+        assert "bad-model" in exc_info.value.details
+
+    @pytest.mark.parametrize("model_name", ["retired-model", "dep-retired-model-2025"])
+    @pytest.mark.parametrize("model_status", [ModelStatus.DEPRECATED, ModelStatus.DISABLED])
+    def test_real_guard_rejects_base_and_deployment_names(self, model_name, model_status):
+        model = LLMModel(
+            base_name="retired-model", deployment_name="dep-retired-model-2025", enabled=True, status=model_status
+        )
+        with patch(
+            "codemie.rest_api.routers.assistant.management.llm_service.get_all_llm_model_info", return_value=[model]
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                self._run_update(self._build_request(llm_model_type=model_name))
+
+        assert exc_info.value.code == 400
+        assert model_name in exc_info.value.details
+
+    @patch("codemie.rest_api.routers.assistant.management.llm_service.assert_model_selectable")
+    def test_selectable_model_still_returns_normal_response(self, mock_assert):
+        mock_assert.return_value = None
+        request = self._build_request(llm_model_type="gpt-4o")
+
+        response = self._run_update(request)
+
+        mock_assert.assert_called_once_with("gpt-4o", previous_model_name="gpt-4o")
+        assert response.message == "Specified assistant updated"
+
+    @pytest.mark.parametrize(
+        "previous_name,requested_name",
+        [
+            ("retired-model", "retired-model"),
+            ("dep-retired-model-2025", "dep-retired-model-2025"),
+            ("retired-model", "dep-retired-model-2025"),
+            ("dep-retired-model-2025", "retired-model"),
+        ],
+    )
+    def test_unrelated_edit_keeps_deprecated_model(self, previous_name, requested_name):
+        model = LLMModel(
+            base_name="retired-model",
+            deployment_name="dep-retired-model-2025",
+            enabled=True,
+            status=ModelStatus.DEPRECATED,
+        )
+        assistant = self._build_assistant()
+        assistant.llm_model_type = previous_name
+        request = self._build_request(llm_model_type=requested_name)
+        request.system_prompt = "Updated prompt with the existing model"
+
+        with patch(
+            "codemie.rest_api.routers.assistant.management.llm_service.get_all_llm_model_info", return_value=[model]
+        ):
+            response = self._run_update(request, assistant=assistant)
+
+        assert response.message == "Specified assistant updated"
+        self.repository.update.assert_called_once()
+        assert self.repository.update.call_args.args[:2] == (assistant, request)
+
+    @patch("codemie.rest_api.routers.assistant.management.llm_service.assert_model_selectable")
+    def test_unselectable_model_does_not_persist_the_update(self, mock_assert):
+        """CR-008: repository.update() must not run before the guard raises - an unselectable
+        model update must not be committed."""
+        mock_assert.side_effect = ModelNotSelectableError("bad-model", "model is deprecated")
+        assistant = self._build_assistant()
+        request = self._build_request(llm_model_type="bad-model")
+
+        with patch("codemie.rest_api.routers.assistant.management.AssistantRepository") as mock_repo_cls:
+            mock_repo_instance = mock_repo_cls.return_value
+            ctx_managers = [
+                patch("codemie.rest_api.routers.assistant.management.project_access_check"),
+                patch(
+                    "codemie.rest_api.routers.assistant.management.get_assistant_by_id_or_raise", return_value=assistant
+                ),
+                patch("codemie.rest_api.routers.assistant.management.check_user_can_access_assistant"),
+                patch("codemie.rest_api.routers.assistant.management._validate_remote_entities_and_raise"),
+                patch("codemie.rest_api.routers.assistant.management.category_service.validate_category_ids"),
+                patch(
+                    "codemie.rest_api.routers.assistant.management.GuardrailService.sync_guardrail_assignments_for_entity"
+                ),
+                patch("codemie.rest_api.routers.assistant.management._track_mcp_usage_changes"),
+                patch("codemie.rest_api.routers.assistant.management._track_assistant_management_metric"),
+            ]
+            for cm in ctx_managers:
+                cm.start()
+            try:
+                from codemie.rest_api.routers.assistant.management import update_assistant
+
+                user = MagicMock(spec=User)
+                user.id = "user-123"
+                user.username = "testuser"
+                user.name = "Test User"
+
+                with pytest.raises(ExtendedHTTPException):
+                    update_assistant(
+                        assistant_id="assistant-123",
+                        request=request,
+                        background_tasks=MagicMock(),
+                        user=user,
+                    )
+            finally:
+                for cm in ctx_managers:
+                    cm.stop()
+
+        mock_repo_instance.update.assert_not_called()
+
+    @patch("codemie.rest_api.routers.assistant.management.llm_service.assert_model_selectable")
+    def test_update_not_touching_model_field_skips_guard(self, mock_assert):
+        # llm_model_type absent from the request payload -> guard must not run,
+        # so unrelated updates never get blocked by model selectability.
+        request = self._build_request(set_llm_model_type=False)
+
+        response = self._run_update(request)
+
+        mock_assert.assert_not_called()
+        assert response.message == "Specified assistant updated"

@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
 from codemie.core.utils import slugify
 from codemie.core.models import (
     BaseResponse,
@@ -60,6 +60,7 @@ from codemie.service.assistant.sensitive_prompt_variables import (
 )
 from codemie.service.assistant_service import AssistantService
 from codemie.service.guardrail.guardrail_service import GuardrailService
+from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.mcp_config_service import MCPConfigService
 from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.service.assistant.assistant_version_compare_service import AssistantVersionCompareService
@@ -228,6 +229,9 @@ def _save_new_assistant(assistant: Assistant, request: AssistantRequest, user: U
     from codemie.service.assistant.assistant_version_service import AssistantVersionService
 
     try:
+        llm_service.assert_model_selectable(assistant.llm_model_type)
+        if assistant.image_generation_model:
+            llm_service.assert_model_selectable(assistant.image_generation_model)
         assistant.save(refresh=True)
 
         _localize_new_assistant_icon(assistant, request, user)
@@ -259,6 +263,13 @@ def _save_new_assistant(assistant: Assistant, request: AssistantRequest, user: U
             )
 
         _track_assistant_management_metric("create_assistant", assistant, user, True)
+    except ModelNotSelectableError as e:
+        _track_assistant_management_metric(
+            "create_assistant", assistant, user, False, {"error_class": e.__class__.__name__}
+        )
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST, message="Model not selectable", details=str(e)
+        ) from e
     except IntegrityError as e:
         # Concurrency backstop. _check_slug_uniqueness() (in validate_fields) reads ES in a
         # separate transaction, so two simultaneous creates can both pass it and collide only at
@@ -431,6 +442,55 @@ def _update_validation_response(
     )
 
 
+def _validate_updated_assistant_models(request: AssistantRequest, assistant: Assistant) -> None:
+    """Check explicit model updates against the assistant's stored selections."""
+    if "llm_model_type" in request.model_fields_set and request.llm_model_type:
+        llm_service.assert_model_selectable(request.llm_model_type, previous_model_name=assistant.llm_model_type)
+    if "image_generation_model" in request.model_fields_set and request.image_generation_model:
+        llm_service.assert_model_selectable(
+            request.image_generation_model, previous_model_name=assistant.image_generation_model
+        )
+
+
+def _commit_assistant_update(
+    assistant: Assistant,
+    request: AssistantRequest,
+    user: User,
+    was_global: bool,
+    old_mcp_servers: list,
+) -> None:
+    """Commit the assistant content update, mapping failures to HTTP errors."""
+    try:
+        # Validate category IDs (required for marketplace assistants)
+        category_service.validate_category_ids(request.categories, required=was_global)
+
+        _validate_updated_assistant_models(request, assistant)
+
+        AssistantRepository().update(assistant, request, user)
+        _track_mcp_usage_changes(old_mcp_servers, list(assistant.mcp_servers or []))
+
+        # Filter out datasources that don't exist in the target project
+        # This handles cases like editing an assistant and changing its project
+        if assistant.context:
+            _filter_invalid_datasources(assistant)
+            assistant.refresh_marketplace_columns_from_db()
+            assistant.update()  # Save the filtered context
+
+        _track_assistant_management_metric("update_assistant", assistant, user, True)
+    except ModelNotSelectableError as e:
+        _track_assistant_management_metric(
+            "update_assistant", assistant, user, False, {"error_class": e.__class__.__name__}
+        )
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST, message="Model not selectable", details=str(e)
+        ) from e
+    except Exception as e:
+        _track_assistant_management_metric(
+            "update_assistant", assistant, user, False, {"error_class": e.__class__.__name__}
+        )
+        _raise_assistant_operation_error("update", e)
+
+
 @router.put(
     "/assistants/{assistant_id}",
     status_code=status.HTTP_200_OK,
@@ -460,8 +520,6 @@ def update_assistant(
     # Only when the request names an icon: assigning the field would mark it as set and clear the stored one.
     if "icon_url" in request.model_fields_set:
         request.icon_url = AssistantIconService.localize_icon(assistant_id, request.icon_url, assistant.icon_url, user)
-
-    repository = AssistantRepository()
 
     old_mcp_servers = list(assistant.mcp_servers or [])
 
@@ -502,26 +560,7 @@ def update_assistant(
     # repository.update() and assistant.update() each commit independently.
     # Once this block exits successfully the edit is durable; the RE_SUBMIT
     # transition that follows is a separate, distinct operation.
-    try:
-        # Validate category IDs (required for marketplace assistants)
-        category_service.validate_category_ids(request.categories, required=was_global)
-
-        repository.update(assistant, request, user)
-        _track_mcp_usage_changes(old_mcp_servers, list(assistant.mcp_servers or []))
-
-        # Filter out datasources that don't exist in the target project
-        # This handles cases like editing an assistant and changing its project
-        if assistant.context:
-            _filter_invalid_datasources(assistant)
-            assistant.refresh_marketplace_columns_from_db()
-            assistant.update()  # Save the filtered context
-
-        _track_assistant_management_metric("update_assistant", assistant, user, True)
-    except Exception as e:
-        _track_assistant_management_metric(
-            "update_assistant", assistant, user, False, {"error_class": e.__class__.__name__}
-        )
-        _raise_assistant_operation_error("update", e)
+    _commit_assistant_update(assistant, request, user, was_global, old_mcp_servers)
 
     # --- Phase 2: RE_SUBMIT transition (content already committed) ---
     # Isolated from Phase 1 so that a transition failure surfaces as a 5xx

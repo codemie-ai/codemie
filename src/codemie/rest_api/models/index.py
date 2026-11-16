@@ -724,11 +724,18 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         description: str = "",
         branch: Optional[str] = None,
         link: Optional[str] = None,
-        embeddings_model: str = llm_service.default_embedding_model,
-        summarization_model: str = llm_service.default_llm_model,
+        embeddings_model: str | None = None,
+        summarization_model: str | None = None,
         setting_id: Optional[str] = None,
         **kwargs,
     ) -> "IndexInfo":
+        # Resolved lazily rather than as a default argument: default_embedding_model/default_llm_model
+        # read the model catalog, which is database-backed, and a default argument would run that
+        # query at module-import time.
+        if embeddings_model is None:
+            embeddings_model = llm_service.default_embedding_model
+        if summarization_model is None:
+            summarization_model = llm_service.default_llm_model
         prompt = kwargs.get("prompt")
         docs_generation = kwargs.get("docs_generation", False)
         files_filter = kwargs.get("files_filter")

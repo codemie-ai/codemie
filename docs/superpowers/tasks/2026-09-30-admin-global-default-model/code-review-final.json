@@ -1,0 +1,126 @@
+{
+  "decision": "request-changes",
+  "rationale": "Two live default-selection paths remain inconsistent with persisted status and public selectability, and a new module misses a documented code-quality requirement. A pre-existing bulk status validation gap is deferred; a static startup enum concern was filtered as unreachable, and two pre-existing commit subjects are deferred though the standards audit still marks commit-format partial. Three findings require fixes; the UI acceptance row is reviewed separately.",
+  "confidence": "high",
+  "risk_flags": [
+    "breaking-change",
+    "public-api"
+  ],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC-1 Admin read, set, replace, clear and authorization",
+      "status": "pass",
+      "notes": "Admin routes and singleton repository implement the operations."
+    },
+    {
+      "kind": "spec",
+      "item": "AC-2 Validate currently selectable model or auto-router",
+      "status": "partial",
+      "notes": "Cached LiteLLM status can be stale after an admin status update."
+    },
+    {
+      "kind": "spec",
+      "item": "AC-3 Keep invalidated choice and use valid fallback",
+      "status": "partial",
+      "notes": "Stale LiteLLM status can leave an invalidated choice effective."
+    },
+    {
+      "kind": "spec",
+      "item": "AC-4 Consistent internal and public resolution",
+      "status": "partial",
+      "notes": "Public category endpoint can pick a deprecated category model."
+    },
+    {
+      "kind": "spec",
+      "item": "AC-5 One effective global flag; retain other categories",
+      "status": "pass",
+      "notes": "Catalog metadata is projected without mutating source."
+    },
+    {
+      "kind": "spec",
+      "item": "AC-6 User-scoped selectable defaults",
+      "status": "partial",
+      "notes": "Public default can nominate an unselectable choice."
+    },
+    {
+      "kind": "spec",
+      "item": "AC-7 Admin UI and Help display",
+      "status": "na",
+      "notes": "UI repository is reviewed separately."
+    },
+    {
+      "kind": "spec",
+      "item": "AC-8 Persistence and reload behavior",
+      "status": "pass",
+      "notes": "Singleton persistence and model projections are present."
+    },
+    {
+      "kind": "spec",
+      "item": "Database outage preserves known invalid status",
+      "status": "pass",
+      "notes": "Last successful status cache is reused."
+    },
+    {
+      "kind": "spec",
+      "item": "Other category defaults remain configured",
+      "status": "pass",
+      "notes": "Admin override affects global only."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "partial",
+      "notes": "The new EPMCDME-15077 subjects follow the documented ticket-prefixed format, but two subjects already in the review range do not: status-persistence-api: add per-task implementation reports and contract-questions note; status-persistence-api: add planning artifacts."
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "The new backend modules have explicit function annotations and Apache headers, but src/codemie/rest_api/models/admin_global_default_api.py omits from __future__ import annotations, which the code-quality guide asks for in new modules."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "The new admin GET, PUT, and DELETE endpoints use the central authenticate and admin_access_only dependencies; the new persistence code uses SQLAlchemy expressions and does not log credentials or normalize untrusted input before validation."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/admin_global_default_api.py",
+      "line": 15,
+      "title": "Add required future annotations import",
+      "problem": "The new API model module omits from __future__ import annotations, which the repository code-quality guide requires in new Python modules.",
+      "impact": "The new module violates a documented blocking source convention.",
+      "recommendation": "Add from __future__ import annotations after the license header."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/llm_models.py",
+      "line": 35,
+      "title": "Exclude unselectable public defaults",
+      "problem": "_default_for_category chooses any visible category flag and falls back to the first choice. Deprecated models remain visible; include_all also exposes disabled models. Router projections lose source status, so a deprecated router can be selected too.",
+      "impact": "GET /v1/default_models and its category route may return a model users cannot select, contrary to the internal resolver and the approved user-scoped default contract.",
+      "recommendation": "Choose only selectable entries, using source status before router projection where necessary; return no default when the user's catalog has no selectable choice."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/llm_service/llm_service.py",
+      "line": 81,
+      "title": "Refresh cached LiteLLM status",
+      "problem": "get_all_llm_model_info returns the initialized LiteLLM list without remerging persisted status. Admin status endpoints only update the database, so the cached model retains its prior status after a disable or deprecation.",
+      "impact": "An admin can save, retain, or serve a disabled model as the effective global default until the LiteLLM catalog reloads.",
+      "recommendation": "Refresh or update persisted status on the active LiteLLM catalog before validation and default resolution, including after status writes; preserve the last successful override during database outages."
+    }
+  ]
+}

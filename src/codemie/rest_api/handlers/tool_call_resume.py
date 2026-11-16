@@ -342,7 +342,7 @@ def _restored_assistant(handler: StandardAssistantHandler, chat_request: Assista
     """
     from codemie.rest_api.routers.assistant._ask import _prepare_assistant_for_execution
 
-    return _prepare_assistant_for_execution(handler.assistant, chat_request)
+    return _prepare_assistant_for_execution(handler.assistant, chat_request, handler.user)
 
 
 def _applied_or_raise(record: StoredPendingToolCall, request: ToolCallResumeRequest) -> list[AppliedDecision]:

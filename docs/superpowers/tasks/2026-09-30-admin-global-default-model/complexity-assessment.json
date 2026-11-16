@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Implement an admin-selectable persisted global default LLM model in the CodeMie backend and UI while preserving configured fallback and leaving the code category unmanaged.",
+  "generated": "2026-09-30T11:30:35Z",
+  "dimensions": {
+    "component_scope": { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk": { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies": { "score": 1, "label": "XS" },
+    "affected_layers": { "score": 6, "label": "XXL" }
+  },
+  "total": 26,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "The backend service, admin API, persistence, catalog projections, and UI store and page are involved. The global fallback also feeds assistant, workflow, generator, and tool paths, bumping scope from XL to XXL." },
+    { "dimension": "requirements_clarity", "reason": "The core admin set and clear behavior is defined, but treatment of invalidated selections, auto-routers, and user-specific catalogs requires product and design decisions." },
+    { "dimension": "technical_risk", "reason": "The model-status override is a close persistence and admin-authorization pattern, but effective-default consistency across live proxy reloads, status changes, outages, and per-user views has no exact precedent. The existing authorization pattern covers the new admin route." },
+    { "dimension": "file_change_estimate", "reason": "Likely 11–15 modified files and 4–6 new files across backend and UI, including a repository, migration, domain model, and focused coverage." },
+    { "dimension": "affected_layers", "reason": "The feature crosses two codebases and touches UI, API, service, and DB persistence with an Alembic schema migration; it also consumes the existing LiteLLM catalog integration." },
+    { "dimension": "technical_risk", "reason": "The L-band provider-with-configuration-UI calibration example has similar breadth but more configuration migration and credential concerns; the XL cloud-integration example adds a new unreliable service and heavyweight dependencies absent here." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL: the effective global default affects multiple existing workflows and agents."
+  ],
+  "split_recommendation": null
+}

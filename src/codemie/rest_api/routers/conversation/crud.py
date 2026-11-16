@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Query
 
 from codemie.configs import logger
 from codemie.core.ability import Ability, Action
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
 from codemie.core.models import (
     CreateConversationRequest,
     UpdateConversationRequest,
@@ -60,10 +60,13 @@ def update_conversation(
     if not Ability(user).can(Action.WRITE, conversation):
         raise_access_denied("write")
 
-    conversation = ConversationService.update_conversation(
-        request=request,
-        conversation=conversation,
-    )
+    try:
+        conversation = ConversationService.update_conversation(
+            request=request,
+            conversation=conversation,
+        )
+    except ModelNotSelectableError as e:
+        raise ExtendedHTTPException(code=400, message="Model not selectable", details=str(e)) from e
 
     if not conversation:
         logger.info("Conversation could not be updated")

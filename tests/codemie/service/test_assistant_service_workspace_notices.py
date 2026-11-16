@@ -228,6 +228,7 @@ def test_chat_builder_attributes_with_the_model_the_request_runs_on():
         config.ENABLE_LANGGRAPH_AITOOLS_AGENT = False
         llm = stack.enter_context(patch("codemie.service.assistant_service.llm_service"))
         llm.get_react_llms.return_value = []
+        llm.resolve_disabled_model.side_effect = lambda model, *_args, **_kwargs: model
         stack.enter_context(
             patch(
                 "codemie.service.assistant_service.resolve_assistant_model",
