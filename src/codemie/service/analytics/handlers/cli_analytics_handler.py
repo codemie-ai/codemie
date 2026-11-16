@@ -63,6 +63,7 @@ from codemie.repository.cli_analytics.ports import (
     UsersMoneyPage,
 )
 from codemie.repository.cli_analytics.postgres.settings import dashboard_concurrency_limit
+from codemie.repository.cli_analytics.scope import API_SUBSCRIPTION_TYPE
 from codemie.repository.cli_analytics.vocabulary import BLANK_CHARS, humanize_harness_name, strip_pasted_content
 from codemie.service.analytics.cli_analytics_project_gate import (
     NOTE_FOLDER_NOT_LINKED,
@@ -581,10 +582,9 @@ def _cost_by_user(groups: dict[str, list[CostGroup]], by_user: list[dict], inclu
     return rows
 
 
-def _cost_by_model(
-    groups: dict[str, list[CostGroup]], model_classes: list[dict], include_buckets: bool
-) -> tuple[list[dict], list[dict]]:
-    """The models with spend, and (with the buckets) those that only have estimate rows."""
+def _cost_by_model(groups: dict[str, list[CostGroup]], model_classes: list[dict], include_buckets: bool) -> list[dict]:
+    """The models with cost, each with its buckets when asked. The per-model buckets cover the same sessions as
+    `G_MODEL` (every session, Personal-paid included, since EPMCDME-17260), so no model has buckets without a row."""
     by_model_classes = _by_key(model_classes)
     model_routes = _by_group_key(groups.get(G_MODEL_ROUTE, []), "model")
     model_personal = _by_group_key(groups.get(G_MODEL_PERSONAL, []), "model")
@@ -599,17 +599,10 @@ def _cost_by_model(
             ),
         }
 
-    spend_models = {g.keys["model"]: g.cost_usd for g in groups.get(G_MODEL, [])}
-    cost_by_model = sorted(
-        (model_row(name, cost) for name, cost in spend_models.items()),
+    return sorted(
+        (model_row(g.keys["model"], g.cost_usd) for g in groups.get(G_MODEL, [])),
         key=lambda r: (-_float_sort_key(r["cost_usd"]), r["model_name"]),
     )
-    without_spend = (
-        [model_row(name, 0.0) for name in sorted((set(model_routes) | set(model_personal)) - set(spend_models))]
-        if include_buckets
-        else []
-    )
-    return cost_by_model, without_spend
 
 
 def _cost_response(
@@ -626,12 +619,11 @@ def _cost_response(
     total = next(iter(groups.get(G_TOTAL, [])), None)
     if total is not None:
         pricer._unpriced.update(total.unpriced_models)  # the spend scope only; estimate buckets never feed it
-    cost_by_model, models_without_spend = _cost_by_model(groups, model_classes, include_buckets)
     data = {
         "kpis": _cost_kpis(total, kpi_rows, all_classes),
         "cost_by_user": _cost_by_user(groups, by_user, include_buckets),
-        "cost_by_model": cost_by_model,
-        "models_without_spend": models_without_spend,
+        "cost_by_model": _cost_by_model(groups, model_classes, include_buckets),
+        "models_without_spend": [],  # kept in the contract; always empty since EPMCDME-17260
         **(buckets_from_groups(groups.get(G_ROUTE, []), groups.get(G_PERSONAL, [])) if include_buckets else {}),
     }
     return data, pricer
@@ -702,6 +694,15 @@ def _money(rows: list[dict]) -> tuple[dict, dict[str, Any], CatalogPricer]:
     pricer = CatalogPricer()
     pricer.record_unpriced(unpriced_display_names(spend.get("unpriced_models") or []))
     return spend, _dashboard_buckets(by_grouping["route"], by_grouping["billed"]), pricer
+
+
+def _cost_split(total_cost: float, rows: list[dict]) -> tuple[float, float]:
+    """The Overview's (API cost, Subscription cost) of Est. Cost `total_cost` from the `class` money rows (the cost by
+    subscription class): API is the CodeMie proxy class, Subscription what API leaves of Est. Cost, so every other
+    class, Personal-paid included."""
+    by_class = {_s(r.get("subscription_type")): _f(r.get("cost_usd")) for r in rows if _s(r.get("key")) == "class"}
+    api_cost = by_class.get(API_SUBSCRIPTION_TYPE, 0.0)
+    return api_cost, max(0.0, total_cost - api_cost)
 
 
 def _group_repositories_into_projects(repo_rows: list[dict], project_order: list[str | None]) -> list[dict]:
@@ -902,7 +903,8 @@ class LocalAnalyticsHandler:
 
         kpi = _first(kpi_rows)
         total_sessions = _i(kpi.get("total_sessions"))
-        total_cost = _f(spend.get("cost_usd"))
+        total_cost, cache_read_cost_usd = _f(spend.get("cost_usd")), _f(spend.get("cache_read_cost_usd"))
+        api_cost, subscription_cost = _cost_split(total_cost, parts.get("money", []))
         input_tokens = _i(kpi.get("total_input_tokens"))
         output_tokens = _i(kpi.get("total_output_tokens"))
         cache_read_tokens = _i(kpi.get("total_cache_read_tokens"))
@@ -925,12 +927,13 @@ class LocalAnalyticsHandler:
 
         dead_sessions = _i(_first(parts.get("dead", [])).get("n"))
 
-        cache_read_cost_usd = _f(spend.get("cache_read_cost_usd"))
         total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens
 
         kpis = {
             "total_sessions": total_sessions,
             "total_cost_usd": total_cost,
+            "api_cost_usd": api_cost,
+            "subscription_cost_usd": subscription_cost,
             "duration_ms": duration_ms,
             "total_turns": total_turns,
             "total_tool_calls": tool_calls,
@@ -986,7 +989,7 @@ class LocalAnalyticsHandler:
         `include_class_lists` and `include_buckets` (the Cost tab reads neither; the route turns them off unless
         asked): without the class lists the subscription and origin lists of the totals, users and models stay empty
         and their statements do not run; without the buckets the funding-route and personal-billed buckets stay
-        empty (zero), the six groupings behind them are not built and `models_without_spend` is empty."""
+        empty (zero) and the six groupings behind them are not built. `models_without_spend` is always empty."""
         rollup = None if include_class_lists or include_buckets else await self._rollup_cost(f)
         if rollup is not None:
             money, by_user, all_classes, model_classes = (
@@ -1274,7 +1277,7 @@ class LocalAnalyticsHandler:
             self._repo.get_file_facts_by_session(f),
             self._repo.get_tool_success_by_session(f),
             self._repo.get_lines_by_session(f),
-            self._repo.get_session_model_costs(f, spend_only=True),
+            self._repo.get_session_model_costs(f),
         )
         returned = {_s(r.get("session_id")) for r in cost_facts}
         money = price_session_models([r for r in session_model_rows if _s(r.get("session_id")) in returned])

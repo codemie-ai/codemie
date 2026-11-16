@@ -16,7 +16,8 @@
 
 Row classes: P = a session_dims row private to its owner (project_origin 'personal', or subscription_type
 'personal' with an origin that is not a shared one; a Personal-paid session routed to a work project, shared
-origin, is N and follows the project's read permissions, while its cost stays out of spend: `sql_personal_billed`);
+origin, is N and follows the project's read permissions, and its cost counts like any other: `sql_personal_billed` names
+the billing class);
 N = a session_dims row that is not P; M = no session_dims row (legacy). A missing
 owner never turns a row into Personal and never matches a viewer.
 
@@ -159,6 +160,9 @@ def sql_detail_condition(scope: Any) -> tuple[str, dict[str, Any]]:
 # The values the ingest side writes (cli_classification.classify, cli_analytics_project_gate ORIGIN_*
 # and PROJECT_SOURCES); kept here because the repository layer must not import the service layer.
 SUBSCRIPTION_TYPES = ("codemie", "corporate", "personal", "unknown")
+# Overview splits the cost in two: API is the sessions routed through the CodeMie proxy, Subscription is every other
+# class (Personal-paid included).
+API_SUBSCRIPTION_TYPE = "codemie"
 # `legacy_project`: a session (any classification) that adopted the project of its earlier (legacy) rows; the real
 # routing origin is unknown, so none is guessed, but the row must not read as missing (= private for Personal-paid).
 ORIGIN_LEGACY_PROJECT = "legacy_project"

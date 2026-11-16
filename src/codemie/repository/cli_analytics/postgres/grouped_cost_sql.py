@@ -19,7 +19,7 @@ Two levels, both placed in a statement that already defines `sel` built with `wi
 
 - `priced_groups_cte()`: the CTE `priced_groups`, one row per (session, raw model) of `sel` with a token row, priced
   once (the cache split clamped at that grain, `cost` and `cache_read_cost` each `round(_, 9)`), with the session's
-  keys. No spend filter: `spend` says whether the row counts toward spend money.
+  keys. Every row counts toward the money, the Personal-paid sessions' too (EPMCDME-17260).
 - `grouped_cost_sql(groupings)`: the derived table `gc`, every requested grouping summed from that one priced set.
 
 The pricing terms are the builders of `cost_key_sql`, so the Sessions key and these figures cannot disagree. Contract:
@@ -40,11 +40,12 @@ from codemie.repository.cli_analytics.postgres.cost_key_sql import (
     model_token_groups,
     unpriced_test,
 )
-from codemie.repository.cli_analytics.scope import FUNDING_ROUTES, sql_personal_billed
+from codemie.repository.cli_analytics.scope import FUNDING_ROUTES, sql_personal_billed, sql_subscription_type
 
-GroupKey = Literal["user", "project", "repository", "branch", "model", "funding_route", "personal_billed"]
+GroupKey = Literal[
+    "user", "project", "repository", "branch", "model", "funding_route", "personal_billed", "subscription_type"
+]
 _GROUP_KEYS: tuple[str, ...] = get_args(GroupKey)
-_SCOPES = ("spend", "all")
 
 # Per key: the `priced_groups` column it reads and the type of its NULL where a grouping does not use it. `user` is a
 # reserved word in PostgreSQL, so the column is quoted wherever it is named.
@@ -56,6 +57,7 @@ _KEY_SOURCES: dict[str, tuple[str, str]] = {
     "model": ("normalized_model_name", "text"),
     "funding_route": ("funding_route", "text"),
     "personal_billed": ("personal_billed", "boolean"),
+    "subscription_type": ("sub_class", "text"),
 }
 _KEY_COLUMNS = {key: '"user"' if key == "user" else key for key in _GROUP_KEYS}
 
@@ -66,7 +68,6 @@ class Grouping:
 
     name: str  # returned in column `grouping`
     keys: Sequence[GroupKey]  # [] = whole window
-    scope: Literal["spend", "all"]  # spend: WHERE spend
     cost_daily_only: bool = False  # WHERE has_cost_daily
 
     def __post_init__(self) -> None:
@@ -76,8 +77,6 @@ class Grouping:
             raise ValueError(f"grouping {self.name!r}: unknown key {unknown}, expected some of {_GROUP_KEYS}")
         if len(set(keys)) != len(keys):
             raise ValueError(f"grouping {self.name!r}: a key is repeated in {keys}")
-        if self.scope not in _SCOPES:
-            raise ValueError(f"grouping {self.name!r}: unknown scope {self.scope!r}, expected one of {_SCOPES}")
         object.__setattr__(self, "keys", keys)
 
 
@@ -120,7 +119,7 @@ _STORED_ARM = """SELECT m.session_id, m.model_name, m.normalized_model_name, m.i
 def priced_groups_cte(stored: bool = False) -> str:
     """The CTE `priced_groups AS MATERIALIZED (...)`: session_id, model_name, normalized_model_name, "user"
     (the developer of `sel`), project, repository, branch, funding_route (NULL or outside `FUNDING_ROUTES`:
-    'unknown'), personal_billed, spend (= NOT personal_billed), has_cost_daily, cost, cache_read_cost, unpriced.
+    'unknown'), personal_billed, sub_class, has_cost_daily, cost, cache_read_cost, unpriced.
     Needs `sel` with the developer column and the `rates_params` of the window's models.
 
     `stored=False` (the default, and the fallback of every stored read) builds every group live from `cost_daily` and
@@ -152,7 +151,7 @@ def priced_groups_cte(stored: bool = False) -> str:
                s.branch,
                CASE WHEN d.funding_route IN ({routes}) THEN d.funding_route ELSE 'unknown' END AS funding_route,
                {billed}                                     AS personal_billed,
-               NOT {billed}                                 AS spend,
+               {sql_subscription_type("s.subscription_type")} AS sub_class,
                {has_cost_daily} AS has_cost_daily,
                round(({cost_terms()})::numeric, 9)          AS cost,
                round(({cache_read_term()})::numeric, 9)     AS cache_read_cost,
@@ -179,7 +178,7 @@ def _session_value(key: str) -> str:
 
 def _cells(keys: Sequence[str], with_model: bool) -> str:
     """Pre-aggregation of the `priced_groups` rows into small cells, by the session-level `keys` the groupings use
-    (plus `spend` and `has_cost_daily`, which every WHERE reads), and by the normalised model when `with_model`.
+    (plus `has_cost_daily`, which a `cost_daily_only` WHERE reads), and by the normalised model when `with_model`.
 
     A session has one value of every session-level key, so the cells of a coarser grouping hold disjoint sessions and
     `session_count` adds up exactly. That needs one row per session in a cell: the inner query folds the rows of a
@@ -191,19 +190,17 @@ def _cells(keys: Sequence[str], with_model: bool) -> str:
     blank = " AND p.normalized_model_name <> ''" if with_model else ""
     grain = "p.session_id, p.normalized_model_name" if with_model else "p.session_id"
     outer = [_MODEL_COLUMN] if with_model else []
-    outer += [_key_column(k) for k in keys] + ["spend", "has_cost_daily"]
+    outer += [_key_column(k) for k in keys] + ["has_cost_daily"]
     cols = ", ".join(outer)
     unpriced_exprs = (
-        ["p.normalized_model_name"] * with_model
-        + [f"p.{_KEY_SOURCES[k][0]}" for k in keys]
-        + ["p.spend", "p.has_cost_daily"]
+        ["p.normalized_model_name"] * with_model + [f"p.{_KEY_SOURCES[k][0]}" for k in keys] + ["p.has_cost_daily"]
     )
     unpriced_cols = ", ".join(f"{e} AS {c}" for e, c in zip(unpriced_exprs, outer, strict=True))
     unpriced_group = ", ".join(unpriced_exprs)
     return f"""SELECT {cols},
                sum(cost) AS cost, sum(cache_read_cost) AS cache_read_cost, count(*) AS n,
                bool_or(unpriced) AS unpriced, NULL::text AS uname
-        FROM (SELECT {model_in}{session_cols}bool_and(p.spend) AS spend, bool_and(p.has_cost_daily) AS has_cost_daily,
+        FROM (SELECT {model_in}{session_cols}bool_and(p.has_cost_daily) AS has_cost_daily,
                      sum(p.cost) AS cost, sum(p.cache_read_cost) AS cache_read_cost, bool_or(p.unpriced) AS unpriced
               FROM priced_groups p
               WHERE true{blank}
@@ -224,9 +221,7 @@ def _arm(grouping: Grouping, used: Sequence[str]) -> str:
         else f"NULL::{_KEY_SOURCES[k][1]} AS {_key_column(k)}"
         for k in used
     ]
-    where = ["c.spend"] if grouping.scope == "spend" else []
-    if grouping.cost_daily_only:
-        where.append("c.has_cost_daily")
+    where = ["c.has_cost_daily"] if grouping.cost_daily_only else []
     name = grouping.name.replace("'", "''")
     group_by = f" GROUP BY {', '.join(f'c.{k}' for k in keys)}" if keys else " HAVING count(*) > 0"
     source = "cells_model" if "model" in grouping.keys else "cells_session"

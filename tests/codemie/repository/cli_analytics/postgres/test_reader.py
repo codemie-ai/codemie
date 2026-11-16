@@ -917,10 +917,11 @@ async def test_cost_by_user_without_the_classes_selects_the_names_only():
 async def test_the_overview_models_return_the_spend_the_rollup_stores_for_the_order_tie_break():
     sql, _ = await _sql_of("get_overview_models")
 
-    # the spend of the non-billed token rows, NULL while none: what the model order ties on (and what the rollup keeps)
-    assert "sum(d.cost_usd) FILTER (WHERE NOT d.billed)" in sql
-    assert "AS cost_usd" in sql
-    assert "ORDER BY count(DISTINCT d.session_id) DESC, sum(d.cost_usd) FILTER (WHERE NOT d.billed) DESC" in sql
+    # every session's cost, Personal-paid included (EPMCDME-17260): what the model order ties on, as
+    # `get_model_breakdown` (and what the rollup keeps)
+    assert "d.billed" not in sql
+    assert "sum(d.cost_usd)::numeric AS cost_usd" in sql
+    assert "ORDER BY count(DISTINCT d.session_id) DESC, sum(d.cost_usd) DESC" in sql
 
 
 @pytest.mark.asyncio
@@ -2551,12 +2552,9 @@ async def test_window_model_flags_read_the_shared_token_grouping_behind_the_view
 async def test_session_model_costs_and_cost_key_share_one_token_grouping():
     costs, _ = await _sql_of("get_session_model_costs")
     grouping = " ".join(model_token_groups().split())
-    spend_grouping = " ".join(model_token_groups(True).split())
 
     assert grouping in costs
     assert grouping in " ".join(session_cost_key_sql().split())
-    assert spend_grouping != grouping
-    assert spend_grouping in " ".join(session_cost_key_sql(True).split())
 
 
 def test_cost_key_sql_is_the_twin_of_the_python_pricer():
@@ -2618,10 +2616,10 @@ async def test_the_project_page_groups_orders_and_cuts_projects_in_one_statement
     sql = " ".join(recorder.statements[0].split())
 
     assert len(recorder.statements) == 1
-    # One spend-only build of the token groups for the cost key and the flags.
+    # One build of the token groups for the cost key and the flags.
     assert sql.count("g AS MATERIALIZED (") == 1 and "normalized_model_name" not in sql
     assert "FROM g LEFT JOIN unnest(" in sql and sql.count("bool_or(") == 5
-    assert "NOT IN (SELECT session_id FROM sel WHERE" in sql  # Personal-paid sessions add no spend
+    assert "NOT IN (SELECT session_id FROM sel WHERE" not in sql  # Personal-paid sessions count too (EPMCDME-17260)
     assert "nullif(s.project_name, '') AS project_name" in sql
     assert "GROUP BY project_name" in sql
     assert f"ORDER BY p.project_name IS NULL, p.cost_key DESC, p.project_name {_C}" in sql
@@ -2882,10 +2880,10 @@ async def _sql_and_args(method: str, f: LocalAnalyticsFilter, **kwargs) -> tuple
     "filters", [{}, {"projects": ["p"]}, {"deny_all": True}], ids=["unfiltered", "projects", "deny"]
 )
 @pytest.mark.asyncio
-async def test_funding_rows_read_the_spend_rows_scope_without_the_spend_filter(filters):
+async def test_funding_rows_read_the_spend_rows_scope(filters):
     f = _flt(**filters)
     sql, args = await _sql_and_args("get_session_funding_costs", f)
-    spend_sql, spend_args = await _sql_and_args("get_session_model_costs", f, spend_only=True)
+    spend_sql, spend_args = await _sql_and_args("get_session_model_costs", f)
     # the spend rows read the shared token grouping (`SELECT g.* FROM (...)`), the bucket rows `c.session_id` directly
     head, spend_head = sql.split(" SELECT c.session_id,")[0], spend_sql.split(" SELECT g.* FROM (")[0]
 
@@ -2893,8 +2891,8 @@ async def test_funding_rows_read_the_spend_rows_scope_without_the_spend_filter(f
     assert head.startswith("WITH sel AS (") and "SELECT * FROM (SELECT d.session_id" in head
     assert head == spend_head
     assert args == spend_args
-    # the spend rows keep their filter; the bucket rows read every selected session
-    assert "NOT IN (SELECT session_id FROM sel WHERE" in spend_sql
+    # both read every selected session, the Personal-paid ones too (EPMCDME-17260)
+    assert "NOT IN (SELECT session_id FROM sel WHERE" not in spend_sql
     assert "NOT IN (SELECT session_id FROM sel WHERE" not in sql
     assert "coalesce(d.funding_route, 'unknown') AS funding_route" in sql
     assert " ".join(f"{sql_personal_billed('s')} AS personal_billed".split()) in sql

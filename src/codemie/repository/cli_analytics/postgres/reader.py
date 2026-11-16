@@ -75,7 +75,6 @@ from codemie.repository.cli_analytics.ports import (
 from codemie.repository.cli_analytics.postgres.cost_key_sql import (
     _SEL_SESSIONS,
     _RATE_COLUMNS,
-    _spend,
     _token_rows,
     cost_groups_cte,
     cost_key_from_groups_sql,
@@ -343,6 +342,7 @@ _PART_COLUMNS = (
     ("branch", "text"),
     ("funding_route", "text"),
     ("personal_billed", "boolean"),
+    ("subscription_type", "text"),
     ("cost_usd", "numeric"),
     ("cache_read_cost_usd", "numeric"),
     ("session_count", "bigint"),
@@ -358,13 +358,15 @@ def _part(part: str, **values: str) -> str:
     )
 
 
-# The money of a request's totals: the spend (whole selection, its unpriced models), and the funding-route and
-# personal-billed estimates over every selected session.
+# The money of a request's totals: the spend (every selected session, the Personal-paid ones too since EPMCDME-17260;
+# its cost, cache re-read cost and unpriced models), and its split by funding route and by personal billing.
 _TOTAL_GROUPINGS = (
-    Grouping("spend", [], "spend"),
-    Grouping("route", ["funding_route"], "all"),
-    Grouping("billed", ["personal_billed"], "all"),
+    Grouping("spend", []),
+    Grouping("route", ["funding_route"]),
+    Grouping("billed", ["personal_billed"]),
 )
+# The Overview's totals also hold the cost split by subscription class (`class`: API against the rest).
+_OVERVIEW_GROUPINGS = (*_TOTAL_GROUPINGS, Grouping("class", ["subscription_type"]))
 _GC_KEY_PARTS = {"project": "project_name", "repository": "repository", "branch": "branch"}
 
 
@@ -384,12 +386,14 @@ def _gc_part(part: str, groupings: Sequence[Grouping], alias: str = "m") -> str:
         "cost_incomplete": f"{alias}.cost_incomplete",
     }
     values.update({column: f"{alias}.{key}" for key, column in _GC_KEY_PARTS.items() if key in used})
-    values.update({key: f"{alias}.{key}" for key in ("funding_route", "personal_billed") if key in used})
+    values.update(
+        {key: f"{alias}.{key}" for key in ("funding_route", "personal_billed", "subscription_type") if key in used}
+    )
     return _part(part, **values)
 
 
 # a session's spend money: what the dead-session predicate reads
-_SESSION_COST = "scost AS (SELECT session_id, sum(cost) AS cost FROM priced_groups WHERE spend GROUP BY session_id)"
+_SESSION_COST = "scost AS (SELECT session_id, sum(cost) AS cost FROM priced_groups GROUP BY session_id)"
 
 
 _STARTED_IN_WINDOW = "started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
@@ -785,18 +789,19 @@ def positional(sql: str, params: dict[str, Any]) -> tuple[str, list[Any]]:
     return text, [params[name] for name in names]
 
 
-# The groupings of `get_cost_money`: spend ones sum Personal-paid out; `user` ones keep the `cost_daily` sessions
-# `get_cost_by_user` lists (a subagent-totals-only session is in the total and per model, in no user's figure).
+# The groupings of `get_cost_money` (every session's money, the Personal-paid ones too); `user` ones keep the
+# `cost_daily` sessions `get_cost_by_user` lists (a subagent-totals-only session is in the total and per model, in
+# no user's figure).
 _COST_GROUPINGS = (
-    Grouping(G_TOTAL, [], "spend"),
-    Grouping(G_USER, ["user"], "spend", cost_daily_only=True),
-    Grouping(G_MODEL, ["model"], "spend"),
-    Grouping(G_ROUTE, ["funding_route"], "all"),
-    Grouping(G_PERSONAL, ["personal_billed"], "all"),
-    Grouping(G_USER_ROUTE, ["user", "funding_route"], "all", cost_daily_only=True),
-    Grouping(G_USER_PERSONAL, ["user", "personal_billed"], "all", cost_daily_only=True),
-    Grouping(G_MODEL_ROUTE, ["model", "funding_route"], "all"),
-    Grouping(G_MODEL_PERSONAL, ["model", "personal_billed"], "all"),
+    Grouping(G_TOTAL, []),
+    Grouping(G_USER, ["user"], cost_daily_only=True),
+    Grouping(G_MODEL, ["model"]),
+    Grouping(G_ROUTE, ["funding_route"]),
+    Grouping(G_PERSONAL, ["personal_billed"]),
+    Grouping(G_USER_ROUTE, ["user", "funding_route"], cost_daily_only=True),
+    Grouping(G_USER_PERSONAL, ["user", "personal_billed"], cost_daily_only=True),
+    Grouping(G_MODEL_ROUTE, ["model", "funding_route"]),
+    Grouping(G_MODEL_PERSONAL, ["model", "personal_billed"]),
 )
 
 # What the Cost tab reads without the estimate buckets: the spend total, per user and per model.
@@ -804,12 +809,12 @@ _COST_SPEND_GROUPINGS = _COST_GROUPINGS[:3]
 
 # The groupings of `get_users_money_page`: the same names as /cost, but per user over every session of `sel`.
 _USERS_GROUPINGS = (
-    Grouping(G_TOTAL, [], "spend"),
-    Grouping(G_USER, ["user"], "spend"),
-    Grouping(G_ROUTE, ["funding_route"], "all"),
-    Grouping(G_PERSONAL, ["personal_billed"], "all"),
-    Grouping(G_USER_ROUTE, ["user", "funding_route"], "all"),
-    Grouping(G_USER_PERSONAL, ["user", "personal_billed"], "all"),
+    Grouping(G_TOTAL, []),
+    Grouping(G_USER, ["user"]),
+    Grouping(G_ROUTE, ["funding_route"]),
+    Grouping(G_PERSONAL, ["personal_billed"]),
+    Grouping(G_USER_ROUTE, ["user", "funding_route"]),
+    Grouping(G_USER_PERSONAL, ["user", "personal_billed"]),
 )
 
 
@@ -1372,9 +1377,9 @@ class PostgresCliAnalyticsReader:
         costless-inclusive universe the Sessions list already uses via `get_session_cost_facts(...,
         include_costless=True)`. A costless session has no `cost_daily` row, so it contributes 0 to every
         token sum (NULL rows are ignored by `sum`), never NULL to the row as a whole. `total_cost_usd` is
-        the one exception: it stays NULL, not 0, for a window with no `_spend`-eligible row, so "no spend
-        data" (NULL) stays distinguishable from "confirmed $0 spend" -- `spend_sessions` and
-        `total_cost_usd` exclude Personal-paid sessions from the aggregate the same way (see `_spend`).
+        the one exception: it stays NULL, not 0, for a window with no cost row, so "no spend data" (NULL)
+        stays distinguishable from "confirmed $0 spend". `spend_sessions` and `total_cost_usd` cover every
+        session with a cost row, the Personal-paid ones too (EPMCDME-17260).
 
         The cost rows are read plain and scoped by a join to `sel`: nothing here needs `_cost_rows`'s per-row window
         columns (grain calls, session email), and its `IN (SELECT session_id FROM sel)` form had the planner probe
@@ -1383,9 +1388,8 @@ class PostgresCliAnalyticsReader:
             f"""
         WITH {self._sel_cte(f)}
         SELECT count(DISTINCT s.session_id)                              AS total_sessions,
-               count(DISTINCT s.session_id)
-                   FILTER (WHERE c.session_id IS NOT NULL AND {_spend("c")}) AS spend_sessions,
-               sum(c.cost_usd) FILTER (WHERE {_spend("c")})              AS total_cost_usd,
+               count(DISTINCT c.session_id)                              AS spend_sessions,
+               sum(c.cost_usd)                                           AS total_cost_usd,
                coalesce(sum(c.input_tokens), 0)::bigint          AS total_input_tokens,
                coalesce(sum(c.output_tokens), 0)::bigint         AS total_output_tokens,
                coalesce(sum(c.cache_read_tokens), 0)::bigint     AS total_cache_read_tokens,
@@ -1406,8 +1410,8 @@ class PostgresCliAnalyticsReader:
             f"""
         WITH {self._sel_cte(f)}
         SELECT (SELECT count(DISTINCT session_id) FROM sel)                   AS total_sessions,
-               count(DISTINCT d.session_id) FILTER (WHERE {_spend("d")})      AS spend_sessions,
-               sum(d.cost_usd) FILTER (WHERE {_spend("d")})                   AS total_cost_usd,
+               count(DISTINCT d.session_id)                                   AS spend_sessions,
+               sum(d.cost_usd)                                                AS total_cost_usd,
                coalesce(sum(d.input_tokens), 0)::bigint          AS total_input_tokens,
                coalesce(sum(d.output_tokens), 0)::bigint         AS total_output_tokens,
                coalesce(sum(d.cache_read_tokens), 0)::bigint     AS total_cache_read_tokens,
@@ -1424,7 +1428,7 @@ class PostgresCliAnalyticsReader:
         WITH {self._sel_cte(f)}
         SELECT {model_name}                                   AS model_name,
                count(DISTINCT d.session_id)                   AS session_count,
-               sum(d.cost_usd) FILTER (WHERE {_spend("d")}) AS cost_usd,
+               sum(d.cost_usd)                                AS cost_usd,
                sum(d.cache_read_tokens)::bigint               AS cache_read_tokens,
                sum(d.input_tokens + d.output_tokens + d.cache_read_tokens + d.cache_creation_tokens)::bigint
                                                               AS total_tokens
@@ -1436,13 +1440,12 @@ class PostgresCliAnalyticsReader:
             window_params(f),
         )
 
-    async def get_session_model_costs(self, f: LocalAnalyticsFilter, *, spend_only: bool = False) -> Rows:
+    async def get_session_model_costs(self, f: LocalAnalyticsFilter) -> Rows:
         """Token sums per (session, raw model), the empty model kept, with the normalised model name: the rows
-        every money value is priced from. The 5m / 1h sums are NULL when no row of the group has a split.
-        `spend_only` leaves out Personal-paid sessions: aggregate spend is company/project-paid only, while a
-        single session keeps its own cost."""
+        every money value is priced from, every selected session's (the Personal-paid ones too, EPMCDME-17260). The
+        5m / 1h sums are NULL when no row of the group has a split."""
         return await self._q(
-            f"WITH {self._sel_cte(f)} SELECT g.* FROM {model_token_groups(spend_only)}",
+            f"WITH {self._sel_cte(f)} SELECT g.* FROM {model_token_groups()}",
             window_params(f),
         )
 
@@ -1469,8 +1472,9 @@ class PostgresCliAnalyticsReader:
 
     async def get_session_funding_costs(self, f: LocalAnalyticsFilter) -> Rows:
         """The `get_session_model_costs` rows of every selected session (no spend filter), each with the session's
-        client-asserted `funding_route` (NULL reads 'unknown') and `personal_billed` (the billing class): the rows
-        the funding and personal-billed estimate buckets are priced from. Same `sel`, so the same read scope."""
+        client-asserted `funding_route` (NULL reads 'unknown'), `personal_billed` (the billing class) and normalised
+        `subscription_type`: the rows the funding and personal-billed estimate buckets are priced from. Same `sel`,
+        so the same read scope."""
         model_name = self._normalized_model_name("c.model_name")
         return await self._q(
             f"""
@@ -1480,6 +1484,7 @@ class PostgresCliAnalyticsReader:
                {model_name}                                 AS normalized_model_name,
                coalesce(d.funding_route, 'unknown') AS funding_route,
                {sql_personal_billed("s")} AS personal_billed,
+               {_SUB} AS subscription_type,
                sum(c.input_tokens)::bigint                  AS input_tokens,
                sum(c.output_tokens)::bigint                 AS output_tokens,
                sum(c.cache_read_tokens)::bigint             AS cache_read_tokens,
@@ -1951,32 +1956,32 @@ class PostgresCliAnalyticsReader:
 
     async def get_overview_models(self, f: LocalAnalyticsFilter) -> Rows:
         """The Overview's models in one read of the token rows, as rows of `part` `model`: the normalised model
-        (`key`, never blank), the sessions that used it (`n`), their spend from `cost_daily` (`cost_usd`, the tie-break
-        of the order, an exact `Decimal`: the user rollup stores and adds it) and the sorted-distinct class lists of
-        those sessions. In the order of `get_model_breakdown` (sessions, then spend, then name) and over the same
-        sessions; the classes are
-        those of `get_class_lists(f, "model")`. The token rows join `sel` rather than filter by `IN`. The session
-        classes and the personal-billed test are computed once per session, and the normalisation once per distinct
-        raw name (`names`, materialised: otherwise the planner evaluates it for every token row). The raw names are
-        those of the selected sessions' rows (`tok`, the one read of `cost_daily`), not of the whole table."""
+        (`key`, never blank), the sessions that used it (`n`), their cost from `cost_daily` (`cost_usd`, every
+        session's, Personal-paid included; the tie-break of the order, an exact `Decimal`: the user rollup stores and
+        adds it) and the sorted-distinct class lists of those sessions. In the order of `get_model_breakdown` (sessions,
+        then cost, then name) and over the same sessions; the classes are those of `get_class_lists(f, "model")`. The
+        token rows join `sel` rather than filter by `IN`. The session classes are computed once per session, and the
+        normalisation once per distinct raw name (`names`, materialised: otherwise the planner evaluates it for every
+        token row). The raw names are those of the selected sessions' rows (`tok`, the one read of `cost_daily`), not of
+        the whole table."""
         name = self._normalized_model_name("x.raw")
         return await self._q(
             f"""
         WITH {self._sel_cte(f)},
         tok AS MATERIALIZED (
             SELECT c.session_id, c.model_name AS raw, sum(c.cost_usd) AS cost_usd,
-                   {_SUB} AS sub, {_ORIGIN} AS origin, coalesce({sql_personal_billed("s")}, false) AS billed
+                   {_SUB} AS sub, {_ORIGIN} AS origin
             FROM cost_daily c JOIN sel s ON s.session_id = c.session_id
             GROUP BY c.session_id, c.model_name, s.subscription_type, s.project_origin
         ),
         names AS MATERIALIZED (SELECT raw, {name} AS nm FROM (SELECT DISTINCT raw FROM tok) x)
         SELECT {_part(
             "model", key="n.nm", n="count(DISTINCT d.session_id)", subscription_types="array_agg(DISTINCT d.sub)",
-            project_origins="array_agg(DISTINCT d.origin)", cost_usd="sum(d.cost_usd) FILTER (WHERE NOT d.billed)")}
+            project_origins="array_agg(DISTINCT d.origin)", cost_usd="sum(d.cost_usd)")}
         FROM tok d JOIN names n ON n.raw = d.raw
         WHERE n.nm <> ''
         GROUP BY n.nm
-        ORDER BY count(DISTINCT d.session_id) DESC, sum(d.cost_usd) FILTER (WHERE NOT d.billed) DESC, n.nm {_C}""",
+        ORDER BY count(DISTINCT d.session_id) DESC, sum(d.cost_usd) DESC, n.nm {_C}""",
             window_params(f),
             exact=True,
         )
@@ -2007,11 +2012,17 @@ class PostgresCliAnalyticsReader:
         )
 
     async def _dashboard_money(
-        self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates], classes: bool, exact: bool = False
+        self,
+        f: LocalAnalyticsFilter,
+        rates: Sequence[ModelRates],
+        classes: bool,
+        exact: bool = False,
+        groupings: Sequence[Grouping] = _TOTAL_GROUPINGS,
     ) -> Rows:
         """The money of the selected sessions, priced once at `rates` by `priced_groups_cte`, as rows of `part`: `money`
-        (`spend`, `route`, `billed`: the rows of `grouped_cost_sql`, `key` is the grouping) and `dead` (`n` sessions
-        that cost money and changed no file, `cost_usd` their money, and with `classes` their class lists)."""
+        (`spend`, `route`, `billed`, and with `groupings` more: the rows of `grouped_cost_sql`, `key` is the grouping)
+        and `dead` (`n` sessions that cost money and changed no file, `cost_usd` their money, and with `classes` their
+        class lists)."""
         class_lists = (
             {
                 "subscription_types": f"array_agg(DISTINCT coalesce(nullif({_SUB}, ''), 'unknown'))",
@@ -2035,7 +2046,7 @@ class PostgresCliAnalyticsReader:
         {changed},
         {priced_groups_cte()},
         {_SESSION_COST}
-        SELECT {_gc_part("money", _TOTAL_GROUPINGS, "gc")} FROM {grouped_cost_sql(_TOTAL_GROUPINGS)}
+        SELECT {_gc_part("money", groupings, "gc")} FROM {grouped_cost_sql(groupings)}
         UNION ALL
         SELECT {_part("dead", n="count(*)", cost_usd="sum(c.cost)", **class_lists)}
         FROM scost c JOIN sel s ON s.session_id = c.session_id
@@ -2048,9 +2059,10 @@ class PostgresCliAnalyticsReader:
     async def get_overview_money(
         self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates] = (), *, exact: bool = False
     ) -> Rows:
-        """The Overview's money, see `_dashboard_money`. `exact` keeps the money as `Decimal` rather than the float of
-        `normalise`: the user rollup stores and adds it over days."""
-        return await self._dashboard_money(f, rates, classes=False, exact=exact)
+        """The Overview's money, see `_dashboard_money`, with the cost of every subscription class (`class` rows).
+        `exact` keeps the money as `Decimal` rather than the float of `normalise`: the user rollup stores and adds it
+        over days."""
+        return await self._dashboard_money(f, rates, classes=False, exact=exact, groupings=_OVERVIEW_GROUPINGS)
 
     async def get_efficiency_money(self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates] = ()) -> Rows:
         """The Efficiency's money and dead sessions, see `_dashboard_money`."""
@@ -2101,11 +2113,11 @@ class PostgresCliAnalyticsReader:
             if per_page is not None:
                 paging = "WHERE rn > $offset::bigint AND rn <= $offset::bigint + $limit::bigint"
                 params["offset"], params["limit"] = page * per_page, per_page
-        groupings = [*_TOTAL_GROUPINGS, Grouping("g_spend", group_keys, "spend")]
+        groupings = [*_TOTAL_GROUPINGS, Grouping("g_spend", group_keys)]
         if include_branches:  # the branches roll up to (project, repository): their estimates come with the groups
             groupings += [
-                Grouping("b_route", [*bucket_keys, "funding_route"], "all"),
-                Grouping("b_billed", [*bucket_keys, "personal_billed"], "all"),
+                Grouping("b_route", [*bucket_keys, "funding_route"]),
+                Grouping("b_billed", [*bucket_keys, "personal_billed"]),
             ]
         return await self._priced_q(
             f,
@@ -2153,8 +2165,8 @@ class PostgresCliAnalyticsReader:
         with none), priced from their sessions only, as rows of `part` `bucket` (`b_route` / `b_billed`, by
         repository). `get_repository_ranking` returns the page; this prices the page, not the whole selection."""
         groupings = [
-            Grouping("b_route", ["repository", "funding_route"], "all"),
-            Grouping("b_billed", ["repository", "personal_billed"], "all"),
+            Grouping("b_route", ["repository", "funding_route"]),
+            Grouping("b_billed", ["repository", "personal_billed"]),
         ]
         params = {**window_params(f), **rates_params(rates)}
         params["page_repositories"], params["page_unattributed"] = list(repositories), unattributed

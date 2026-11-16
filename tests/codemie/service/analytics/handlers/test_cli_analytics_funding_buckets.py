@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Funding and personal-billed estimate buckets next to the unchanged spend (EPMCDME-16849 items 7-8).
+"""Funding and personal-billed buckets: a breakdown of the total cost (EPMCDME-16849 items 7-8; since EPMCDME-17260
+the total counts the Personal-paid sessions too, so the personal-billed bucket is part of it, not added to it).
 
-The fake reader of the spend-scope test answers the spend rows (`spend_only=True`, Personal-paid left out) and the
-bucket rows (every session, its funding route and billing class). The bucket keys are additive: stripping them
+The fake reader of the spend-scope test answers the model rows and the bucket rows (every session, its funding route
+and billing class). The bucket keys are additive: stripping them
 gives exactly the response the handler built before. Each response is also rendered through the router's real
 `_respond` / `_metadata`, so a field the response models do not declare would be missing from the JSON.
 """
@@ -34,7 +35,7 @@ from codemie.rest_api.models.cli_analytics import (
     LocalAnalyticsUsersResponse,
 )
 from codemie.rest_api.routers.cli_analytics import _metadata, _respond
-from tests.codemie.repository.cli_analytics.support.grouped_money import spend_only
+from tests.codemie.repository.cli_analytics.support.grouped_money import without_buckets
 from tests.codemie.service.analytics.handlers.test_cli_analytics_spend_scope import (
     CORPORATE_COST,
     PERSONAL_COST,
@@ -86,6 +87,17 @@ def _strip(value):
     return value
 
 
+# The Overview splits Est. Cost by subscription class, read from the rows the bucket rows come from, so these two move
+# with them by design (test_cli_analytics_spend_scope covers them).
+OVERVIEW_SPLIT_KEYS = ("api_cost_usd", "subscription_cost_usd")
+
+
+def _without_overview_split(name, data):
+    if name != "overview":
+        return data
+    return {**data, "kpis": {k: v for k, v in data["kpis"].items() if k not in OVERVIEW_SPLIT_KEYS}}
+
+
 async def _call(name, sessions, *, no_bucket_rows=False):
     handler, _ = handler_over(sessions)
     if no_bucket_rows:
@@ -93,7 +105,7 @@ async def _call(name, sessions, *, no_bucket_rows=False):
         priced = handler._repo.get_cost_money
 
         async def spend_money(f, rates, buckets=True):
-            return spend_only(await priced(f, rates))
+            return without_buckets(await priced(f, rates))
 
         handler._repo.get_cost_money = spend_money
     call, model, _ = ENDPOINTS[name]
@@ -107,18 +119,18 @@ def _rendered(data, pricer, model) -> dict:
     return json.loads(_respond({"data": data, "metadata": metadata}, model).body)
 
 
-def _spend(row: dict) -> float:
+def _total(row: dict) -> float:
     return row["kpis"]["total_cost_usd"] if "kpis" in row else row["cost_usd"]
 
 
-# (a) a personal-billed session is its own bucket and stays out of spend
+# (a) a personal-billed session is its own bucket and counts in the total
 
 
 @pytest.mark.asyncio
-async def test_personal_billed_sessions_are_their_own_bucket_and_stay_out_of_spend():
+async def test_personal_billed_sessions_are_their_own_bucket_and_count_in_the_total():
     data, _, _ = await _call("cost", SESSIONS)
 
-    assert data["kpis"]["total_cost_usd"] == pytest.approx(CORPORATE_COST)  # spend unchanged
+    assert data["kpis"]["total_cost_usd"] == pytest.approx(CORPORATE_COST + PERSONAL_COST)
     assert data["kpis"]["total_sessions"] == 3  # activity counts the personal-billed sessions
     assert data["personal_billed"] == _bucket(PERSONAL_COST, 2)
     assert data["funding"] == {
@@ -127,7 +139,7 @@ async def test_personal_billed_sessions_are_their_own_bucket_and_stay_out_of_spe
         "unknown": _bucket(1.0, 1),  # no claim (NULL) reads unknown
     }
     users = {r["developer_name"]: r for r in data["cost_by_user"]}
-    assert users["bob"]["cost_usd"] == 0.0
+    assert users["bob"]["cost_usd"] == pytest.approx(PERSONAL_COST)
     assert users["bob"]["personal_billed"] == _bucket(PERSONAL_COST, 2)
     assert users["alice"]["personal_billed"] == _bucket(0.0, 0)
 
@@ -148,15 +160,15 @@ async def test_the_bucket_rows_change_no_existing_field(name, sessions):
     with_buckets, _, _ = await _call(name, sessions)
     baseline, _, _ = await _call(name, sessions, no_bucket_rows=True)
 
-    assert _strip(with_buckets) == _strip(baseline)
+    assert _strip(_without_overview_split(name, with_buckets)) == _strip(_without_overview_split(name, baseline))
 
 
-# (b) per-entity grouping consistency: spend + personal_billed == the priced total of every funding bucket
+# (b) per-entity grouping consistency: the total is the priced total of every funding bucket, personal-billed in it
 
 
 @pytest.mark.parametrize("name", list(ENDPOINTS))
 @pytest.mark.asyncio
-async def test_spend_plus_personal_billed_is_the_priced_total_of_each_entity(name):
+async def test_the_total_is_the_priced_total_of_each_entity_and_holds_the_personal_billed_cost(name):
     data, _, _ = await _call(name, SESSIONS)
     _, _, row_keys = ENDPOINTS[name]
     entities = [data] if "kpis" in data and "total_cost_usd" in data["kpis"] else []
@@ -165,7 +177,8 @@ async def test_spend_plus_personal_billed_is_the_priced_total_of_each_entity(nam
     assert entities
     for entity in entities:
         priced_total = sum(entity["funding"][route]["cost_usd"] for route in ROUTES)
-        assert _spend(entity) + entity["personal_billed"]["cost_usd"] == pytest.approx(priced_total)
+        assert _total(entity) == pytest.approx(priced_total)
+        assert entity["personal_billed"]["cost_usd"] <= _total(entity) + 1e-9
     assert sum(data["funding"][route]["cost_usd"] for route in ROUTES) == pytest.approx(CORPORATE_COST + PERSONAL_COST)
 
 
@@ -181,9 +194,9 @@ async def test_an_unpriced_model_flags_only_its_own_buckets():
     assert data["funding"]["api_based"] == _bucket(CORPORATE_COST, 1)
     assert data["funding"]["unknown"] == _bucket(1.0, 1)
     assert data["personal_billed"] == _bucket(1.0, 2, [UNPRICED])
-    # the spend pricer never saw the Personal-paid model: the spend metadata is complete
+    # the Personal-paid model is in the total, so the metadata names it as unpriced
     body = _rendered(data, pricer, model)
-    assert (body["metadata"]["unpriced_models"], body["metadata"]["cost_incomplete"]) == ([], False)
+    assert (body["metadata"]["unpriced_models"], body["metadata"]["cost_incomplete"]) == ([UNPRICED], True)
     # a model row's buckets describe that model alone: the priced Personal-paid session, not the unpriced one
     by_model = {r["model_name"]: r for r in body["data"]["cost_by_model"]}
     assert by_model["claude-haiku"]["personal_billed"] == _bucket(1.0, 1)
@@ -202,17 +215,17 @@ async def test_a_bucket_names_an_unpriced_model_and_its_route_once_by_the_plain_
 
 
 @pytest.mark.asyncio
-async def test_a_personal_only_model_is_served_apart_from_cost_by_model_and_a_blank_model_is_never_a_row():
+async def test_a_personal_only_model_is_a_cost_by_model_row_and_a_blank_model_is_never_a_row():
     data, pricer, model = await _call("cost", EXTRA_MODELS)
 
     body = _rendered(data, pricer, model)["data"]
-    assert [r["model_name"] for r in body["cost_by_model"]] == ["claude-haiku"]  # spend membership unchanged
-    assert [r["model_name"] for r in body["models_without_spend"]] == [UNPRICED]  # no blank model row
-    row = body["models_without_spend"][0]
+    # a Personal-paid model counts like any other (EPMCDME-17260): no model is left without a cost row
+    assert [r["model_name"] for r in body["cost_by_model"]] == ["claude-haiku", UNPRICED]  # no blank model row
+    assert body["models_without_spend"] == []
+    row = body["cost_by_model"][1]
     assert row["cost_usd"] == 0.0
     assert row["personal_billed"] == _bucket(0.0, 1, [UNPRICED])
     assert row["funding"]["subscription"] == _bucket(0.0, 1, [UNPRICED])
-    assert data["kpis"]["total_cost_usd"] == pytest.approx(CORPORATE_COST)  # spend unchanged
 
 
 @pytest.mark.asyncio

@@ -16194,7 +16194,7 @@
             "$ref": "#/components/schemas/LocalAnalyticsCostKPIs"
           },
           "models_without_spend": {
-            "description": "Models only the estimate priced (no spend): cost_usd 0 plus buckets; never in cost_by_model",
+            "description": "Always empty since EPMCDME-17260 (every model with cost is in cost_by_model, Personal-paid included); kept for compatibility",
             "items": {
               "$ref": "#/components/schemas/LocalAnalyticsCostByModelRow"
             },
@@ -16750,6 +16750,12 @@
       },
       "LocalAnalyticsOverviewKPIs": {
         "properties": {
+          "api_cost_usd": {
+            "default": 0.0,
+            "description": "Cost of the sessions routed through the CodeMie proxy",
+            "title": "Api Cost Usd",
+            "type": "number"
+          },
           "avg_context_per_call": {
             "title": "Avg Context Per Call",
             "type": "number"
@@ -16788,6 +16794,12 @@
             },
             "title": "Project Origins",
             "type": "array"
+          },
+          "subscription_cost_usd": {
+            "default": 0.0,
+            "description": "Cost of every other session at API rates, Personal-paid included; not billed",
+            "title": "Subscription Cost Usd",
+            "type": "number"
           },
           "subscription_types": {
             "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
@@ -45222,13 +45234,13 @@
             }
           },
           {
-            "description": "Fill the funding-route and personal-billed buckets and `models_without_spend`. A caller that does not read them passes false: they are then zero and empty.",
+            "description": "Fill the funding-route and personal-billed buckets. A caller that does not read them passes false: they are then zero.",
             "in": "query",
             "name": "include_buckets",
             "required": false,
             "schema": {
               "default": true,
-              "description": "Fill the funding-route and personal-billed buckets and `models_without_spend`. A caller that does not read them passes false: they are then zero and empty.",
+              "description": "Fill the funding-route and personal-billed buckets. A caller that does not read them passes false: they are then zero.",
               "title": "Include Buckets",
               "type": "boolean"
             }

@@ -92,14 +92,14 @@ MIN_FRESH_SECONDS = 180
 RECENT_DAYS = 2
 FULL_SCAN_SECONDS = 600
 # What a built day holds: 1 = the developer rows, 2 = also the model rows (what /users and /cost read), 3 = also the
-# Overview rows. A shape only grows: a reader asks for the least shape that holds what it reads (`min_shape`) and the
-# job rebuilds a day of a shape below the one it builds (`ROLLUP_SHAPE`), so a day of a higher shape (a newer pod's) is
-# neither refused nor rebuilt down. Code from before shape 3 (MR 4807 alone) compares with `!=` and would rebuild a
-# day of shape 3 as shape 2, back and forth with a new pod, so this is released together with it: no pod runs the `!=`
-# comparisons next to one that builds shape 3. If 4807 is ever deployed first, ship the comparisons with
-# `ROLLUP_SHAPE = SHAPE_COST` before raising it.
-SHAPE_COST = 2
-SHAPE_OVERVIEW = 3
+# Overview rows, 4 = the money of the model and Overview rows covers every session, the Personal-paid ones too
+# (before, only the spend's; EPMCDME-17260). A shape only grows: a reader asks for the least shape that holds what it
+# reads (`min_shape`) and the job rebuilds a day of a shape below the one it builds (`ROLLUP_SHAPE`), so a day of a
+# higher shape (a newer pod's) is neither refused nor rebuilt down. Every reader asks for shape 4: the money a day of
+# a lower shape stores leaves the Personal-paid sessions out, so until the job has rebuilt a day the live statements
+# answer for it.
+SHAPE_COST = 4
+SHAPE_OVERVIEW = 4
 ROLLUP_SHAPE = SHAPE_OVERVIEW  # the shape the job builds
 
 
@@ -110,9 +110,9 @@ SMALL_COHORT_RANDOM_PAGE_COST = "1.1"
 
 _MONEY_KEYS = ["user", "funding_route", "personal_billed"]
 _MONEY_GROUPINGS = (
-    Grouping("ur_all", _MONEY_KEYS, "all"),
-    Grouping("ur_cd", _MONEY_KEYS, "all", cost_daily_only=True),
-    Grouping("ur_model", ["model"], "spend"),
+    Grouping("ur_all", _MONEY_KEYS),
+    Grouping("ur_cd", _MONEY_KEYS, cost_daily_only=True),
+    Grouping("ur_model", ["model"]),
 )
 _CENT = Decimal("0.000000001")
 
@@ -253,6 +253,9 @@ class OverviewAgg:
     )
     lines: dict[date, list] = field(default_factory=dict)  # line day -> [added | None, removed | None, nonzero]
     models: dict[str, list] = field(default_factory=dict)  # model -> [sessions, spend | None]
+    # The cost of every session by subscription class: not stored in the Overview rows, read from the money rows
+    # (`_OVERVIEW_CLASSES_SQL`) or the live statement.
+    class_cost: dict[str, Decimal] = field(default_factory=dict)
 
     def merge(self, other: OverviewAgg) -> None:
         for name in OVERVIEW_SUMS:
@@ -265,6 +268,8 @@ class OverviewAgg:
         for model, (sessions, spend) in other.models.items():
             mine = self.models.setdefault(model, [0, None])
             mine[0], mine[1] = mine[0] + sessions, _nadd(mine[1], spend)
+        for name, cost in other.class_cost.items():
+            self.class_cost[name] = self.class_cost.get(name, Decimal(0)) + cost
 
 
 @dataclass
@@ -399,6 +404,8 @@ def _overview_money(agg: OverviewAgg, rows: list[dict]) -> None:
         if r["part"] == "money" and r["key"] == "spend":
             agg.spend_cost, agg.cache_read_cost = _dec(r["cost_usd"]), _dec(r["cache_read_cost_usd"])
             agg.unpriced = set(r["unpriced_models"] or ())
+        elif r["part"] == "money" and r["key"] == "class":
+            agg.class_cost[r["subscription_type"]] = _dec(r["cost_usd"])
         elif r["part"] == "dead":
             agg.dead_sessions = int(r["n"] or 0)
 
@@ -814,6 +821,11 @@ GROUP BY model"""
 _OVERVIEW_SQL = f"""
 SELECT {", ".join(f"sum({n}) AS {n}" if n in _OVERVIEW_NUMERIC else f"sum({n})::bigint AS {n}" for n in OVERVIEW_SUMS)}
 FROM user_day_overview_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES}"""  # noqa: S608 - fixed names
+# The cost of every session of the window by subscription class: the money rows hold it per (developer, route,
+# billed, class), the Overview rows only the total.
+_OVERVIEW_CLASSES_SQL = f"""
+SELECT sub_class, sum(cost_all) AS cost
+FROM user_day_money_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES} GROUP BY sub_class"""
 _OVERVIEW_UNPRICED_SQL = f"""
 SELECT DISTINCT unnest(unpriced) AS name
 FROM user_day_overview_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES} AND cardinality(unpriced) > 0"""
@@ -865,6 +877,7 @@ async def _overview_window(conn: Any, args: tuple) -> Cohort:
         for r in await conn.fetch(_OVERVIEW_LINES_SQL, *args)
     }
     o.models = {r["model"]: [r["sessions"], r["spend"]] for r in await conn.fetch(_OVERVIEW_MODELS_SQL, *args)}
+    o.class_cost = {r["sub_class"]: r["cost"] for r in await conn.fetch(_OVERVIEW_CLASSES_SQL, *args)}
     return cohort
 
 
@@ -972,13 +985,10 @@ def _money(cohort: Cohort) -> tuple[GroupedMoney, dict[str, Decimal]]:
     # The Users page's groupings (`_USERS_GROUPINGS`) sum every priced session: unlike /cost's they are not limited to
     # the sessions whose token rows all come from `cost_daily`, so the `*_cd` columns are not read here.
     cells = list(cohort.money.items())
-    total = _fold_cells((((), m) for (_, _, billed), m in cells if not billed), False).get(())
+    total = _fold_cells((((), m) for _, m in cells), False).get(())
     if total and total[1] > 0:
         groups[G_TOTAL].append(_group({}, *total))
-    by_user = {
-        user: cost
-        for (user,), cost in fill(G_USER, (((u,), m) for (u, _, billed), m in cells if not billed), ("user",)).items()
-    }
+    by_user = {user: cost for (user,), cost in fill(G_USER, (((u,), m) for (u, _, _), m in cells), ("user",)).items()}
     fill(G_ROUTE, (((r,), m) for (_, r, _), m in cells), ("funding_route",))
     fill(G_PERSONAL, (((b,), m) for (_, _, b), m in cells), ("personal_billed",))
     fill(G_USER_ROUTE, (((u, r), m) for (u, r, _), m in cells), ("user", "funding_route"))
@@ -990,7 +1000,7 @@ def assemble_cost(cohort: Cohort) -> RollupCost:
     """The reader port's answer for /cost from a window's combined cohort: the spend total, per developer (over the
     sessions with a `cost_daily` row, the `cd` columns) and per model, the developers that list, and the session and
     token totals, with the rules of the live statements (`_COST_GROUPINGS`, `get_cost_kpis`, `get_cost_by_user`)."""
-    spend = [m for (_, _, billed), m in cohort.money.items() if not billed]
+    spend = list(cohort.money.values())
     names: set[str] = set()
     for m in spend:
         names |= m.unpriced_all
@@ -999,9 +1009,7 @@ def assemble_cost(cohort: Cohort) -> RollupCost:
     if sessions > 0:
         groups[G_TOTAL].append(_group({}, sum((m.cost_all for m in spend), Decimal(0)), sessions, names))
     per_user: dict[str, list] = {}
-    for (user, _, billed), m in cohort.money.items():
-        if billed:
-            continue
+    for (user, _, _), m in cohort.money.items():
         cell = per_user.setdefault(user, [Decimal(0), 0, set()])
         cell[0] += m.cost_cd
         cell[1] += m.sessions_cd
@@ -1042,6 +1050,10 @@ def assemble_overview(cohort: Cohort) -> RollupOverview:
                 "unpriced_models": sorted(o.unpriced),
             }
         )
+    money_rows += [
+        {"part": "money", "key": "class", "subscription_type": name, "cost_usd": float(cost)}
+        for name, cost in sorted(o.class_cost.items())
+    ]
     fact_rows = [
         {
             "part": "facts",
@@ -1209,8 +1221,9 @@ async def serve_cohort(
     """The window's combined cohort from the rollup plus the few sessions that started earlier and are active in the
     window (read live), or None when the rollup may not answer: another scope or filters, a window it is not made for,
     a day it lacks, built under other rates or of a shape below what is read, or a job that has not run lately. `models`
-    also reads the per-model rows (/cost); `overview` the Overview rows, which only a day of shape `SHAPE_OVERVIEW`
-    holds (so /users and /cost, which read shape `SHAPE_COST`, are not refused while those days are being built)."""
+    also reads the per-model rows (/cost); `overview` the Overview rows, held by a day of shape `SHAPE_OVERVIEW`.
+    /users and /cost ask for `SHAPE_COST`, which equals it since EPMCDME-17260, so every reader waits for the rebuild of
+    a lower-shape day and the live statements answer meanwhile."""
     now = now or datetime.now(timezone.utc)
     start, day0, rollup_start, rollup_f = _split_first_day(f)
     if not version or not eligible(rollup_f, now):

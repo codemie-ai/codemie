@@ -76,25 +76,25 @@ _TOL = 1e-9
 
 # Every grouping the shared contract lists for EPMCDME-17051 and EPMCDME-17052.
 GROUPINGS = [
-    Grouping("spend", [], "spend"),
-    Grouping("spend_user", ["user"], "spend"),
-    Grouping("spend_user_cd", ["user"], "spend", cost_daily_only=True),
-    Grouping("spend_model", ["model"], "spend"),
-    Grouping("spend_repo", ["repository"], "spend"),
-    Grouping("spend_proj_repo", ["project", "repository"], "spend"),
-    Grouping("spend_proj_repo_branch", ["project", "repository", "branch"], "spend"),
-    Grouping("route", ["funding_route"], "all"),
-    Grouping("billed", ["personal_billed"], "all"),
-    Grouping("user_route", ["user", "funding_route"], "all"),
-    Grouping("user_billed", ["user", "personal_billed"], "all"),
-    Grouping("user_route_cd", ["user", "funding_route"], "all", cost_daily_only=True),
-    Grouping("user_billed_cd", ["user", "personal_billed"], "all", cost_daily_only=True),
-    Grouping("model_route", ["model", "funding_route"], "all"),
-    Grouping("model_billed", ["model", "personal_billed"], "all"),
-    Grouping("repo_route", ["repository", "funding_route"], "all"),
-    Grouping("repo_billed", ["repository", "personal_billed"], "all"),
-    Grouping("proj_repo_route", ["project", "repository", "funding_route"], "all"),
-    Grouping("proj_repo_billed", ["project", "repository", "personal_billed"], "all"),
+    Grouping("spend", []),
+    Grouping("spend_user", ["user"]),
+    Grouping("spend_user_cd", ["user"], cost_daily_only=True),
+    Grouping("spend_model", ["model"]),
+    Grouping("spend_repo", ["repository"]),
+    Grouping("spend_proj_repo", ["project", "repository"]),
+    Grouping("spend_proj_repo_branch", ["project", "repository", "branch"]),
+    Grouping("route", ["funding_route"]),
+    Grouping("billed", ["personal_billed"]),
+    Grouping("user_route", ["user", "funding_route"]),
+    Grouping("user_billed", ["user", "personal_billed"]),
+    Grouping("user_route_cd", ["user", "funding_route"], cost_daily_only=True),
+    Grouping("user_billed_cd", ["user", "personal_billed"], cost_daily_only=True),
+    Grouping("model_route", ["model", "funding_route"]),
+    Grouping("model_billed", ["model", "personal_billed"]),
+    Grouping("repo_route", ["repository", "funding_route"]),
+    Grouping("repo_billed", ["repository", "personal_billed"]),
+    Grouping("proj_repo_route", ["project", "repository", "funding_route"]),
+    Grouping("proj_repo_billed", ["project", "repository", "personal_billed"]),
 ]
 
 
@@ -186,8 +186,10 @@ SOURCES = ("live", "stored", "mixed")
 _VERSION = "parity-v1"
 # sha256 of `priced_groups_cte()` as it was before the stored source existed: the all-live form must not change.
 # Re-pinned on the EPMCDME-16427 part2 base, which moved the shared pricing terms, and for EPMCDME-16457, which dashes
-# dotted Claude versions in normalized_model_name.
-_LIVE_FORM_SHA256 = "2665a0ff2704030b015d389c9f297bca84d5205c7c2052424b444e7dec4bb47a"
+# dotted Claude versions in normalized_model_name, for the `sub_class` column (the subscription class the Overview
+# splits its cost by), which only adds a column of `sel`, and for EPMCDME-17260, which drops the `spend` column (every
+# session counts toward the money, the Personal-paid ones too).
+_LIVE_FORM_SHA256 = "7e2a43e92983b35d6945c8659724878324d831e6a306f7ccb6c022e6a9c88576"
 
 
 async def _stamp_for(engine, seed: _GroupedSeed, source: str) -> list[str] | None:
@@ -236,7 +238,6 @@ def _python_rows(funding_rows: list[dict], sessions: dict[str, dict], cost_daily
             "funding_route": row["funding_route"],
             "personal_billed": row["personal_billed"],
         }
-        row["spend"] = not row["personal_billed"]
         row["has_cost_daily"] = row["session_id"] in cost_daily
     return priced
 
@@ -245,8 +246,7 @@ def _python_groups(rows: list[dict], grouping: Grouping) -> dict[tuple, dict]:
     kept = [
         r
         for r in rows
-        if (grouping.scope == "all" or r["spend"])
-        and (not grouping.cost_daily_only or r["has_cost_daily"])
+        if (not grouping.cost_daily_only or r["has_cost_daily"])
         and ("model" not in grouping.keys or r["normalized_model_name"] != "")
     ]
     grouped: dict[tuple, list[dict]] = defaultdict(list)
@@ -312,7 +312,7 @@ async def test_grouped_sql_cost_equals_the_python_pricer_on_every_case(source):
         f = seed.filter()
         with patch(f"{_MODULE}.llm_service.get_all_llm_model_info", return_value=[_HAIKU, _NO_1H, _PARTIAL]):
             funding_rows = await reader.get_session_funding_costs(f)
-            spend_money = price_session_models(await reader.get_session_model_costs(f, spend_only=True))
+            spend_money = price_session_models(await reader.get_session_model_costs(f))
             rates = [model_rates_for(m) for m in sorted({r["model_name"] for r in funding_rows})]
             sessions = {
                 r["session_id"]: r
@@ -332,7 +332,7 @@ async def test_grouped_sql_cost_equals_the_python_pricer_on_every_case(source):
                 f,
                 rates,
                 "SELECT session_id, sum(cost) AS cost, sum(cache_read_cost) AS cache_read_cost "
-                "FROM priced_groups WHERE spend GROUP BY session_id",
+                "FROM priced_groups GROUP BY session_id",
                 stale,
             )
 
@@ -357,10 +357,10 @@ async def test_grouped_sql_cost_equals_the_python_pricer_on_every_case(source):
             {"Foo-X", "foo-x", "FOO-X", "Bar-Y", ""} | spend_unpriced(python_rows)
         )
 
-        # priced_groups summed by session WHERE spend is today's by_session and cache_read_by_session
+        # priced_groups summed by session is today's by_session and cache_read_by_session, the Personal-paid one's too
         by_session = {r["session_id"]: r for r in per_session}
         assert set(by_session) == set(spend_money.by_session)
-        assert named["personal"] not in by_session
+        assert named["personal"] in by_session
         for sid, cost in spend_money.by_session.items():
             assert float(by_session[sid]["cost"]) == pytest.approx(cost, abs=_TOL), sid
             cache_read = spend_money.cache_read_by_session[sid]
@@ -405,7 +405,7 @@ async def test_grouped_sql_cost_equals_the_python_pricer_on_every_case(source):
 
 
 def spend_unpriced(rows: list[dict]) -> set[str]:
-    return {r["model"] for r in rows if r["spend"] and r["missing"]}
+    return {r["model"] for r in rows if r["missing"]}
 
 
 @pytest.mark.parametrize("stale", [None, []], ids=["live", "stored"])
@@ -423,17 +423,12 @@ async def test_a_filter_matching_nothing_gives_no_rows(stale):
 
 def test_grouping_rejects_an_unknown_key():
     with pytest.raises(ValueError, match="key"):
-        Grouping("bad", ["developer"], "spend")
-
-
-def test_grouping_rejects_an_unknown_scope():
-    with pytest.raises(ValueError, match="scope"):
-        Grouping("bad", ["user"], "everything")
+        Grouping("bad", ["developer"])
 
 
 def test_grouped_cost_sql_rejects_a_duplicate_name():
     with pytest.raises(ValueError, match="duplicate"):
-        grouped_cost_sql([Grouping("g", [], "spend"), Grouping("g", ["user"], "all")])
+        grouped_cost_sql([Grouping("g", []), Grouping("g", ["user"])])
 
 
 def test_grouped_cost_sql_rejects_no_grouping():
@@ -442,7 +437,7 @@ def test_grouped_cost_sql_rejects_no_grouping():
 
 
 def test_gc_carries_one_column_per_used_key_only():
-    sql = grouped_cost_sql([Grouping("u", ["user"], "spend"), Grouping("m", ["model", "funding_route"], "all")])
+    sql = grouped_cost_sql([Grouping("u", ["user"]), Grouping("m", ["model", "funding_route"])])
     assert '"user"' in sql and " AS model" in sql and " AS funding_route" in sql
     assert " AS repository" not in sql and " AS personal_billed" not in sql
 
@@ -470,7 +465,7 @@ def test_priced_groups_columns_are_the_same_for_both_forms(stored):
         "AS project",
         "AS funding_route",
         "AS personal_billed",
-        "AS spend",
+        "AS sub_class",
         "AS has_cost_daily",
         "AS cost",
         "AS cache_read_cost",

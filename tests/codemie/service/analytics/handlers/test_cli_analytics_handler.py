@@ -2821,8 +2821,8 @@ async def test_cost_without_the_buckets_asks_only_for_the_spend_groupings_and_ze
     lean, _ = await handler.get_cost(make_filter(), include_buckets=False)
 
     assert asked == [True, False]
-    assert full["models_without_spend"] and full["funding"]["api_based"]["cost_usd"] == 7.0
-    assert lean["models_without_spend"] == []
+    assert full["funding"]["api_based"]["cost_usd"] == 7.0
+    assert full["models_without_spend"] == lean["models_without_spend"] == []
     assert "funding" not in lean and "personal_billed" not in lean  # the response model fills the zero buckets
     # what the Cost tab reads is the same either way
     assert lean["kpis"]["total_cost_usd"] == full["kpis"]["total_cost_usd"] == 5.0
@@ -2987,7 +2987,7 @@ async def test_cost_unpriced_from_spend_total_only():
 
 
 @pytest.mark.asyncio
-async def test_cost_joins_buckets_by_user_and_model_and_lists_models_without_spend():
+async def test_cost_joins_buckets_by_user_and_model_and_leaves_models_without_spend_empty():
     money = GroupedMoney(
         {
             G_TOTAL: [_cg({}, 4.0, 2)],
@@ -3007,9 +3007,9 @@ async def test_cost_joins_buckets_by_user_and_model_and_lists_models_without_spe
 
     assert data["cost_by_user"][0]["personal_billed"]["cost_usd"] == 7.0
     assert data["cost_by_model"][0]["funding"]["api_based"]["cost_usd"] == 4.0
-    assert [
-        (r["model_name"], r["cost_usd"], r["personal_billed"]["cost_usd"]) for r in data["models_without_spend"]
-    ] == [("m-personal", 0.0, 9.0)]
+    # buckets of a model without a G_MODEL row (impossible since EPMCDME-17260: the same sessions) add no row
+    assert [r["model_name"] for r in data["cost_by_model"]] == ["m-spend"]
+    assert data["models_without_spend"] == []
 
 
 # ── /users and /user-charts on one bounded connection (EPMCDME-17051) ──

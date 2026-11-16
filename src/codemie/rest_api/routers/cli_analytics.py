@@ -647,8 +647,8 @@ async def get_cost(
     ),
     include_buckets: bool = Query(
         True,
-        description="Fill the funding-route and personal-billed buckets and `models_without_spend`. A caller that "
-        "does not read them passes false: they are then zero and empty.",
+        description="Fill the funding-route and personal-billed buckets. A caller that does not read them passes "
+        "false: they are then zero.",
     ),
 ) -> JSONResponse:
     _ensure_enabled()

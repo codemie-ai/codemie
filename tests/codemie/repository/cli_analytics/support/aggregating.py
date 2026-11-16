@@ -85,11 +85,22 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
 
     async def money(f, session_ids=None, spend=True):
         """(money of the spend rows, estimate rows) of `session_ids` (every selected session when None)."""
-        spend_rows = await repo.get_session_model_costs(f, spend_only=True) if spend else []
+        spend_rows = await repo.get_session_model_costs(f) if spend else []
         funding_rows = await repo.get_session_funding_costs(f)
         if session_ids is not None:
             spend_rows = [r for r in spend_rows if _s(r.get("session_id")) in session_ids]
         return price_session_models(spend_rows), price_bucket_rows(funding_rows)
+
+    async def class_rows(f) -> list[dict]:
+        """The Overview's `class` rows (the cost by subscription class), priced from the funding rows, which list every
+        session. A class without a session has no row; a funding row without a class reads unknown."""
+        by_class: dict[str, list[dict]] = {}
+        for row in await repo.get_session_funding_costs(f):
+            by_class.setdefault(_s(row.get("subscription_type")) or "unknown", []).append(row)
+        return [
+            _bucket_row("class", price_bucket_rows(named), subscription_type=name)
+            for name, named in sorted(by_class.items())
+        ]
 
     def total_rows(spend, priced: list[dict], session_ids: Any = None, estimate_prefix: str = "") -> list[dict]:
         spend_row = {
@@ -125,6 +136,7 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
                 if cost > 0 and not _i(files.get(sid, {}).get("files_changed"))
             ]
             rows += [{"part": "money", **row} for row in total_rows(spend, priced)]
+            rows += [{"part": "money", **row} for row in await class_rows(f)]
             rows.append({"part": "dead", "n": len(dead), "cost_usd": sum(spend.by_session[sid] for sid in dead)})
         return rows
 

@@ -24,9 +24,9 @@ from codemie.rest_api.routers import cli_analytics_ingest_route
 from codemie.service.analytics.handlers import funding_buckets
 
 # sha256 of the statements as the builders produce them on the base (EPMCDME-16427 part2).
-# The session and spend digests moved with EPMCDME-16457's dashing of dotted Claude versions in normalized_model_name.
+# The session digest moved with EPMCDME-16457's dashing of dotted Claude versions in normalized_model_name. The
+# spend-only form is gone (EPMCDME-17260: every session counts toward the money).
 _SESSION_SQL_DIGEST = "".join(("658929ae3a6dff2b2d94a82d3c42223d", "d22df8d3587b67cf399f90c60c5993fe"))
-_SPEND_SQL_DIGEST = "".join(("4ed2d133211bea7a7d56ab5f593a1a6d", "286730f758bfb3545fde9925e9054094"))
 _GROUPS_SQL_DIGEST = "".join(("fbde8947bbc1dd3a0dbd08bdf5b90e18", "2fdd32c64a920c243a0f6ff115d4bf51"))
 
 
@@ -36,7 +36,6 @@ def _digest(text: str) -> str:
 
 def test_public_pricing_builders_keep_session_cost_key_unchanged():
     assert _digest(cost_key_sql.session_cost_key_sql()) == _SESSION_SQL_DIGEST
-    assert _digest(cost_key_sql.session_cost_key_sql(True)) == _SPEND_SQL_DIGEST
     assert _digest(cost_key_sql.cost_key_from_groups_sql()) == _GROUPS_SQL_DIGEST
     assert cost_key_sql.cost_terms() in cost_key_sql.session_cost_key_sql()
     assert cost_key_sql.RATES_JOIN in cost_key_sql.session_cost_key_sql()

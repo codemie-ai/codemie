@@ -27,7 +27,6 @@ from typing import Any
 
 from codemie.repository.cli_analytics.ports import ModelRates
 from codemie.repository.cli_analytics.postgres.kind_masks import KIND_BITS, KIND_TOKENS, RATE_COLUMNS
-from codemie.repository.cli_analytics.scope import sql_personal_billed
 
 
 def normalized_model_name(column: str) -> str:
@@ -64,12 +63,6 @@ def normalized_model_name(column: str) -> str:
         f"CASE WHEN {without_vertex_date} ~* '^claude-' "
         f"THEN regexp_replace({without_vertex_date}, '(?<=\\d)\\.(?=\\d)', '-', 'g') ELSE {without_vertex_date} END"
     )
-
-
-# Spend is what the company or a project pays: the cost of a Personal-paid session (also one stored under a work
-# project) stays out of every aggregate money value, while the session itself remains in `sel` as activity.
-def _spend(alias: str) -> str:
-    return f"{alias}.session_id NOT IN (SELECT session_id FROM sel WHERE {sql_personal_billed('sel')})"
 
 
 _SEL_SESSIONS = ("c.session_id IN (SELECT session_id FROM sel)", "u.session_id IN (SELECT session_id FROM sel)")
@@ -111,12 +104,13 @@ def _token_rows(session_where: str, usage_where: str) -> str:
     )
 
 
-def model_token_groups(spend_only: bool = False, normalized: bool = True, live: bool = False) -> str:
+def model_token_groups(normalized: bool = True, live: bool = False) -> str:
     """THE token grouping: one row per (session, raw model) of the selected sessions, summed from `cost_daily` and
     the subagent totals-only rows of `session_usage` (see _token_rows), scoped by `sel`. Columns: session_id,
     model_name, normalized_model_name and the six token sums (the 5m / 1h sums stay NULL when no row has a split).
     `get_session_model_costs`, the cost key and the kind flags all read it, so they cannot disagree.
-    `spend_only` leaves out Personal-paid sessions (see _spend). `normalized=False` leaves out the normalised name,
+    Every selected session counts, the Personal-paid ones too (EPMCDME-17260). `normalized=False` leaves out the
+    normalised name,
     which the cost key and the flags never read (three regexp passes per group on a million groups). `live` keeps only
     the sessions of the CTE `live` (a stored read)."""
     model_name = normalized_model_name("c.model_name")
@@ -132,7 +126,7 @@ def model_token_groups(spend_only: bool = False, normalized: bool = True, live: 
                sum(c.cache_creation_5m_tokens)::bigint      AS cache_creation_5m_tokens,
                sum(c.cache_creation_1h_tokens)::bigint      AS cache_creation_1h_tokens
         FROM {_token_rows(*_sessions_of(live))}
-        WHERE true{f" AND {_spend('c')}" if spend_only else ""}
+        WHERE true
         GROUP BY c.session_id, c.model_name) g"""
 
 
@@ -207,14 +201,14 @@ def kind_flags_from_groups_sql() -> str:
     return f"(SELECT g.model_name, {flags} FROM g GROUP BY g.model_name) fl"
 
 
-def session_cost_key_sql(spend_only: bool = False) -> str:
+def session_cost_key_sql() -> str:
     """The SQL twin of `CatalogPricer.price` summed per session, as a derived table `k(session_id, cost_key)`:
     the kind-to-rate table of `KIND_TOKENS` / `RATE_COLUMNS`, a kind with `tokens <= 0` skipped, a missing rate
     (or a model without rates) counting as 0. `cost_key` is `round(cost, 9)` as numeric. Needs `sel` and the
     `rates_params` of the models; rates are bound as float8."""
     return (
         f"(SELECT g.session_id, round(sum({cost_terms()})::numeric, 9) AS cost_key "
-        f"FROM {model_token_groups(spend_only)} {RATES_JOIN} GROUP BY g.session_id) k"
+        f"FROM {model_token_groups()} {RATES_JOIN} GROUP BY g.session_id) k"
     )
 
 

@@ -91,8 +91,8 @@ class LocalAnalyticsFundingBuckets(BaseModel):
 
 
 class _EstimateBuckets(BaseModel):
-    """Additive estimates next to the spend: every selected session by funding route, and the personal-billed
-    sessions (by derived billing class) whose cost stays out of every spend value."""
+    """A breakdown of the cost: every selected session by funding route, and the personal-billed sessions (by derived
+    billing class), whose cost counts in the total like any other since EPMCDME-17260."""
 
     funding: LocalAnalyticsFundingBuckets = Field(
         default_factory=LocalAnalyticsFundingBuckets, description="Client-asserted estimate, not proof of billing"
@@ -113,6 +113,10 @@ class PaginationMetadata(BaseModel):
 class LocalAnalyticsOverviewKPIs(_ClassLists):
     total_sessions: int
     total_cost_usd: float
+    api_cost_usd: float = Field(0.0, description="Cost of the sessions routed through the CodeMie proxy")
+    subscription_cost_usd: float = Field(
+        0.0, description="Cost of every other session at API rates, Personal-paid included; not billed"
+    )
     duration_ms: int
     total_turns: int
     total_tool_calls: int
@@ -470,7 +474,8 @@ class LocalAnalyticsCostData(_EstimateBuckets):
     cost_by_model: list[LocalAnalyticsCostByModelRow] = Field(default_factory=list)
     models_without_spend: list[LocalAnalyticsCostByModelRow] = Field(
         default_factory=list,
-        description="Models only the estimate priced (no spend): cost_usd 0 plus buckets; never in cost_by_model",
+        description="Always empty since EPMCDME-17260 (every model with cost is in cost_by_model, Personal-paid "
+        "included); kept for compatibility",
     )
 
 

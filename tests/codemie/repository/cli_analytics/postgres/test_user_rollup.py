@@ -107,8 +107,8 @@ def cohort():
 def test_the_ranking_orders_by_spend_then_code_point_and_puts_costless_users_last():
     served = ur.assemble(cohort())
 
-    # equal spend: "B" < "a" in code-point order; the personal-billed user's cost is not spend
-    assert served.money_page.developers == ["B@x", "a@x", "pers@x", "zero@x"]
+    # the personal-billed user's cost counts (EPMCDME-17260); equal spend: "B" < "a" in code-point order
+    assert served.money_page.developers == ["pers@x", "B@x", "a@x", "zero@x"]
     assert served.money_page.total_count == 4
 
 
@@ -116,10 +116,10 @@ def test_the_groupings_follow_the_users_page_rules():
     groups = ur.assemble(cohort()).money_page.money.groups
 
     total = groups[G_TOTAL][0]
-    assert (total.cost_usd, total.session_count) == (4.0, 2)  # personal-billed is left out of spend
+    assert (total.cost_usd, total.session_count) == (13.0, 3)  # personal-billed counts too (EPMCDME-17260)
     assert total.unpriced_models == ("m",) and total.cost_incomplete
     by_user = {g.keys["user"]: g for g in groups[G_USER]}
-    assert set(by_user) == {"B@x", "a@x"}  # spend only
+    assert set(by_user) == {"B@x", "a@x", "pers@x"}
     assert by_user["a@x"].cost_usd == 2.0 and by_user["a@x"].session_count == 1  # not limited to cost_daily rows
     assert {g.keys["funding_route"]: g.session_count for g in groups[G_ROUTE]} == {"api_based": 2, "subscription": 1}
     assert {g.keys["personal_billed"]: g.cost_usd for g in groups[G_PERSONAL]} == {False: 4.0, True: 9.0}
@@ -457,10 +457,10 @@ def test_the_cost_totals_follow_the_cost_page_rules():
     groups = served.money.groups
 
     total = groups[G_TOTAL][0]
-    assert (total.cost_usd, total.session_count) == (4.5, 4)  # spend: personal-billed left out, every priced session
+    assert (total.cost_usd, total.session_count) == (13.5, 5)  # every priced session, personal-billed too
     assert total.unpriced_models == ("m",) and total.cost_incomplete
     assert served.total_sessions == 7  # every session of the window, priced or not
-    assert served.spend_sessions == 3  # the spend sessions that have a cost_daily row
+    assert served.spend_sessions == 4  # the sessions that have a cost_daily row, personal-billed too
     assert served.total_tokens == 10 + 1 + 5 + 1 + 7 + 1 + 100 + 1  # every developer, personal-billed included
 
 
@@ -469,7 +469,7 @@ def test_the_cost_per_developer_counts_only_the_cost_daily_sessions_and_lists_ev
     by_user = {g.keys["user"]: g for g in served.money.groups[G_USER]}
 
     assert (by_user["a@x"].cost_usd, by_user["a@x"].session_count) == (2.0, 2)  # cd: not the 3 of the total
-    assert set(by_user) == {"a@x", "b@x"}  # spend only: the personal-billed developer has no figure
+    assert set(by_user) == {"a@x", "b@x", "pers@x"}  # the personal-billed developer has a figure too
     assert served.developers == ["a@x", "b@x", "pers@x"]  # listed: has a cost_daily session, any billing
 
 
@@ -641,13 +641,27 @@ def test_the_overview_rows_have_the_shapes_the_live_statements_return():
     served = ur.assemble_overview(c)
 
     spend = next(r for r in served.money_rows if r["part"] == "money")
-    assert (spend["key"], spend["cost_usd"], spend["cache_read_cost_usd"]) == ("spend", 3.25, 0.5)
+    assert (spend["key"], spend["cost_usd"]) == ("spend", 3.25)  # the cache cost is of every session: the `all` row
     assert spend["unpriced_models"] == ["raw-a", "raw-b"]
     assert next(r for r in served.money_rows if r["part"] == "dead")["n"] == 1
     assert served.fact_rows == [
         {"part": "facts", "turns": 7, "tool_calls": 5, "tool_calls_success": 4, "duration_ms": 1000, "files_changed": 2}
     ]
     assert served.kpi_rows[0]["total_sessions"] == 4 and served.kpi_rows[0]["total_api_calls"] == 2
+
+
+def test_the_cost_of_each_subscription_class_adds_across_days_and_is_served_as_class_rows():
+    a = ur.OverviewAgg(class_cost={"codemie": Decimal("1.5"), "personal": Decimal("2")})
+    a.merge(ur.OverviewAgg(class_cost={"codemie": Decimal("0.5"), "unknown": Decimal("1")}))
+
+    assert a.class_cost == {"codemie": Decimal("2.0"), "personal": Decimal("2"), "unknown": Decimal("1")}
+    served = ur.assemble_overview(overview_cohort(class_cost=a.class_cost))
+    classes = [r for r in served.money_rows if r.get("key") == "class"]
+    assert classes == [
+        {"part": "money", "key": "class", "subscription_type": "codemie", "cost_usd": 2.0},
+        {"part": "money", "key": "class", "subscription_type": "personal", "cost_usd": 2.0},
+        {"part": "money", "key": "class", "subscription_type": "unknown", "cost_usd": 1.0},
+    ]
 
 
 def test_a_window_with_no_spend_has_no_spend_row_as_the_live_grouping():
@@ -830,9 +844,10 @@ def test_the_insert_statements_and_the_aggregate_follow_the_columns_of_the_migra
 class ReadConn:
     """Answers the window reads of `_window_cohort`: the Overview rows given, nothing for the others."""
 
-    def __init__(self, sums=None, unpriced=(), lines=(), models=(), sessions=0):
+    def __init__(self, sums=None, unpriced=(), lines=(), models=(), sessions=0, classes=()):
         self.sums = sums if sums is not None else {name: None for name in ur.OVERVIEW_SUMS}
         self.unpriced, self.lines, self.models, self.sessions, self.args = unpriced, lines, models, sessions, []
+        self.classes = classes
         self.sql: list[str] = []
 
     async def fetchval(self, sql, *args):
@@ -850,6 +865,8 @@ class ReadConn:
             return list(self.lines)
         if sql == ur._OVERVIEW_MODELS_SQL:
             return list(self.models)
+        if sql == ur._OVERVIEW_CLASSES_SQL:
+            return list(self.classes)
         return []
 
     async def fetchrow(self, sql, *args):
@@ -890,6 +907,18 @@ async def test_the_window_read_rebuilds_the_overview_aggregate_from_its_rows():
         ["codemie"],
         None,
     ) in conn.args  # the window and the classes asked for
+
+
+@pytest.mark.asyncio
+async def test_the_window_read_takes_the_cost_of_each_subscription_class_from_the_money_rows():
+    conn = ReadConn(
+        classes=[{"sub_class": "codemie", "cost": Decimal("4")}, {"sub_class": "personal", "cost": Decimal("3")}]
+    )
+
+    cohort = await ur._window_cohort(conn, date(2026, 11, 1), date(2026, 11, 2), None, None, overview=True)
+
+    assert cohort.overview.class_cost == {"codemie": Decimal("4"), "personal": Decimal("3")}
+    assert "FROM user_day_money_rollup" in ur._OVERVIEW_CLASSES_SQL and "{" not in ur._OVERVIEW_CLASSES_SQL
 
 
 @pytest.mark.asyncio
@@ -934,6 +963,8 @@ class FakeStatements:
                 "unpriced_models": ["raw-a"],
             },
             {"part": "money", "key": "route", "cost_usd": Decimal("9")},  # an estimate bucket: not stored
+            {"part": "money", "key": "class", "subscription_type": "codemie", "cost_usd": Decimal("1.25")},
+            {"part": "money", "key": "class", "subscription_type": "personal", "cost_usd": Decimal("2")},
             {"part": "dead", "n": 2},
         ]
 
@@ -994,6 +1025,7 @@ async def test_gather_overview_maps_each_live_statement_to_the_aggregate_field_i
         {"raw-a"},
         2,
     )
+    assert o.class_cost == {"codemie": Decimal("1.25"), "personal": Decimal("2")}
     assert (o.turns, o.tool_calls, o.tool_successes, o.duration_ms, o.files_changed) == (7, 5, 4, 900, 3)
     assert (o.input_tokens, o.output_tokens, o.cache_read_tokens, o.cache_creation_tokens, o.api_calls) == (
         10,
@@ -1080,12 +1112,30 @@ async def serve(conn, overview=False, models=False):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("shape", "overview", "served"),
-    [(1, False, False), (2, False, True), (2, True, False), (3, False, True), (3, True, True), (4, True, True)],
-    ids=["old-users", "cost-users", "cost-overview", "full-users", "full-overview", "newer-overview"],
+    [
+        (1, False, False),
+        (2, False, False),
+        (2, True, False),
+        (3, False, False),
+        (3, True, False),
+        (4, False, True),
+        (4, True, True),
+        (5, True, True),
+    ],
+    ids=[
+        "old-users",
+        "spend-only-model-rows-users",
+        "cost-overview",
+        "spend-only-model-rows-users-3",
+        "spend-only-overview",
+        "full-users",
+        "full-overview",
+        "newer",
+    ],
 )
 async def test_a_reader_needs_only_the_shape_that_holds_what_it_reads(shape, overview, served):
-    # /users and /cost read what a day of the cost shape holds, so they are not refused while the days are rebuilt for
-    # the Overview rows; the Overview needs those rows; a day of a newer shape holds at least as much.
+    # Below shape 4 a day's stored money leaves the Personal-paid sessions out (EPMCDME-17260), so every reader needs
+    # shape 4: /users and /cost for the model rows, the Overview for its rows; a day of a newer shape holds as much.
     result = await serve(ServeConn(day_states(shape)), overview=overview)
 
     assert (result is not None) is served
@@ -1106,7 +1156,7 @@ async def test_the_overview_of_the_live_gap_sessions_is_added_to_the_rollup_rows
     monkeypatch.setattr(ur, "gather_overview", fake_overview)
     monkeypatch.setattr(ur, "_on_held", _noop)
 
-    cohort = await serve(ServeConn(day_states(3), resumed=["s1", "s2"]), overview=True)
+    cohort = await serve(ServeConn(day_states(ur.SHAPE_OVERVIEW), resumed=["s1", "s2"]), overview=True)
 
     assert seen["session_ids"] == ["s1", "s2"]  # only the sessions that started earlier and are active in the window
     assert cohort.users["live@x"].session_count == 2 and cohort.overview.sessions == 2  # counted with the rollup's
@@ -1125,7 +1175,7 @@ async def test_the_overview_statements_do_not_run_for_the_live_gap_sessions_of_u
     monkeypatch.setattr(ur, "gather_overview", fake_overview)
     monkeypatch.setattr(ur, "_on_held", _noop)
 
-    cohort = await serve(ServeConn(day_states(2), resumed=["s1"]))
+    cohort = await serve(ServeConn(day_states(ur.SHAPE_COST), resumed=["s1"]))
 
     assert cohort.users["live@x"].session_count == 1 and cohort.overview.turns == 0
 

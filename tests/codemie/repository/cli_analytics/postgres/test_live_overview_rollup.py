@@ -32,6 +32,7 @@ from tests.codemie.repository.cli_analytics.postgres.live_helpers import _COST_S
 from tests.codemie.service.analytics.handlers.test_coding_agent_pricing import _HAIKU
 
 VERSION = "test-overview-rates-version"
+PERSONAL_MODEL = "claude-haiku-4-5"  # priced by the patched catalog (`_HAIKU`), so its cache re-reads cost money
 _TABLES = ("session_dims", "cost_daily", "lines_daily", "turns_daily", "invocations_hourly")
 _ROLLUP_TABLES = (*ur._DAY_TABLES, "user_rollup_day_state")
 
@@ -48,7 +49,8 @@ async def _forget_days(engine, days) -> None:
 
 
 class _Models:
-    """Sessions of a few developers over models that tie on sessions and spend, so the order falls to the name."""
+    """Sessions of a few developers over models that tie on sessions and spend, so the order falls to the name, in
+    the API and Subscription classes, and one Personal-paid session on a model of its own."""
 
     def __init__(self) -> None:
         self.suffix = uuid.uuid4().hex[:10]
@@ -77,6 +79,11 @@ class _Models:
                     email = f"dev{n % 3}-{self.suffix}@x.com"
                     self.sids.append(sid)
                     await conn.execute(_DIMS_SQL, sid, self.t0, self.t0 + timedelta(minutes=1), email)
+                    await conn.execute(  # API and Subscription sessions: the `class` rows
+                        "UPDATE session_dims SET subscription_type = $2 WHERE session_id = $1",
+                        sid,
+                        ("codemie", "corporate")[n % 2],
+                    )
                     await conn.execute(_COST_SQL, day, sid, email, self.model(name), 1000, 10, 0, 0, None, None)
                     await conn.execute("UPDATE cost_daily SET cost_usd = $2 WHERE session_id = $1", sid, spend)
                     await conn.execute("INSERT INTO turns_daily (day, session_id, turns) VALUES ($1, $2, 2)", day, sid)
@@ -90,6 +97,21 @@ class _Models:
                         10 * n,
                         n,
                     )
+
+            # a Personal-paid work-project session (a shared origin, so not private and in the rollup's scope): in
+            # the spend and its `personal` class row since EPMCDME-17260. On a priced model of its own (not ending in
+            # the suffix, so the ties above stay) with cache re-reads, so the cache re-read cost is not zero
+            sid, email = f"test-overview-{self.suffix}-personal", f"dev0-{self.suffix}@x.com"
+            self.sids.append(sid)
+            await conn.execute(_DIMS_SQL, sid, self.t0, self.t0 + timedelta(minutes=1), email)
+            await conn.execute(
+                "UPDATE session_dims SET subscription_type = 'personal', project_origin = 'profile'"
+                " WHERE session_id = $1",
+                sid,
+            )
+            await conn.execute(_COST_SQL, day, sid, email, PERSONAL_MODEL, 1000, 10, 1_000_000, 0, None, None)
+            await conn.execute("UPDATE cost_daily SET cost_usd = 4 WHERE session_id = $1", sid)
+            await conn.execute("INSERT INTO turns_daily (day, session_id, turns) VALUES ($1, $2, 2)", day, sid)
 
     async def cleanup(self, engine) -> None:
         async with engine.acquire() as conn:
@@ -138,13 +160,22 @@ async def test_the_rollup_serves_the_overview_the_live_statements_give_with_the_
                 live_lines = await repo.get_overview_lines(live_filter)
 
         # the cards: money, facts, tokens
-        live_spend = next((r for r in live_money if r["part"] == "money" and r["key"] == "spend"), None)
-        served_spend = next((r for r in served.money_rows if r["part"] == "money"), None)
-        assert (served_spend is None) == (live_spend is None)
-        if live_spend is not None:
-            assert served_spend["cost_usd"] == pytest.approx(float(live_spend["cost_usd"]))
-            assert served_spend["cache_read_cost_usd"] == pytest.approx(float(live_spend["cache_read_cost_usd"]))
-            assert sorted(served_spend["unpriced_models"]) == sorted(live_spend["unpriced_models"] or [])
+        money = lambda rows, key: [r for r in rows if r["part"] == "money" and r["key"] == key]  # noqa: E731
+        live_spend, served_spend = money(live_money, "spend"), money(served.money_rows, "spend")
+        assert len(served_spend) == len(live_spend)
+        # Est. Cost and the cache re-read cost (Bloat %): the spend row, over every session of the window
+        for served_row, live_row in zip(served_spend, live_spend):
+            assert served_row["cost_usd"] == pytest.approx(float(live_row["cost_usd"]))
+            assert served_row["cache_read_cost_usd"] == pytest.approx(float(live_row["cache_read_cost_usd"]))
+            assert served_row["cache_read_cost_usd"] > 0  # the seeded cache re-reads: a dropped value would read 0
+            assert sorted(served_row["unpriced_models"]) == sorted(live_row["unpriced_models"] or [])
+        # API Spend and Subscription Usage: the `class` rows, the cost by subscription class
+        by_class = lambda rows: {r["subscription_type"]: float(r["cost_usd"]) for r in money(rows, "class")}  # noqa: E731
+        live_classes, served_classes = by_class(live_money), by_class(served.money_rows)
+        assert served_classes.keys() == live_classes.keys()
+        assert {"codemie", "corporate", "personal"} <= live_classes.keys()  # the seeded Personal-paid session is in
+        for name, cost in live_classes.items():
+            assert served_classes[name] == pytest.approx(cost), name
         assert _by_part(served.money_rows, "dead")[0]["n"] == _by_part(live_money, "dead")[0]["n"]
         for key in ("turns", "tool_calls", "tool_calls_success", "duration_ms", "files_changed"):
             assert served.fact_rows[0][key] == int(live_facts[0][key] or 0), key

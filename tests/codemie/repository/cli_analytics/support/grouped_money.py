@@ -15,7 +15,7 @@
 """A fake `get_cost_money` for handler tests: the Python pricer's figures shaped as the reader's `GroupedMoney`.
 
 It prices the rows of `get_session_funding_costs` (a `funding_route` and a `personal_billed` flag are optional) the way
-the SQL does: spend groupings leave Personal-paid rows out, a blank model has no model group, `user` groupings keep the
+the SQL does: every row counts, the Personal-paid ones too, a blank model has no model group, `user` groupings keep the
 sessions of `cost_daily`, and a grouping that matches no row has no row.
 """
 
@@ -40,17 +40,17 @@ from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPrice
 from codemie.service.analytics.handlers.session_money import token_counts
 
 _SPEND_NAMES = (G_TOTAL, G_USER, G_MODEL)
-# (name, keys, spend scope, cost_daily sessions only)
+# (name, keys, cost_daily sessions only)
 _GROUPINGS = (
-    (G_TOTAL, (), True, False),
-    (G_USER, ("user",), True, True),
-    (G_MODEL, ("model",), True, False),
-    (G_ROUTE, ("funding_route",), False, False),
-    (G_PERSONAL, ("personal_billed",), False, False),
-    (G_USER_ROUTE, ("user", "funding_route"), False, True),
-    (G_USER_PERSONAL, ("user", "personal_billed"), False, True),
-    (G_MODEL_ROUTE, ("model", "funding_route"), False, False),
-    (G_MODEL_PERSONAL, ("model", "personal_billed"), False, False),
+    (G_TOTAL, (), False),
+    (G_USER, ("user",), True),
+    (G_MODEL, ("model",), False),
+    (G_ROUTE, ("funding_route",), False),
+    (G_PERSONAL, ("personal_billed",), False),
+    (G_USER_ROUTE, ("user", "funding_route"), True),
+    (G_USER_PERSONAL, ("user", "personal_billed"), True),
+    (G_MODEL_ROUTE, ("model", "funding_route"), False),
+    (G_MODEL_PERSONAL, ("model", "personal_billed"), False),
 )
 
 
@@ -82,10 +82,10 @@ def price_groups(rows: Iterable[dict[str, Any]], developers: dict[str, str] | No
             }
         )
     groups: dict[str, list[CostGroup]] = {}
-    for name, keys, spend, daily in _GROUPINGS:
+    for name, keys, daily in _GROUPINGS:
         buckets: dict[tuple, list[dict]] = {}
         for p in priced:
-            if (spend and p["personal_billed"]) or (daily and developers is not None and p["sid"] not in developers):
+            if daily and developers is not None and p["sid"] not in developers:
                 continue
             if "model" in keys and not p["model"]:
                 continue
@@ -111,11 +111,11 @@ def fake_cost_money(rows: Iterable[dict[str, Any]], developers: dict[str, str] |
 
     async def get_cost_money(f, rates, buckets=True):
         money = price_groups(rows, developers)
-        return money if buckets else spend_only(money)
+        return money if buckets else without_buckets(money)
 
     return get_cost_money
 
 
-def spend_only(money: GroupedMoney) -> GroupedMoney:
+def without_buckets(money: GroupedMoney) -> GroupedMoney:
     """`money` without the funding-route and Personal-billed estimate groupings."""
     return GroupedMoney({name: money.groups.get(name, []) for name in _SPEND_NAMES})

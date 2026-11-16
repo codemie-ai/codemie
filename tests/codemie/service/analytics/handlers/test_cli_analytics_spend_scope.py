@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Aggregate spend excludes Personal-paid work-project sessions end to end through the five handlers
-(EPMCDME-16440, review CR-008 / CR-009).
+"""Aggregate cost counts Personal-paid work-project sessions like any other, end to end through the five handlers
+(EPMCDME-17260, which reverses the exclusion of EPMCDME-16440).
 
-The reader is a fake that honours `spend_only` the way the SQL does (`_spend`): it drops Personal-paid sessions from
-the priced model rows and counts only the others in `spend_sessions`. Everything else it answers is the same
-three-session fact set, so activity stays visible and only the money and its divisors can move. Dropping the flag at
-any call site, or dividing by `total_sessions`, changes an asserted value.
+The reader is a fake that answers the same three-session fact set to every statement: one corporate session and two
+Personal-paid ones. Every money value and its divisors cover all three; the `personal_billed` buckets stay a breakdown
+of that total, not an addition to it.
 """
 
 from datetime import datetime
@@ -55,27 +54,37 @@ def make_filter():
 def catalog():
     model = MagicMock()
     model.base_name = model.deployment_name = MODEL  # a string, so a model missing from the catalog is unpriced
-    model.cost = CostConfig(input=1e-6, output=5e-6)
+    model.cost = CostConfig(input=1e-6, output=5e-6, cache_read_input_token_cost=1e-7)
     return patch(CATALOG, return_value=[model])
 
 
 def handler_over(sessions):
-    """A handler over a reader that answers `sessions` and honours `spend_only`; `calls` records every flag."""
-    spend = {sid for sid, s in sessions.items() if s["paid"] != "personal"}
-    calls: list[bool] = []
+    """A handler over a reader that answers `sessions`; `calls` records every read of the per-session model rows."""
+    calls: list[str] = []
 
     def row(sid, s):
         model = s.get("model", MODEL)
-        return {"session_id": sid, "model_name": model, "normalized_model_name": model, "input_tokens": s["tokens"]}
+        return {
+            "session_id": sid,
+            "model_name": model,
+            "normalized_model_name": model,
+            "input_tokens": s["tokens"],
+            "cache_read_tokens": s.get("cache", 0),
+        }
 
-    async def model_costs(_f, *, spend_only=False):
-        calls.append(spend_only)
-        return [row(sid, s) for sid, s in sessions.items() if not spend_only or sid in spend]
+    async def model_costs(_f):
+        calls.append("model_costs")
+        return [row(sid, s) for sid, s in sessions.items()]
 
     async def funding_costs(_f):
         # as the SQL: every selected session, NULL route read as unknown, the billing class as a flag
         return [
-            {**row(sid, s), "funding_route": s.get("route") or "unknown", "personal_billed": s["paid"] == "personal"}
+            {
+                **row(sid, s),
+                "funding_route": s.get("route") or "unknown",
+                "personal_billed": s["paid"] == "personal",
+                "subscription_type": s["paid"],
+            }
             for sid, s in sessions.items()
         ]
 
@@ -94,7 +103,7 @@ def handler_over(sessions):
     repo.get_cost_money = fake_cost_money(money_rows, devs)
     repo.get_session_model_costs = model_costs
     repo.get_session_funding_costs = funding_costs
-    repo.get_cost_kpis = AsyncMock(return_value=[{"total_sessions": len(sessions), "spend_sessions": len(spend)}])
+    repo.get_cost_kpis = AsyncMock(return_value=[{"total_sessions": len(sessions), "spend_sessions": len(sessions)}])
     repo.get_cost_by_user = AsyncMock(return_value=[{"developer_name": d} for d in by_dev])
     install_users_reads(
         repo,
@@ -135,48 +144,106 @@ def handler_over(sessions):
 
 
 @pytest.mark.asyncio
-async def test_cost_excludes_personal_paid_spend_and_divides_by_the_spend_sessions():
+async def test_cost_counts_personal_paid_and_divides_by_every_priced_session():
     handler, calls = handler_over(SESSIONS)
     with catalog():
         data, _ = await handler.get_cost(make_filter())
 
     kpis = data["kpis"]
-    assert kpis["total_sessions"] == 3  # activity stays whole
-    assert kpis["total_cost_usd"] == pytest.approx(CORPORATE_COST)
-    assert kpis["avg_cost_per_session"] == pytest.approx(CORPORATE_COST / 1)  # not / 3
+    assert kpis["total_sessions"] == 3
+    assert kpis["total_cost_usd"] == pytest.approx(CORPORATE_COST + PERSONAL_COST)
+    assert kpis["avg_cost_per_session"] == pytest.approx((CORPORATE_COST + PERSONAL_COST) / 3)
     users = {r["developer_name"]: r["cost_usd"] for r in data["cost_by_user"]}
-    assert users == {"alice": pytest.approx(CORPORATE_COST), "bob": 0.0}
-    assert [(r["model_name"], r["cost_usd"]) for r in data["cost_by_model"]] == [(MODEL, pytest.approx(CORPORATE_COST))]
+    assert users == {"alice": pytest.approx(CORPORATE_COST), "bob": pytest.approx(PERSONAL_COST)}
+    assert [(r["model_name"], r["cost_usd"]) for r in data["cost_by_model"]] == [
+        (MODEL, pytest.approx(CORPORATE_COST + PERSONAL_COST))
+    ]
     assert calls == []  # the money is grouped in one statement, not priced from session rows
 
 
 @pytest.mark.asyncio
-async def test_cost_without_any_spend_session_is_zero_and_keeps_every_session():
+async def test_cost_with_only_personal_paid_sessions_is_their_cost():
     only_personal = {k: v for k, v in SESSIONS.items() if v["paid"] == "personal"}
     handler, _ = handler_over(only_personal)
     with catalog():
         data, _ = await handler.get_cost(make_filter())
 
     assert data["kpis"]["total_sessions"] == 2
-    assert data["kpis"]["total_cost_usd"] == 0.0
-    assert data["kpis"]["avg_cost_per_session"] == 0.0
-    assert [r["cost_usd"] for r in data["cost_by_user"]] == [0.0]
+    assert data["kpis"]["total_cost_usd"] == pytest.approx(PERSONAL_COST)
+    assert data["kpis"]["avg_cost_per_session"] == pytest.approx(PERSONAL_COST / 2)
+    assert [r["cost_usd"] for r in data["cost_by_user"]] == [pytest.approx(PERSONAL_COST)]
 
 
 @pytest.mark.asyncio
-async def test_overview_spend_excludes_personal_paid_and_keeps_the_activity_count():
+async def test_overview_est_cost_counts_personal_paid_as_every_tab_does():
     handler, calls = handler_over(SESSIONS)
     with catalog():
         data, _, _ = await handler.get_overview(make_filter())
 
     assert data["kpis"]["total_sessions"] == 3
-    assert data["kpis"]["total_cost_usd"] == pytest.approx(CORPORATE_COST)
-    assert data["kpis"]["dead_sessions"] == 1  # only the spend session can be dead
-    assert calls == [True]
+    assert data["kpis"]["total_cost_usd"] == pytest.approx(CORPORATE_COST + PERSONAL_COST)
+    assert data["kpis"]["dead_sessions"] == 3  # no session changed a file: each priced one is dead, Personal-paid too
+    assert calls == ["model_costs"]
+
+
+# Overview splits the cost in two: API is the sessions routed through the CodeMie proxy
+# (`subscription_type` codemie), Subscription is every other class, Personal-paid included. Est. Cost is their sum.
+API_SESSIONS = {
+    **SESSIONS,
+    "api": {"dev": "carol", "repo": "repo-c", "paid": "codemie", "tokens": 4_000_000, "route": "api_based"},
+    "unk": {"dev": "dave", "repo": "repo-d", "paid": "unknown", "tokens": 5_000_000},
+}
+API_COST = 4.0
+SUBSCRIPTION_COST = CORPORATE_COST + PERSONAL_COST + 5.0  # corporate, personal and unknown
 
 
 @pytest.mark.asyncio
-async def test_users_cost_is_corporate_only_and_every_user_stays_listed():
+@pytest.mark.parametrize("include_buckets", [True, False])
+async def test_overview_splits_api_from_subscription_and_est_cost_is_their_sum(include_buckets):
+    handler, _ = handler_over(API_SESSIONS)
+    with catalog():
+        data, _, _ = await handler.get_overview(make_filter(), include_buckets=include_buckets)
+
+    kpis = data["kpis"]
+    assert kpis["api_cost_usd"] == pytest.approx(API_COST)
+    assert kpis["subscription_cost_usd"] == pytest.approx(SUBSCRIPTION_COST)
+    assert kpis["total_cost_usd"] == pytest.approx(API_COST + SUBSCRIPTION_COST)
+
+
+# cache read is $0.10 per 1M tokens: the spend session costs 1 + 1 and the personal one 1 + 3
+CACHE_SESSIONS = {
+    "corp": {"dev": "alice", "repo": "repo-a", "paid": "corporate", "tokens": 1_000_000, "cache": 10_000_000},
+    "pers": {"dev": "bob", "repo": "repo-b", "paid": "personal", "tokens": 1_000_000, "cache": 30_000_000},
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_buckets", [True, False])
+async def test_overview_cache_reread_cost_and_bloat_are_over_the_total_cost_personal_included(include_buckets):
+    handler, _ = handler_over(CACHE_SESSIONS)
+    with catalog():
+        data, _, _ = await handler.get_overview(make_filter(), include_buckets=include_buckets)
+
+    kpis = data["kpis"]
+    assert kpis["total_cost_usd"] == pytest.approx(6.0)
+    assert kpis["cache_read_cost_usd"] == pytest.approx(4.0)  # the spend session's 1 and the personal one's 3
+    assert kpis["bloat_pct"] == 66.7  # 4 of 6
+
+
+@pytest.mark.asyncio
+async def test_overview_with_only_personal_sessions_is_all_subscription():
+    only_personal = {sid: s for sid, s in SESSIONS.items() if s["paid"] == "personal"}
+    handler, _ = handler_over(only_personal)
+    with catalog():
+        data, _, _ = await handler.get_overview(make_filter(), include_buckets=False)
+
+    kpis = data["kpis"]
+    assert (kpis["api_cost_usd"], kpis["subscription_cost_usd"]) == (0.0, pytest.approx(PERSONAL_COST))
+    assert kpis["total_cost_usd"] == pytest.approx(PERSONAL_COST)
+
+
+@pytest.mark.asyncio
+async def test_users_cost_counts_personal_paid():
     handler, calls = handler_over(SESSIONS)
     with catalog():
         data, _ = await handler.get_users(make_filter(), None, None)
@@ -184,13 +251,13 @@ async def test_users_cost_is_corporate_only_and_every_user_stays_listed():
     rows = {r["developer_name"]: r for r in data["rows"]}
     assert set(rows) == {"alice", "bob"}
     assert rows["alice"]["cost_usd"] == pytest.approx(CORPORATE_COST)
-    assert rows["bob"]["cost_usd"] == 0.0
+    assert rows["bob"]["cost_usd"] == pytest.approx(PERSONAL_COST)
     assert (rows["alice"]["session_count"], rows["bob"]["session_count"]) == (1, 2)
     assert calls == []  # the users' money is grouped in one statement, not priced from session rows
 
 
 @pytest.mark.asyncio
-async def test_repositories_cost_is_corporate_only_and_every_repository_stays_listed():
+async def test_repositories_cost_counts_personal_paid():
     handler, calls = handler_over(SESSIONS)
     with catalog():
         data, _ = await handler.get_repositories(make_filter(), 0, 50, include_branches=False)
@@ -198,48 +265,48 @@ async def test_repositories_cost_is_corporate_only_and_every_repository_stays_li
     rows = {r["repository"]: r for r in data["rows"]}
     assert set(rows) == {"repo-a", "repo-b"}
     assert rows["repo-a"]["cost_usd"] == pytest.approx(CORPORATE_COST)
-    assert rows["repo-b"]["cost_usd"] == 0.0
+    assert rows["repo-b"]["cost_usd"] == pytest.approx(PERSONAL_COST)
     assert rows["repo-b"]["session_count"] == 2
-    assert calls == [True]
+    assert calls == ["model_costs"]
 
 
 @pytest.mark.asyncio
-async def test_efficiency_dead_session_cost_and_percentage_use_the_spend_sessions():
+async def test_efficiency_cost_and_dead_sessions_count_personal_paid():
     handler, calls = handler_over(SESSIONS)
     with catalog():
         data, _ = await handler.get_efficiency(make_filter())
 
     dead = data["dead_sessions"]
-    assert data["kpis"]["total_cost_usd"] == pytest.approx(CORPORATE_COST)
-    assert dead["count"] == 1
-    assert dead["wasted_cost_usd"] == pytest.approx(CORPORATE_COST)
-    assert dead["avg_cost_per_dead"] == pytest.approx(CORPORATE_COST / 1)
-    assert dead["pct_of_sessions"] == 100.0  # 1 of 1 spend session, not 1 of 3 (33.3)
-    assert sum(b["count"] for b in data["session_depth"]) == 3  # activity keeps all three
-    assert calls == [True]
+    assert data["kpis"]["total_cost_usd"] == pytest.approx(CORPORATE_COST + PERSONAL_COST)
+    assert dead["count"] == 3  # no session changed a file
+    assert dead["wasted_cost_usd"] == pytest.approx(CORPORATE_COST + PERSONAL_COST)
+    assert dead["avg_cost_per_dead"] == pytest.approx((CORPORATE_COST + PERSONAL_COST) / 3)
+    assert dead["pct_of_sessions"] == 100.0  # 3 of 3 priced sessions
+    assert sum(b["count"] for b in data["session_depth"]) == 3
+    assert calls == ["model_costs"]
 
 
 @pytest.mark.asyncio
-async def test_efficiency_without_any_spend_session_has_no_dead_session_and_zero_percentage():
+async def test_efficiency_with_only_personal_paid_sessions_counts_them_as_dead():
     only_personal = {k: v for k, v in SESSIONS.items() if v["paid"] == "personal"}
     handler, _ = handler_over(only_personal)
     with catalog():
         data, _ = await handler.get_efficiency(make_filter())
 
-    assert data["dead_sessions"]["count"] == 0
-    assert data["dead_sessions"]["pct_of_sessions"] == 0.0
-    assert data["dead_sessions"]["wasted_cost_usd"] == 0
-    assert data["dead_sessions"]["avg_cost_per_dead"] is None
+    assert data["dead_sessions"]["count"] == 2
+    assert data["dead_sessions"]["pct_of_sessions"] == 100.0
+    assert data["dead_sessions"]["wasted_cost_usd"] == pytest.approx(PERSONAL_COST)
+    assert data["dead_sessions"]["avg_cost_per_dead"] == pytest.approx(PERSONAL_COST / 2)
     assert sum(b["count"] for b in data["session_depth"]) == 2
 
 
 @pytest.mark.asyncio
 async def test_the_session_list_keeps_the_personal_paid_sessions_with_their_own_cost():
-    """The raw session view is not spend: all three are listed and a Personal-paid session shows its real cost."""
+    """All three are listed and a Personal-paid session shows its own cost."""
     handler, calls = handler_over(SESSIONS)
     with catalog():
         data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
 
     costs = {s["trace_id"]: s["cost_usd"] for s in data["sessions"]}
     assert costs == {"corp": pytest.approx(1.0), "pers1": pytest.approx(2.0), "pers2": pytest.approx(1.0)}
-    assert calls == [False]
+    assert calls == ["model_costs"]

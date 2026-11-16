@@ -16,8 +16,8 @@
 
 The database decides which sessions match the search, groups them by project, orders the projects by spend (the
 unattributed project last) and cuts the page. Only the sessions of the page's projects go back to the service, which
-prices and assembles them. The cost key and the kind flags read one spend-only build of the token groups (`g`), the
-same groups `get_session_model_costs(spend_only=True)` returns, so the order and the priced rows cannot disagree.
+prices and assembles them. The cost key and the kind flags read one build of the token groups (`g`), the
+same groups `get_session_model_costs` returns, so the order and the priced rows cannot disagree.
 """
 
 from __future__ import annotations
@@ -39,8 +39,8 @@ _SEARCH_CONDITION = (
 
 
 def spend_groups_cte() -> str:
-    """The spend-only (session, model) token groups of the window, built once for the cost key and the flags."""
-    return f"g AS MATERIALIZED (SELECT * FROM {model_token_groups(spend_only=True, normalized=False)})"
+    """The (session, model) token groups of the window, built once for the cost key and the flags."""
+    return f"g AS MATERIALIZED (SELECT * FROM {model_token_groups(normalized=False)})"
 
 
 def project_page_sql(sel_ctes: str, searched: bool) -> str:

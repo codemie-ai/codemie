@@ -187,8 +187,10 @@ class _Seed:
                         " VALUES ($1, $2, $3, $4, $5, $6)",
                         day, sid, self.email, _COST_MODEL, lines[0], lines[1],
                     )  # fmt: skip
-            await conn.execute(
-                "UPDATE session_dims SET has_activity = true WHERE session_id = ANY($1::text[])", self.ids()
+            await conn.execute(  # the stored activity facts the selection's started arm reads
+                "UPDATE session_dims SET has_activity = true, last_activity_day = $2 WHERE session_id = ANY($1::text[])",
+                self.ids(),
+                day,
             )
 
     async def cleanup(self, engine: AnalyticsPgEngine) -> None:
@@ -213,7 +215,7 @@ def _same(actual, expected) -> bool:
     return actual == expected
 
 
-_IDENTITY = ("key", "project_name", "repository", "branch", "funding_route", "personal_billed")
+_IDENTITY = ("key", "project_name", "repository", "branch", "funding_route", "personal_billed", "subscription_type")
 
 
 def _assert_parts_equal(got: list[dict], want: list[dict], parts: tuple[str, ...], label) -> None:

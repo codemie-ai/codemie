@@ -102,10 +102,3 @@ def buckets_from_groups(route_rows: list[CostGroup], personal_rows: list[CostGro
         "funding": {route: _group_bucket(by_route.get(route)) for route in FUNDING_ROUTES},
         "personal_billed": _group_bucket(personal),
     }
-
-
-def models_without_spend(priced: list[dict], spend_models: Any) -> list[dict]:
-    """Rows for the models the estimate priced but the spend did not (a personal-billed-only model): `cost_usd` 0 and
-    its buckets, in a field of their own so the spend `cost_by_model` keeps its membership. No blank model."""
-    names = sorted({r["normalized_model_name"] for r in priced} - set(spend_models) - {""})
-    return [{"model_name": name, "cost_usd": 0.0, **buckets(priced, model=name)} for name in names]
