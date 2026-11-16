@@ -1,0 +1,31 @@
+{
+  "decision": "approve",
+  "rationale": "Codex self-review of the CLI Usage and Where the Money Goes migration to LiteLLM spend. Reviewed the new port across every adapter, coverage clipping, caller access propagation, NULL-safe projection/context reconciliation in one database snapshot, cache versioning, nested typed cache deserialization, and classification/allocation using ledger money. The local projection-only case and subsequent partial raw restore were checked against real PostgreSQL data; attribution sums matched the CLI spend-group total exactly. New strict-lint issues were fixed before publication. This is a self-review, not an independent reviewer approval. Babysit follow-up: reproduced all four CI failures, fixed the decoded-cache capacity to retain two complete analyses including CLI evidence, and updated stale cache-version/summary expectations. Added CLI widget regressions for scoped clipped reads, ledger-only amounts, typed cache round-trips, unavailable retry and inactive coverage. The Usage Attribution folder passes: 734 passed in 20.38s (poetry run pytest -q --no-cov tests/codemie/service/usage_attribution). Sonar follow-up: documented the six intentionally unused ledger-protocol parameters using the existing inline S1172 exception convention, and extracted ledger context accumulation from the classification-input builder to reduce nesting without changing its behavior. Targeted widget/summary checks pass: 53 passed in 4.41s (poetry run pytest -q --no-cov tests/codemie/service/usage_attribution/spend_widgets tests/codemie/service/usage_attribution/test_handler.py::TestSummaryFromTheLedger). Remote build/test stage passed on the previous commit; the Sonar rerun remains pending for this follow-up.",
+  "confidence": "medium",
+  "risk_flags": [
+    "make test-harness stopped before collection because CODEMIE_API_DOMAIN is not configured; there is no local test-harness configuration file.",
+    "Repository, branch and client context requires a bounded raw ledger aggregation; local verification does not establish production-scale query performance.",
+    "Historical hourly spend without raw repository metadata remains unclassified unless existing allocation rules can assign it. Independent cent rounding can leave a one-cent difference across displayed category rows."
+  ],
+  "business_review": [
+    {
+      "kind": "scope",
+      "status": "pass",
+      "notes": "CLI category amounts, allocations and money-flow slices use the ledger. Elasticsearch remains classification evidence. Shared-project candidate discovery and potential chargeback, Repository Groups, Who Pays and other analysis views keep their existing sources. No local dump, restored data, local configuration or restore script is included."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "CliUsageSpend follows SpendWidget with a frozen typed output, one cached public read, shared scope and coverage handling, and private classification helpers. Data access stays behind SpendService, SpendLedger and SpendLogsRepository."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "The new SQL read applies narrowed_by_access using WidgetContext.scope. No API keys, request payloads or raw ledger rows are added to API responses or committed review evidence. A reviewer /sanity run is requested because this adds an access-scoped analytics read."
+    }
+  ],
+  "findings": [],
+  "deferred": []
+}

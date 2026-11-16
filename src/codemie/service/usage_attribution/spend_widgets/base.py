@@ -63,6 +63,52 @@ class SpendTable:
         return self.rows.get(key) or SpendFigures()
 
 
+@dataclass(frozen=True)
+class CliCategorySpend:
+    category: str
+    spend: float | None = None
+    classified: float | None = None
+    allocated: float | None = None
+    cb: float | None = None
+    sh: float | None = None
+    pe: float | None = None
+    users: int = 0
+
+
+@dataclass(frozen=True)
+class CliReasonSpend:
+    reason: str
+    spend: float | None = None
+    allocated: float | None = None
+    remaining: float | None = None
+    repositories: int = 0
+
+
+@dataclass(frozen=True)
+class CliUsageFigures:
+    """Classified CLI ledger figures in cents; absent money remains None."""
+
+    total: float | None = None
+    people: int | None = None
+    production: float | None = None
+    production_charged: float | None = None
+    production_allocated: float | None = None
+    experiments: float | None = None
+    experiments_allocated: float | None = None
+    experiments_parts: dict[str, float | None] = field(default_factory=dict)
+    allocated: float | None = None
+    unclassified: float | None = None
+    likely_production: float | None = None
+    unclassified_other: float | None = None
+    unclassified_parts: dict[str, float | None] = field(default_factory=dict)
+    categories: tuple[CliCategorySpend, ...] = ()
+    reasons: tuple[CliReasonSpend, ...] = ()
+    coverage_share: float | None = None
+    analysed: float | None = None
+    outside_limits: float | None = None
+    complete: bool = field(default=True, compare=False)
+
+
 class WidgetCache(Protocol):
     async def get(self, key: str) -> bytes | None: ...
 
@@ -85,7 +131,7 @@ class WidgetContext:
         return self._access
 
 
-class SpendWidget[SpendOutput: (SpendFigures, SpendTable)](ABC):
+class SpendWidget[SpendOutput: (SpendFigures, SpendTable, CliUsageFigures)](ABC):
     """One entity's spend, read from the hourly ledger and clipped to the coverage floor.
 
     A subclass names its cache ``view`` and its ``output`` type, and implements ``read``, its one public method.

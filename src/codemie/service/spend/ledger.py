@@ -55,6 +55,20 @@ from codemie.service.spend.traffic_class import UNION_CLASSES, TrafficClass
 
 
 @dataclass(frozen=True, slots=True)
+class CliSpendRow:
+    """Ledger money grouped by its identity, paying project and CLI context."""
+
+    user_id: str | None
+    principal: str | None
+    project: str | None
+    form: str
+    repository: str | None
+    branch: str | None
+    client: str | None
+    spend: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class PersonalHolder:
     """A personal or global budget: one user, one category.
 
@@ -793,6 +807,12 @@ class SpendLedger(Protocol):
         id set. It is a portion of the split rather than of any one class - those rows belong to no
         series - so a summary can render a partial label rather than silently showing a short figure.
         """
+        ...
+
+    async def cli_attribution_rows(
+        self, period: TimeRange, *, access: AccessScope | None
+    ) -> tuple[CliSpendRow, ...] | None:
+        """CLI ledger money by person, paying project and repository; None when unavailable."""
         ...
 
     async def aggregate_by_spend_group(

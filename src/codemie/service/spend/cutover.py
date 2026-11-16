@@ -95,6 +95,7 @@ from codemie.service.spend.coverage import SpendDimension, SpendResult, TimeRang
 from codemie.service.spend.ledger import (
     AccessScope,
     BudgetHolder,
+    CliSpendRow,
     ComposedScope,
     DimensionScope,
     ReportFilter,
@@ -388,6 +389,15 @@ class CutoverSpendLedger:
         with the chart printed beside it.
         """
         return await self._per_key(period, lambda ledger, half: ledger.aggregate_by_traffic_class(half, resolved_ids))
+
+    async def cli_attribution_rows(
+        self, period: TimeRange, *, access: AccessScope | None
+    ) -> tuple[CliSpendRow, ...] | None:
+        """Repository attribution has ledger figures only; never supplement it from the legacy half."""
+        _legacy, current = self._split(period)
+        if current is None:
+            return None
+        return await self._current.cli_attribution_rows(current, access=access)
 
     async def aggregate_by_spend_group(
         self,

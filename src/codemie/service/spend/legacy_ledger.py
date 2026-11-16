@@ -110,6 +110,7 @@ from codemie.service.spend.default_ledger import _MONEY_METRICS, DefaultSpendLed
 from codemie.service.spend.ledger import (
     AccessScope,
     BudgetHolder,
+    CliSpendRow,
     ComposedScope,
     DimensionScope,
     PersonTotalHolder,
@@ -385,6 +386,15 @@ class LegacySpendLedger:
         absent here rather than one drawn and three not.
         """
         return await self._es.aggregate_by_traffic_class(period, resolved_ids)
+
+    async def cli_attribution_rows(
+        self,
+        period: TimeRange,  # noqa: ARG002  # NOSONAR: S1172 - required ledger protocol
+        *,
+        access: AccessScope | None,  # noqa: ARG002  # NOSONAR: S1172 - required ledger protocol
+    ) -> tuple[CliSpendRow, ...] | None:
+        """This adapter has no LiteLLM repository attribution figures."""
+        return None
 
     async def aggregate_by_spend_group(
         self,

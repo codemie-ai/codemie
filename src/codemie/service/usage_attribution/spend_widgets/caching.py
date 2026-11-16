@@ -25,7 +25,7 @@ from codemie.service.usage_attribution.constants import CACHE_NAMESPACE
 from codemie.service.usage_attribution.settings import stable_hash
 
 LEDGER_TTL_S = 15 * 60
-KEY_VERSION = "v2"
+KEY_VERSION = "v4"
 
 
 def cached_read(read: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:

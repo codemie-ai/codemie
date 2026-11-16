@@ -40,6 +40,15 @@ from codemie.service.usage_attribution.analysis import (
 )
 from codemie.service.usage_attribution.constants import (
     CACHE_NAMESPACE,
+    CATEGORIES,
+    EXPERIMENTS,
+    LIKELY_PRODUCTION,
+    NO_REPOSITORY,
+    OUTSIDE_LIMITS,
+    PRODUCTION,
+    REASONS,
+    SECTION_CLI_EVIDENCE,
+    UNCLASSIFIED,
     CHARGED,
     DEFAULT_FRAMEWORK_SKILL_REGEX,
     FEATURE_KEY,
@@ -444,23 +453,77 @@ class UsageAttributionHandler:
     # ------------------------------------------------------------------ analysis views
     async def cli_summary(self, rng: RangeInfo, eff: EffectiveSettings) -> dict[str, Any]:
         handle = await self._analysis(rng, eff)
-        summary = (await self.service.load_sections(handle, [SECTION_SUMMARY]))[SECTION_SUMMARY]
-        figures = await spend_widgets.PlatformSpend(self._widget_context()).read(rng.start, rng.end)
+        sections = await self.service.load_sections(handle, [SECTION_SUMMARY, SECTION_CLI_EVIDENCE])
+        summary = sections[SECTION_SUMMARY]
+        figures, cli = await _gather(
+            spend_widgets.PlatformSpend(self._widget_context()).read(rng.start, rng.end),
+            spend_widgets.CliUsageSpend(
+                self._widget_context(), evidence=sections[SECTION_CLI_EVIDENCE], settings=eff.values
+            ).read(rng.start, rng.end, f"{handle.prefix}:{handle.meta.get('computed_at')}"),
+        )
         tiles = {
             **summary["tiles"],
             "total": figures.total,
             "cli": figures.cli,
             "web": figures.platform,
             "web_types": {**(summary["tiles"].get("web_types") or {}), "datasource": figures.embedding},
+            "cli_people": cli.people,
+            "prod": cli.production,
+            "prod_cb": cli.production_charged,
+            "prod_alloc": cli.production_allocated,
+            "exp": cli.experiments,
+            "exp_alloc": cli.experiments_allocated,
+            "exp_parts": {category: cli.experiments_parts.get(category) for category in EXPERIMENTS},
+            "allocated": cli.allocated,
+            "uncl": cli.unclassified,
+            "likely_prod": cli.likely_production,
+            "uncl_parts": {
+                reason: cli.unclassified_parts.get(reason)
+                for reason in (LIKELY_PRODUCTION, NO_REPOSITORY, "too_little_evidence", OUTSIDE_LIMITS)
+            },
         }
-        pie = [dict(item, value=figures.platform) if item.get("id") == "platform" else item for item in summary["pie"]]
+        pie_values = {
+            "platform": figures.platform,
+            PRODUCTION: cli.production,
+            LIKELY_PRODUCTION: cli.likely_production,
+            "experiments": cli.experiments,
+            UNCLASSIFIED: cli.unclassified_other,
+        }
+        categories = {row.category: row for row in cli.categories}
         return {
             "tiles": tiles,
-            "pie": pie,
+            "pie": [dict(item, value=pie_values[item["id"]]) for item in summary["pie"]],
             "who_pays": summary["who_pays"],
-            "categories": summary["categories"],
-            "reasons": summary["reasons"],
-            "coverage": summary["coverage"],
+            "categories": [
+                {
+                    "category": category,
+                    "spend": row.spend if (row := categories.get(category)) else None,
+                    "classified": row.classified if row else None,
+                    "allocated": row.allocated if row else None,
+                    "cb": row.cb if row else None,
+                    "sh": row.sh if row else None,
+                    "pe": row.pe if row else None,
+                    "users": row.users if row else 0,
+                }
+                for category in CATEGORIES
+            ],
+            "reasons": [
+                {
+                    "reason": row.reason,
+                    "label": REASONS.get(row.reason, row.reason),
+                    "repositories": row.repositories,
+                    "spend": row.spend,
+                    "allocated": row.allocated,
+                    "remaining": row.remaining,
+                }
+                for row in cli.reasons
+            ],
+            "coverage": {
+                **summary["coverage"],
+                "share": cli.coverage_share,
+                "analysed": cli.analysed,
+                "outside_limits": cli.outside_limits,
+            },
             "display": self.display(eff, rng),
             "analysis": self.analysis_block(handle, eff),
         }

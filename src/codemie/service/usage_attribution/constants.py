@@ -22,12 +22,12 @@ FEATURE_KEY = "usageAttribution"
 USAGE_ATTRIBUTION_COMPONENT_ID = f"features:{FEATURE_KEY}"
 
 # Bump when the analysis logic changes in a way that changes results: it is part of every analysis cache key
-# (2: Web Platform who pays follows the dated funding of each member, funding.py).
-CLASSIFIER_VERSION = "2"
+# (2: Web Platform who pays follows dated funding; 3: CLI spend widgets receive classification evidence).
+CLASSIFIER_VERSION = "3"
 # Bump when the shape or the meaning of the cached Elasticsearch/app DB inputs changes (2: records without a
 # repository field join the empty value; 3: Web Platform funding, A9; 4: A5 framework sessions are also counted in
-# the CLI analytics Postgres).
-INPUTS_VERSION = "4"
+# the CLI analytics Postgres; 5: invalidate inputs for the CLI ledger widget rollout).
+INPUTS_VERSION = "5"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Elasticsearch (codemie_metrics_logs*). Field paths follow service/analytics/handlers/cli/constants.py.
@@ -212,6 +212,7 @@ WORKER_MEMORY_EXIT_CODE = 75
 
 # Sections of one cached analysis
 SECTION_SUMMARY = "summary"
+SECTION_CLI_EVIDENCE = "cli_evidence"
 SECTION_SHARED = "shared"
 SECTION_GROUPS = "groups"
 SECTION_PEOPLE = "people"
@@ -225,6 +226,7 @@ SECTION_GROUP_DETAIL = "gdetail"
 SECTION_PERSON_DETAIL = "pdetail"
 LIST_SECTIONS = (
     SECTION_SUMMARY,
+    SECTION_CLI_EVIDENCE,
     SECTION_SHARED,
     SECTION_GROUPS,
     SECTION_PEOPLE,

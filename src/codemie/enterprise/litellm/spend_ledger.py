@@ -51,6 +51,7 @@ from codemie.service.spend.identity_bridge import identity_bridge_portion
 from codemie.service.spend.ledger import (
     AccessScope,
     BudgetHolder,
+    CliSpendRow,
     ComposedScope,
     DimensionScope,
     PersonalHolder,
@@ -382,6 +383,16 @@ class SpendLogsLedger:
             )
             for cls in TrafficClass
         }
+
+    async def cli_attribution_rows(
+        self, period: TimeRange, *, access: AccessScope | None
+    ) -> tuple[CliSpendRow, ...] | None:
+        """The admitted CLI ledger rows, narrowed to the caller's access boundary."""
+        admitted = self._coverage.admitted(period)
+        if admitted is None:
+            return None
+        async with self._session_factory() as session:
+            return await self._repository.cli_attribution_rows(session, admitted, access)
 
     async def aggregate_by_spend_group(
         self,

@@ -22,8 +22,9 @@ not activated, gives no figure for every figure - never a zero.
 **Plain values.** Each answer is reduced to its bare figures; the partial and unavailable qualifications the port
 attaches are dropped, because the Usage Attribution responses carry plain numbers only.
 
-**One widget, one public method.** A widget (``PlatformSpend``, ``PeopleSpend``, ``ProjectSpend``, in ``widgets``)
-subclasses ``SpendWidget``, names its cache view and output type, and has one ``read``, cached by ``@cached_read``.
+**One widget, one public method.** Each widget in ``widgets`` (``PlatformSpend``, ``PeopleSpend``,
+``ProjectSpend``, ``CliUsageSpend``) subclasses ``SpendWidget``, names its cache view and output type,
+and has one ``read``, cached by ``@cached_read``.
 A caller's ``WidgetContext`` holds the user, the shared cache and the access boundary, derived once. The widgets
 hand out ready data - figures in cents - and the caller lays them into its own response.
 
@@ -32,6 +33,7 @@ dataclass in ``base`` when ``SpendFigures`` and ``SpendTable`` do not fit.
 """
 
 from codemie.service.usage_attribution.spend_widgets.base import (
+    CliUsageFigures,
     SpendFigures,
     SpendTable,
     SpendWidget,
@@ -39,10 +41,17 @@ from codemie.service.usage_attribution.spend_widgets.base import (
     WidgetContext,
 )
 from codemie.service.usage_attribution.spend_widgets.caching import LEDGER_TTL_S, cached_read
-from codemie.service.usage_attribution.spend_widgets.widgets import PeopleSpend, PlatformSpend, ProjectSpend
+from codemie.service.usage_attribution.spend_widgets.widgets import (
+    CliUsageSpend,
+    PeopleSpend,
+    PlatformSpend,
+    ProjectSpend,
+)
 
 __all__ = [
     "LEDGER_TTL_S",
+    "CliUsageFigures",
+    "CliUsageSpend",
     "PeopleSpend",
     "PlatformSpend",
     "ProjectSpend",

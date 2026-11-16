@@ -5,10 +5,10 @@ public `read`. The handler lays the typed result into its response; nothing here
 
 | File | Holds |
 |---|---|
-| `base.py` | Output types `SpendFigures` and `SpendTable` (frozen pydantic dataclasses), `WidgetContext` (caller, shared cache, access scope), `SpendWidget` (the base class, and the coverage-floor window rule) |
+| `base.py` | Output types `SpendFigures`, `SpendTable` and `CliUsageFigures` (frozen pydantic dataclasses), `WidgetContext` (caller, shared cache, access scope), `SpendWidget` (the base class, and the coverage-floor window rule) |
 | `caching.py` | `@cached_read`, the only place that reads or writes the cache |
 | `helpers.py` | What more than one widget shares, for use inside this package only: `round_cents`, `rendered`, `read_per_row`, `no_rows` |
-| `widgets.py` | `PlatformSpend`, `PeopleSpend`, `ProjectSpend` |
+| `widgets.py` | `PlatformSpend`, `PeopleSpend`, `ProjectSpend`, `CliUsageSpend` |
 
 ## Rules
 
@@ -31,3 +31,11 @@ public `read`. The handler lays the typed result into its response; nothing here
 1. Add a `SpendWidget` subclass to `widgets.py` with `view`, `output` and a `@cached_read` `read`.
 2. Reuse `SpendFigures` or `SpendTable`; add another output dataclass to `base.py` only if neither fits.
 3. Export it from `__init__.py`, and add tests under `tests/codemie/service/usage_attribution/spend_widgets/`.
+
+## CLI classification
+
+`CliUsageSpend` reads person/project/repository money through `SpendService.cli_attribution_rows`. The ledger adapter
+uses the same projection as the totals and a bounded raw read for repository, branch and client context.
+Projection spend without matching raw context remains in the result with missing metadata. The analysis's
+`cli_evidence` section supplies classification evidence, and its computation version is part of the widget cache key.
+Elasticsearch amounts are evidence only: every displayed CLI category amount and allocation comes from ledger rows.

@@ -52,7 +52,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import ColumnElement, Result, and_, false, func, or_, select, true
+from sqlalchemy import ColumnElement, Result, and_, false, func, null, or_, select, true, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codemie.service.spend.attribution import PROJECT_PREFIX
@@ -70,6 +70,7 @@ from codemie.service.spend.ledger import (
     HOLDER_BATCH_SIZE,
     AccessScope,
     BudgetHolder,
+    CliSpendRow,
     ComposedScope,
     DimensionScope,
     PersonalHolder,
@@ -701,6 +702,50 @@ class SpendLogsRepository:
 
     def __init__(self, projection: bool = False) -> None:
         self._projection = projection
+
+    async def cli_attribution_rows(
+        self, session: AsyncSession, period: TimeRange, access: AccessScope | None
+    ) -> tuple[CliSpendRow, ...]:
+        """CLI money from the same source as totals, retaining raw context when it is available.
+
+        Hourly imports can exist without their raw rows. The projection still supplies their money,
+        but cannot supply repository context. Such spend is returned with missing context rather than
+        dropped. Both reads share one statement/snapshot, so raw context cannot duplicate a projected dollar.
+        """
+        statement = await asyncio.to_thread(self._cli_attribution_statement, period, access)
+        result = await session.execute(statement)
+        return tuple(CliSpendRow(*row) for row in result)
+
+    def _cli_attribution_statement(self, period: TimeRange, access: AccessScope | None):
+        names = ("attr_user_id", "attr_principal", "attr_project", "attr_form")
+        keys = tuple(getattr(Row, name) for name in names)
+        context = (Row.codemie_repository, Row.codemie_branch, Row.codemie_client)
+        predicate = narrowed_by_access(traffic_class_predicate(TrafficClass.CLI), access)
+        detailed = (
+            select(*keys, *context, func.sum(Row.spend).label("spend"))
+            .where(within(period), predicate)
+            .group_by(*keys, *context)
+        )
+        if not self._projection:
+            return detailed
+
+        # Context is raw-only; identity and the authoritative total can use the hourly projection.
+        shape = ReadShape(predicate, (Aggregate(label="spend"),), group_by=names)
+        totals = read_statement(period, lambda _resolved: shape).cte("cli_totals")
+        details = detailed.cte("cli_context")
+        matched = (
+            select(*(details.c[name] for name in names), func.sum(details.c.spend).label("spend"))
+            .group_by(*(details.c[name] for name in names))
+            .cte("cli_matched")
+        )
+        same_identity = and_(*(totals.c[name].is_not_distinct_from(matched.c[name]) for name in names))
+        missing = totals.c.spend - func.coalesce(matched.c.spend, 0)
+        remainder = (
+            select(*(totals.c[name] for name in names), null(), null(), null(), missing)
+            .select_from(totals.outerjoin(matched, same_identity))
+            .where(missing != 0)
+        )
+        return union_all(select(details), remainder)
 
     async def sum_for_holder(
         self,

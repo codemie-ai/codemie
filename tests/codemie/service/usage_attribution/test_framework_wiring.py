@@ -461,9 +461,9 @@ def test_a_merged_row_makes_the_pair_a_framework_pair():
 
 
 def test_the_inputs_version_changes_the_fetch_hash(monkeypatch):
-    assert INPUTS_VERSION == "4"
+    assert INPUTS_VERSION == "5"
     current = build_effective(build_defaults({}), {}).fetch_hash
-    monkeypatch.setattr("codemie.service.usage_attribution.constants.INPUTS_VERSION", "3")
+    monkeypatch.setattr("codemie.service.usage_attribution.constants.INPUTS_VERSION", "4")
     assert build_effective(build_defaults({}), {}).fetch_hash != current
 
 

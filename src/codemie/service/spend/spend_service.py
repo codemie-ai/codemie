@@ -50,6 +50,7 @@ from codemie.service.spend.coverage import SpendDimension, SpendResult, TimeRang
 from codemie.service.spend.ledger import (
     AccessScope,
     BudgetHolder,
+    CliSpendRow,
     ComposedScope,
     DimensionScope,
     ReportFilter,
@@ -57,7 +58,8 @@ from codemie.service.spend.ledger import (
     SpendLedger,
     bucket_starts,
 )
-from codemie.service.spend.ledger_registry import ledger_coverage, ledgers_by_call_class
+from codemie.service.spend.ledger_registry import get_spend_ledger, ledger_coverage, ledgers_by_call_class
+from codemie.service.spend.routing import LLMCallClass
 from codemie.service.spend.read_failures import record_read_failure
 from codemie.service.spend.spend_group import SpendGroup
 from codemie.service.spend.traffic_class import UNION_CLASSES, TrafficClass
@@ -339,6 +341,19 @@ class SpendService:
             )
             for traffic_class in TrafficClass
         }
+
+    async def cli_attribution_rows(
+        self, period: TimeRange, *, access: AccessScope | None
+    ) -> tuple[CliSpendRow, ...] | None:
+        """CLI repository spend from the ledger owning chat, with the usual failure handling."""
+        ledger = get_spend_ledger(LLMCallClass.CHAT)
+        return await self._ask(
+            ledger,
+            "cli_attribution_rows",
+            period,
+            ledger.cli_attribution_rows(period, access=access),
+            lambda: None,
+        )
 
     async def aggregate_by_spend_group(
         self,

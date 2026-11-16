@@ -27,10 +27,11 @@ import pytest
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.usage_attribution import handler as h
 from codemie.service.usage_attribution.analysis import AnalysisHandle, resolve_range
-from codemie.service.usage_attribution.constants import DEFAULT_FRAMEWORK_SKILL_REGEX
+from codemie.service.usage_attribution.constants import CATEGORIES, DEFAULT_FRAMEWORK_SKILL_REGEX
 from codemie.service.usage_attribution.sections import shard_of
 from codemie.service.usage_attribution.settings import SettingsError, build_defaults, build_effective, encode_overrides
-from codemie.service.usage_attribution.spend_widgets import SpendFigures, SpendTable
+from codemie.service.usage_attribution.spend_widgets import CliUsageFigures, SpendFigures, SpendTable
+from codemie.service.usage_attribution.spend_widgets.base import CliCategorySpend, CliReasonSpend
 
 NOW = datetime(2026, 10, 13, 15, 0, tzinfo=timezone.utc)
 ADMIN = SimpleNamespace(id="admin", is_admin=True, is_maintainer=False, is_auditor=False)
@@ -599,7 +600,8 @@ class TestTotalsFromTheLedger:
 
 SUMMARY = {
     "tiles": {"total": 148.0, "web": 53.0, "cli": 95.0, "prod": 20.0, "uncl": 1.0, "uncl_parts": {},
-              "allocated": 0.0, "excluded": {"no_customer": 5}, "web_types": {"assistant": 40.0, "workflow": 10.0,
+              "cli_people": 1, "prod_cb": 5.0, "prod_alloc": 0.0, "exp": 5.0, "exp_alloc": 0.0,
+              "exp_parts": {}, "likely_prod": 0.0, "allocated": 0.0, "excluded": {"no_customer": 5}, "web_types": {"assistant": 40.0, "workflow": 10.0,
               "datasource": 3.0}},
     "pie": [{"id": "platform", "label": "Web Platform", "value": 53.0}, {"id": "production", "value": 20.0}],
     "who_pays": {}, "categories": [], "reasons": [], "coverage": {}, "signals": [], "identity": {},
@@ -611,22 +613,54 @@ SUMMARY = {
 class TestSummaryFromTheLedger:
     async def test_cli_summary_tiles_and_pie(self):
         summary = json.loads(json.dumps(SUMMARY))
-        handler, eff, rng = setup({"summary": summary})
+        evidence = {"persons": {}}
+        handler, eff, rng = setup({"summary": summary, "cli_evidence": evidence})
         LEDGER.platform = AsyncMock(return_value=ledger_groups(10.0, 4.0, 6.0, 1.0))
-        out = await handler.cli_summary(rng, eff)
+        amounts = {"production": 2.0, "learning": 1.0, "unclassified": 3.0}
+        cli = CliUsageFigures(
+            total=6.0,
+            people=2,
+            production=2.0,
+            production_charged=0.5,
+            production_allocated=0.25,
+            experiments=1.0,
+            experiments_allocated=0.5,
+            experiments_parts={"learning": 1.0},
+            allocated=0.75,
+            unclassified=3.0,
+            likely_production=1.0,
+            unclassified_other=2.0,
+            categories=tuple(CliCategorySpend(category=c, spend=amounts.get(c, 0.0)) for c in CATEGORIES),
+            reasons=(CliReasonSpend(reason="no_repository", spend=3.0, remaining=3.0),),
+            coverage_share=100.0,
+            analysed=6.0,
+            outside_limits=0.0,
+        )
+        with patch.object(h.spend_widgets.CliUsageSpend, "read", AsyncMock(return_value=cli)) as read:
+            out = await handler.cli_summary(rng, eff)
+        read.assert_awaited_once_with(rng.start, rng.end, "prefix:2026-10-13T15:00:00Z")
         tiles = out["tiles"]
         assert (tiles["total"], tiles["cli"], tiles["web"], tiles["web_types"]["datasource"]) == (10, 6, 4, 1)
-        assert (tiles["prod"], tiles["web_types"]["assistant"], tiles["web_types"]["workflow"]) == (20, 40, 10)
-        assert out["pie"] == [{"id": "platform", "label": "Web Platform", "value": 4.0}, SUMMARY["pie"][1]]
+        assert (tiles["prod"], tiles["web_types"]["assistant"], tiles["web_types"]["workflow"]) == (2, 40, 10)
+        assert out["pie"] == [
+            {"id": "platform", "label": "Web Platform", "value": 4.0},
+            {"id": "production", "value": 2.0},
+        ]
+        assert sum(row["spend"] for row in out["categories"]) == 6.0
+        assert out["reasons"][0]["spend"] == 3.0
+        assert out["coverage"]["analysed"] == 6.0
         assert summary == SUMMARY  # the cached section is not changed
 
     async def test_cli_summary_below_the_floor(self):
-        handler, eff, rng = setup({"summary": json.loads(json.dumps(SUMMARY))})
+        handler, eff, rng = setup({"summary": json.loads(json.dumps(SUMMARY)), "cli_evidence": {"persons": {}}})
         LEDGER.platform = AsyncMock(return_value=ledger_groups())
-        out = await handler.cli_summary(rng, eff)
+        with patch.object(h.spend_widgets.CliUsageSpend, "read", AsyncMock(return_value=CliUsageFigures())):
+            out = await handler.cli_summary(rng, eff)
         assert (out["tiles"]["total"], out["tiles"]["cli"], out["tiles"]["web"]) == (None, None, None)
         assert out["tiles"]["web_types"]["datasource"] is None and out["pie"][0]["value"] is None
         assert set(out["tiles"]) == set(SUMMARY["tiles"])
+        assert out["tiles"]["prod"] is None and out["tiles"]["exp"] is None and out["tiles"]["uncl"] is None
+        assert all(row["spend"] is None for row in out["categories"])
 
     async def test_status_cli_tile(self):
         summary = json.loads(json.dumps(SUMMARY))

@@ -37,6 +37,7 @@ from typing import Any
 from codemie.service.usage_attribution import funding, parsing, queries
 from codemie.service.usage_attribution.constants import (
     DETAIL_SHARDS,
+    SECTION_CLI_EVIDENCE,
     ES_REQUEST_TIMEOUT_S,
     INPUTS_VERSION,
     MAX_BUCKETS_DEFAULT,
@@ -516,6 +517,14 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
     an = Analysis(inputs, job["settings"]).run()
     t_sections = time.perf_counter()
     sections = build_sections(an)
+    sections[SECTION_CLI_EVIDENCE] = {
+        "window": inputs["window"],
+        "persons": inputs.get("ev_persons") if inputs.get("ev_persons") is not None else inputs.get("persons", {}),
+        "values": inputs.get("values", {}),
+        "tool": inputs.get("tool", []),
+        "sess": inputs.get("sess", []),
+        "app_db": inputs.get("app_db", {}),
+    }
     encoded: dict[str, bytes] = {}
     for name, value in sections.items():
         if name in SHARDED_SECTIONS:

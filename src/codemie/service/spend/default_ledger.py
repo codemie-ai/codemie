@@ -74,6 +74,7 @@ from codemie.service.spend.ledger import (
     HOLDER_BATCH_SIZE,
     AccessScope,
     BudgetHolder,
+    CliSpendRow,
     ComposedScope,
     DimensionScope,
     PersonalHolder,
@@ -654,6 +655,15 @@ class DefaultSpendLedger:
             for bucket in buckets
             for traffic_class in TrafficClass
         }
+
+    async def cli_attribution_rows(
+        self,
+        period: TimeRange,  # noqa: ARG002  # NOSONAR: S1172 - required ledger protocol
+        *,
+        access: AccessScope | None,  # noqa: ARG002  # NOSONAR: S1172 - required ledger protocol
+    ) -> tuple[CliSpendRow, ...] | None:
+        """This adapter has no LiteLLM repository attribution figures."""
+        return None
 
     async def aggregate_by_spend_group(
         self,

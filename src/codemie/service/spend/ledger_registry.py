@@ -40,6 +40,7 @@ from codemie.service.spend.coverage import LedgerCoverage, SpendDimension, Spend
 from codemie.service.spend.ledger import (
     AccessScope,
     BudgetHolder,
+    CliSpendRow,
     ComposedScope,
     DimensionScope,
     ReportFilter,
@@ -218,6 +219,15 @@ class _NoopSpendLedger:
         # as a blank rather than as the unavailable state. The resolved_ids argument is unapplied -
         # see consumed_for_holder.
         return {traffic_class: SpendResult.no_figure(period) for traffic_class in TrafficClass}
+
+    async def cli_attribution_rows(
+        self,
+        period: TimeRange,  # noqa: ARG002  # NOSONAR: S1172 - required ledger protocol
+        *,
+        access: AccessScope | None,  # noqa: ARG002  # NOSONAR: S1172 - required ledger protocol
+    ) -> tuple[CliSpendRow, ...] | None:
+        """This adapter has no LiteLLM repository attribution figures."""
+        return None
 
     async def aggregate_by_spend_group(
         self,

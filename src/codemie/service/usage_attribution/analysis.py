@@ -98,7 +98,7 @@ TIME_PERIODS = tuple(_PERIODS)
 _EARLIEST = datetime(2000, 1, 1, tzinfo=timezone.utc)
 _SLOT = timedelta(minutes=15)
 # Two analyses of list sections (a second period or a Recompute on the same pod) stay decoded.
-_DECODED_MAX = 12
+_DECODED_MAX = 2 * len(LIST_SECTIONS)
 
 
 class AnalysisUnavailableError(Exception):
