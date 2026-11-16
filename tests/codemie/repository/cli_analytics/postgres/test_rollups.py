@@ -1513,7 +1513,7 @@ def test_a_request_group_naming_more_than_one_route_has_no_route() -> None:
     # A transcript request group's model is its one route (a name with '/') over a plain name; when its rows name
     # more than one route it has none and takes the largest plain name (NULL when no row is plain), so it is keyed
     # by the OTel name of its paired record, else by model_raw; with no route the largest name.
-    from codemie.repository.cli_analytics.postgres import reader
+    from codemie.repository.cli_analytics.postgres import inline_skill_attribution
     from codemie.repository.cli_analytics.postgres.route_identity import group_model
 
     assert group_model("m") == (
@@ -1522,7 +1522,8 @@ def test_a_request_group_naming_more_than_one_route_has_no_route() -> None:
         " ELSE coalesce(max(m) FILTER (WHERE strpos(m, '/') > 0), max(m)) END"
     )
     assert f"{group_model('u.model')} AS model" in rollups._BUILD_REQUESTS
-    assert group_model("u.model") == reader._GROUP_MODEL
+    # the session detail lists a request by the same group model, through the pairing it shares with the dispatches
+    assert f"{group_model('u.model')} AS model" in inline_skill_attribution._PAIRING
 
 
 def _plugin_model(raw: str) -> str:

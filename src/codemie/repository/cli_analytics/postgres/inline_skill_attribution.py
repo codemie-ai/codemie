@@ -31,6 +31,7 @@ from codemie.repository.cli_analytics.postgres.rollups import (
     _resolved,
 )
 from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES_CTE, request_route
+from codemie.repository.cli_analytics.postgres.route_identity import group_model, routed_predicate
 from codemie.repository.cli_analytics.vocabulary import SKILL_DISPATCH_EVENT, EventKind
 
 _API_REQUEST = int(EventKind.API_REQUEST)
@@ -43,7 +44,7 @@ _C = 'COLLATE "C"'
 # raw model and totals, <= 5 s) and tier 3 (a partial positive-output snapshot, <= 30 s), the last two resolved one to
 # one with the rollups' own walk (each transcript request takes its nearest free record). One `day` stands for the
 # whole session, as no pair may be cut at midnight here.
-_PAIRED_REQUESTS = f"""WITH RECURSIVE
+_PAIRING = f"""WITH RECURSIVE
             t AS MATERIALIZED (
                 SELECT x.*, (x.ts AT TIME ZONE 'UTC')::date AS t_day,
                        row_number() OVER (PARTITION BY x.session_id ORDER BY x.ts, x.tkey) AS tid
@@ -55,6 +56,7 @@ _PAIRED_REQUESTS = f"""WITH RECURSIVE
                              max(u.cache_creation_5m_tokens) AS cache_5m, max(u.cache_creation_1h_tokens) AS cache_1h,
                              max(u.scope_kind) AS scope_kind, max(u.scope_name) AS scope_name,
                              max(u.agent_id) AS agent_id, max(u.agent_type) AS agent_type,
+                             {group_model("u.model")} AS model, max(u.thinking_tokens) AS thinking_tokens,
                              (max(nullif(u.stop_reason, '')) IS NULL AND NOT coalesce(bool_or(u.is_api_error), false))
                                  AS partial,
                              coalesce(nullif(u.request_id, ''), nullif(u.message_id, ''),
@@ -93,12 +95,53 @@ _PAIRED_REQUESTS = f"""WITH RECURSIVE
                 SELECT day, session_id, tid, oid FROM p2
                 UNION ALL
                 {_resolved("3")}
-            )
+            )"""
+
+_PAIRED_REQUESTS = f"""{_PAIRING}
             SELECT o.okey, o.ts, o.prompt_id, o.model, o.cost_usd, o.input_tokens, o.output_tokens, o.cache_read_tokens,
                    o.cache_creation_tokens, o.attrs, t.scope_kind, t.scope_name, coalesce(t.agent_id, '') AS agent_id
             FROM p
             JOIN t ON t.tid = p.tid
             JOIN o ON o.oid = p.oid"""
+
+
+# What the session's listed requests take from the pairing (see get_session_detail_events), as the cost rollup writes
+# its requests: a paired OTel record takes the cache-write split of its transcript request when that has one
+# (`split`: `okey`, the write total, 5m and 1h); a transcript request with no partner is a request of its own
+# (`unpaired`: its time, route-aware model name, tokens and split, NULL where the transcript has none).
+REQUEST_PAIRS = f"""{_PAIRING}
+            SELECT 'split' AS part, o.okey, NULL::timestamptz AS ts, NULL::text AS model_name,
+                   NULL::bigint AS input_tokens, NULL::bigint AS output_tokens, NULL::bigint AS cache_read_tokens,
+                   coalesce(t.cache_5m, 0) + coalesce(t.cache_1h, 0) AS cache_creation_tokens,
+                   coalesce(t.cache_5m, 0) AS cache_5m, coalesce(t.cache_1h, 0) AS cache_1h,
+                   NULL::bigint AS thinking_tokens
+            FROM p
+            JOIN t ON t.tid = p.tid
+            JOIN o ON o.oid = p.oid
+            WHERE t.cache_5m IS NOT NULL OR t.cache_1h IS NOT NULL
+            UNION ALL
+            SELECT 'unpaired', NULL, t.ts,
+                   CASE WHEN {routed_predicate("t.model", "t.model_raw")} THEN t.model ELSE t.model_raw END,
+                   t.input_tokens, t.output_tokens, t.cache_read_tokens,
+                   coalesce(t.cache_5m, 0) + coalesce(t.cache_1h, 0), t.cache_5m, t.cache_1h, t.thinking_tokens
+            FROM t
+            WHERE NOT EXISTS (SELECT 1 FROM p WHERE p.tid = t.tid)"""  # noqa: S608 - code constants
+
+# The CTEs `request_pairs` and `pair_splits`: the `split` rows of REQUEST_PAIRS as one jsonb object
+# okey -> [total, 5m, 1h], read by `pair_split` in O(log n) per record, like `request_routes`.
+REQUEST_PAIRS_CTES = f"""request_pairs AS MATERIALIZED (
+            {REQUEST_PAIRS}
+        ), pair_splits AS MATERIALIZED (
+            SELECT coalesce(jsonb_object_agg(okey, jsonb_build_array(cache_creation_tokens, cache_5m, cache_1h)),
+                            '{{}}'::jsonb) AS splits
+            FROM request_pairs WHERE part = 'split'
+        )"""  # noqa: S608 - code constants
+
+
+def pair_split(okey: str, index: int) -> str:
+    """The cache-write total (0), 5m (1) or 1h (2) tokens of the transcript request paired with the OTel record whose
+    row identity is `okey`; NULL when the record has no partner or its partner carries no split."""
+    return f"(((SELECT ps.splits FROM pair_splits ps) -> ({okey})) ->> {index})::bigint"  # noqa: S608 - code constants
 
 
 INLINE_SKILL_CTES = f"""{REQUEST_ROUTES_CTE}, paired_requests AS MATERIALIZED (
@@ -153,4 +196,4 @@ INLINE_SKILL_CTES = f"""{REQUEST_ROUTES_CTE}, paired_requests AS MATERIALIZED (
                         GROUP BY 1) m) AS models
             FROM inline_matched g
             GROUP BY g.dispatch_ts, g.skill_name, g.prompt_id
-        )"""
+        )"""  # noqa: S608 - code constants

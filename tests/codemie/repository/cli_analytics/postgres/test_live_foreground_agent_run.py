@@ -205,8 +205,10 @@ async def test_live_a_foreground_agent_row_shows_the_subagents_own_run_and_reque
                 {key: value or 0 for key, value in dict(record).items()}
                 for record in await conn.fetch(_STORED_TOKENS, _SESSION)
             ]
+            # every request the session cost counts: the capture's OTel records carry the route as their model, so
+            # the rollup does not pair them with the transcript lines (raw model) and counts both sets
             api_requests = await conn.fetchval(
-                "SELECT count(*) FROM log_events WHERE session_id = $1 AND event_kind = 1", _SESSION
+                "SELECT sum(api_call_count) FROM cost_daily WHERE session_id = $1", _SESSION
             )
     finally:
         await _cleanup(engine)
@@ -276,4 +278,5 @@ async def test_live_a_foreground_agent_row_shows_the_subagents_own_run_and_reque
             for r in stored
         )
     )
+    # the listed requests are the ones the cost counts, so the growth line ends on the session cost
     assert sum(1 for event in detail["events"] if event["event_type"] == "api_request") == api_requests

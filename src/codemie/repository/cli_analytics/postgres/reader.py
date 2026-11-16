@@ -109,13 +109,16 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
     sole_dispatch_of_prompt,
 )
 from codemie.repository.cli_analytics.postgres.hook_row_sql import is_claude_code
-from codemie.repository.cli_analytics.postgres.inline_skill_attribution import INLINE_SKILL_CTES
+from codemie.repository.cli_analytics.postgres.inline_skill_attribution import (
+    INLINE_SKILL_CTES,
+    REQUEST_PAIRS_CTES,
+    pair_split,
+)
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
 from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES_CTE, request_route
-from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _GROUP_REACH, _attr_ms, _has_totals
+from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms, _has_totals
 from codemie.repository.cli_analytics.postgres.project_page_sql import project_page_sql
-from codemie.repository.cli_analytics.postgres.route_identity import group_model, routed_predicate
 from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.session_page_sql import (
     FRAMEWORK_NAMES_TABLE,
@@ -671,7 +674,8 @@ def _session_developer(lines_email: str) -> str:
 # way, instead of silently depending on which row alias happens to be in scope.
 _DEVELOPER = _session_developer(_LINES_EMAIL)
 
-_GROUP_MODEL = group_model("u.model")
+# The row identity of a log_events record, as the request pairing names it (`okey`).
+_OKEY = "log_events.tableoid::text || log_events.ctid::text"
 
 
 # The model of the row with the most calls, over the rows of the original grain of cost_daily:
@@ -3137,13 +3141,15 @@ class PostgresCliAnalyticsReader:
 
         The requests are the session's OTel api_request records, plus the transcript requests (`usage_requests`,
         grouped as the cost rollup groups them: by request id, else message id, and raw model; the largest value of
-        every field, the latest time; a row with neither id alone) that no OTel record covers. One switch decides
-        it, per request group, not per session or per row: a transcript request is dropped when an OTel api_request
-        lies in the UTC day of its latest time widened by the rollup's pairing reach (`_GROUP_REACH`), the day
-        `_BUILD_REQUESTS` assigns it, so a request and its OTel record across midnight are one request and a
-        re-sent request is never cut in two. A session without OTel records (hooks only: GitHub Copilot, Claude
-        Code without telemetry) lists all its transcript requests; a session with both lists each day's requests
-        from OTel where that day has them and from the transcript where it has not.
+        every field, the latest time; a row with neither id alone) that no OTel record is paired with. The pairing is
+        the cost rollup's own, run over the whole session (`REQUEST_PAIRS`), so each request is listed once, as
+        cost_daily counts it: a transcript request with an OTel partner is that record (it is not listed again), and
+        a transcript request with none is a request of its own, whatever else its day holds (an OTel record that
+        reached the server for some requests of a day does not hide the others). A paired record takes the 5m / 1h
+        cache-write split of its transcript request when that has one, as the cost rollup prices it, since the OTel
+        record carries no split of its own: left unsplit, a write is priced at the 5m rate. A request's split is NULL
+        when neither of the two carries one. A session without OTel records (hooks only: GitHub Copilot, Claude
+        Code without telemetry) lists all its transcript requests.
         Every request's `model_name` is the name cost_daily keys its tokens by, so each request is priced as
         cost_daily prices it: the route of a transcript request run on a route of its own model, one that normalises
         to its raw model up to a trailing date (`routed_predicate`) (an OTel record takes the route of the transcript
@@ -3165,16 +3171,17 @@ class PostgresCliAnalyticsReader:
         gate, gate_params = detail_gate(scope)
         return await self._q(
             f"""
-        WITH {REQUEST_ROUTES_CTE}
+        WITH {REQUEST_ROUTES_CTE}, {REQUEST_PAIRS_CTES}
         SELECT * FROM (
             SELECT ts AS timestamp, 'api_request' AS event_type,
-                   coalesce({request_route("log_events.tableoid::text || log_events.ctid::text")}, model, '')
-                       AS model_name,
+                   coalesce({request_route(_OKEY)}, model, '') AS model_name,
                    coalesce(input_tokens, 0) AS input_tokens, coalesce(output_tokens, 0) AS output_tokens,
                    coalesce(cache_read_tokens, 0) AS cache_read_tokens,
-                   coalesce(cache_creation_tokens, 0) AS cache_creation_tokens,
-                   {_attr_ms("log_events", "cache_creation_5m_tokens")} AS cache_creation_5m_tokens,
-                   {_attr_ms("log_events", "cache_creation_1h_tokens")} AS cache_creation_1h_tokens,
+                   coalesce({pair_split(_OKEY, 0)}, cache_creation_tokens, 0) AS cache_creation_tokens,
+                   coalesce({pair_split(_OKEY, 1)}, {_attr_ms("log_events", "cache_creation_5m_tokens")})
+                       AS cache_creation_5m_tokens,
+                   coalesce({pair_split(_OKEY, 2)}, {_attr_ms("log_events", "cache_creation_1h_tokens")})
+                       AS cache_creation_1h_tokens,
                    NULL::bigint AS reasoning_tokens, '' AS tool_name
             FROM log_events WHERE session_id = $sid::text AND event_kind = {_API_REQUEST} AND {gate}
             UNION ALL
@@ -3204,40 +3211,15 @@ class PostgresCliAnalyticsReader:
                                 AND s.ts >= date_trunc('day', h.ts, 'UTC')
                                 AND s.ts < date_trunc('day', h.ts, 'UTC') + interval '1 day')
             UNION ALL
-            -- Same identity and merge rule as _BUILD_REQUESTS, with its cache-write rule (5m + 1h, NULL split
-            -- kept). The handler prices the row at the catalog from these tokens, like every other request.
-            -- model_name is the name cost_daily keys the request by: its route when it ran on one of its own
-            -- model (routed_predicate), else model_raw, like the GROUP BY, so a dotted/dashed mismatch between
-            -- model and model_raw cannot price this row under a different name than the session total.
-            -- A request is dropped when an OTel api_request lies in its UTC day widened by the rollup's pairing
-            -- reach (_GROUP_REACH): the log_events branch lists it, so a transcript request and its OTel record
-            -- across midnight are one request. The test runs once per request, on the grouped time (the one
-            -- _BUILD_REQUESTS assigns its day by), never on single rows, which would cut a re-sent request in two.
-            SELECT g.ts, 'api_request', g.model_name, g.input_tokens, g.output_tokens, g.cache_read_tokens,
-                   g.cache_creation_tokens, g.cache_creation_5m_tokens, g.cache_creation_1h_tokens,
-                   g.thinking_tokens, ''
-            FROM (
-                SELECT max(u.ts) AS ts,
-                       CASE WHEN {routed_predicate(_GROUP_MODEL, "max(u.model_raw)")} THEN {_GROUP_MODEL}
-                            ELSE coalesce(max(u.model_raw), '') END AS model_name,
-                       coalesce(max(u.input_tokens), 0) AS input_tokens,
-                       coalesce(max(u.output_tokens), 0) AS output_tokens,
-                       coalesce(max(u.cache_read_tokens), 0) AS cache_read_tokens,
-                       coalesce(max(u.cache_creation_5m_tokens), 0) + coalesce(max(u.cache_creation_1h_tokens), 0)
-                           AS cache_creation_tokens,
-                       max(u.cache_creation_5m_tokens) AS cache_creation_5m_tokens,
-                       max(u.cache_creation_1h_tokens) AS cache_creation_1h_tokens,
-                       max(u.thinking_tokens) AS thinking_tokens
-                FROM usage_requests u
-                WHERE u.session_id = $sid::text AND {gate}
-                GROUP BY coalesce(nullif(u.request_id, ''), nullif(u.message_id, '')), coalesce(u.model_raw, ''),
-                         CASE WHEN coalesce(nullif(u.request_id, ''), nullif(u.message_id, '')) IS NULL
-                              THEN u.tableoid::text || u.ctid::text END
-            ) g
-            WHERE NOT EXISTS (SELECT 1 FROM log_events l
-                              WHERE l.session_id = $sid::text AND l.event_kind = {_API_REQUEST}
-                                AND l.ts >= date_trunc('day', g.ts, 'UTC') - {_GROUP_REACH}
-                                AND l.ts < date_trunc('day', g.ts, 'UTC') + interval '1 day' + {_GROUP_REACH})
+            -- A transcript request no OTel record is paired with (`unpaired` of REQUEST_PAIRS), grouped and paired as
+            -- _BUILD_REQUESTS does, with its cache-write rule (5m + 1h, NULL split kept). The handler prices the row at
+            -- the catalog from these tokens, like every other request. model_name is the name cost_daily keys the
+            -- request by: its route when it ran on one of its own model (routed_predicate), else model_raw.
+            SELECT p.ts, 'api_request', p.model_name, coalesce(p.input_tokens, 0), coalesce(p.output_tokens, 0),
+                   coalesce(p.cache_read_tokens, 0), p.cache_creation_tokens, p.cache_5m, p.cache_1h,
+                   p.thinking_tokens, ''
+            FROM request_pairs p
+            WHERE p.part = 'unpaired' AND {gate}
         ) events
         ORDER BY timestamp, event_type {_C}, tool_name {_C}, model_name {_C}""",
             {"sid": session_id, **gate_params},

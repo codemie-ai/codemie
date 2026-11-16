@@ -34,6 +34,7 @@ from codemie.repository.cli_analytics.postgres.agent_call_attribution import (
 )
 from codemie.repository.cli_analytics.postgres.fork_attribution import dispatch_fork_candidate, executed_tool_span
 from codemie.repository.cli_analytics.postgres.hook_row_sql import tool_response_agent_id
+from codemie.repository.cli_analytics.postgres.inline_skill_attribution import pair_split
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.reader import (
     _C,
@@ -51,7 +52,16 @@ from codemie.repository.cli_analytics.postgres.reader import (
     window_params,
 )
 from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
-from codemie.repository.cli_analytics.postgres.rollups import _attr_ms
+from codemie.repository.cli_analytics.postgres.rollups import (
+    _MATCH,
+    _MATCH_PARTIAL,
+    _TIER_2_MATCH,
+    _TIER_3_MATCH,
+    _TIER_3_RANKING,
+    _attr_ms,
+    _candidates,
+    _one_to_one,
+)
 from codemie.repository.cli_analytics.postgres.session_page_sql import SORT_KEYS_ENABLED_SQL
 from codemie.repository.cli_analytics.postgres.session_derived import (
     CLASSIFIER_NAMES_SQL,
@@ -775,7 +785,8 @@ async def test_session_detail_hook_branches_are_guarded_by_missing_spans_and_log
     events = " ".join(recorder.statements[1].split())
     assert "FROM invocations_hourly" in tools and "FROM spans" not in tools  # the rollup decides spans vs hooks
     assert "FROM hook_events" in events and "NOT EXISTS (SELECT 1 FROM spans" in events
-    assert "FROM usage_requests" in events and "NOT EXISTS (SELECT 1 FROM log_events" in events
+    # a transcript request is listed unless the rollup's pairing gives it an OTel partner
+    assert "FROM usage_requests" in events and "NOT EXISTS (SELECT 1 FROM p WHERE p.tid = t.tid)" in events
 
 
 @pytest.mark.asyncio
@@ -787,14 +798,53 @@ async def test_session_detail_hook_branches_follow_the_rollup_rule_per_utc_day()
 
     events = " ".join(recorder.statements[0].split())
     assert "date_trunc('day', h.ts, 'UTC')" in events
-    # the OTel guard of the usage branch runs on the grouped request (g.ts), widened by the rollup's pairing reach
-    assert "date_trunc('day', g.ts, 'UTC') - interval '3600 seconds'" in events
-    assert "date_trunc('day', g.ts, 'UTC') + interval '1 day' + interval '3600 seconds'" in events
+    # the usage branch has no OTel-in-the-day switch: a day with some OTel records must not hide the transcript
+    # requests that have no partner, so it lists what the pairing leaves unpaired
+    assert "date_trunc('day', g.ts, 'UTC')" not in events
     assert "date_trunc('day', usage_requests.ts" not in events
+    assert "p.part = 'unpaired'" in events
     assert "s.span_kind IN (1, 2, 3)" in events
     assert f"octet_length(h.tool_name) <= {MAX_KEY_BYTES}" in events
     # the tool arm is the rollup's own day rule, not widened around midnight: the listed calls are the counted ones
     assert "s.ts < date_trunc('day', h.ts, 'UTC') + interval '1 day')" in events
+
+
+@pytest.mark.asyncio
+async def test_session_detail_events_pair_requests_as_the_cost_rollup_does():
+    """Pins the pieces of the events query that decide which requests are listed and how a paired one is split, so
+    an inverted unpaired filter or a swapped 5m / 1h index fails without TEST_LOCAL_PG_URL (the live tests in
+    test_live_events_match_session_cost.py cover the behaviour on a real database)."""
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_events("s1", scope=DETAIL_SCOPE)
+
+    def flat(sql: str) -> str:
+        return " ".join(sql.split())
+
+    events = flat(recorder.statements[0])
+    # the tier 2 and tier 3 resolution of the cost rollup, not a pairing of its own
+    assert flat(_candidates("c", _MATCH, _TIER_2_MATCH, "t1", hashed_cut=True)) in events
+    assert flat(_one_to_one("c", "")) in events
+    assert flat(_candidates("c3", _MATCH_PARTIAL, _TIER_3_MATCH, "p2", _TIER_3_RANKING, hashed_cut=True)) in events
+    assert flat(_one_to_one("c3", "3", "d.totals_equal DESC, d.name_match DESC, d.gap, d.oid")) in events
+    # `unpaired` is a transcript request with no partner; `split` is a paired one whose transcript carries a split
+    assert re.search(
+        r"SELECT 'unpaired', NULL, t\.ts, (?:(?!UNION ALL).)*? FROM t WHERE NOT EXISTS \(SELECT 1 FROM p WHERE p\.tid = t\.tid\)",
+        events,
+    )
+    assert re.search(
+        r"SELECT 'split' AS part, (?:(?!UNION ALL).)*? FROM p JOIN t ON t\.tid = p\.tid JOIN o ON o\.oid = p\.oid "
+        r"WHERE t\.cache_5m IS NOT NULL OR t\.cache_1h IS NOT NULL",
+        events,
+    )
+    assert "FROM request_pairs p WHERE p.part = 'unpaired'" in events
+    # the split is [total, 5m, 1h] from the transcript, and the OTel arm reads each index into its own column
+    assert "coalesce(t.cache_5m, 0) AS cache_5m, coalesce(t.cache_1h, 0) AS cache_1h" in events
+    assert "jsonb_build_array(cache_creation_tokens, cache_5m, cache_1h)" in events
+    okey = "log_events.tableoid::text || log_events.ctid::text"
+    assert flat(f"coalesce({pair_split(okey, 0)}, cache_creation_tokens, 0) AS cache_creation_tokens") in events
+    for index, column in ((1, "cache_creation_5m_tokens"), (2, "cache_creation_1h_tokens")):
+        assert flat(f"coalesce({pair_split(okey, index)}, {_attr_ms('log_events', column)}) AS {column}") in events
 
 
 @pytest.mark.asyncio
@@ -805,8 +855,8 @@ async def test_session_detail_timeline_names_a_transcript_request_like_cost_dail
 
     events = " ".join(recorder.statements[0].split())
     # one transcript arm (main's second one is gone): the route of its own model, else model_raw, as _BUILD_REQUESTS
-    assert "coalesce(max(u.model_raw), '') END AS model_name" in events
-    assert "max(u.thinking_tokens) AS thinking_tokens" in events
+    assert "THEN t.model ELSE t.model_raw END" in events
+    assert "t.thinking_tokens" in events
     # every arm of the UNION ALL has the same 11 columns: the OTel arm carries NULL reasoning tokens
     assert "NULL::bigint AS reasoning_tokens, '' AS tool_name" in events
 
