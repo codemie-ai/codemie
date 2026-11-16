@@ -1200,9 +1200,8 @@ class TestCaseInsensitivePersonalProject:
         "variant",
         [
             Application(name="Mixed.Case@epam.com", project_type="personal", created_by="someone-else"),
-            Application(name="Mixed.Case@epam.com", project_type="shared", created_by="user-16566"),
         ],
-        ids=["owned-by-another-user", "not-personal"],
+        ids=["owned-by-another-user"],
     )
     @patch("codemie.service.project.personal_project_service.user_project_repository")
     @patch("codemie.service.project.personal_project_service.application_repository")
@@ -1216,6 +1215,160 @@ class TestCaseInsensitivePersonalProject:
 
         mock_user_proj.aadd_project.assert_not_called()
         session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("created_by", [None, "user-16566"], ids=["created-by-none", "created-by-user"])
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_create_personal_project_converts_non_personal_case_variant(
+        self, mock_app_repo, mock_user_proj, created_by
+    ):
+        session = AsyncMock()
+        variant = self._app(self.REAL, project_type="shared", created_by=created_by)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=variant)
+        mock_app_repo.aget_active_personal_by_creator_case_insensitive = AsyncMock(return_value=None)
+        mock_user_proj.aget_by_project_name = AsyncMock(return_value=[])
+        mock_user_proj.aget_by_user_and_project = AsyncMock(return_value=None)
+        mock_user_proj.aadd_project = AsyncMock()
+
+        name = await PersonalProjectService._create_personal_project(session, self.USER_ID, self.EMAIL)
+
+        assert name == self.REAL
+        assert variant.project_type == Application.ProjectType.PERSONAL
+        assert variant.created_by == self.USER_ID
+        mock_user_proj.aadd_project.assert_called_once_with(session, self.USER_ID, self.REAL, is_project_admin=False)
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_create_personal_project_converts_case_variant_with_only_own_membership(
+        self, mock_app_repo, mock_user_proj
+    ):
+        session = AsyncMock()
+        variant = self._app(self.REAL, project_type="shared", created_by=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=variant)
+        mock_app_repo.aget_active_personal_by_creator_case_insensitive = AsyncMock(return_value=None)
+        mock_user_proj.aget_by_project_name = AsyncMock(
+            return_value=[UserProject(user_id=self.USER_ID, project_name=self.REAL)]
+        )
+        mock_user_proj.aget_by_user_and_project = AsyncMock(
+            return_value=UserProject(user_id=self.USER_ID, project_name=self.REAL)
+        )
+        mock_user_proj.aadd_project = AsyncMock()
+
+        name = await PersonalProjectService._create_personal_project(session, self.USER_ID, self.EMAIL)
+
+        assert name == self.REAL
+        assert variant.project_type == Application.ProjectType.PERSONAL
+        assert variant.created_by == self.USER_ID
+        mock_user_proj.aadd_project.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("codemie.clients.postgres.get_async_session")
+    @patch("codemie.service.project.personal_project_service.activity_event_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_ensure_converts_case_variant_and_emits_one_event_with_real_name(
+        self, mock_app_repo, mock_user_proj, mock_activity_repo, mock_get_async_session
+    ):
+        mock_get_async_session.return_value = _make_async_session_cm(AsyncMock())
+        mock_activity_repo.async_insert = AsyncMock()
+        variant = self._app(self.REAL, project_type="shared", created_by=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=variant)
+        mock_app_repo.aget_active_personal_by_creator_case_insensitive = AsyncMock(return_value=None)
+        mock_user_proj.aget_by_project_name = AsyncMock(return_value=[])
+        mock_user_proj.aget_by_user_and_project = AsyncMock(return_value=None)
+        mock_user_proj.aadd_project = AsyncMock()
+
+        assert await PersonalProjectService.ensure_personal_project_async(self.USER_ID, self.EMAIL) is True
+
+        mock_activity_repo.async_insert.assert_called_once()
+        assert mock_activity_repo.async_insert.call_args.args[0].entity_id == self.REAL
+        assert variant.project_type == Application.ProjectType.PERSONAL
+        assert variant.created_by == self.USER_ID
+
+        # Second login: the application is now personal and the membership exists
+        mock_user_proj.aget_by_user_and_project = AsyncMock(
+            return_value=UserProject(user_id=self.USER_ID, project_name=self.REAL)
+        )
+        mock_get_async_session.return_value = _make_async_session_cm(AsyncMock())
+
+        assert await PersonalProjectService.ensure_personal_project_async(self.USER_ID, self.EMAIL) is True
+
+        mock_activity_repo.async_insert.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_create_personal_project_refuses_conversion_when_user_owns_another_personal_variant(
+        self, mock_app_repo, mock_user_proj
+    ):
+        """CR-001: legacy duplicates: a non-personal variant must not become a second personal project."""
+        session = AsyncMock()
+        variant = self._app(self.REAL, project_type="shared", created_by=None)
+        own_personal = self._app("MIXED.case@epam.com")
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=variant)
+        mock_app_repo.aget_active_personal_by_creator_case_insensitive = AsyncMock(return_value=own_personal)
+        mock_user_proj.aget_by_project_name = AsyncMock(return_value=[])
+        mock_user_proj.aget_by_user_and_project = AsyncMock(return_value=None)
+        mock_user_proj.aadd_project = AsyncMock()
+
+        with pytest.raises(ValueError):
+            await PersonalProjectService._create_personal_project(session, self.USER_ID, self.EMAIL)
+
+        mock_app_repo.aget_active_personal_by_creator_case_insensitive.assert_called_once_with(
+            session, self.EMAIL, self.USER_ID
+        )
+        assert variant.project_type == "shared"
+        assert variant.created_by is None
+        mock_user_proj.aadd_project.assert_not_called()
+        session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("codemie.clients.postgres.get_async_session")
+    @patch("codemie.service.project.personal_project_service.activity_event_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_create_personal_project_refuses_case_variant_with_other_members(
+        self, mock_app_repo, mock_user_proj, mock_activity_repo, mock_get_async_session
+    ):
+        session = AsyncMock()
+        variant = self._app(self.REAL, project_type="shared", created_by=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=variant)
+        mock_user_proj.aget_by_project_name = AsyncMock(
+            return_value=[UserProject(user_id="other-user", project_name=self.REAL)]
+        )
+        mock_user_proj.aget_by_user_and_project = AsyncMock(return_value=None)
+        mock_user_proj.aadd_project = AsyncMock()
+        mock_activity_repo.async_insert = AsyncMock()
+
+        with pytest.raises(ValueError):
+            await PersonalProjectService._create_personal_project(session, self.USER_ID, self.EMAIL)
+
+        mock_user_proj.aadd_project.assert_not_called()
+        session.add.assert_not_called()
+
+        mock_get_async_session.return_value = _make_async_session_cm(AsyncMock())
+        assert await PersonalProjectService.ensure_personal_project_async(self.USER_ID, self.EMAIL) is False
+        mock_activity_repo.async_insert.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_create_personal_project_exact_name_lowercase_unchanged(self, mock_app_repo, mock_user_proj):
+        session = AsyncMock()
+        variant = self._app(self.EMAIL, project_type="shared", created_by=None)
+        mock_app_repo.aget_active_by_name_case_insensitive = AsyncMock(return_value=variant)
+        mock_user_proj.aget_by_project_name = AsyncMock(return_value=[])
+        mock_user_proj.aget_by_user_and_project = AsyncMock(return_value=None)
+        mock_user_proj.aadd_project = AsyncMock()
+
+        name = await PersonalProjectService._create_personal_project(session, self.USER_ID, self.EMAIL)
+
+        assert name == self.EMAIL
+        assert variant.project_type == Application.ProjectType.PERSONAL
+        assert variant.created_by == self.USER_ID
+        mock_user_proj.aadd_project.assert_called_once_with(session, self.USER_ID, self.EMAIL, is_project_admin=False)
 
     @pytest.mark.asyncio
     @patch("codemie.service.project.personal_project_service.user_project_repository")

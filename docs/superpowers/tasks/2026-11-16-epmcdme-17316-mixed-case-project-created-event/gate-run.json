@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17316_follow-up",
+  "head": "0f8c4c939768444d8f7c34971a0c7a5dcb10a886",
+  "runner": "poetry",
+  "started_at": "2026-11-16T15:40:00Z",
+  "completed_at": "2026-11-16T15:55:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {"id": "lint-format", "source": "guide", "status": "PASS", "duration_ms": 2119, "command": "ruff format --check", "exit_code": 0, "notes": "Check-only (make ruff rewrites files); 3767 files already formatted."},
+    {"id": "lint", "source": "guide", "status": "PASS", "duration_ms": 1681, "command": "ruff check", "exit_code": 0},
+    {"id": "license", "source": "guide", "status": "PASS", "duration_ms": 3820, "command": "python scripts/license_headers/check_license_headers.py --check --quiet", "exit_code": 0, "notes": "3443 files checked, 0 missing headers."},
+    {"id": "secrets", "source": "guide", "status": "PASS", "duration_ms": 142468, "command": "docker run ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace", "exit_code": 0, "notes": "no leaks found (full worktree)."},
+    {"id": "build", "source": "guide", "status": "PASS", "duration_ms": 40817, "command": "poetry build -o <scratchpad>/dist", "exit_code": 0, "notes": "sdist and wheel built. Poetry auto-created a .venv in the worktree; it was removed afterwards. Output dir redirected outside the repo."},
+    {"id": "unit-affected", "source": "guide", "status": "PASS", "duration_ms": 95713, "command": "pytest tests/codemie/service/project/test_personal_project_service.py tests/codemie/repository/test_application_repository_extended.py -q", "exit_code": 0, "notes": "108 passed; codemie imported from worktree src."},
+    {"id": "unit-full", "source": "guide", "status": "N/A", "duration_ms": 0, "command": "make test", "exit_code": null, "notes": "NOT RUN: full suite is killed for low memory on this machine; CI/reviewer must run it. Not a pass."},
+    {"id": "commit-subject", "source": "hook", "status": "PASS", "duration_ms": 50, "command": "git log --format=%s origin/main..HEAD | grep -vE '^EPMCDME-[0-9]+: '", "exit_code": 0, "notes": "Both commits (c53c78b556, 0f8c4c9397) carry the EPMCDME-17316: prefix."}
+  ],
+  "failures": {}
+}

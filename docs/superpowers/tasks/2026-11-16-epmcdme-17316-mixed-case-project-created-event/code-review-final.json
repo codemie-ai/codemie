@@ -1,0 +1,149 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved check round: CR-001 resolved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User chose request-changes: fix CR-001 (prefer exact-name or already-personal application among case-variants)"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved check round: CR-001 resolved"
+    }
+  ],
+  "reviewed_head": "0f8c4c939768444d8f7c34971a0c7a5dcb10a886",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "CR-001 is resolved: conversion of a case-variant now calls the new creator-scoped lookup and raises ValueError when the user already owns a personal project under another casing, with a repository query and tests added. Deferred items were not re-checked.",
+  "confidence": "medium",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/project/personal_project_service.py",
+      "line": 230,
+      "title": "Case-variant lookup can convert wrong project",
+      "problem": "_find_application returns only first() among active case-variant applications, ordered exact-name first then by name. If the user already owns a personal case-variant and a non-personal variant sorts first, the relaxed _is_reusable now accepts the non-personal one and converts it, so the user ends with two personal projects.",
+      "impact": "Before this change that state raised ValueError; now a second project is silently taken over and made personal (if it has no other members). Reachability was not confirmed: project_service.py:239 blocks new case-insensitive duplicates, so it needs legacy duplicate data.",
+      "recommendation": "When a non-personal case variant is found, also check whether the user already owns a personal case-variant (look up all active variants, not only first()); if so raise ValueError instead of converting.",
+      "status": "resolved",
+      "check_notes": "personal_project_service.py:207-226 and :281-284 add _ensure_no_other_own_personal_variant before converting a case-variant; it raises ValueError if the user already owns a personal variant (new repository lookup, tests added).",
+      "fix": {
+        "change": "Conversion of a case-variant application now raises ValueError when the user already owns an active personal project under another casing (new repository lookup aget_active_personal_by_creator_case_insensitive)",
+        "test": "tests/codemie/service/project/test_personal_project_service.py::TestCaseInsensitivePersonalProject::test_create_personal_project_refuses_conversion_when_user_owns_another_personal_variant"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/service/project/personal_project_service.py",
+      "line": 259,
+      "title": "Converted project keeps cost center and resources",
+      "problem": "A non-personal application converted to personal keeps cost_center_id, git repos and owned resources.",
+      "preexisting": "Exact-name conversion already behaves this way; spec says variants convert like exact-name ones."
+    },
+    {
+      "id": "DF-002",
+      "severity": "major",
+      "file": "src/codemie/service/project/personal_project_service.py",
+      "line": 81,
+      "title": "Concurrent logins can double-convert and double-emit",
+      "problem": "Simultaneous first logins of one user can both convert and both emit project.created; no row lock.",
+      "preexisting": "Same unlocked read-then-write sequence already applied to exact-name conversion."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC1: non-personal case-variant application with no other members becomes personal, created_by = user",
+      "status": "pass",
+      "notes": "_is_reusable relaxed; conversion at :260-267; covered by conversion tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: exactly one membership named like the application",
+      "status": "pass",
+      "notes": "project_name = existing_app.name; aadd_project called once with the real name"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: one project.created event with entity_id = real stored name; later call emits nothing",
+      "status": "pass",
+      "notes": "emitter unchanged; test asserts entity_id == real name and a single insert after a second call"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: case-variant that is another user's personal project still refused",
+      "status": "pass",
+      "notes": "guard kept in _is_reusable; ValueError raised before any write or emit"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: project with other members still refused, case-variant or exact",
+      "status": "pass",
+      "notes": "other-members check untouched; new refusal test added"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: lowercase-email users and exact-name conversions behave as before",
+      "status": "pass",
+      "notes": "exact-name branch unchanged; exact conversion test present"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: harness test passes without xfail, verified on the stand",
+      "status": "pending-stage-7",
+      "notes": "stand/harness execution evidence lives outside this repo's unit tests"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "1 commit subject in range matches the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "2 files changed (personal_project_service.py, its test file); no Ruff, typing, license-header or module-cohesion rule broken"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "other-users-have-access guard retained; another user's personal project still refused; logs carry no email or credentials"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "One major finding: with two active case-variant applications (legacy data) the lookup may pick the non-personal one and convert it, giving the user two personal projects; reachability is unconfirmed, so confidence is medium. AC7 is pending-stage-7. 2 pre-existing items deferred (cost center and resources kept on conversion; unlocked concurrent-login race), 0 dismissed; backlog in code-review-deferred.local.md.",
+    "confidence": "medium",
+    "risk_flags": []
+  }
+}

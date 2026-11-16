@@ -494,6 +494,25 @@ class TestApplicationRepositoryAsyncOperations:
         assert "order by case when (applications.name = 'proj-a') then 0 else 1 end" in query_text
 
     @pytest.mark.asyncio
+    async def test_aget_active_personal_by_creator_case_insensitive_filters_on_creator_and_type(self):
+        """CR-001: finds a personal project the user already owns under any casing of the name."""
+        # Arrange
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.first.return_value = None
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        # Act
+        await application_repository.aget_active_personal_by_creator_case_insensitive(mock_session, "Proj-A", "user-1")
+
+        # Assert
+        query_text = _compile_sql(mock_session.execute.call_args[0][0])
+        assert "lower(applications.name) = 'proj-a'" in query_text
+        assert "applications.deleted_at is null" in query_text
+        assert "applications.project_type = 'personal'" in query_text
+        assert "applications.created_by = 'user-1'" in query_text
+
+    @pytest.mark.asyncio
     async def test_aget_by_name_returns_none_when_not_exists(self):
         """aget_by_name returns None when project doesn't exist (async)."""
         # Arrange

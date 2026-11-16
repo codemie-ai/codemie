@@ -876,6 +876,23 @@ class ApplicationRepository:
         result = await session.execute(statement)
         return result.scalars().first()
 
+    async def aget_active_personal_by_creator_case_insensitive(
+        self, session: AsyncSession, name: str, created_by: str
+    ) -> Application | None:
+        """Non-soft-deleted personal application of the given creator, by case-insensitive name (async)."""
+        statement = (
+            select(Application)
+            .where(
+                func.lower(Application.name) == name.lower(),
+                Application.deleted_at.is_(None),
+                Application.project_type == Application.ProjectType.PERSONAL,
+                Application.created_by == created_by,
+            )
+            .order_by(Application.name)
+        )
+        result = await session.execute(statement)
+        return result.scalars().first()
+
     async def acreate(
         self,
         session: AsyncSession,

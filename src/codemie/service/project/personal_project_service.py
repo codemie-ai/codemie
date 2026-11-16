@@ -198,11 +198,32 @@ class PersonalProjectService:
     def _is_reusable(application: Application, user_id: str, user_email: str) -> bool:
         """An exact-name application can be converted as before.
 
-        A case variant is reused only when it is already this user's personal project.
+        A case variant is converted too, unless it is another user's personal project.
         """
         if application.name == user_email:
             return True
-        return application.project_type == Application.ProjectType.PERSONAL and application.created_by == user_id
+        return not (application.project_type == Application.ProjectType.PERSONAL and application.created_by != user_id)
+
+    @staticmethod
+    async def _ensure_no_other_own_personal_variant(
+        session, application: Application, user_id: str, user_email: str
+    ) -> None:
+        """Refuse converting a case variant when the user already owns a personal project under another casing.
+
+        Legacy data may hold several case variants; the lookup returns only one, so a second
+        personal project would otherwise be created by converting the other variant.
+        """
+        if application.name == user_email:
+            return
+        own = await application_repository.aget_active_personal_by_creator_case_insensitive(
+            session, user_email, user_id
+        )
+        if own:
+            logger.warning(
+                f"User already owns a personal project differing only by case: "
+                f"user_id={user_id}, project_type={application.project_type}"
+            )
+            raise ValueError("Cannot convert a case-variant project: user already has a personal project")
 
     @staticmethod
     async def _create_personal_project(session, user_id: str, user_email: str) -> str:
@@ -223,7 +244,7 @@ class PersonalProjectService:
             The application's real name, which the user-project mapping carries
 
         Raises:
-            ValueError: Another user's or a non-personal project differs from the email only by case
+            ValueError: Another user's personal project differs from the email only by case
             Exception: Database errors propagate to caller
         """
         # Check if application already exists (ignoring case: it keeps the casing it was created with)
@@ -231,10 +252,10 @@ class PersonalProjectService:
 
         if existing_app and not PersonalProjectService._is_reusable(existing_app, user_id, user_email):
             logger.warning(
-                f"Project differing only by case is not this user's personal project: "
+                f"Project differing only by case is another user's personal project: "
                 f"user_id={user_id}, project_type={existing_app.project_type}"
             )
-            raise ValueError("Cannot use a case-variant project that is not this user's personal project")
+            raise ValueError("Cannot use a case-variant project that is another user's personal project")
 
         if existing_app:
             # Validate safe conversion: Only convert if NO other users have access
@@ -258,6 +279,9 @@ class PersonalProjectService:
 
             # Safe to convert: Update to personal project
             if existing_app.project_type != Application.ProjectType.PERSONAL or existing_app.created_by != user_id:
+                await PersonalProjectService._ensure_no_other_own_personal_variant(
+                    session, existing_app, user_id, user_email
+                )
                 existing_app.project_type = Application.ProjectType.PERSONAL
                 existing_app.created_by = user_id
                 existing_app.description = f"Personal Project for {user_email}"
