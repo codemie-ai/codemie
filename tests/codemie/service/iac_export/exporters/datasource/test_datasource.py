@@ -66,8 +66,9 @@ def _model_fields(model: type[BaseModel]) -> set[str]:
     return {RENAMES.get(_snake(f), _snake(f)) for f in model.model_fields} - NOT_EXPORTED
 
 
-def _assert_covers(spec: dict, model: type[BaseModel]) -> None:
-    assert _model_fields(model) <= set(spec), sorted(_model_fields(model) - set(spec))
+def _assert_covers(spec: dict, model: type[BaseModel], not_exported: set[str] = frozenset()) -> None:
+    fields = _model_fields(model) - not_exported
+    assert fields <= set(spec), sorted(fields - set(spec))
 
 
 def _admin() -> User:
@@ -156,9 +157,13 @@ def test_confluence_spec_covers_every_update_field():
     index = _index(
         "knowledge_base_confluence",
         confluence=ConfluenceIndexInfo(cql="space = X", include_comments=True, max_pages=50, keep_newlines=False),
+        embeddings_model="emb-1",
     )
     spec = _export(index)["spec"]
-    _assert_covers(spec, UpdateKnowledgeBaseConfluenceRequest)
+    # codemie-sdk-python and the codemie-cdk Confluence spec have no `embedding_model` yet (the envelope schema
+    # rejects it); remove this exclusion once they carry it and the exporter exports the field.
+    _assert_covers(spec, UpdateKnowledgeBaseConfluenceRequest, not_exported={"embedding_model"})
+    assert "embedding_model" not in spec
     assert spec["type"] == "knowledge_base_confluence"
     assert spec["cql"] == "space = X"
     assert (spec["include_comments"], spec["max_pages"], spec["keep_newlines"]) == (True, 50, False)

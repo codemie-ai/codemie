@@ -1052,7 +1052,9 @@ def _ds_code(vcs: str, index_type: str) -> Any:
 def _ds_confluence() -> Any:
     from codemie.rest_api.models.index import ConfluenceIndexInfo
 
-    return _ds_index("knowledge_base_confluence", confluence=ConfluenceIndexInfo(cql="space = X"))
+    return _ds_index(
+        "knowledge_base_confluence", confluence=ConfluenceIndexInfo(cql="space = X"), embeddings_model="emb-1"
+    )
 
 
 def _ds_jira() -> Any:
@@ -1174,6 +1176,9 @@ DS_KB_CASES: dict[str, tuple[Callable[[], Any], str, str, str]] = {
 # SharePoint token have no field in the envelope; project_space_visible is its `shared_with_project`.
 DS_NOT_EXPORTED = {"new_project_name", "guardrail_assignments", "access_token"}
 DS_RENAMES = {"project_space_visible": "shared_with_project"}
+# codemie-sdk-python and the codemie-cdk Confluence spec have no `embedding_model` yet, so the envelope schema rejects
+# it. Drop the entry once they carry it and the exporter exports the field (tracked in a follow-up ticket).
+DS_CONFLUENCE_NOT_EXPORTED = DS_NOT_EXPORTED | {"embedding_model"}
 
 
 class _Recorder:
@@ -1296,7 +1301,8 @@ def test_kb_datasource_spec_covers_every_update_field(case):
     index = factory()
     with _ds_persistence([index], _Recorder()):
         spec = _ds_export(index)
-    _assert_covers(spec, _ds_requests()[request_key], not_exported=DS_NOT_EXPORTED, renames=DS_RENAMES)
+    not_exported = DS_CONFLUENCE_NOT_EXPORTED if request_key == "confluence" else DS_NOT_EXPORTED
+    _assert_covers(spec, _ds_requests()[request_key], not_exported=not_exported, renames=DS_RENAMES)
 
 
 def test_guard_datasource_round_trip_fails_when_a_field_is_omitted():
@@ -1315,7 +1321,10 @@ def test_guard_datasource_completeness_check_fails_when_a_field_is_omitted():
         spec = _ds_export(index)
     with pytest.raises(AssertionError, match="cql"):
         _assert_covers(
-            _without(spec, "cql"), _ds_requests()["confluence"], not_exported=DS_NOT_EXPORTED, renames=DS_RENAMES
+            _without(spec, "cql"),
+            _ds_requests()["confluence"],
+            not_exported=DS_CONFLUENCE_NOT_EXPORTED,
+            renames=DS_RENAMES,
         )
 
 

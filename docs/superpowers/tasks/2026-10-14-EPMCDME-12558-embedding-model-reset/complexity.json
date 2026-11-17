@@ -1,0 +1,13 @@
+{
+  "score": 7,
+  "breakdown": {
+    "component_scope": 1,
+    "requirements_clarity": 1,
+    "technical_risk": 1,
+    "file_change_estimate": 1,
+    "dependencies": 1,
+    "affected_layers": 2
+  },
+  "routing": "writing-plans",
+  "rationale": "affected_layers: Two API sub-components touched (Pydantic models and router handler) within the same API layer — a minor cross-cutting concern across two directories but no service or persistence layer changes needed"
+}

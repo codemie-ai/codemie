@@ -1713,6 +1713,7 @@ class UpdateKnowledgeBaseConfluenceRequest(CronExpressionValidatorMixin, BaseMod
     project_space_visible: Optional[bool] = None
     cql: Optional[str] = None
     setting_id: Optional[str] = None
+    embedding_model: Optional[str] = None
     new_project_name: Optional[str] = None  # Field to support project change
     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
     cron_expression: Optional[str] = None
@@ -1862,7 +1863,7 @@ class IndexKnowledgeBaseFileRequest(IndexKnowledgeBaseRequest):
     csv_start_row: Optional[int] = None
     csv_rows_per_document: Optional[int] = 1
     embedding_model: Optional[str] = None
-    guardrail_assignments: Optional[str] = None  # json encoded list of GuardrailAssignmentItem
+    guardrail_assignments: Optional[str] = None  # noqa: UP007 -- json encoded list of GuardrailAssignmentItem
     include_email_attachments: bool = True
 
     MIN_FILE_COUNT: ClassVar[int] = 1

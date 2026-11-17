@@ -31767,6 +31767,17 @@
             ],
             "title": "Description"
           },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
           "guardrail_assignments": {
             "anyOf": [
               {

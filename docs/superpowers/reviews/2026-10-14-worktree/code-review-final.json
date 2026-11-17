@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case lens identified 4 pre-existing concerns in kb_atlassian.py and models/index.py (Confluence empty-string guard, embedding model field_validator, Jira/Xray update models missing embedding_model), none introduced by this diff. All 4 deferred. Standards ran but all rows na — HEAD equals base commit. No blocking findings, no failed or truncated lenses, no coverage gap.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "na", "notes": "No commits in range d316d85ba..HEAD (HEAD is at d316d85ba)"},
+    {"kind": "code-quality", "status": "na", "notes": "No changed files in range d316d85ba...HEAD (HEAD is at d316d85ba)"},
+    {"kind": "security", "status": "na", "notes": "No changed files to audit against security guide"}
+  ],
+  "findings": []
+}

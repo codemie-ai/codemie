@@ -927,6 +927,125 @@ async def test_reindex_confluence_uses_stored_setting_id_when_request_setting_id
     )
 
 
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_confluence_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.ConfluenceDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+def test_update_confluence_persists_selected_embedding_model_with_full_reindex(
+    mock_filter, mock_worker, mock_creds, auth_headers
+):
+    kb_index_mock = MagicMock()
+    kb_index_mock.embeddings_model = "text-embedding-ada-002"
+    mock_filter.return_value = [kb_index_mock]
+    mock_worker.return_value = MagicMock()
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/confluence?full_reindex=true",
+        json={
+            "name": "test_index",
+            "project_name": "test_project",
+            "embedding_model": "text-embedding-3-large",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    kb_index_mock.update_index.assert_called_once()
+    assert kb_index_mock.update_index.call_args.kwargs["embeddings_model"] == "text-embedding-3-large"
+
+
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+def test_update_confluence_changed_embedding_model_without_full_reindex_is_rejected(mock_filter, auth_headers):
+    kb_index_mock = MagicMock()
+    kb_index_mock.embeddings_model = "text-embedding-ada-002"
+    mock_filter.return_value = [kb_index_mock]
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/confluence",
+        json={
+            "name": "test_index",
+            "project_name": "test_project",
+            "embedding_model": "text-embedding-3-large",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 422
+    kb_index_mock.update_index.assert_not_called()
+
+
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+def test_update_confluence_unchanged_embedding_model_without_full_reindex_is_accepted(mock_filter, auth_headers):
+    kb_index_mock = MagicMock()
+    kb_index_mock.embeddings_model = "text-embedding-3-large"
+    mock_filter.return_value = [kb_index_mock]
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/confluence",
+        json={
+            "name": "test_index",
+            "project_name": "test_project",
+            "embedding_model": "text-embedding-3-large",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+
+
+@patch('codemie.rest_api.routers.index.kb_atlassian.llm_service')
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+def test_update_confluence_null_stored_model_is_compared_as_default(mock_filter, mock_llm_service, auth_headers):
+    kb_index_mock = MagicMock()
+    kb_index_mock.embeddings_model = None
+    mock_filter.return_value = [kb_index_mock]
+    mock_llm_service.default_embedding_model = "text-embedding-ada-002"
+    body = {"name": "test_index", "project_name": "test_project"}
+
+    same = app_client.put(
+        "/v1/index/knowledge_base/confluence",
+        json={**body, "embedding_model": "text-embedding-ada-002"},
+        headers=auth_headers,
+    )
+    different = app_client.put(
+        "/v1/index/knowledge_base/confluence",
+        json={**body, "embedding_model": "text-embedding-3-large"},
+        headers=auth_headers,
+    )
+
+    assert same.status_code == 200
+    assert different.status_code == 422
+
+
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+def test_update_confluence_omitting_embedding_model_leaves_value_unchanged(mock_filter, auth_headers):
+    kb_index_mock = MagicMock()
+    mock_filter.return_value = [kb_index_mock]
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/confluence",
+        json={"name": "test_index", "project_name": "test_project"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    kb_index_mock.update_index.assert_not_called()
+
+
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+def test_update_confluence_empty_embedding_model_is_treated_as_absent(mock_filter, auth_headers):
+    kb_index_mock = MagicMock()
+    mock_filter.return_value = [kb_index_mock]
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/confluence",
+        json={"name": "test_index", "project_name": "test_project", "embedding_model": ""},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    kb_index_mock.update_index.assert_not_called()
+
+
 @patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_xray_creds')
 @patch('codemie.rest_api.routers.index.kb_atlassian.XrayDatasourceProcessor')
 @patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')

@@ -37,6 +37,7 @@ from codemie.rest_api.models.index import (
 )
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.settings.settings import SettingsService
 
 from codemie.rest_api.routers.index._common import (
@@ -195,6 +196,28 @@ def index_knowledge_base_xray(
     return BaseResponse(message=f"Indexing of datasource {request.name} has been started in the background")
 
 
+def _require_full_reindex_for_embedding_model(
+    request: UpdateKnowledgeBaseConfluenceRequest, kb_index: KnowledgeBaseIndexInfo, full_reindex: bool
+) -> None:
+    """Stored vectors come from the old model: a different model is applied only together with a full reindex,
+    otherwise KB search would embed queries with the new model against old-model vectors.
+    """
+    if not request.embedding_model or full_reindex:
+        return
+    # A datasource without a stored model was embedded with the default one.
+    if request.embedding_model == (kb_index.embeddings_model or llm_service.default_embedding_model):
+        return
+    raise ExtendedHTTPException(
+        code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        message="Changing the embedding model requires a full reindex",
+        details=(
+            f"The datasource '{request.name}' was indexed with a different embedding model. "
+            "Pass full_reindex=true to apply the new model."
+        ),
+        help="Re-send the request with full_reindex=true to change the embedding model.",
+    )
+
+
 @router.put("/index/knowledge_base/confluence", status_code=status.HTTP_200_OK)
 def update_knowledge_base_confluence(
     request: UpdateKnowledgeBaseConfluenceRequest,
@@ -223,12 +246,15 @@ def update_knowledge_base_confluence(
     if hasattr(request, 'new_project_name'):
         _validate_project_change(request.new_project_name, request.project_name, request.name, user)
 
+    _require_full_reindex_for_embedding_model(request, kb_index[0], full_reindex)
+
     # Update the index
     if (
         request.description is not None
         or request.project_space_visible is not None
         or request.cql is not None
         or request.setting_id is not None
+        or request.embedding_model
         or (hasattr(request, 'new_project_name') and request.new_project_name)
     ):
         kb_index[0].update_index(
@@ -240,6 +266,7 @@ def update_knowledge_base_confluence(
             setting_id=request.setting_id,
             project_name=request.new_project_name if hasattr(request, 'new_project_name') else None,
             guardrail_assignments=request.guardrail_assignments,
+            embeddings_model=request.embedding_model,
         )
 
     if full_reindex is not True and resume_indexing is not True:

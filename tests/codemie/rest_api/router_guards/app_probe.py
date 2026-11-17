@@ -69,7 +69,8 @@ def _import_app() -> Any:
         stack.enter_context(patch("socket.socket.connect_ex", _refuse_connection))
         stack.enter_context(patch("codemie.clients.postgres.PostgresClient.get_engine", return_value=_mock_engine()))
         stack.enter_context(patch("codemie.rest_api.utils.state_import.StateImportService.import_indexes"))
-        # main.py from-imports is_litellm_enabled, so it has to be patched before main is imported.
+        # main.py and proxy_router.py each from-import is_litellm_enabled, so both copies have to be patched
+        # before main is imported; otherwise the LLM proxy routes depend on codemie-enterprise being installed.
         stack.enter_context(patch("codemie.enterprise.litellm.is_litellm_enabled", return_value=True))
         # Proxy registration uses its own bound import. Enable it independently
         # of whether the optional enterprise package is installed on this host.

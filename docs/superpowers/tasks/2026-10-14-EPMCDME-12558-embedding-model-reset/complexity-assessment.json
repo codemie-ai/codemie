@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "task": "Fix Confluence embedding model picker reset by adding missing field to UpdateKnowledgeBaseConfluenceRequest and passing it to update_index()",
+  "generated": "2026-10-14T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 1,
+      "label": "XS"
+    },
+    "requirements_clarity": {
+      "score": 1,
+      "label": "XS"
+    },
+    "technical_risk": {
+      "score": 1,
+      "label": "XS"
+    },
+    "file_change_estimate": {
+      "score": 1,
+      "label": "XS"
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS"
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S"
+    }
+  },
+  "total": 7,
+  "size": "XS",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "affected_layers",
+      "reason": "Two API sub-components touched (Pydantic models and router handler) within the same API layer — a minor cross-cutting concern across two directories but no service or persistence layer changes needed"
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
