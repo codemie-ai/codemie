@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -1033,3 +1033,59 @@ class TestSyncProjectBudgetMemberRemoved:
 
         assert alloc.deleted_at is not None
         session.flush.assert_called_once()
+
+    @patch("codemie.service.project.project_assignment_service.get_active_provider")
+    def test_bulk_removal_soft_deletes_all_allocations(self, mock_get_provider):
+        """Bulk removal: provider delete and soft-delete run once per allocation."""
+        session = MagicMock()
+        alloc1 = self._make_allocation(category="platform", provider_member_ref="ref-1")
+        alloc2 = self._make_allocation(category="cli", provider_member_ref="ref-2")
+        session.exec.return_value.all.return_value = [alloc1, alloc2]
+
+        mock_provider = MagicMock()
+        mock_get_provider.return_value = mock_provider
+
+        with patch.object(ProjectAssignmentService, "_run_budget_provider_coro", return_value=None) as mock_run:
+            ProjectAssignmentService._sync_project_budget_member_removed(session, "myproject", "user-abc")
+
+        assert mock_run.call_count == 2
+        assert alloc1.deleted_at is not None
+        assert alloc2.deleted_at is not None
+
+
+class TestRefreshMemberShares:
+    """ProjectAssignmentService.refresh_member_shares re-splits equal shares, fail-open."""
+
+    @staticmethod
+    def _patch_session():
+        session = MagicMock()
+        session.commit = AsyncMock()
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=session)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return session, patch("codemie.service.project.project_assignment_service.get_async_session", return_value=ctx)
+
+    def test_recomputes_and_commits(self):
+        session, session_patch = self._patch_session()
+        with (
+            session_patch,
+            patch("codemie.service.budget.project_budget_service.project_budget_service") as svc,
+        ):
+            svc.recompute_equal_shares = AsyncMock()
+            ProjectAssignmentService.refresh_member_shares("p")
+
+        svc.recompute_equal_shares.assert_awaited_once_with(session, "p")
+        session.commit.assert_awaited_once()
+
+    def test_failure_is_swallowed_and_logged(self):
+        _, session_patch = self._patch_session()
+        with (
+            session_patch,
+            patch("codemie.service.budget.project_budget_service.project_budget_service") as svc,
+            patch("codemie.service.project.project_assignment_service.logger") as log,
+        ):
+            svc.recompute_equal_shares = AsyncMock(side_effect=RuntimeError("boom"))
+            ProjectAssignmentService.refresh_member_shares("p")
+
+        message = log.warning.call_args.args[0]
+        assert "budget_event=member_share_refresh_failed component=project_assignment_service" in message

@@ -280,6 +280,7 @@ class AuthenticationService:
                     session, project_name, user_id, actor_id=None
                 )
                 session.commit()
+            ProjectAssignmentService.refresh_member_shares(project_name)
 
         for project_name in project_names:
             try:

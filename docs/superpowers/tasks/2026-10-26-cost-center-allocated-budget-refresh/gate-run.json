@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16356_fix-cost-center-allocated-budget",
+  "head": "e91baad9be872b9afc91084b78c59e414bf44d97",
+  "runner": "poetry",
+  "started_at": "2026-10-26T12:15:00Z",
+  "completed_at": "2026-10-26T12:30:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 11752,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1631,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 56605,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 328552,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "Reported by user from a local run of the full suite: 22743 passed, 321 skipped, 316 warnings in 344.36s. Supersedes the runner attempt (3 sandbox thread-limit failures in test_filesystem_policy.py, unrelated to the diff)."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "notes": "Diff does not touch CLI Analytics SQL"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "notes": "Credentials/network not available; not run"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Reported by user from a local run: 199 passed, 4 skipped in 487.19s.",
+      "exit_code": 0
+    },
+    {
+      "id": "pre-commit-hooks",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "scripts/git-hooks/pre_commit.sh",
+      "notes": "Ruff+license covered by lint/license-check; commit-msg/pre-push (pytest+sonar) covered by unit/sonar entries"
+    }
+  ]
+}

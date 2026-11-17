@@ -75,6 +75,8 @@ def assign_user_to_project(
         )
         session.commit()
 
+    project_assignment_service.refresh_member_shares(project_name)
+
     return ProjectAssignmentResponse(**result)
 
 
@@ -125,6 +127,8 @@ def remove_user_from_project(
         )
         session.commit()
 
+    project_assignment_service.refresh_member_shares(project_name)
+
     return ProjectAssignmentResponse(**result)
 
 
@@ -152,6 +156,8 @@ def bulk_assign_users_to_project(
             action=f"{request.method} {request.url.path}",
         )
         session.commit()
+
+    project_assignment_service.refresh_member_shares(project_name)
 
     return BulkAssignmentResponse(
         message=f"Bulk assignment completed: {len(results)} users processed",
@@ -208,6 +214,7 @@ def import_users_from_csv(
     or users cannot be found.
     """
     from codemie.service.project.csv_import_service import MAX_CSV_BYTES, csv_import_service
+    from codemie.service.project.project_assignment_service import project_assignment_service
 
     _ensure_user_management_enabled()
 
@@ -229,6 +236,8 @@ def import_users_from_csv(
             action=f"{request.method} {request.url.path}",
         )
         session.commit()
+
+    project_assignment_service.refresh_member_shares(project_name)
 
     return BulkAssignmentResponse(
         message=f"CSV import completed: {len(results)} users processed",
@@ -267,6 +276,8 @@ def bulk_remove_users_from_project(
             action=f"{request.method} {request.url.path}",
         )
         session.commit()
+
+    project_assignment_service.refresh_member_shares(project_name)
 
     return BulkAssignmentResponse(
         message=f"Bulk removal completed: {len(results)} users removed",

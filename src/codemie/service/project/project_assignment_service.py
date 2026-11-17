@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timezone
 
 from sqlmodel import Session, select
 
+from codemie.clients.postgres import get_async_session
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
@@ -90,6 +91,31 @@ class ProjectAssignmentService:
             future.cancel()
             logger.warning("Project budget provider sync timed out after 30s; skipping")
             return None
+
+    @staticmethod
+    def refresh_member_shares(project_name: str) -> None:
+        """Re-split equal member shares after a membership change. Call after the membership commit.
+
+        Fail-open: a failure is logged and never fails the membership request.
+        """
+
+        async def _refresh() -> None:
+            from codemie.service.budget.project_budget_service import project_budget_service  # noqa: PLC0415
+
+            async with get_async_session() as session:
+                await project_budget_service.recompute_equal_shares(session, project_name)
+                await session.commit()
+            for key in list(_resolution_cache.keys()):
+                if key[0] == project_name:
+                    _resolution_cache.pop(key, None)
+
+        try:
+            ProjectAssignmentService._run_budget_provider_coro(_refresh())
+        except Exception as e:
+            logger.warning(
+                f"budget_event=member_share_refresh_failed component=project_assignment_service "
+                f"project_name={project_name!r} error={e!r}"
+            )
 
     @staticmethod
     def _build_member_provider_metadata(member_state) -> dict:

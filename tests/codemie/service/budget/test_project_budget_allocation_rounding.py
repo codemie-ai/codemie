@@ -410,3 +410,41 @@ async def test_recompute_equal_shares_skips_budget_when_fixed_overrides_exceed_i
     mock_update.assert_not_awaited()
     mock_shared.assert_not_awaited()
     assert any("member_share_recompute_skipped" in message for message in _warning_messages(mock_logger))
+
+
+@pytest.mark.asyncio
+async def test_recompute_equal_shares_after_member_removed_matches_manual_rebalance():
+    # 3 members were split 3 ways (3.0 each of 9.0); one is removed -> two remain with stale shares.
+    budget = _budget(max_budget=9.0, soft_budget=6.0)
+    allocations = [_stored_allocation(uid, AllocationMode.EQUAL, 3.0, 2.0, budget.budget_id) for uid in ("u1", "u2")]
+    expected = ProjectBudgetService._equal_amounts_with_fixed_overrides(
+        allocations, budget.max_budget, budget.soft_budget
+    )
+
+    _, mock_update, _, _ = await _recompute(allocations, budget)
+
+    assert {c.kwargs["allocation_id"]: c.kwargs["allocated_max_budget"] for c in mock_update.await_args_list} == {
+        f"alloc-{uid}": expected[uid][0] for uid in ("u1", "u2")
+    }
+    assert sum(a.allocated_max_budget for a in allocations) == pytest.approx(budget.max_budget)
+
+
+@pytest.mark.asyncio
+async def test_recompute_equal_shares_leaves_fixed_rows_untouched():
+    budget = _budget(max_budget=9.0, soft_budget=6.0)
+    fixed = _stored_allocation("fixed", AllocationMode.FIXED, 3.0, 2.0, budget.budget_id)
+    equal = _stored_allocation("equal", AllocationMode.EQUAL, 3.0, 2.0, budget.budget_id)
+
+    _, mock_update, _, _ = await _recompute([fixed, equal], budget)
+
+    assert [c.kwargs["allocation_id"] for c in mock_update.await_args_list] == ["alloc-equal"]
+    assert (fixed.allocated_max_budget, fixed.allocated_soft_budget) == (3.0, 2.0)
+    assert equal.allocated_max_budget == pytest.approx(6.0)
+
+
+@pytest.mark.asyncio
+async def test_recompute_equal_shares_noop_without_member_allocations():
+    _, mock_update, mock_shared, _ = await _recompute([], _budget(max_budget=9.0, soft_budget=6.0))
+
+    mock_update.assert_not_awaited()
+    mock_shared.assert_not_awaited()

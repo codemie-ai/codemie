@@ -4528,3 +4528,99 @@ class TestMemberAssignmentDatabaseFailure:
             self._call_route("assign", super_admin_user)
 
         assert exc_info.value is error
+
+
+class TestMembershipRoutesRefreshShares:
+    """Every membership change re-splits member shares once, after the commit."""
+
+    @staticmethod
+    def _routes(user):
+        from codemie.rest_api.models.project import BulkAssignmentRequest, BulkAssignmentUserItem
+        from codemie.rest_api.routers.projects.membership import (
+            bulk_assign_users_to_project,
+            bulk_remove_users_from_project,
+            import_users_from_csv,
+        )
+
+        req = MagicMock(method="X", url=SimpleNamespace(path="/v1/x"), state=SimpleNamespace(user=user))
+        proj = MagicMock(project_type="shared")
+        single = {"message": "ok", "user_id": "u", "project_name": "p", "is_project_admin": False}
+        bulk = [{"user_id": "u", "action": "assigned", "is_project_admin": False}]
+        csv_file = MagicMock()
+        csv_file.file.read.return_value = b"email,role"
+        payload = ProjectAssignmentRequest(user_id="u", is_project_admin=False)
+        bulk_payload = BulkAssignmentRequest(users=[BulkAssignmentUserItem(user_id="u", is_project_admin=False)])
+        return [
+            (
+                "assign_user_to_project",
+                single,
+                False,
+                lambda: assign_user_to_project(request=req, payload=payload, project_name="p", authorized_project=proj),
+            ),
+            (
+                "remove_user_from_project",
+                single,
+                False,
+                lambda: remove_user_from_project(request=req, project_name="p", user_id="u", authorized_project=proj),
+            ),
+            (
+                "bulk_assign_users_to_project",
+                bulk,
+                False,
+                lambda: bulk_assign_users_to_project(
+                    request=req, payload=bulk_payload, project_name="p", authorized_project=proj
+                ),
+            ),
+            (
+                "bulk_remove_users_from_project",
+                bulk,
+                False,
+                lambda: bulk_remove_users_from_project(
+                    request=req, user_id=["u"], project_name="p", authorized_project=proj
+                ),
+            ),
+            (
+                "assign_from_csv",
+                bulk,
+                True,
+                lambda: import_users_from_csv(request=req, file=csv_file, project_name="p", authorized_project=proj),
+            ),
+        ]
+
+    @pytest.mark.parametrize("idx", range(5))
+    @patch("codemie.rest_api.routers.projects.membership._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
+    def test_refresh_called_once_after_commit(self, mock_get_session, _ensure, idx, super_admin_user):
+        method, result, is_csv, call = self._routes(super_admin_user)[idx]
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        with (
+            patch("codemie.service.project.project_assignment_service.project_assignment_service") as assign_svc,
+            patch("codemie.service.project.csv_import_service.csv_import_service") as csv_svc,
+        ):
+            getattr(csv_svc if is_csv else assign_svc, method).return_value = result
+            order = MagicMock()
+            order.attach_mock(mock_session.commit, "commit")
+            order.attach_mock(assign_svc.refresh_member_shares, "refresh")
+            call()
+
+        assert [c[0] for c in order.mock_calls] == ["commit", "refresh"]
+        assign_svc.refresh_member_shares.assert_called_once_with("p")
+
+    @pytest.mark.parametrize("idx", range(5))
+    @patch("codemie.rest_api.routers.projects.membership._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
+    def test_refresh_skipped_when_service_raises(self, mock_get_session, _ensure, idx, super_admin_user):
+        method, _, is_csv, call = self._routes(super_admin_user)[idx]
+        mock_get_session.return_value.__enter__.return_value = MagicMock()
+        with (
+            patch("codemie.service.project.project_assignment_service.project_assignment_service") as assign_svc,
+            patch("codemie.service.project.csv_import_service.csv_import_service") as csv_svc,
+        ):
+            getattr(csv_svc if is_csv else assign_svc, method).side_effect = ExtendedHTTPException(
+                code=422, message="bad"
+            )
+            with pytest.raises(ExtendedHTTPException):
+                call()
+
+        assign_svc.refresh_member_shares.assert_not_called()
