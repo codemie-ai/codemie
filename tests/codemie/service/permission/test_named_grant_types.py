@@ -127,10 +127,14 @@ def test_hosted_owner_is_the_eligible_creator():
     from codemie.rest_api.security.user import User
 
     descriptor = descriptor_for(ResourceType.HOSTED_APPLICATION)
-    app = type("A", (), {"created_by": type("C", (), {"id": "u1"})()})()
-    assert descriptor.is_owner(app, User(id="u1", username="u1"))
-    assert not descriptor.is_owner(app, User(id="u2", username="u2"))
-    assert not descriptor.is_owner(type("A", (), {"created_by": None})(), User(id="u1", username="u1"))
+    app = type("A", (), {"created_by": type("C", (), {"id": "u1"})(), "project": "p"})()
+    stranger = User(id="u2", username="u2")
+    stranger.is_admin = False  # ENV=local forces is_admin on at construction
+    creator = User(id="u1", username="u1")
+    creator.is_admin = False
+    assert descriptor.is_owner(app, creator)
+    assert not descriptor.is_owner(app, stranger)
+    assert not descriptor.is_owner(type("A", (), {"created_by": None, "project": "p"})(), creator)
 
 
 def test_before_grant_refuses_suspended_app():

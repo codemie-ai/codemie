@@ -241,7 +241,10 @@ async def shared_with(
     identity: HostedActor = Depends(hosted_actor),
     value: HostedApplicationsRuntime = Depends(user_management),
 ) -> JSONResponse:
-    """Owner only: the users who were granted view access by name."""
+    """Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.
+
+    The users who were granted view access by name.
+    """
     return reply(await value.catalog.shared_with(identity, app_id))
 
 
@@ -252,7 +255,10 @@ async def sharable_users(
     identity: HostedActor = Depends(hosted_actor),
     value: HostedApplicationsRuntime = Depends(user_management),
 ) -> JSONResponse:
-    """Owner only: directory users that can be granted access, matching ``q``."""
+    """Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.
+
+    Directory users that can be granted access, matching ``q``.
+    """
     return reply(await value.catalog.sharable_users(identity, app_id, q))
 
 
@@ -264,7 +270,10 @@ async def share(
     value: HostedApplicationsRuntime = Depends(user_management),
     _guard: HostedApplicationsRuntime = Depends(mutation),
 ) -> JSONResponse:
-    """Owner only: grant view-only access to the listed users."""
+    """Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.
+
+    Grant view-only access to the listed users.
+    """
     return reply(await value.catalog.share(identity, app_id, body.user_ids))
 
 
@@ -276,7 +285,10 @@ async def unshare(
     value: HostedApplicationsRuntime = Depends(user_management),
     _guard: HostedApplicationsRuntime = Depends(mutation),
 ) -> JSONResponse:
-    """Owner only: revoke the listed users' access."""
+    """Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.
+
+    Revoke the listed users' access.
+    """
     return reply(await value.catalog.unshare(identity, app_id, body.user_ids))
 
 
@@ -286,7 +298,10 @@ async def get_share_link(
     identity: HostedActor = Depends(hosted_actor),
     value: HostedApplicationsRuntime = Depends(user_management),
 ) -> JSONResponse:
-    """Owner only: the app's current share link, or null."""
+    """Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.
+
+    The app's current share link, or null.
+    """
     return reply(await value.catalog.get_share_link(identity, app_id))
 
 
@@ -297,7 +312,10 @@ async def create_share_link(
     value: HostedApplicationsRuntime = Depends(user_management),
     _guard: HostedApplicationsRuntime = Depends(mutation),
 ) -> JSONResponse:
-    """Owner only: create (or return) the app's share link."""
+    """Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.
+
+    Create (or return) the app's share link.
+    """
     return reply(await value.catalog.create_share_link(identity, app_id))
 
 
@@ -308,7 +326,10 @@ async def revoke_share_link(
     value: HostedApplicationsRuntime = Depends(user_management),
     _guard: HostedApplicationsRuntime = Depends(mutation),
 ) -> JSONResponse:
-    """Owner, or a platform admin or maintainer: revoke the app's share link and the access it gave."""
+    """Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.
+
+    Revoke the app's share link and the access it gave.
+    """
     return reply(await value.catalog.revoke_share_link(identity, app_id))
 
 

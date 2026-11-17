@@ -194,12 +194,13 @@ It exposes:
 - Python predicates for one loaded app: `is_owned_by(created_by_id, user)`, `is_managed_by(project, user)` (project
   admin), `is_shared_with(project, shared, is_global, security_state, user)` (project and Marketplace terms only),
   `is_granted(security_state, user, app_id, grants, action)` (the named-grant term behind `Role.GRANTED`),
-  `is_eligible`, `is_grant_remover(created_by_id, user)`, `is_moderator(user)`, `is_suspended(app)`.
+  `is_eligible`, `is_sharing_manager(created_by_id, project, user)`, `is_moderator(user)`, `is_suspended(app)`.
 - Suspension: `refuses(app, action)`, `suspend_refuses(app, action)`, `refuses_sql(apps, action)`,
   `refused_actions(app)` (section 5.5).
 - SQL conditions taking a user-id SQL expression: `readable(apps, user_id_expr)`,
   `manageable(apps, user_id_expr, action)` with `action` WRITE (change the app, the default) or DELETE (the delete
-  path), `grant_remover(apps | None, user_id_expr)`, and `grant_recipient(users)` (the hosted recipient policy). They
+  path), `sharing_manager(apps, user_id_expr)`, `orphan_grant_remover(user_id_expr)` (admin or maintainer, for a grant
+  whose app row is gone), and `grant_recipient(users)` (the hosted recipient policy). They
   join `users` and `user_projects` themselves. A grant term joins the manager condition only for the actions in
   `MANAGER_GRANT_ACTIONS`, which is empty while grants are view only (D9) and never applies to DELETE (S-16).
 - `platform_user(session, user)`: a copy of the request user with roles read from `users` and `user_projects`, the
@@ -216,10 +217,11 @@ version).
 | Role | Who (from `users` / `user_projects`) | May |
 |---|---|---|
 | Eligible user (term of every condition) | `is_active`, `deleted_at IS NULL`, `user_type <> config.EXTERNAL_USER_TYPE` (service accounts count as internal, CORE-27) | Nothing by itself |
-| Owner (creator) | `created_by.id = user.id` | Everything a manager may, plus share by name and by link (`can_share`) |
+| Owner (creator) | `created_by.id = user.id` | Everything a manager may. Sharing is not extra: the owner is one of the sharing managers below |
 | Manager | Owner; project admin of the app's project (`user_projects.is_project_admin`); platform admin or maintainer (`users.is_admin OR users.is_maintainer`) | Open and preview any version, edit, change `project` and `shared`, upload, configure, select and activate versions, publish and unpublish, covers, delete |
+| Sharing manager | Owner; project admin of the app's project; platform admin or maintainer (`access.sharing_manager` in SQL, `access.is_sharing_manager` in Python; EPMCDME-17239). An edit (WRITE) grant does not count | Share by name and by link, unshare, list who has access, search recipients, get and revoke the link, delete a single grant (`can_share`) |
 | Viewer | Not suspended, and one of: `is_global`; `shared` and member of the app's project; a live grant (by name or by link) | Open the active version; READ only |
-| Platform admin (moderator) | `users.is_admin OR users.is_maintainer` | Suspend and reinstate (`can_moderate`); revoke the share link; delete a single grant through the generic permissions API |
+| Platform admin (moderator) | `users.is_admin OR users.is_maintainer` | Suspend and reinstate (`can_moderate`); also a sharing manager |
 | Nobody | External, inactive or deleted users; anyone matching no term | 404 everywhere, absent from every list |
 
 The creator's own eligibility is not a term: a deactivated creator does not hide the app; other managers keep it
@@ -283,11 +285,11 @@ The creator's own eligibility is not a term: a deactivated creator does not hide
 | Publish to the Marketplace | Manager; refused while suspended; allowed without an active version (CORE-15) |
 | Remove from the Marketplace | Manager; allowed while suspended |
 | Delete | Manager, asked as `manageable(DELETE)` (`managed_app(action=DELETE)`), never through a grant term; allowed while suspended (S-21) |
-| Grant by name, read or create the share link, list who has access, search recipients | Owner only; granting and link creation refused while suspended (`share_on`) |
-| Revoke by name | Owner only; allowed while suspended |
-| Revoke the share link | Owner, or a platform admin or maintainer (link descriptor `may_revoke` = owner or `is_grant_remover`, S-17); allowed while suspended; one revoke step, audited with the revoker as actor |
+| Grant by name, read or create the share link, list who has access, search recipients | Sharing manager; granting and link creation refused while suspended (`share_on`, 409 `APP_SUSPENDED`) |
+| Revoke by name | Sharing manager; allowed while suspended |
+| Revoke the share link | Sharing manager (no separate revoke rule; D9 of EPMCDME-17239); allowed while suspended; one revoke step, audited with the revoker as actor |
 | Suspend, reinstate | Platform admin (maintainers included), reason required; reinstate refused to the app's creator |
-| Delete one grant through `DELETE /v1/permissions/{id}` | `grant_remover`: platform admin or maintainer, or the app's creator, from the `users` row; for an orphan grant only an admin |
+| Delete one grant through `DELETE /v1/permissions/{id}` | Sharing manager of the app, from the `users` row; for an orphan grant (no app row) only a platform admin or maintainer; refusal stays 401 "Access denied" |
 | Create a grant through `POST /v1/permissions` | Refused for every named grant |
 
 ### 5.5 Suspension
@@ -340,7 +342,7 @@ The creator's own eligibility is not a term: a deactivated creator does not hide
   included, in the Project tab (`scope=project`, CORE-18), and can also open one by its URL or id (`GET /{id}` and
   `managed_app` admit every platform admin).
 - A leaked link is stopped without suspending the app: a platform admin or maintainer opens the app by id and calls
-  `DELETE /v1/hosted-applications/{id}/share-link`, the same single revoke step the owner uses (tombstone plus
+  `DELETE /v1/hosted-applications/{id}/share-link`, the same single revoke step every sharing manager uses (tombstone plus
   removal of the link's grants, each audited with the admin as actor). Reinstate restores only `security_state`, so
   it never brings a revoked link back. A single grant can be deleted through the generic permissions API (S-17).
 
@@ -365,14 +367,18 @@ The creator's own eligibility is not a term: a deactivated creator does not hide
 
 ### 6.1 Named grants
 
-- Owner only (D14, D17). Routes: `GET /{id}/shared-with`, `POST /{id}/share`, `DELETE /{id}/share`,
-  `GET /{id}/sharable-users?q=`. Anyone else who can read the app gets 403 `ACCESS_DENIED` "Only the owner can share
-  or revoke access"; anyone who cannot read it gets 404. All four require user management (`user_management`
+- Sharing managers only: the creator, a project admin of the app's project, a platform admin or a maintainer
+  (EPMCDME-17239; D14 and D17 are superseded). Routes: `GET /{id}/shared-with`, `POST /{id}/share`,
+  `DELETE /{id}/share`, `GET /{id}/sharable-users?q=`. Anyone else who can read the app gets 403 `ACCESS_DENIED`
+  "Only the app's managers (its creator, admins of its project, platform admins and maintainers) can share it or
+  manage its access"; anyone who cannot read it gets 404. People search never returns the creator; a manager other
+  than the creator who shares with the creator gets 400 `CREATOR_ALREADY_HAS_ACCESS` "The app's creator already has
+  access", and the creator naming themselves is dropped silently. All four require user management (`user_management`
   dependency: 400 `USER_MANAGEMENT_DISABLED` otherwise).
 - Request `ShareUsersRequest{user_ids}`: 1 to 100 ids, extra fields forbidden (so no access level can be asked for),
   422 otherwise (NG-24, NG-25). Ids are de-duplicated keeping order (NG-23).
-- Grant and revoke run in the hosted management transaction on the locked app row (`_owned_app`, which calls
-  `tx.managed_app(lock=True)`), so the sign-out cutoff, the owner check and the suspend refusal apply to the locked
+- Grant and revoke run in the hosted management transaction on the locked app row (`_sharing_app`, which calls
+  `tx.sharing_app(lock=True)`; the read routes, shared-with and people search, call it without a lock), so the sign-out cutoff, the sharing check and the suspend refusal apply to the locked
   row (NG-29).
 - Shared code, generic over the resource type and in !4256's shapes, lives in
   `src/codemie/service/permission/named_grant_service.py` (sync functions and `a`-prefixed async twins; each step
@@ -402,9 +408,9 @@ The creator's own eligibility is not a term: a deactivated creator does not hide
   and whether the actor may remove one grant), `before_grant`, `is_owner`, `not_owner_message`, `resource_key`,
   `audit_attributes` and `recipient` (the condition a grantee's `users` row must meet both to be granted and for a
   stored grant to count).
-- Hosted descriptor: `resolve` is one select of scalar subqueries (project, creator id, `grant_remover`, with only
+- Hosted descriptor: `resolve` is one select of scalar subqueries (project, creator id, `sharing_manager`, with only
   the admin branch for an orphan grant); `before_grant` is `suspend_refuses(app, "share_on")`; `is_owner` is
-  `access.is_owned_by` on the platform copy of the user; `recipient` is `access.grant_recipient`;
+  `access.is_sharing_manager` on the platform copy of the user (EPMCDME-17239; it was `is_owned_by`); `recipient` is `access.grant_recipient`;
   `audit_attributes` adds `app_id`.
 - Assistant descriptor: `before_grant` is the personal-integration refusal (400, "Assistant uses a personal
   integration and cannot be shared with users. ..."); `is_owner` is `Assistant.is_owned_by`; `not_owner_message` is
@@ -457,19 +463,18 @@ The creator's own eligibility is not a term: a deactivated creator does not hide
   is specific to links: the link events, `areadable` (`readable` on an active app), `alock` (`tx.lock_app` on an
   active app that does not refuse `share_on`), `project_of`, the link answers (`not_available`: 404
   `SHARE_LINK_NOT_AVAILABLE`; `opener_refused`: 403 `ACCESS_DENIED` "Only internal users can open a share link";
-  `access_denied(message)`: 403) and `may_revoke`. Recipients are `permissions` rows with `grant_source='link'` and
+  `access_denied(message)`: 403). There is no `may_revoke`: revoke asks the grant descriptor's sharing rule. Recipients are `permissions` rows with `grant_source='link'` and
   `source_link_id=<link id>`, so link access is the grant viewer term and there is no second access store (D8).
 - Token: `secrets.token_urlsafe(32)`, stored twice: `token_sha256` (unique, the only lookup value, so only the hash
   is ever a bound parameter on open) and the plaintext `token`, kept so the owner can read the same link again
   (SL-2). Plaintext at rest is an accepted risk (CR-001 of share-links).
-- Link routes (behind `user_management`, on the locked row from `_owned_app`):
-  - `GET /{id}/share-link` (owner) → `{"link": {id, token, created_at} | null}` (SL-9);
-  - `POST /{id}/share-link` (owner) calls `share_link_service.acreate`: the grant descriptor's owner check on the
+- Link routes (behind `user_management`, gated by `_sharing_app`; create and revoke lock the row, get takes no lock):
+  - `GET /{id}/share-link` (sharing manager) → `{"link": {id, token, created_at} | null}` (SL-9);
+  - `POST /{id}/share-link` (sharing manager) calls `share_link_service.acreate`: the grant descriptor's owner check on the
     locked row and `before_grant` (refused while suspended), then get or create; writes
     `hosted_application.share_link.created` on create;
-  - `DELETE /{id}/share-link` (owner, or a platform admin or maintainer; anyone else who can read the app gets 403
-    "Only the owner or a platform administrator can revoke the share link") calls `arevoke_checked` (the link
-    descriptor's `may_revoke`, defaulting to the grant owner rule), which calls `arevoke`, the one revoke step
+  - `DELETE /{id}/share-link` (sharing manager; anyone else who can read the app gets 403 with the
+    sharing message above) calls `arevoke_checked` (the grant descriptor's sharing rule), which calls `arevoke`, the one revoke step
     (SL-23): set `revoked_at` / `revoked_by`, write `hosted_application.share_link.revoked`, remove every grant whose
     `source_link_id` is that link, one event each. A no-op without a live link; always answers `{"link": null}`;
     allowed while suspended.
@@ -523,12 +528,12 @@ The creator's own eligibility is not a term: a deactivated creator does not hide
 - `GET /v1/hosted-applications?scope=shared` lists active, readable apps the caller holds a live grant on (by name or
   by link) and did not create, whatever their project or `is_global` (NG-27, NG-28). Assistants list items shared by
   name through the personal-project filter of !4256; giving them the same tab and scope is a follow-up.
-- Who has access (`GET /{id}/shared-with`) is returned to the owner only. Project members see only `shared`; no other
+- Who has access (`GET /{id}/shared-with`) is returned to sharing managers only. Project members see only `shared`; no other
   response carries the grantee list (D14).
-- The UI shows "via link" for rows with `grant_source === 'link'` and tells the owner that such people can come back
+- The UI shows "via link" for rows with `grant_source === 'link'` and tells the sharing manager that such people can come back
   through the link while it is live.
 - The card shows "Shared with project" from `shared` and "Marketplace" from `is_global`; named sharing appears only
-  in the owner's details sidebar under "Shared with" (UI-7).
+  in the sharing manager's details sidebar under "Shared with" (UI-7).
 
 ---
 
@@ -663,7 +668,7 @@ List filters (`list_filters`, applied on top of the scope; each only narrows):
 
 App projection fields: `id`, `name`, `description`, `artifact_kind` (the working kind for managers, the active kind
 otherwise), `updated_at`, `publisher.display_name`, `project`, `shared`, `is_global`, `created_by{id, username,
-name}`, `user_abilities` (`read`/`write`/`delete` from `Ability.list`), `can_share` (owner), `can_moderate` (platform
+name}`, `user_abilities` (`read`/`write`/`delete` from `Ability.list`), `can_share` (sharing manager), `can_moderate` (platform
 admin or maintainer), `suspended`, `suspension_refuses`, `has_active_version`, `has_cover`; managers also get
 `selected_version_id`, `active_version_id`, `lifecycle_state`, `revision`, `etag`, `created_at`.
 
@@ -684,15 +689,15 @@ admin or maintainer), `suspended`, `suspension_refuses`, `has_active_version`, `
 
 | Method and path | Who | Request | Response |
 |---|---|---|---|
-| `GET /hosted-applications/{id}/shared-with` | owner | — | `{shared_with: [{id, username, email, name, picture, grant_source}]}` |
-| `GET /hosted-applications/{id}/sharable-users?q=` | owner | `q` 2..200 characters | `{users: [{id, username, email, name, picture}]}`, ≤ 20 users the hosted recipient rule admits |
-| `POST /hosted-applications/{id}/share` | owner | `{user_ids: [1..100]}` | `{shared_with: [...]}`; 409 `APP_SUSPENDED` while suspended; 404 unknown, 400 not sharable (external, inactive, deleted) |
-| `DELETE /hosted-applications/{id}/share` | owner | `{user_ids: [1..100]}` | `{shared_with: [...]}`; allowed while suspended |
-| `GET /hosted-applications/{id}/share-link` | owner | — | `{link: {id, token, created_at} \| null}` |
-| `POST /hosted-applications/{id}/share-link` | owner | — | `{link: {...}}`, the same link on every call while live; 409 `APP_SUSPENDED` while suspended |
-| `DELETE /hosted-applications/{id}/share-link` | owner, platform admin or maintainer | — | `{link: null}`; revokes the link and its grants, audited with the caller as actor; no-op without one; allowed while suspended; 403 for other readers |
+| `GET /hosted-applications/{id}/shared-with` | sharing manager | — | `{shared_with: [{id, username, email, name, picture, grant_source}]}` |
+| `GET /hosted-applications/{id}/sharable-users?q=` | sharing manager | `q` 2..200 characters | `{users: [{id, username, email, name, picture}]}`, ≤ 20 users the hosted recipient rule admits |
+| `POST /hosted-applications/{id}/share` | sharing manager | `{user_ids: [1..100]}` | `{shared_with: [...]}`; 409 `APP_SUSPENDED` while suspended; 404 unknown, 400 not sharable (external, inactive, deleted) |
+| `DELETE /hosted-applications/{id}/share` | sharing manager | `{user_ids: [1..100]}` | `{shared_with: [...]}`; allowed while suspended |
+| `GET /hosted-applications/{id}/share-link` | sharing manager | — | `{link: {id, token, created_at} \| null}` |
+| `POST /hosted-applications/{id}/share-link` | sharing manager | — | `{link: {...}}`, the same link on every call while live; 409 `APP_SUSPENDED` while suspended |
+| `DELETE /hosted-applications/{id}/share-link` | sharing manager | — | `{link: null}`; revokes the link and its grants, audited with the caller as actor; no-op without one; allowed while suspended; 403 (sharing message) for other readers |
 | `POST /hosted-applications/share-links/open` | eligible internal user | `{token}` | `{app_id}`; 404 `SHARE_LINK_NOT_AVAILABLE`; 403 `ACCESS_DENIED` for callers outside the recipient rule; 503 `SERVICE_BUSY` on lock timeout; 401 signed out |
-| `DELETE /permissions/{id}` (generic) | descriptor's `may_remove` (`grant_remover`) | — | Removes one named grant with audit |
+| `DELETE /permissions/{id}` (generic) | sharing manager of the app (orphan grant: platform admin or maintainer) | — | Removes one named grant with audit |
 | `POST /permissions` (generic) | — | — | Refused for named grants |
 
 ### 9.4 Admin
@@ -757,8 +762,8 @@ responses are untyped JSON, so response fields are not in the schema.
 `hostedActions(app)` is the one ordered menu used by the card, the details header and the viewer
 (`useHostedCardActions`): Open (disabled without an active version); for managers Edit, Upload new version, and
 "Publish to Marketplace" (disabled by `suspensionRefuses(app, 'publish')`) or "Remove from Marketplace"; Share when
-`canShare`; Delete when `canRemove`; for `canModerate`, Suspend or Reinstate, and "Revoke share link" when the
-moderator is not the owner (the owner revokes from the Share popup). The admin revoke asks for confirmation and then
+`canShare`; Delete when `canRemove`; for `canModerate`, Suspend or Reinstate, and "Revoke share link" (every
+moderator is a sharing manager and can also revoke from the Share popup). The admin revoke asks for confirmation and then
 says only "No live share link remains", because the API answers `{link: null}` whether or not a link was live.
 Activate in the version list also requires the version's own `can_activate` (UI-23). Wording: "Activate version",
 version tag "Active".
@@ -880,15 +885,15 @@ rejects; unknown values are ignored. The UI always sorts by `updated_desc` and s
 | External users | No access to any hosted app (Marketplace included), cannot create apps, cannot be granted, cannot open links (403); `hosted_actor` refuses them with `ACCOUNT_NOT_SUPPORTED` |
 | Role source | Admin, maintainer, project-admin and membership flags are read from `users` / `user_projects` (`platform_user`), never from IdP roles or `ENV=local`, in Python and SQL (CR-001 of access-core); local tests must set `users.is_admin` |
 | External type | SQL eligibility uses `config.EXTERNAL_USER_TYPE`, as the Python predicates do (CR-002 of named-grants) |
-| Not available vs forbidden | An app the caller cannot read answers 404 everywhere; readers who are not the owner get 403 on owner routes |
+| Not available vs forbidden | An app the caller cannot read answers 404 everywhere; readers who are not sharing managers get 403 on sharing routes |
 | Share-link token in transit | Open is a POST with the token in the JSON body, never in an API path; the open response, launch tickets and gateway requests never contain it; it never reaches the content origin |
 | Share-link token in logs | Lookup by `token_sha256`; `hide_parameters=True` on the hosted engine; no log, error body or event carries it |
-| Share-link token at rest | Plaintext beside the hash so the owner can re-read the same link; accepted risk (CR-001 of share-links), as for conversation tokens |
+| Share-link token at rest | Plaintext beside the hash so every sharing manager can re-read the same link; accepted risk (CR-001 of share-links), as for conversation tokens |
 | Share-link token in the UI | Path form `/apps/share/<token>` (as conversation links); the document request writes it to the UI nginx and ingress access logs, and requests made before the redirect may carry it in Referer to the same origin; both accepted (UI-24, UI-25). History replace removes it from the address bar and history |
 | Referrer policy | Browser default (UI-11) |
 | Redeem on load | A link preview, prefetch or accidental visit by a signed-in internal user grants view access; accepted (UI-1) |
 | Link probing | One 404 for unknown, revoked, garbage, suspended or purging-app tokens (SL-11); no rate limit on open |
-| Recipient search exposure | Any owner can search internal users' names and emails (2-character minimum, 20 results), as in assistant sharing (P-C3) |
+| Recipient search exposure | Any sharing manager can search internal users' names and emails (2-character minimum, 20 results), as in assistant sharing (P-C3) |
 | Grant scope | View only; no level field accepted; edit access waits for RBAC (D9) |
 | Audit | Grant and link changes are strict activity events in the same transaction; nothing is recorded with `ACTIVITY_EVENTS_ENABLED` off (the default) |
 | Independent review | Reinstate refused to the app's creator |
@@ -1027,11 +1032,11 @@ and "design" are decisions of the original author's tickets.
 | D11 | How are recipients picked? | User search and Share popup aligned with assistant sharing (!4256, !1901) | user |
 | D12 | Whose quota does a manager's upload use? | The app creator's | user |
 | D13 | What does a recipient see before any version is activated? | Card and details with "No active version yet", without content | user |
-| D14 | Who may share with named people and by link, and who sees the list? | Only the owner, as for assistants; who it is shared with appears only in the owner's details sidebar | user |
+| D14 | Who may share with named people and by link, and who sees the list? | Only the owner, as for assistants; who it is shared with appears only in the owner's details sidebar. **Superseded by EPMCDME-17239:** every sharing manager (creator, project admin, platform admin, maintainer) shares and sees the list; assistants stay owner only | user |
 | D15 | Organization and sign-in-issuer keys on hosted data? | None: they hold one constant per installation and an issuer change would orphan data. Viewing sessions are bound to the user and the sign-in session | user |
 | D16 | How is link sharing turned on? | As for conversations: the first "Copy share link" creates a link, later clicks return it; "Revoke link" kills it and removes its recipients; the next copy creates a new link. Unlike conversations, revocable | user |
-| D17 | Who grants and revokes by name and creates the link? | Only the owner, as in !4256. A platform admin can delete a single grant through the generic permissions API, with audit, and revoke the link (S-17) | user |
-| D18 | Who builds the parts shared with assistant sharing? | This feature, generic over the resource type and shaped like !4256: user grants in `permissions`, level check, owner-only granting, recipient search, grant audit, who-has-access listing, removal on delete, audited admin delete | user |
+| D17 | Who grants and revokes by name and creates the link? | Only the owner, as in !4256. A platform admin can delete a single grant through the generic permissions API, with audit, and revoke the link (S-17). **Superseded by EPMCDME-17239:** every sharing manager grants, revokes, creates and revokes the link and deletes a single grant; see section 5.2 | user |
+| D18 | Who builds the parts shared with assistant sharing? | This feature, generic over the resource type and shaped like !4256: user grants in `permissions`, level check, granting by the type's sharing rule (owner only when written; see D14, D17), recipient search, grant audit, who-has-access listing, removal on delete, audited admin delete | user |
 | D19 | May a person the owner removed get back in through the same live link? | Yes: everyone who opens a live link is added; to cut access for good the owner revokes the link | user |
 | D20 | Where do the platform's configured applications appear? | In their own tab, "Platform apps" | user |
 | D21 | What does a non-manager see for a suspended app? | Nothing: absent from lists, "not available" when opened; only managers see it marked "Suspended" | user |
@@ -1073,14 +1078,14 @@ and "design" are decisions of the original author's tickets.
 | CORE-29 | Independent-review guard? | Reinstate refused to the app's creator (`created_by`) | spec |
 | CORE-30 | What ends viewer sessions? | The per-request rule; `access_revision` bumped only on delete and purge | spec |
 | CORE-31 | How many writers per flag? | One: `PATCH` for `shared`, `/marketplace/*` for `is_global` | spec |
-| CORE-32 | What does `can_share` gate? | Named and link sharing only (owner); project sharing is changed by any manager through `PATCH` | spec |
+| CORE-32 | What does `can_share` gate? | Named and link sharing only (sharing manager, EPMCDME-17239); project sharing is changed by any manager through `PATCH` | spec |
 | CORE-33 | Flags in the response? | `user_abilities`, `can_share`, `can_moderate`, `suspended`, `suspension_refuses`, `has_active_version`; no hosted capability flags; values per persona tested | spec |
 | CORE-34 | Where must the gateway's added cost be shown? | Two queries per content request; p95 authorize latency at a stated concurrency recorded in the MR | story constraint |
 | CR-001 (core) | Source of admin and project roles? | The database (`users`, `user_projects`) through `platform_user`, for projection abilities, the admin gate and `is_managed_by`; a divergence test guards it | user |
 | CR-005 (core) | Does DELETE write `shared` / `is_global`? | No; only `PATCH` and `/marketplace/*` write the flags | user |
 | CR-006 (core) | Personal data of purged rows? | Purge keeps only `created_by.id`; a CHECK requires empty username and name | user |
 | S-16 | Grant term action-aware before edit access exists? | Yes: `Role.GRANTED` checks whether the loaded level covers the action, registered under READ for hosted apps and assistants; `is_shared_with` has no grant term; SQL `manageable` takes WRITE or DELETE and the delete path asks DELETE; the by-name upsert raises a level the stored grant does not cover; only READ is requestable | user |
-| S-17 | May a platform admin or maintainer revoke a live share link without suspending the app? | Yes: `DELETE /{id}/share-link` admits the owner or `grant_remover` through the link descriptor's `may_revoke`; the single revoke step, audited with the admin as actor; no new route. Granting and link creation stay owner only | user |
+| S-17 | May a platform admin or maintainer revoke a live share link without suspending the app? | Yes: `DELETE /{id}/share-link` admits the owner or `grant_remover` through the link descriptor's `may_revoke`; the single revoke step, audited with the admin as actor; no new route. Granting and link creation stay owner only. **Superseded by EPMCDME-17239:** `may_revoke` and `grant_remover` are gone; every sharing manager revokes the link, one rule and one message | user |
 | S-19 | One source of the suspension refusal list? | `SUSPEND_GATED_ACTIONS`, applied through `refuses` / `suspend_refuses` / `refuses_sql`; every app projection carries `suspension_refuses`, which clients read | user |
 | S-21 | Refuse delete of a suspended app? | No: deletion takes the content down as suspension does, blocking it would not stop a re-upload, and retaining evidence is out of scope | user |
 | S-22 | Status filter overlap? | `draft` is "no active version and not in the Marketplace", so Draft, Published and Unpublished never overlap | user |
@@ -1147,7 +1152,7 @@ and "design" are decisions of the original author's tickets.
 | SL-6 | How does by-name keep winning? | The link grant uses `ON CONFLICT DO NOTHING` | spec |
 | SL-7 | Cost of repeated opens under the lock? | Check `readable` unlocked first; lock the app row only to write a grant | spec |
 | SL-8 | Link sharing during a suspend? | Create and open refused; revoke allowed | spec |
-| SL-9 | How does the UI learn about a live link without creating one? | Owner-only `GET /share-link` | spec |
+| SL-9 | How does the UI learn about a live link without creating one? | `GET /share-link` for sharing managers only | spec |
 | SL-10 | How does "who has access" show "via link"? | `list_shared_with` items carry `grant_source` (additive) | spec |
 | SL-11 | What does an opener learn about a token? | One 404 `SHARE_LINK_NOT_AVAILABLE` for unknown, revoked, app gone and suspended | spec |
 | SL-12 | How does open's lock keep the hosted lock mode and refresh what it re-reads? | `tx.lock_app`, shared with `managed_app` | spec |
@@ -1163,7 +1168,7 @@ and "design" are decisions of the original author's tickets.
 | SL-23 | How many steps is a link revoke? | One: `share_link_service.arevoke` tombstones the link and removes every grant it made, each audited; the revoke route (`arevoke_checked`) and `_begin_purge` call it | user |
 | SL-24 | Who is the `created_by` of a link grant row? | The link's owner (`share_links.created_by`); the opener stays the principal and the audit actor | user |
 | S-23 | Can a long revoke stall share-link opens? | Bounded: open sets a transaction `lock_timeout` and answers 503 `SERVICE_BUSY` when the app row stays locked longer | user |
-| S-30 | One set of type facts for grants and links? | The link service reads the type's named-grant descriptor (domain, entity type, owner rule and message, `before_grant`, audit attributes, recipient rule); `ShareLinkDescriptor` holds only link events, `areadable`, `alock`, `project_of`, the link answers and `may_revoke`; every link type must be a named-grant type; link open admits openers by the type's `recipient` rule; hosted grant events carry `app_id` | user |
+| S-30 | One set of type facts for grants and links? | The link service reads the type's named-grant descriptor (domain, entity type, owner rule and message, `before_grant`, audit attributes, recipient rule); `ShareLinkDescriptor` holds only link events, `areadable`, `alock`, `project_of` and the link answers (EPMCDME-17239 removed `may_revoke`); every link type must be a named-grant type; link open admits openers by the type's `recipient` rule; hosted grant events carry `app_id` | user |
 | S-32 | Link-open lock timeout? | 400 ms, well below the hosted pool checkout timeout (2.0 s); recorded in the code comment and tested | user |
 | CR-001 (SL) | Plaintext token at rest? | Kept; accepted risk (owner re-read) | user |
 | CR-003 (SL) | `grant_source` of orphan grants? | Orphan rows return the stored `grant_source` | user |
@@ -1273,7 +1278,7 @@ and "design" are decisions of the original author's tickets.
 | A hosted-only link table with an FK to the app | `source_link_id` in the shared `permissions` table would name a hosted table | SL-22 |
 | Moving conversation links into `share_links` now | It would change conversation links; conversations may adopt the table later | SL-22 |
 | Keeping removed people out of the link | The link is meant for a chat; exclusions add state; the owner revokes the link instead | D19 |
-| Grants or link revoke by project admins; grants by platform admins | Owner only, as for assistants; platform admins have generic delete of one grant and link revoke | D14, D17, S-17 |
+| Grants or link revoke by project admins; grants by platform admins | Rejected then (owner only, as for assistants; platform admins had generic delete of one grant and link revoke). Superseded by EPMCDME-17239: all sharing managers share and revoke | D14, D17, S-17 |
 | Suspend revoking the share link | Reinstate must restore sharing exactly; an admin revokes the link directly | D22, S-17 |
 | Charging a manager's upload to the manager | The creator holds the quota | D12 |
 | Suspend as a freeze checked at many consumers, or resetting sharing | Managers must keep working; reinstate must restore sharing exactly | CORE-6, D22 |
@@ -1314,7 +1319,7 @@ and "design" are decisions of the original author's tickets.
 | A hosted-only copy of the Share popup | Two popups for one concept | UI-5 |
 | A single "not suspended" gate in the UI | Blocks allowed narrowing (upload, unpublish, `shared` off) | UI-15 |
 | Sending the whole form on PATCH | `shared: true` on a suspended app shared with its project would refuse a rename | UI-16 |
-| A named-sharing marker on cards | The grantee list is owner-only | UI-7 |
+| A named-sharing marker on cards | The grantee list is for sharing managers only | UI-7 |
 | Automatic live or static card previews | Load on the hosted pool for every card on screen | S-13 |
 | A separate `HOSTED_APPS_STORAGE_TYPE`; sharing the files bucket | One setting selects the backend; the sweep would delete generic files | OS-1, OS-2 |
 | Freshclam in its own container | A larger change; the minimal probe was proved in the lab | FC-1 |

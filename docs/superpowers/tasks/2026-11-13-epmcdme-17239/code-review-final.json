@@ -1,0 +1,338 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "deterministic",
+    "rationale": "targeted verifier: CR-001..CR-006 all resolved, 0 new findings, high confidence"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "deterministic",
+      "rationale": "full roster ran; 6 findings: CR-005/CR-006 critical test gaps (AC9 WRITE-grant recipient row, AC7 assistant test edited), CR-001..CR-004 major (doc drift, missing annotations, untested sharing_app gate)"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "deterministic",
+      "rationale": "targeted verifier: CR-001..CR-006 all resolved, 0 new findings, high confidence"
+    }
+  ],
+  "reviewed_head": "862a960142ba24ebff11e28c0a2df39213c7c1ae",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "Targeted re-check: all 6 prior blocking findings (CR-001..CR-006) are resolved on inspection of current source at a8b4172c (working tree). Design records, the sharing_app annotation, the real-gate test, the AC9 WRITE/DELETE parity personas and the restored AC7 assistant test are all in place; tests were not executed here (Stage 7 owns execution). No new findings by contract; business and standards rows carried forward from the final verdict.",
+  "confidence": "high",
+  "check_confidence": "high",
+  "risk_flags": [
+    "public-api"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 6,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "docs/hosted-applications/architecture.md",
+      "line": 535,
+      "title": "Role tables still frame sharing as creator-only",
+      "problem": "architecture.md:535 still says the Creator can do 'Everything a manager can, plus the sharing below', and the design spec's 'Owner (creator)' row (around line 219) says the same. Under EPMCDME-17239 every manager shares. The design spec's UI line (around line 765) offers 'Revoke share link' only when the moderator cannot open the Share popup, but every moderator is now a sharing manager, so that condition can never hold. The share-link token risk row (around line 890) still says the plaintext is kept 'so the owner can re-read' it.",
+      "impact": "The design records this ticket was asked to update (AC10, design-records spec item) still describe sharing as something only the creator has. Readers and the UI team are told the opposite of the rule that was shipped.",
+      "recommendation": "Rewrite the Creator row in architecture.md:535 and the Owner (creator) row in the design spec (around line 219) so that sharing is a right of every manager, not something the creator has on top. Resolve the design spec's UI line (around line 765) that offers 'Revoke share link' when the moderator cannot open the Share popup: under the new rule every moderator can open it, so drop the condition or the menu item. Update the share-link token risk row (around line 890) to name every sharing manager instead of 'the owner'.",
+      "status": "resolved",
+      "check_notes": "architecture.md:535 and spec Owner row now make the creator one sharing manager; UI revoke condition dropped; token-at-rest rows name every sharing manager.",
+      "fix": {
+        "change": "Creator/Owner rows in architecture.md and the design spec make sharing a right of every manager; UI 'Revoke share link' drops the cannot-open-Share condition; share-link token rows name every sharing manager",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "docs/superpowers/specs/2026-11-06-EPMCDME-15659-hosted-apps-design.md",
+      "line": 197,
+      "title": "Design spec names removed sharing helpers",
+      "problem": "The hosted design spec still documents symbols this change removed. `is_grant_remover` and `grant_remover` appear at lines 197 and 202. `_owned_app` / `tx.managed_app(lock=True)` is given as the grant/revoke and link-route gate at lines 379 and 470, although the code uses `_sharing_app` / `tx.sharing_app` and the read routes take no lock. S-30 (line 1170) still lists `may_revoke` on ShareLinkDescriptor, which contradicts line 465 ('There is no may_revoke').",
+      "impact": "D9 asked for the old helpers and their stale references to be removed. The design record now names functions and fields that do not exist and contradicts itself about may_revoke, so a later change would be planned against a code shape that is gone.",
+      "recommendation": "In the design spec, rename `is_grant_remover`/`grant_remover` to `is_sharing_manager`/`sharing_manager` and `orphan_grant_remover` (lines 197, 202). Replace `_owned_app`/`tx.managed_app(lock=True)` with `_sharing_app`/`tx.sharing_app`, and note that the read routes take no lock (lines 379, 470). Drop `may_revoke` from S-30 (line 1170), because line 465 already says there is none. Leave the D14, D17 and S-17 history rows as they are, since they are marked superseded.",
+      "status": "resolved",
+      "check_notes": "Spec lines 197/202 name is_sharing_manager/sharing_manager/orphan_grant_remover; 379/470 use _sharing_app/tx.sharing_app with lock notes; S-30 drops may_revoke. History rows left.",
+      "fix": {
+        "change": "Design spec names is_sharing_manager/sharing_manager/orphan_grant_remover, _sharing_app/tx.sharing_app (locks on writes, none on reads), and S-30 no longer lists may_revoke",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/hosted_applications/repository.py",
+      "line": 126,
+      "title": "HostedTransaction.sharing_app has no type annotations",
+      "problem": "code-quality.md 'Types And Imports' says untyped public functions should be avoided in new code. The new public method `sharing_app(self, app_id, user, *, lock=False)` gives no types for app_id, user, lock or its return value, while its helper `_gated_app` is typed.",
+      "impact": "The standards audit marks this documented code-quality standard as blocking for this gate, and the method is new in this change.",
+      "recommendation": "Annotate it, e.g. `async def sharing_app(self, app_id: UUID | str, user: User, *, lock: bool = False) -> HostedApplications`, to match `_gated_app`'s return type.",
+      "status": "resolved",
+      "check_notes": "sharing_app now typed (app_id: UUID | str, user: User, lock: bool) -> HostedApplications; User imported, UUID already imported.",
+      "fix": {
+        "change": "HostedTransaction.sharing_app annotated: app_id UUID | str, user User, lock bool, returns HostedApplications",
+        "test": "ruff check on repository.py"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/hosted_applications/repository.py",
+      "line": 126,
+      "title": "Real HostedTransaction.sharing_app gate never tested",
+      "problem": "This is a regression gap. No test runs the WHERE clause of the real `HostedTransaction.sharing_app` (id, lifecycle_state == 'active', sharing_manager) against seeded rows with a caller who is not the creator. In test_catalog.py, FakeTx.sharing_app (lines 99-103) is a hand-written copy of the query. The test_transaction.py fake admits through `session.admitted`, whatever the WHERE says. test_share_links_pg.py calls the real sharing routes only as the owner. Also flagged by the blind lens.",
+      "impact": "`_sharing_app` is used by all seven hosted sharing routes, and shared_with, sharable_users and get_share_link do nothing after it to check the caller again. If the gate drifted (swapped for readable(), or lost the sharing_manager term or the lifecycle filter), no test would fail, and a plain reader or grantee could get the grantee list and the live share-link token.",
+      "recommendation": "Add a test against seeded tables, either the SQLite engine of test_access/test_catalog or the PG world of test_share_links_pg. It should call the real `HostedTransaction.sharing_app`, or `catalog.shared_with`/`get_share_link` through the real repository, and assert three things. A project admin, a platform admin and a maintainer are admitted. A READ or WRITE grantee, a project member, a Marketplace viewer and another project's admin get 404. A non-active app (deleting or purging) gets 404 even for its creator.",
+      "status": "resolved",
+      "check_notes": "FakeTx binds the real HostedTransaction.sharing_app/_gated_app; new 12-case x lock matrix covers managers, READ/WRITE grantees, member, marketplace, other admin, purging app.",
+      "fix": {
+        "change": "test_catalog FakeTx now runs the real HostedTransaction.sharing_app/_gated_app; new parametrized test of the real gate over managers, grantees, member, marketplace viewer, other-project admin and purging apps, locked and unlocked",
+        "test": "tests/codemie/service/hosted_applications/test_catalog.py::test_the_real_sharing_gate_admits_only_sharing_managers_on_an_active_app"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/core/hosted_applications/test_access.py",
+      "line": 560,
+      "title": "AC9 parity table lacks a WRITE-grant recipient",
+      "problem": "AC9 asks the Python/SQL parity table to include 'a recipient with any grant level is not a sharing manager'. In test_is_sharing_manager_equals_the_sql_sharing_manager, the only recipient persona is seeded by `_grant(connection, app_id, user.id)` at the default Action.READ. No WRITE-level recipient row checks that the SQL `sharing_manager` and `is_sharing_manager` agree. The WRITE grantee appears only in the catalog matrix (recipient_write), which runs against the FakeTx copy.",
+      "impact": "A required story criterion is only partly met. Nothing in the parity table would catch a later change that adds a WRITE grant branch to the sharing rule (for example when per-person edit grants land and reuse _manager).",
+      "recommendation": "Add a persona to SHARING_PERSONAS for a recipient whose grant is at WRITE level, and also one at DELETE level if that is supported (expected: False). Seed it with `_grant(connection, app_id, user.id, Action.WRITE)` so that both the SQL `sharing_manager` and `is_sharing_manager` are checked to refuse it.",
+      "status": "resolved",
+      "check_notes": "SHARING_PERSONAS adds recipient_write and recipient_delete (False), seeded via _grant(..., Action.WRITE/DELETE) in the SQL/Python parity test.",
+      "fix": {
+        "change": "Parity table adds recipient_write and recipient_delete personas seeded at WRITE and DELETE grant level",
+        "test": "tests/codemie/core/hosted_applications/test_access.py::test_is_sharing_manager_equals_the_sql_sharing_manager"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/service/permission/test_named_grant_service.py",
+      "line": 644,
+      "title": "AC7 assistant test edited, not unchanged",
+      "problem": "AC7 requires the existing assistant sharing tests to 'pass unchanged', but test_assistant_non_owner_gets_the_assistant_message was edited: `owner=User(id=\"x\", username=\"x\")` became `owner=_non_admin(\"x\")`. The edit is not needed. Assistant.is_owned_by (assistant.py:935) compares only the creator id and ignores is_admin, so the original test still passes.",
+      "impact": "A required story criterion is only partly met. The unchanged assistant test is the evidence AC7 asks for, showing the shared named-grant changes left assistant sharing alone, and the edit removes it.",
+      "recommendation": "Restore the original `owner=User(id=\"x\", username=\"x\")` in test_assistant_non_owner_gets_the_assistant_message. `Assistant.is_owned_by` compares only the creator id, so the unchanged test still passes, and AC7 requires the existing assistant tests to pass unchanged.",
+      "status": "resolved",
+      "check_notes": "test_assistant_non_owner_gets_the_assistant_message restored to owner=User(id=\"x\", username=\"x\"); no diff against the merge base.",
+      "fix": {
+        "change": "Restored owner=User(id=\"x\", username=\"x\") in the assistant non-owner test; it now matches main",
+        "test": "tests/codemie/service/permission/test_named_grant_service.py::test_assistant_non_owner_gets_the_assistant_message"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "One named sharing rule in access.py: SQL term plus Python twin, the manager term without its grant branch",
+      "status": "pass",
+      "notes": "sharing_manager / is_sharing_manager via _manager_terms"
+    },
+    {
+      "kind": "spec",
+      "item": "Gate: catalog locks the app only for a sharing manager; post-lock filter and allow/refusal removed",
+      "status": "pass",
+      "notes": "HostedTransaction.sharing_app + catalog._sharing_app"
+    },
+    {
+      "kind": "spec",
+      "item": "Gate: hosted descriptor is_owner is the Python twin of the sharing rule",
+      "status": "pass",
+      "notes": "grant_descriptor.is_owner -> is_sharing_manager"
+    },
+    {
+      "kind": "spec",
+      "item": "Gate: 403/404 split unchanged (readable but not a manager -> 403, else 404)",
+      "status": "pass",
+      "notes": "readable() probe kept in _sharing_app"
+    },
+    {
+      "kind": "spec",
+      "item": "Single-grant delete: sharing manager on an app, or eligible admin/maintainer on an orphan; refusal stays 401",
+      "status": "pass",
+      "notes": "build_resolve_statement with_app/orphan"
+    },
+    {
+      "kind": "spec",
+      "item": "One rule (D9): remove may_revoke, grant_remover/is_grant_remover, arevoke_checked fallback, stale docstrings",
+      "status": "pass",
+      "notes": "code removed; design spec still names them (CR-002)"
+    },
+    {
+      "kind": "spec",
+      "item": "Python and SQL agree for every persona; gate, is_owner, may_remove and can_share read only this rule",
+      "status": "pass",
+      "notes": "all call sites read the rule"
+    },
+    {
+      "kind": "spec",
+      "item": "Creator as recipient: search excludes creator only; non-creator manager naming creator -> 400",
+      "status": "pass",
+      "notes": "catalog.share / sharable_users"
+    },
+    {
+      "kind": "spec",
+      "item": "Suspended app: share and link create refused; unshare, shared-with, link get/revoke work for every manager",
+      "status": "pass",
+      "notes": "test_every_manager_on_a_suspended_app"
+    },
+    {
+      "kind": "spec",
+      "item": "can_share true exactly for sharing managers, suspended or not",
+      "status": "pass",
+      "notes": "projections.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Activity log records the calling manager as actor",
+      "status": "pass",
+      "notes": "asserted for a non-creator manager"
+    },
+    {
+      "kind": "spec",
+      "item": "Refusal text: one managers message; seven route descriptions and OpenAPI baseline updated",
+      "status": "pass",
+      "notes": "MANAGERS_ONLY; router and openapi.json updated"
+    },
+    {
+      "kind": "spec",
+      "item": "Assistants: generic owner rule, assistant descriptor and _require_owner untouched",
+      "status": "pass",
+      "notes": "no assistant source diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Design records state the manager rule (architecture.md, hosted design spec)",
+      "status": "pass",
+      "notes": "updated; role rows still frame sharing as creator extra (CR-001)"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no change to who is a manager, POST /v1/permissions, generic delete refusal; no migration",
+      "status": "pass",
+      "notes": "none changed"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: do not exclude the acting user from people search",
+      "status": "pass",
+      "notes": "exclude_ids holds only the creator"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1: each manager succeeds on every sharing op incl. others' grants and links; log records that manager",
+      "status": "pass",
+      "notes": "test_every_manager_shares_and_manages_links"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: each manager may delete a single grant; others 401; orphan grant admin/maintainer only",
+      "status": "pass",
+      "notes": "resolve tests + PG project-admin delete"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: can_share true for every manager, false for everyone else",
+      "status": "pass",
+      "notes": "test_projections"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: non-managers refused on every AC1 op, 403 when readable else 404",
+      "status": "pass",
+      "notes": "NON_MANAGERS matrix in test_catalog"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: search never returns creator; non-creator naming creator refused 400, nothing written",
+      "status": "pass",
+      "notes": "catalog tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: suspended app - share/link create refused; unshare, shared-with, link get/revoke succeed",
+      "status": "pass",
+      "notes": "test_every_manager_on_a_suspended_app"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: assistant non-owner refused with today's message; existing assistant sharing tests pass unchanged",
+      "status": "partial",
+      "notes": "assistant code untouched; test_assistant_non_owner_gets_the_assistant_message edited (CR-006)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8: hosted refusals carry the managers message; route descriptions and openapi baseline match",
+      "status": "pass",
+      "notes": "no 'Owner only' left"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9: Python twin agrees with SQL across personas, incl. a recipient with any grant level",
+      "status": "partial",
+      "notes": "parity table seeds the recipient at READ only (CR-005)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC10: both hosted design records state the manager rule; D14, D17, S-17 superseded",
+      "status": "pass",
+      "notes": "superseded markers present"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 9 commit subjects in the review range follow the git-workflow.md 'EPMCDME-####: Description' format (EPMCDME-17239: <Capitalized sentence>)"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "new public HostedTransaction.sharing_app (repository.py:126) has no parameter or return annotations; code-quality.md 'Types And Imports' lists untyped public functions in new code under Avoid"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "sharing rule built as SQLAlchemy expressions with bindparam; decided from users/user_projects rows; no new token or credential logging"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Six blocking findings. Two story criteria are only partly met: AC7 (an assistant test was edited, not left unchanged) and AC9 (the parity table has no WRITE-grant recipient). The real HostedTransaction.sharing_app gate is untested and has no type annotations, and both design records still name removed helpers and describe sharing as creator-only. All four lenses and the standards audit ran and every candidate was checked against source; 0 deferred, 12 dismissed: created_by is non-nullable, share/unshare already pass a platform_user, self-search and the 401 refusal are spec non-goals, and the rest were noise or already covered.",
+    "confidence": "high",
+    "risk_flags": [
+      "public-api"
+    ]
+  }
+}

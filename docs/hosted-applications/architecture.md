@@ -198,7 +198,7 @@ Two platform tables, shared with other resource types, hold who an application i
 | Table | What it holds for hosted applications |
 |---|---|
 | `permissions` | Named and link grants: `resource_type='HOSTED_APPLICATION'`, `principal_type=USER`, `principal_id=<users.id>`, `permission_level=READ`, `grant_source` (`name` or `link`) and, for a link grant, `source_link_id`. `created_by` is the owner who granted (for a link grant, the link's owner, never the opener). The same table holds assistant grants (`resource_type='ASSISTANT'`). |
-| `share_links` | Revocable share links of any link-sharing resource type (only hosted applications today): `resource_type`, `resource_id`, the token (plaintext, for the owner's re-read) and its SHA-256 (the only lookup key), creator, creation and revocation. At most one live link per resource (`uq_share_links_live` on `(resource_type, resource_id) WHERE revoked_at IS NULL`); a revoked row stays as a tombstone. No foreign key to the resource, as on `permissions`; `permissions.source_link_id` references `share_links.id` `ON DELETE RESTRICT`, so a link row never takes its grants with it. |
+| `share_links` | Revocable share links of any link-sharing resource type (only hosted applications today): `resource_type`, `resource_id`, the token (plaintext, so every sharing manager can re-read it) and its SHA-256 (the only lookup key), creator, creation and revocation. At most one live link per resource (`uq_share_links_live` on `(resource_type, resource_id) WHERE revoked_at IS NULL`); a revoked row stays as a tombstone. No foreign key to the resource, as on `permissions`; `permissions.source_link_id` references `share_links.id` `ON DELETE RESTRICT`, so a link row never takes its grants with it. |
 
 The security policy registry is a code constant, `PERMITTED_POLICIES` in
 `codemie.core.hosted_applications.policy`, not database state. It lists the validation policy versions under
@@ -532,15 +532,16 @@ to it, and `Ability.PERMISSIONS["HostedApplications"]` maps roles to actions.
 
 | Role | Who | Can |
 |---|---|---|
-| Creator (owner) | `created_by.id` equals the user | Everything a manager can, plus share with named people and by link (`can_share`). |
+| Creator (owner) | `created_by.id` equals the user | Everything a manager can. Sharing is not extra: the creator is one of the sharing managers below. |
 | Manager | The creator, an admin of the application's project, or a platform administrator (maintainers included) | Open the working version, upload and select versions, activate, edit metadata and covers, delete, publish to or unpublish from the marketplace. |
+| Sharing manager | The creator, an admin of the application's project, a platform administrator or a maintainer (`access.sharing_manager` in SQL, `access.is_sharing_manager` in Python) | Share with named people and by link, unshare, see who has access, search people to share with, get and revoke the share link (`can_share`). An edit (WRITE) grant does not make a person a sharing manager. |
 | Viewer | `shared` and a member of the project, `is_global`, or a live grant (by name or by link); never while suspended | Launch the live version. |
 | Nobody | External users; users who are inactive or deleted | Not found, including every list. |
 
 Two SQL conditions encode this, `manageable` and `readable` (`readable` includes `manageable`), joined to
 `users` and `user_projects`; `manageable` takes the action (WRITE to change the app, DELETE on the delete path) so a
 later per-person edit grant can never imply delete. The same rule has Python predicates for loaded objects
-(`is_owned_by`, `is_managed_by`, `is_shared_with`, and `is_granted` behind the action-aware `Role.GRANTED` of
+(`is_owned_by`, `is_managed_by`, `is_sharing_manager`, `is_shared_with`, and `is_granted` behind the action-aware `Role.GRANTED` of
 `Ability`, registered under READ only). Both read the roles from the same rows: the predicates, the response
 abilities, the list scopes and the administrator check of suspend and reinstate take the caller's
 platform-admin, project-admin and membership flags from `users` and `user_projects` (`platform_user`), never
@@ -593,21 +594,25 @@ Sharing with named people and by link uses the platform's shared modules, not ho
 share by name through the same modules.
 
 - Named grants: `service/permission/named_grant_service.py` with the `NAMED_GRANT_TYPES` descriptor registry
-  (`named_grant_types.py`; hosted descriptor `service/hosted_applications/grant_descriptor.py`). Owner only; a
-  grantee must be an active, not deleted, internal user. `live_grants` (in `rest_api/models/permission.py`) is the
+  (`named_grant_types.py`; hosted descriptor `service/hosted_applications/grant_descriptor.py`). Hosted sharing is
+  for sharing managers (the creator, project admins, platform admins and maintainers; assistants stay owner only).
+  A reader who is not a sharing manager gets 403 "Only the app's managers (its creator, admins of its project,
+  platform admins and maintainers) can share it or manage its access"; a caller who cannot read the app gets 404.
+  People search never returns the creator, and a manager other than the creator who names the creator gets 400
+  `CREATOR_ALREADY_HAS_ACCESS`. A grantee must be an active, not deleted, internal user. `live_grants` (in `rest_api/models/permission.py`) is the
   one statement of a live grant: it counts only for an eligible internal user while `ENABLE_USER_MANAGEMENT` is
   on. The SQL viewer term, `scope=shared` and the Python grant term are built on it. Hosted code reads the
   caller's grants once per transaction on its own pool (`named_grant_service.apreload`) and passes them as
   `Ability(user, grants=...)`; any other `Ability` check loads the user's grants of a class itself, once per
   `Ability` object (`named_grant_service.load_class_grants`).
 - Share links: `service/permission/share_link_service.py` with the `SHARE_LINK_TYPES` registry
-  (`share_link_types.py`). A link type is also a named-grant type: the owner rule, the suspend refusal
+  (`share_link_types.py`). A link type is also a named-grant type: the sharing rule, the suspend refusal
   (`before_grant`), the audit attributes and the recipient rule come from the grant descriptor, and the hosted link
   descriptor (`service/hosted_applications/share_link_descriptor.py`) adds only the link events, the readability
-  check, `tx.lock_app`, the link answers and who may revoke. The owner gets or creates the
+  check, `tx.lock_app`, the link answers. A sharing manager gets or creates the
   live link (`POST /{id}/share-link`, refused while suspended) and reads it (`GET /{id}/share-link`).
-  `DELETE /{id}/share-link` (the owner, or a platform admin or maintainer who reaches the app by id, so a leaked
-  link is stopped without suspending the app) calls `arevoke`, the one revoke step: it tombstones the link and
+  `DELETE /{id}/share-link` (any sharing manager, under the same rule and message as the other sharing routes, so a
+  leaked link is stopped without suspending the app) calls `arevoke`, the one revoke step: it tombstones the link and
   removes every grant the link made, each audited with the revoker as actor. Opening (`POST /share-links/open`, token in the body) by an eligible internal user
   who cannot read the app yet locks the app row, re-reads the link and writes one link grant
   (`ON CONFLICT DO NOTHING`, so a by-name grant wins); the grant row's creator is the link's owner, the opener is
@@ -616,8 +621,8 @@ share by name through the same modules.
 - A by-name grant replaces a link grant for the same person, so it survives a link revoke. Removing a link
   recipient by name ends their access, but they can come back through the live link until it is revoked.
 - Generic permissions API: `POST /v1/permissions` refuses hosted (and assistant) grants; `DELETE
-  /v1/permissions/{id}` removes one, audited, for a platform admin or maintainer or the app's creator
-  (`grant_remover`, read from `users`).
+  /v1/permissions/{id}` removes one, audited, for a sharing manager of the app; for an orphan grant (no app row) only a platform admin or
+  maintainer. A refusal stays 401 "Access denied".
 
 ### Lock order
 

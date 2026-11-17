@@ -28,6 +28,7 @@ from codemie.rest_api.models.hosted_application import HostedApplications
 from codemie.rest_api.models.permission import Permission, PrincipalType, ResourceType
 from codemie.rest_api.models.user_management import UserDB, UserProject
 from codemie.rest_api.security.user import User
+from codemie.service.hosted_applications.grant_descriptor import build_resolve_statement
 
 PROJECT = "proj-a"
 OTHER = "proj-b"
@@ -464,65 +465,149 @@ def test_grants_are_ignored_while_user_management_is_off(engine):
         assert not _matches(connection, app_id, access.readable(APPS, sa.literal("u-outsider")))
 
 
+def _may_remove(connection, resource_id, persona):
+    row = connection.execute(build_resolve_statement(), {"rid": resource_id, "actor": PERSONAS[persona][0]["id"]}).one()
+    return bool(row.may_remove)
+
+
 @pytest.mark.parametrize(
-    ("persona", "creator_id", "expected"),
+    ("persona", "expected_admitted"),
     [
-        ("platform_admin", "u-creator", True),
-        ("maintainer", "u-creator", True),
-        ("creator", "u-creator", True),
-        ("project_admin", "u-creator", False),
-        ("member", "u-creator", False),
-        ("outsider", "u-creator", False),
-        ("external", "u-creator", False),
-        ("external_creator", "u-extc", False),
+        ("creator", True),
+        ("project_admin", True),
+        ("platform_admin", True),
+        ("maintainer", True),
+        ("member", False),
+        ("outsider", False),
+        ("external", False),
     ],
 )
-def test_grant_remover_admits_admin_maintainer_or_creator(engine, persona, creator_id, expected):
-    uid = sa.literal(PERSONAS[persona][0]["id"])
+def test_resolve_statement_lets_the_sharing_rule_remove_a_grant_of_an_app(engine, persona, expected_admitted):
     with engine.begin() as connection:
-        app_id = seed_app(connection, creator_id)
-        assert _matches(connection, app_id, access.grant_remover(APPS, uid)) is expected
+        app_id = seed_app(connection, "u-creator")
+        assert _may_remove(connection, app_id, persona) is expected_admitted
 
 
-def test_grant_remover_without_an_app_row_admits_only_admins(engine):
-    with engine.connect() as connection:
+@pytest.mark.parametrize(
+    ("persona", "expected_admitted"),
+    [
+        ("platform_admin", True),
+        ("maintainer", True),
+        ("project_admin", False),
+        ("creator", False),
+        ("member", False),
+    ],
+)
+def test_resolve_statement_lets_only_admins_remove_an_orphan_grant(engine, persona, expected_admitted):
+    with engine.begin() as connection:
+        assert _may_remove(connection, uuid4(), persona) is expected_admitted
 
-        def admitted(persona):
-            uid = sa.literal(PERSONAS[persona][0]["id"])
-            return connection.execute(sa.select(access.grant_remover(None, uid))).scalar()
 
-        assert admitted("platform_admin") and admitted("maintainer")
-        assert not admitted("creator") and not admitted("member") and not admitted("external")
-
-
-def test_grant_remover_excludes_inactive_and_deleted_admins(engine):
+def test_resolve_statement_excludes_an_inactive_admin_from_orphan_grants(engine):
     users = UserDB.__table__
     with engine.begin() as connection:
-        for change in ({"is_active": False}, {"deleted_at": sa.func.current_timestamp()}):
-            connection.execute(users.update().where(users.c.id == "u-admin").values(**change))
-            assert not connection.execute(sa.select(access.grant_remover(None, sa.literal("u-admin")))).scalar()
-            connection.execute(users.update().where(users.c.id == "u-admin").values(is_active=True, deleted_at=None))
+        connection.execute(users.update().where(users.c.id == "u-admin").values(is_active=False))
+        assert not _may_remove(connection, uuid4(), "platform_admin")
 
 
-def test_grant_remover_composes_as_a_scalar_column(engine):
+# ---- the sharing rule: creator, project admin of the app's project, platform admin, maintainer ----
+
+SHARING_PERSONAS = {
+    "creator": True,
+    "project_admin": True,
+    "other_project_admin": False,
+    "platform_admin": True,
+    "maintainer": True,
+    "member": False,
+    "recipient": False,
+    "recipient_write": False,
+    "recipient_delete": False,
+    "outsider": False,
+}
+
+
+# A named grant at any level never makes its recipient a sharing manager.
+RECIPIENT_LEVELS = {"recipient": Action.READ, "recipient_write": Action.WRITE, "recipient_delete": Action.DELETE}
+
+
+def _seed_other_project_admin(connection):
+    connection.execute(
+        UserDB.__table__.insert().values(
+            id="u-oadmin",
+            username="other_project_admin",
+            email="other_project_admin@example.com",
+            user_type="regular",
+            is_active=True,
+            is_admin=False,
+            is_maintainer=False,
+            is_auditor=False,
+            auth_source="local",
+            email_verified=False,
+        )
+    )
+    connection.execute(
+        UserProject.__table__.insert().values(
+            id=str(uuid4()), user_id="u-oadmin", project_name=OTHER, is_project_admin=True, is_default=False
+        )
+    )
+
+
+def _sharing_user(persona):
+    if persona == "other_project_admin":
+        user = User(id="u-oadmin", username=persona, project_names=[OTHER], admin_project_names=[OTHER])
+        user.is_admin = False  # ENV=local forces is_admin on at construction
+        return user
+    if persona.startswith("recipient"):
+        return make_user("outsider")
+    return make_user(persona)
+
+
+@pytest.mark.parametrize(("persona", "expected_admitted"), SHARING_PERSONAS.items())
+def test_is_sharing_manager_equals_the_sql_sharing_manager(engine, user_management_on, persona, expected_admitted):
+    user = _sharing_user(persona)
+    with engine.begin() as connection:
+        _seed_other_project_admin(connection)
+        app_id = seed_app(connection, "u-creator")
+        if persona.startswith("recipient"):
+            _grant(connection, app_id, user.id, RECIPIENT_LEVELS[persona])
+        in_sql = _matches(connection, app_id, access.sharing_manager(APPS, sa.literal(user.id)))
+    assert in_sql is expected_admitted
+    assert access.is_sharing_manager("u-creator", PROJECT, user) is expected_admitted
+
+
+def test_sharing_manager_excludes_external_and_inactive_users(engine):
+    users = UserDB.__table__
     with engine.begin() as connection:
         app_id = seed_app(connection, "u-creator")
-        row = connection.execute(
-            sa.select(APPS.c.id, access.grant_remover(APPS, sa.literal("u-creator")).label("can")).where(
-                APPS.c.id == app_id
-            )
-        ).one()
-        assert row.can
+        connection.execute(users.update().where(users.c.id == "u-creator").values(is_active=False))
+        assert not _matches(connection, app_id, access.sharing_manager(APPS, sa.literal("u-creator")))
+        assert not _matches(connection, app_id, access.sharing_manager(APPS, sa.literal("u-extc")))
+    assert not access.is_sharing_manager("u-extc", PROJECT, make_user("external_creator"))
 
 
-@pytest.mark.parametrize("persona", PERSONAS)
-def test_is_grant_remover_agrees_with_the_sql_grant_remover(engine, persona):
-    """The Python twin used to revoke a share link (S-17) admits whom ``grant_remover`` admits."""
-    user = make_user(persona)
+def test_a_request_admin_flag_does_not_pass_the_sharing_rule_once_platform_user_reads_the_users_row(engine):
+    request_user = make_user("member")
+    request_user.is_admin = True  # the IdP or ENV=local says admin; the users row does not
     with engine.begin() as connection:
         app_id = seed_app(connection, "u-creator")
-        in_sql = _matches(connection, app_id, access.grant_remover(APPS, sa.literal(user.id)))
-    assert access.is_grant_remover("u-creator", user) is in_sql
+        assert not _matches(connection, app_id, access.sharing_manager(APPS, sa.literal(request_user.id)))
+    with sa.orm.Session(engine) as sync_session:
+
+        class _Async:
+            async def execute(self, statement):
+                return sync_session.execute(statement)
+
+        import asyncio
+
+        refreshed = asyncio.run(access.platform_user(_Async(), request_user))
+    assert not refreshed.is_admin
+    assert not access.is_sharing_manager("u-creator", PROJECT, refreshed)
+
+
+def test_manageable_keeps_its_terms_after_sharing_manager_joins(engine):
+    for action in (Action.WRITE, Action.DELETE):
+        text = _sql(access.manageable(APPS, sa.literal("u-outsider"), action))
+        assert text == _sql(access.sharing_manager(APPS, sa.literal("u-outsider")))
 
 
 # ---- one suspension refusal list, applied one way (AR-12) ----

@@ -69923,7 +69923,7 @@
     },
     "/v1/hosted-applications/{app_id}/sharable-users": {
       "get": {
-        "description": "Owner only: directory users that can be granted access, matching ``q``.",
+        "description": "Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.\n\nDirectory users that can be granted access, matching ``q``.",
         "operationId": "sharable_users_v1_hosted_applications__app_id__sharable_users_get",
         "parameters": [
           {
@@ -69984,7 +69984,7 @@
     },
     "/v1/hosted-applications/{app_id}/share": {
       "delete": {
-        "description": "Owner only: revoke the listed users' access.",
+        "description": "Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.\n\nRevoke the listed users' access.",
         "operationId": "unshare_v1_hosted_applications__app_id__share_delete",
         "parameters": [
           {
@@ -70042,7 +70042,7 @@
         ]
       },
       "post": {
-        "description": "Owner only: grant view-only access to the listed users.",
+        "description": "Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.\n\nGrant view-only access to the listed users.",
         "operationId": "share_v1_hosted_applications__app_id__share_post",
         "parameters": [
           {
@@ -70102,7 +70102,7 @@
     },
     "/v1/hosted-applications/{app_id}/share-link": {
       "delete": {
-        "description": "Owner, or a platform admin or maintainer: revoke the app's share link and the access it gave.",
+        "description": "Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.\n\nRevoke the app's share link and the access it gave.",
         "operationId": "revoke_share_link_v1_hosted_applications__app_id__share_link_delete",
         "parameters": [
           {
@@ -70150,7 +70150,7 @@
         ]
       },
       "get": {
-        "description": "Owner only: the app's current share link, or null.",
+        "description": "Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.\n\nThe app's current share link, or null.",
         "operationId": "get_share_link_v1_hosted_applications__app_id__share_link_get",
         "parameters": [
           {
@@ -70198,7 +70198,7 @@
         ]
       },
       "post": {
-        "description": "Owner only: create (or return) the app's share link.",
+        "description": "Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.\n\nCreate (or return) the app's share link.",
         "operationId": "create_share_link_v1_hosted_applications__app_id__share_link_post",
         "parameters": [
           {
@@ -70248,7 +70248,7 @@
     },
     "/v1/hosted-applications/{app_id}/shared-with": {
       "get": {
-        "description": "Owner only: the users who were granted view access by name.",
+        "description": "Only the app's managers (its creator, admins of its project, platform admins and maintainers) can call this.\n\nThe users who were granted view access by name.",
         "operationId": "shared_with_v1_hosted_applications__app_id__shared_with_get",
         "parameters": [
           {

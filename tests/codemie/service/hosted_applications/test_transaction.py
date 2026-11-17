@@ -336,6 +336,33 @@ async def test_managed_app_unlocked_takes_no_lock(repository, session):
 
 
 @pytest.mark.asyncio
+async def test_sharing_app_locks_in_the_hosted_order_only_when_asked(repository, session):
+    app = seed_app(session, creator="u-creator")
+    admin = make_user("u-padmin", project_names=["proj-a"], admin_project_names=["proj-a"])
+    session.admitted.add((app.id, admin.id))
+
+    async with repository.transaction(admin, make_identity(admin.id), write=True) as tx:
+        assert await tx.sharing_app(app.id, admin) is app
+        assert session.locks == [] and tx.quota is None
+        assert await tx.sharing_app(app.id, admin, lock=True) is app
+
+    assert session.locks == [("quota", "u-creator", "FOR UPDATE"), ("app", app.id, "FOR NO KEY UPDATE")]
+
+
+@pytest.mark.asyncio
+async def test_sharing_app_refuses_a_non_manager_with_404(repository, session):
+    app = seed_app(session)
+    outsider = make_user("u-outsider")
+
+    with pytest.raises(HostedApplicationError) as error:
+        async with repository.transaction(outsider, make_identity(outsider.id), write=True) as tx:
+            await tx.sharing_app(app.id, outsider, lock=True)
+
+    assert error.value.status == 404
+    assert session.locks == []
+
+
+@pytest.mark.asyncio
 async def test_managed_app_refuses_a_non_manager_with_404(repository, session):
     app = seed_app(session)
     outsider = make_user("u-outsider")

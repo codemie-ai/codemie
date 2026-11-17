@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-11-13T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 24,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base L: hosted-app access rules (sharing_manager / is_sharing_manager in core access), hosted-app repository, router, catalog, projections, grant and share-link descriptors. Bumped to XL because the generic permission services (named_grant_service, share_link_service, share_link_types) are shared with assistants, which must keep the owner rule." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing manageable/_manager_terms SQL builder, reused without the grant branch, so the approach is established (base M). Bumped to L because the change widens an authorization boundary across seven sharing operations, with Python and SQL twins that must agree." },
+    { "dimension": "file_change_estimate", "reason": "24 files in the diffstat (12 source/docs, 12 tests including the OpenAPI baseline) maps to XXL (16+) under the actual-mode file count mapping." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: affects authorization (who may share, unshare, list grants, manage share links)",
+    "Component Scope bumped from L to XL: touches core shared permission services (named grants, share links) used by both hosted apps and assistants"
+  ],
+  "split_recommendation": null
+}

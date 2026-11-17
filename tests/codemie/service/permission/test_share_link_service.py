@@ -34,20 +34,35 @@ from codemie.rest_api.models.permission import ResourceType, ShareLink
 from codemie.rest_api.models.user_management import UserDB
 from codemie.service.activity.activity_models import ActivityDomain
 from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.service.hosted_applications.grant_descriptor import MANAGERS_ONLY
 from codemie.service.permission import named_grant_service, share_link_service, share_link_types
 
 HOSTED = ResourceType.HOSTED_APPLICATION
 ACTOR = SimpleNamespace(
-    id="u-1", username="owner", name="Owner", user_type="regular", is_admin=False, is_maintainer=False
+    id="u-1",
+    username="owner",
+    name="Owner",
+    user_type="regular",
+    is_admin=False,
+    is_maintainer=False,
+    admin_project_names=[],
 )
 OPENER = SimpleNamespace(
-    id="u-2", username="opener", name="Opener", user_type="regular", is_admin=False, is_maintainer=False
+    id="u-2",
+    username="opener",
+    name="Opener",
+    user_type="regular",
+    is_admin=False,
+    is_maintainer=False,
+    admin_project_names=[],
 )
 PROJECT = "team-a"
 
 
 def _app(owner="u-1", security_state="clear"):
-    return SimpleNamespace(id=uuid4(), created_by=SimpleNamespace(id=owner), security_state=security_state)
+    return SimpleNamespace(
+        id=uuid4(), created_by=SimpleNamespace(id=owner), security_state=security_state, project="demo"
+    )
 
 
 @compiles(JSONB, "sqlite")
@@ -246,7 +261,7 @@ async def test_revoke_without_live_link_returns_none_and_writes_nothing(session,
 
 
 @pytest.mark.asyncio
-async def test_checked_revoke_refuses_anyone_but_owner_or_admin_before_any_change(session, events, removed):
+async def test_checked_revoke_refuses_a_non_manager_before_any_change(session, events, removed):
     app = _app()
     await share_link_service.acreate(session, HOSTED, app, ACTOR, PROJECT)
     events.clear()
@@ -266,30 +281,58 @@ async def test_owner_revoke_is_allowed_while_suspended(session, events, removed)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("flag", ["is_admin", "is_maintainer"])
-async def test_a_platform_admin_or_maintainer_revokes_as_the_actor(session, events, removed, flag):
-    """AR-1: the hosted ``may_revoke`` rule is owner OR ``grant_remover``; the admin is the audit actor."""
+@pytest.mark.parametrize("role", ["is_admin", "is_maintainer", "project_admin"])
+async def test_a_sharing_manager_revokes_as_the_actor(session, events, removed, role):
+    """The sharing rule decides a revoke: a platform admin, maintainer or project admin is the audit actor."""
     app = _app()
     link = await share_link_service.acreate(session, HOSTED, app, ACTOR, PROJECT)
     events.clear()
-    admin = SimpleNamespace(
+    manager = SimpleNamespace(
         id="u-9",
         username="admin",
         name="Admin",
         user_type="regular",
-        is_admin=flag == "is_admin",
-        is_maintainer=flag == "is_maintainer",
+        is_admin=role == "is_admin",
+        is_maintainer=role == "is_maintainer",
+        admin_project_names=[app.project] if role == "project_admin" else [],
     )
-    assert await share_link_service.arevoke_checked(session, HOSTED, app, admin, PROJECT) == link.id
+    assert await share_link_service.arevoke_checked(session, HOSTED, app, manager, PROJECT) == link.id
     assert (await share_link_service.areload(session, link.id)).revoked_by.id == "u-9"
     assert removed == [("u-9", HOSTED, app.id, link.id, PROJECT)]
+
+
+@pytest.mark.asyncio
+async def test_a_non_manager_revoke_is_refused_with_the_managers_only_message(session, events, removed):
+    app = _app()
+    await share_link_service.acreate(session, HOSTED, app, ACTOR, PROJECT)
+    admin_of_other_project = SimpleNamespace(
+        id="u-9",
+        username="x",
+        name="x",
+        user_type="regular",
+        is_admin=False,
+        is_maintainer=False,
+        admin_project_names=["other"],
+    )
+    with pytest.raises(HostedApplicationError) as error:
+        await share_link_service.arevoke_checked(session, HOSTED, app, admin_of_other_project, PROJECT)
+    assert error.value.status == 403
+    assert error.value.message == MANAGERS_ONLY
 
 
 @pytest.mark.asyncio
 async def test_an_external_admin_may_not_revoke(session, events, removed):
     app = _app()
     await share_link_service.acreate(session, HOSTED, app, ACTOR, PROJECT)
-    admin = SimpleNamespace(id="u-9", username="x", name="x", user_type="external", is_admin=True, is_maintainer=False)
+    admin = SimpleNamespace(
+        id="u-9",
+        username="x",
+        name="x",
+        user_type="external",
+        is_admin=True,
+        is_maintainer=False,
+        admin_project_names=[],
+    )
     with pytest.raises(HostedApplicationError):
         await share_link_service.arevoke_checked(session, HOSTED, app, admin, PROJECT)
 

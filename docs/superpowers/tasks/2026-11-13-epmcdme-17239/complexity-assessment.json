@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Widen hosted-app sharing operations (share, unshare, shared-with, people search, share-link get/create/revoke, single-grant delete, can_share) from creator-only to every hosted-app manager while assistants keep the owner rule, with manager-named refusals and updated API baseline and design records (EPMCDME-17239).",
+  "generated": "2026-11-13T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the hosted catalog gate (seven sharing entry points), hosted grant and share-link descriptors, projections (can_share), core access rules, and the generic named-grant / share-link / permission-deletion services shared with assistants; the owner rule is enforced twice (catalog and generic descriptor check) so both must change while assistant descriptors stay untouched." },
+    { "dimension": "technical_risk", "reason": "Authorization widening. Closest pattern is the existing SQL manager rule (access.manageable) and Ability WRITE, which covers who manages but not sharing-specific behaviours: no Python manager predicate twin, no mechanism to refuse granting to the creator or to exclude the creator from people search, and orphan-grant handling for single-grant delete must be decided when D9 replaces grant_remover. Edge cases (suspended app, 403 vs 404, creator recipient) are covered by existing persona-table test templates, so no extra bump." },
+    { "dimension": "file_change_estimate", "reason": "About 10 source files across core/service/router, two design docs, the OpenAPI baseline (7 descriptions), and many owner-centric tests whose assertions flip (catalog, projections, access, share-link service, deletion service, PG matrix, router), plus new tests for creator exclusion — 11-15+ files across multiple subsystems." },
+    { "dimension": "requirements_clarity", "reason": "AC1-AC8 and D9 are concrete; open points are orphan-grant delete handling and the people-search statement contradicted by the backend (no current exclusion)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: affects authorization (who may share, revoke links and delete grants)"
+  ],
+  "split_recommendation": null
+}

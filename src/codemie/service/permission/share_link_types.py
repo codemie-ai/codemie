@@ -17,8 +17,7 @@
 A link type must also be a named-grant type (``NAMED_GRANT_TYPES``): link recipients are named grants, and the link
 service reads the type's grant descriptor for the activity domain and entity type, the owner rule and its refusal
 message, the pre-check (``before_grant``), the audit attributes and the recipient rule. The link descriptor holds only
-what is specific to links: the link events, the lock and readability checks of an open, the link answers and who may
-revoke the live link.
+what is specific to links: the link events, the lock and readability checks of an open, and the link answers.
 
 A type listed here is resolved lazily from a dotted path, so importing this module imports no resource module.
 Only hosted applications share by link today; assistants and conversations do not use this table.
@@ -49,8 +48,6 @@ class ShareLinkDescriptor:
     opener_refused: Callable[[], Exception]
     # The type's 403 answer for a message (the grant descriptor's ``not_owner_message`` on a create or revoke).
     access_denied: Callable[[str], Exception]
-    # Who may revoke the live link: (resource, actor) -> bool on the locked row; None means the grant owner rule.
-    may_revoke: Callable[[Any, Any], bool] | None = None
 
 
 # Dotted "module:attribute" paths, imported on first use.

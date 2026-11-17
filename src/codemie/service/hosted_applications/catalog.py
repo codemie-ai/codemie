@@ -48,7 +48,7 @@ from codemie.service.hosted_applications.versions import VersionServiceMixin
 from codemie.service.hosted_applications.publication import PublicationServiceMixin
 from codemie.service.hosted_applications.uploads import UploadServiceMixin
 from codemie.service.hosted_applications.projections import app_projection, can_manage
-from codemie.service.hosted_applications import share_link_descriptor as link_descriptor
+from codemie.service.hosted_applications import grant_descriptor
 from codemie.service.permission import named_grant_service, share_link_service
 
 # Applications one person may keep; deleted ones do not count.
@@ -67,8 +67,6 @@ SHARE_LINK_OPEN_LOCK_TIMEOUT_MS = 400
 MAX_PROJECT_FILTERS = 50
 MAX_FILTER_TEXT = 200
 
-NOT_OWNER = "Only the owner can share or revoke access"
-NOT_LINK_REVOKER = "Only the owner or a platform administrator can revoke the share link"
 UserPayload = dict[str, str | None]
 SharedWith = dict[str, list[UserPayload]]
 ShareLinkPayload = dict[str, dict[str, str | None] | None]
@@ -561,13 +559,13 @@ class HostedApplicationCatalog(
         tx.covered = await self._covered(tx, apps)
         return [await self._project(tx, app, user) for app in apps]
 
-    async def _owned_app(
-        self, tx: HostedTransaction, identity: HostedActor, app_id: UUID | str, *, allow=None, refusal=NOT_OWNER
+    async def _sharing_app(
+        self, tx: HostedTransaction, identity: HostedActor, app_id: UUID | str, *, lock: bool
     ) -> App:
-        """The locked app, for its owner only (or whom ``allow(app, platform user)`` admits): any other manager gets
-        403 with ``refusal``, anyone who cannot read it 404."""
+        """The app, for its sharing managers only (``access.sharing_manager``): anyone else who can read it gets 403
+        with the descriptor's message, anyone who cannot 404. ``lock`` for the operations that change access."""
         try:
-            app = await tx.managed_app(app_id, identity.user, lock=True)
+            return await tx.sharing_app(app_id, identity.user, lock=lock)
         except HostedApplicationError as exc:
             if exc.status != 404:
                 raise
@@ -578,23 +576,19 @@ class HostedApplicationCatalog(
             )
             if (await tx.session.execute(seen)).first() is None:
                 raise
-            raise HostedApplicationError("ACCESS_DENIED", refusal, 403) from exc
-        platform = await self._platform_user(tx, identity.user)
-        created_by = app.created_by
-        owner_id = created_by.id if created_by else None
-        allowed = allow(app, platform) if allow else access.is_owned_by(owner_id, platform)
-        if not allowed:
-            raise HostedApplicationError("ACCESS_DENIED", refusal, 403)
-        return app
+            raise HostedApplicationError("ACCESS_DENIED", grant_descriptor.DESCRIPTOR.not_owner_message, 403) from exc
 
     async def share(self, identity: HostedActor, app_id: UUID | str, user_ids: list[str]) -> SharedWith:
-        """Grant view-only access to ``user_ids`` (owner only); returns ``{"shared_with": [...]}`` after the change.
+        """Grant view-only access to ``user_ids`` (sharing managers); returns ``{"shared_with": [...]}`` after it.
 
-        ``_owned_app`` gives the 403/404 split; the shared ``agrant`` checks the owner again on the locked row, then
-        runs the descriptor's ``before_grant`` (refused while suspended).
+        ``_sharing_app`` gives the 403/404 split; the shared ``agrant`` checks the sharing rule again on the locked
+        row, then runs the descriptor's ``before_grant`` (refused while suspended).
         """
         async with self.repository.transaction(*identity, write=True) as tx:
-            app = await self._owned_app(tx, identity, app_id)
+            app = await self._sharing_app(tx, identity, app_id, lock=True)
+            creator_id = app.created_by.id
+            if identity.user.id != creator_id and creator_id in user_ids:
+                raise HostedApplicationError("CREATOR_ALREADY_HAS_ACCESS", "The app's creator already has access", 400)
             await named_grant_service.agrant(
                 tx.session,
                 resource_type=ResourceType.HOSTED_APPLICATION,
@@ -606,9 +600,9 @@ class HostedApplicationCatalog(
             return await self._shared_with(tx, app)
 
     async def unshare(self, identity: HostedActor, app_id: UUID | str, user_ids: list[str]) -> SharedWith:
-        """Revoke named grants (owner only, allowed while suspended); returns ``{"shared_with": [...]}``."""
+        """Revoke named grants (sharing managers, allowed while suspended); returns ``{"shared_with": [...]}``."""
         async with self.repository.transaction(*identity, write=True) as tx:
-            app = await self._owned_app(tx, identity, app_id)
+            app = await self._sharing_app(tx, identity, app_id, lock=True)
             await named_grant_service.arevoke(
                 tx.session,
                 resource_type=ResourceType.HOSTED_APPLICATION,
@@ -626,17 +620,17 @@ class HostedApplicationCatalog(
         return {"link": {"id": str(link.id), "token": link.token, "created_at": link.created_at.isoformat()}}
 
     async def get_share_link(self, identity: HostedActor, app_id: UUID | str) -> ShareLinkPayload:
-        """The live share link (owner only): ``{"link": {id, token, created_at} | None}``."""
+        """The live share link (sharing managers, no lock): ``{"link": {id, token, created_at} | None}``."""
         async with self.repository.transaction(*identity, write=True) as tx:
-            app = await self._owned_app(tx, identity, app_id)
+            app = await self._sharing_app(tx, identity, app_id, lock=False)
             return self._link_payload(
                 await share_link_service.aget_live(tx.session, ResourceType.HOSTED_APPLICATION, app.id)
             )
 
     async def create_share_link(self, identity: HostedActor, app_id: UUID | str) -> ShareLinkPayload:
-        """Get or create the app's live link (owner only, refused while suspended by the link descriptor)."""
+        """Get or create the app's live link (sharing managers, refused while suspended by the link descriptor)."""
         async with self.repository.transaction(*identity, write=True) as tx:
-            app = await self._owned_app(tx, identity, app_id)
+            app = await self._sharing_app(tx, identity, app_id, lock=True)
             actor = await self._platform_user(tx, identity.user)
             link = await share_link_service.acreate(
                 tx.session, ResourceType.HOSTED_APPLICATION, app, actor, app.project
@@ -646,13 +640,11 @@ class HostedApplicationCatalog(
     async def revoke_share_link(self, identity: HostedActor, app_id: UUID | str) -> ShareLinkPayload:
         """Revoke the live link and the grants it made; no link is a no-op, allowed while suspended.
 
-        The owner, or a platform admin or maintainer who reaches the app by id (S-17): an admin stops a leaked link
-        without suspending the app, in the same single revoke step, audited with the admin as actor.
+        Any sharing manager, a platform admin or maintainer included (S-17): an admin stops a leaked link without
+        suspending the app, in the same single revoke step, audited with the admin as actor.
         """
         async with self.repository.transaction(*identity, write=True) as tx:
-            app = await self._owned_app(
-                tx, identity, app_id, allow=link_descriptor.may_revoke, refusal=NOT_LINK_REVOKER
-            )
+            app = await self._sharing_app(tx, identity, app_id, lock=True)
             actor = await self._platform_user(tx, identity.user)
             await share_link_service.arevoke_checked(
                 tx.session, ResourceType.HOSTED_APPLICATION, app, actor, app.project
@@ -686,15 +678,16 @@ class HostedApplicationCatalog(
 
     async def shared_with(self, identity: HostedActor, app_id: UUID | str) -> SharedWith:
         async with self.repository.transaction(*identity, write=True) as tx:
-            return await self._shared_with(tx, await self._owned_app(tx, identity, app_id))
+            return await self._shared_with(tx, await self._sharing_app(tx, identity, app_id, lock=False))
 
     async def sharable_users(self, identity: HostedActor, app_id: UUID | str, q: str) -> dict[str, list[UserPayload]]:
-        """Users the owner may grant access to matching ``q``: ``{"users": [...]}``."""
+        """Users a sharing manager may grant access to matching ``q``: ``{"users": [...]}`` (no lock)."""
         async with self.repository.transaction(*identity, write=True) as tx:
-            await self._owned_app(tx, identity, app_id)
-            return {
-                "users": await named_grant_service.search_sharable_users(tx.session, ResourceType.HOSTED_APPLICATION, q)
-            }
+            app = await self._sharing_app(tx, identity, app_id, lock=False)
+            users = await named_grant_service.search_sharable_users(
+                tx.session, ResourceType.HOSTED_APPLICATION, q, exclude_ids=[app.created_by.id]
+            )
+            return {"users": users}
 
     @staticmethod
     async def _shared_with(tx: HostedTransaction, app: App) -> SharedWith:

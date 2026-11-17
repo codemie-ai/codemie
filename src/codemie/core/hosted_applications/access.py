@@ -122,12 +122,12 @@ def is_owned_by(created_by_id: str | None, user: User) -> bool:
     return _eligible(user) and created_by_id is not None and created_by_id == user.id
 
 
-def is_grant_remover(created_by_id: str | None, user: User) -> bool:
-    """Python twin of ``grant_remover`` on a ``platform_user`` copy: a platform admin or maintainer, or the creator.
+def is_sharing_manager(created_by_id: str | None, project: str, user: User) -> bool:
+    """Python twin of ``sharing_manager``: creator, project admin of ``project``, or platform admin/maintainer.
 
-    Also the rule for revoking an app's share link without suspending it (S-17).
+    ``user`` must be a ``platform_user`` copy, never the request user, so roles come from the rows the SQL reads.
     """
-    return is_moderator(user) or (_eligible(user) and created_by_id is not None and created_by_id == user.id)
+    return is_owned_by(created_by_id, user) or is_managed_by(project, user) or is_platform_admin(user)
 
 
 def is_managed_by(project: str, user: User) -> bool:
@@ -186,17 +186,30 @@ def _platform_admin(user_id_expr: Any) -> Any:
     )
 
 
-def _manager(apps: Any, user_id_expr: Any, action: Action) -> Any:
-    if action not in MANAGER_ACTIONS:
-        raise ValueError(f"A manager term answers WRITE or DELETE, not {action}")
-    terms = [
+def _manager_terms(apps: Any, user_id_expr: Any) -> list[Any]:
+    return [
         apps.c.created_by["id"].as_string() == user_id_expr,
         _membership(apps, user_id_expr, admin_only=True),
         _platform_admin(user_id_expr),
     ]
+
+
+def _manager(apps: Any, user_id_expr: Any, action: Action) -> Any:
+    if action not in MANAGER_ACTIONS:
+        raise ValueError(f"A manager term answers WRITE or DELETE, not {action}")
+    terms = _manager_terms(apps, user_id_expr)
     if action in MANAGER_GRANT_ACTIONS:
         terms.append(_grant(apps, user_id_expr, action))
     return sa.or_(*terms)
+
+
+def sharing_manager(apps: Any, user_id_expr: Any) -> Any:
+    """Eligible user who may share the app: its creator, a project admin of its project, or a platform admin.
+
+    The manager terms without a grant branch, so a named grantee never shares. Decided from ``users`` and
+    ``user_projects`` rows, never from request roles.
+    """
+    return sa.and_(sa.exists(_eligible_user(user_id_expr)), sa.or_(*_manager_terms(apps, user_id_expr)))
 
 
 def _grant(apps: Any, user_id_expr: Any, action: Action) -> Any:
@@ -229,21 +242,17 @@ def is_platform_admin(user: User) -> bool:
 
 
 def is_moderator(user: User) -> bool:
-    """A platform admin: may suspend, reinstate and revoke share links. There is no moderation list (S-28);
+    """A platform admin: may suspend and reinstate apps. There is no moderation list (S-28);
     a platform admin finds every app in the Project tab instead (``list_scope``)."""
     return is_platform_admin(user)
 
 
-def grant_remover(apps: Any | None, user_id_expr: Any) -> Any:
-    """Eligible user who may revoke a named grant: a platform admin or maintainer, or the app's creator.
+def orphan_grant_remover(user_id_expr: Any) -> Any:
+    """Eligible platform admin or maintainer: the only users who may revoke a grant whose app row is gone.
 
-    Decided from the ``users`` row, never from request roles. Without an app row (an orphan grant) only the
-    administrator branch applies.
+    Decided from the ``users`` row, never from request roles.
     """
-    branches = [_platform_admin(user_id_expr)]
-    if apps is not None:
-        branches.append(apps.c.created_by["id"].as_string() == user_id_expr)
-    return sa.and_(sa.exists(_eligible_user(user_id_expr)), sa.or_(*branches))
+    return sa.and_(sa.exists(_eligible_user(user_id_expr)), _platform_admin(user_id_expr))
 
 
 def readable(apps: Any, user_id_expr: Any) -> Any:

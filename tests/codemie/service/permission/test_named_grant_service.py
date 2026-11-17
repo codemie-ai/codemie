@@ -30,7 +30,7 @@ from codemie.service.permission import named_grant_service as svc
 RT = ResourceType.HOSTED_APPLICATION
 RID = uuid4()
 ACTOR = User(id="owner-1", username="owner", name="Owner Name")
-RESOURCE = SimpleNamespace(id=RID, created_by=SimpleNamespace(id="owner-1"), security_state="clear")
+RESOURCE = SimpleNamespace(id=RID, created_by=SimpleNamespace(id="owner-1"), security_state="clear", project="demo")
 
 
 def sql(statement) -> str:
@@ -258,10 +258,16 @@ def test_grant_rows_are_one_read_user_row_per_id():
     assert rows[0]["created_by"].id == "owner-1"
 
 
+def _non_admin(user_id):
+    user = User(id=user_id, username=user_id)
+    user.is_admin = False  # ENV=local forces is_admin on at construction
+    return user
+
+
 @pytest.mark.parametrize("operation", [svc.grant, svc.revoke])
 def test_a_non_owner_is_refused_before_any_statement(operation):
     session = RecordingSession()
-    stranger = User(id="someone-else", username="s")
+    stranger = _non_admin("someone-else")
     with pytest.raises(ExtendedHTTPException) as err:
         operation(session, **grant_args(owner=stranger))
     assert err.value.code == 403
@@ -269,16 +275,20 @@ def test_a_non_owner_is_refused_before_any_statement(operation):
 
 
 def test_owner_check_comes_before_before_grant():
-    suspended = SimpleNamespace(id=RID, created_by=SimpleNamespace(id="owner-1"), security_state="suspended")
+    suspended = SimpleNamespace(
+        id=RID, created_by=SimpleNamespace(id="owner-1"), security_state="suspended", project="demo"
+    )
     with pytest.raises(ExtendedHTTPException) as err:
-        svc.grant(RecordingSession(), **grant_args(resource=suspended, owner=User(id="x", username="x")))
+        svc.grant(RecordingSession(), **grant_args(resource=suspended, owner=_non_admin("x")))
     assert err.value.code == 403
 
 
 def test_grant_runs_before_grant_and_revoke_does_not():
     from codemie.core.hosted_applications.errors import HostedApplicationError
 
-    suspended = SimpleNamespace(id=RID, created_by=SimpleNamespace(id="owner-1"), security_state="suspended")
+    suspended = SimpleNamespace(
+        id=RID, created_by=SimpleNamespace(id="owner-1"), security_state="suspended", project="demo"
+    )
     session = RecordingSession()
     with pytest.raises(HostedApplicationError) as err:
         svc.grant(session, **grant_args(resource=suspended))
@@ -292,7 +302,7 @@ async def test_async_twins_check_the_owner():
     for operation in (svc.agrant, svc.arevoke):
         session = AsyncRecordingSession()
         with pytest.raises(ExtendedHTTPException) as err:
-            await operation(session, **grant_args(owner=User(id="x", username="x")))
+            await operation(session, **grant_args(owner=_non_admin("x")))
         assert err.value.code == 403 and session.statements == []
 
 
@@ -466,6 +476,22 @@ async def test_search_sharable_users_filters_by_the_types_recipient_rule(monkeyp
     await svc.search_sharable_users(session, RT, "am")
     where = sql(session.statements[0]).split("WHERE", 1)[1]
     assert "users.is_auditor" in where and "users.user_type" not in where
+
+
+@pytest.mark.asyncio
+async def test_search_sharable_users_excludes_ids_in_sql_before_the_limit():
+    session = AsyncRecordingSession([])
+    await svc.search_sharable_users(session, RT, "am", exclude_ids=["creator-1"])
+    text = sql(session.statements[0])
+    assert "users.id NOT IN" in text and text.index("users.id NOT IN") < text.index("LIMIT")
+    assert ["creator-1"] in session.statements[0].compile(dialect=postgresql.dialect()).params.values()
+
+
+@pytest.mark.asyncio
+async def test_search_sharable_users_without_exclusions_has_no_id_filter():
+    session = AsyncRecordingSession([])
+    await svc.search_sharable_users(session, RT, "am")
+    assert "users.id NOT IN" not in sql(session.statements[0])
 
 
 # ---- link grants ----------------------------------------------------------------------------------------------------

@@ -196,13 +196,11 @@ async def arevoke(
 async def arevoke_checked(
     session: AsyncSession, resource_type: ResourceType, resource: Any, actor: Any, project: str | None
 ) -> UUID | None:
-    """Revoke the live link of ``resource`` (held locked by the caller) when the type's ``may_revoke`` admits the
-    actor (the grant descriptor's owner rule when it is not set); allowed while suspended. The actor is recorded as
-    the revoker."""
+    """Revoke the live link of ``resource`` (held locked by the caller) when the type's grant owner rule admits the
+    actor (hosted apps: the sharing rule); allowed while suspended. The actor is recorded as the revoker."""
     link_rules = link_descriptor_for(resource_type)
     grant = descriptor_for(resource_type)
-    allowed = link_rules.may_revoke or grant.is_owner
-    if not allowed(resource, actor):
+    if not grant.is_owner(resource, actor):
         raise link_rules.access_denied(grant.not_owner_message)
     return await arevoke(session, resource_type, resource.id, actor, project)
 

@@ -20,10 +20,9 @@ from typing import Any
 
 from sqlalchemy import Text, bindparam, select
 
-from codemie.core.hosted_applications.access import is_grant_remover, readable, refuses_sql
+from codemie.core.hosted_applications.access import readable, refuses_sql
 from codemie.core.hosted_applications.errors import HostedApplicationError
 from codemie.rest_api.models.hosted_application import HostedApplications as App
-from codemie.service.hosted_applications.grant_descriptor import is_owner
 from codemie.service.permission.share_link_types import ShareLinkDescriptor
 
 # The hosted recipient rule (``grant_recipient``) admits eligible internal users only.
@@ -42,12 +41,6 @@ def opener_refused() -> HostedApplicationError:
 
 def access_denied(message: str) -> HostedApplicationError:
     return HostedApplicationError("ACCESS_DENIED", message, 403)
-
-
-def may_revoke(app: Any, actor: Any) -> bool:
-    """The owner, or a platform admin or maintainer (``grant_remover``), revokes the link without suspending (S-17)."""
-    created_by = getattr(app, "created_by", None)
-    return is_owner(app, actor) or is_grant_remover(created_by.id if created_by else None, actor)
 
 
 async def areadable(tx: Any, app_id: Any, opener_id: str) -> bool:
@@ -75,5 +68,4 @@ DESCRIPTOR = ShareLinkDescriptor(
     not_available=share_link_not_available,
     opener_refused=opener_refused,
     access_denied=access_denied,
-    may_revoke=may_revoke,
 )

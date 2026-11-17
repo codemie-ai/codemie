@@ -39,6 +39,7 @@ from codemie.rest_api import main
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.hosted_applications import hosted_identity
 from codemie.rest_api.security.user import User
+from codemie.service.hosted_applications.grant_descriptor import MANAGERS_ONLY
 
 UI = "https://codemie.example.com"
 APP = getattr(main.app, "management", main.app)  # the FastAPI application behind optional host dispatch
@@ -612,9 +613,6 @@ def test_suspend_route_answers_with_the_services_administrator_check(client, ref
         assert response.status_code == 200 and response.json()["suspended"] is True
 
 
-NOT_OWNER = "Only the owner can share or revoke access"
-
-
 @pytest.fixture
 def share_catalog(client, signed_in, monkeypatch):
     from codemie.configs import config
@@ -665,7 +663,7 @@ def test_share_and_unshare_pass_the_ids_to_the_catalog_and_return_the_grantees(c
     assert share_catalog["unshare"].await_args.args[1:] == (app_id, ["u-2"])
 
 
-def test_shared_with_and_sharable_users_answer_the_owner(client, share_catalog):
+def test_shared_with_and_sharable_users_answer_a_sharing_manager(client, share_catalog):
     app_id = uuid4()
     listed = client.get(f"/v1/hosted-applications/{app_id}/shared-with")
     assert listed.status_code == 200 and listed.json()["shared_with"][0]["id"] == "u-2"
@@ -682,8 +680,8 @@ def test_sharable_users_needs_at_least_two_characters(client, share_catalog, que
 
 
 @pytest.mark.parametrize("name", ["share", "unshare", "shared_with", "sharable_users"])
-@pytest.mark.parametrize(("error", "status"), [(NOT_OWNER, 403), ("Application not found", 404)])
-def test_owner_only_refusals_keep_their_status(client, share_catalog, name, error, status):
+@pytest.mark.parametrize(("error", "status"), [(MANAGERS_ONLY, 403), ("Application not found", 404)])
+def test_sharing_manager_refusals_keep_their_status(client, share_catalog, name, error, status):
     code = "ACCESS_DENIED" if status == 403 else "NOT_FOUND"
     share_catalog[name].side_effect = HostedApplicationError(code, error, status)
     app = f"/v1/hosted-applications/{uuid4()}"

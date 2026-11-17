@@ -28,7 +28,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from codemie.core.ability import Action
-from codemie.core.hosted_applications.access import manageable
+from codemie.core.hosted_applications.access import manageable, sharing_manager
 from codemie.core.hosted_applications.errors import HostedApplicationError
 from codemie.core.hosted_applications.identity import VerifiedIdentityContext
 from codemie.core.hosted_applications.protocol import canonical_json
@@ -38,6 +38,7 @@ from codemie.rest_api.models.hosted_application import (
     HostedApplicationViewSessions,
     HostedApplications,
 )
+from codemie.rest_api.security.user import User
 
 
 OPERATION_KEY_INDEX = "hosted_application_operation_key"
@@ -121,6 +122,25 @@ class HostedTransaction:
             HostedApplications.lifecycle_state.in_(states),
             manageable(HostedApplications.__table__, manager, action),
         )
+        return await self._gated_app(query, lock=lock)
+
+    async def sharing_app(self, app_id: UUID | str, user: User, *, lock: bool = False) -> HostedApplications:
+        """The active app when ``user`` is its sharing manager (``access.sharing_manager``), else 404.
+
+        The sharing rule: creator, project admin of the app's project, platform admin or maintainer; a named grant
+        never admits. ``lock`` takes the same lock order as ``managed_app`` and checks the rule again on the locked
+        row; read paths pass ``lock=False`` and take no lock.
+        """
+        manager = bindparam("manager_id", user.id, type_=Text)
+        query = select(HostedApplications).where(
+            HostedApplications.id == as_uuid(app_id),
+            HostedApplications.lifecycle_state == "active",
+            sharing_manager(HostedApplications.__table__, manager),
+        )
+        return await self._gated_app(query, lock=lock)
+
+    async def _gated_app(self, query: Select, *, lock: bool) -> HostedApplications:
+        """The app ``query`` selects, else 404; with ``lock`` the creator's quota row, then the re-checked app row."""
         app = (await self.session.execute(query)).scalar_one_or_none()
         if app is None:
             raise not_found()

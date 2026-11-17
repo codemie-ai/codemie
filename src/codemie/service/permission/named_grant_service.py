@@ -25,8 +25,9 @@ a caller that already holds them passes them (``Ability(user, grants=...)``).
 
 from __future__ import annotations
 
+from collections.abc import Collection, Iterable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
@@ -762,14 +763,15 @@ async def alist_shared_with(
 
 
 async def search_sharable_users(
-    session: AsyncSession, resource_type: ResourceType, query: str | None
+    session: AsyncSession, resource_type: ResourceType, query: str | None, exclude_ids: Collection[str] = ()
 ) -> list[dict[str, str | None]]:
     """Users the type may grant (its descriptor's ``recipient`` rule) matching the query, at most
-    SEARCH_RESULT_LIMIT (limit is in SQL): the people offered are the people a grant would accept."""
+    SEARCH_RESULT_LIMIT (limit is in SQL): the people offered are the people a grant would accept.
+    ``exclude_ids`` are left out in SQL, before the limit."""
+    condition = descriptor_for(resource_type).recipient(UserDB)
+    if exclude_ids:
+        condition = sa.and_(condition, UserDB.id.not_in(list(exclude_ids)))
     users = await user_repository.aquery_active_users(
-        session,
-        search=query or None,
-        limit=SEARCH_RESULT_LIMIT,
-        condition=descriptor_for(resource_type).recipient(UserDB),
+        session, search=query or None, limit=SEARCH_RESULT_LIMIT, condition=condition
     )
     return [{"id": u.id, "username": u.username, "email": u.email, "name": u.name, "picture": u.picture} for u in users]

@@ -37,9 +37,9 @@ READ = ["read"]
 # persona -> (app kwargs, user_abilities, can_share, can_moderate)
 CASES = {
     "creator": ({"shared": True}, ALL, True, False),
-    "project_admin": ({"shared": True}, ALL, False, False),
-    "platform_admin": ({"shared": True}, ALL, False, True),
-    "maintainer": ({"shared": True}, ALL, False, True),
+    "project_admin": ({"shared": True}, ALL, True, False),
+    "platform_admin": ({"shared": True}, ALL, True, True),
+    "maintainer": ({"shared": True}, ALL, True, True),
     "member": ({"shared": True}, READ, False, False),
     "outsider": ({"shared": True}, [], False, False),
     "service_account": ({"shared": True}, [], False, False),

@@ -20,7 +20,13 @@ from typing import Any
 
 import sqlalchemy as sa
 
-from codemie.core.hosted_applications.access import grant_recipient, grant_remover, is_owned_by, suspend_refuses
+from codemie.core.hosted_applications.access import (
+    grant_recipient,
+    is_sharing_manager,
+    orphan_grant_remover,
+    sharing_manager,
+    suspend_refuses,
+)
 from codemie.rest_api.models.hosted_application import HostedApplications
 from codemie.service.activity.activity_models import ActivityDomain, ActivityEntityType
 from codemie.service.permission.named_grant_types import NamedGrantDescriptor, ResolvedResource
@@ -29,8 +35,8 @@ from codemie.service.permission.named_grant_types import NamedGrantDescriptor, R
 def build_resolve_statement() -> sa.Select:
     """One SELECT of scalar subqueries on ``apps.id = :rid``: project, creator id and the removal right.
 
-    Without an app row (an orphan grant) project and creator are NULL and only the administrator branch of
-    ``grant_remover(None, actor)`` can hold.
+    Without an app row (an orphan grant) project and creator are NULL and only the administrator
+    branch (``orphan_grant_remover``) can hold; with one, the sharing rule decides.
     """
     apps = HostedApplications.__table__
     rid = sa.bindparam("rid", type_=apps.c.id.type)
@@ -38,9 +44,16 @@ def build_resolve_statement() -> sa.Select:
     by_id = apps.c.id == rid
     project = sa.select(apps.c.project).where(by_id).scalar_subquery()
     creator = sa.select(apps.c.created_by["id"].as_string()).where(by_id).scalar_subquery()
-    with_app = sa.exists(sa.select(apps.c.id).where(by_id, grant_remover(apps, actor)))
-    may_remove = sa.or_(grant_remover(None, actor), with_app)
+    with_app = sa.exists(sa.select(apps.c.id).where(by_id, sharing_manager(apps, actor)))
+    orphan = sa.and_(orphan_grant_remover(actor), ~sa.exists(sa.select(apps.c.id).where(by_id)))
+    may_remove = sa.or_(orphan, with_app)
     return sa.select(project.label("project"), creator.label("creator_id"), may_remove.label("may_remove"))
+
+
+MANAGERS_ONLY = (
+    "Only the app's managers (its creator, admins of its project, platform admins and maintainers) "
+    "can share it or manage its access"
+)
 
 
 def _resolved(row: Any) -> ResolvedResource:
@@ -68,9 +81,10 @@ def audit_attributes(app_id: Any) -> dict[str, Any]:
 
 
 def is_owner(app: Any, actor: Any) -> bool:
-    """The eligible creator; ``actor`` is the platform copy of the user (``access.platform_user``)."""
+    """The sharing rule (creator, project admin, platform admin, maintainer); ``actor`` is the platform copy of the
+    user (``access.platform_user``)."""
     created_by = getattr(app, "created_by", None)
-    return is_owned_by(created_by.id if created_by else None, actor)
+    return is_sharing_manager(created_by.id if created_by else None, app.project, actor)
 
 
 DESCRIPTOR = NamedGrantDescriptor(
@@ -83,6 +97,7 @@ DESCRIPTOR = NamedGrantDescriptor(
     aresolve=aresolve,
     before_grant=before_grant,
     is_owner=is_owner,
+    not_owner_message=MANAGERS_ONLY,
     audit_attributes=audit_attributes,
     recipient=grant_recipient,
 )

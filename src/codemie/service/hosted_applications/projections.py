@@ -51,7 +51,7 @@ def app_projection(app, user, *, grants=None, publisher=None, artifact_kind=None
             {"id": created_by.id, "username": created_by.username, "name": created_by.name} if created_by else None
         ),
         "user_abilities": [action.value for action in abilities],
-        "can_share": access.is_owned_by(created_by.id if created_by else None, user),
+        "can_share": access.is_sharing_manager(created_by.id if created_by else None, app.project, user),
         "can_moderate": bool(user.is_admin),
         "suspended": access.is_suspended(app),
         # The actions a suspension refuses right now, from the one backend list (``SUSPEND_GATED_ACTIONS``).

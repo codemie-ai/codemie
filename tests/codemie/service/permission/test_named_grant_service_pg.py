@@ -168,7 +168,9 @@ def test_timing_100_id_share(pg_session):
     from codemie.rest_api.security.user import User
 
     owner = User(id="timing-owner", username="timing-owner")
-    resource = SimpleNamespace(id=uuid4(), created_by=SimpleNamespace(id=owner.id), security_state="clear")
+    resource = SimpleNamespace(
+        id=uuid4(), created_by=SimpleNamespace(id=owner.id), security_state="clear", project="demo"
+    )
     svc.grant(
         pg_session,
         resource_type=ResourceType.HOSTED_APPLICATION,

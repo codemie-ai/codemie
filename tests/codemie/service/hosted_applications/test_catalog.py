@@ -34,7 +34,7 @@ from sqlalchemy.pool import StaticPool
 
 from codemie.core.hosted_applications.access import manageable
 from codemie.core.hosted_applications.errors import HostedApplicationError
-from codemie.repository.hosted_applications.repository import as_uuid, not_found
+from codemie.repository.hosted_applications.repository import HostedTransaction, as_uuid, not_found
 from codemie.rest_api.models.hosted_application import (
     HostedApplicationJobs as Job,
     HostedApplicationStorageAttempts as Attempt,
@@ -49,6 +49,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.hosted_applications import catalog as catalog_module
 from codemie.service.hosted_applications import runtime as runtime_module
 from codemie.service.hosted_applications.catalog import HostedApplicationCatalog, list_scope
+from codemie.service.hosted_applications.grant_descriptor import MANAGERS_ONLY
 from codemie.service.permission import named_grant_service, share_link_service
 
 TEAM = "team-a"
@@ -95,12 +96,17 @@ class FakeTx:
             raise not_found()
         return app
 
+    # The real sharing gate, its WHERE run on SQLite; the lock steps it calls are this fake's.
+    sharing_app = HostedTransaction.sharing_app
+    _gated_app = HostedTransaction._gated_app
+
     async def set_lock_timeout(self, milliseconds):
         """CR-014: too late for open; the timeout is a transaction option, set before its first statement."""
         raise AssertionError("open must bound its lock waits through repository.transaction(lock_timeout_ms=...)")
 
     async def lock_app(self, query):
         """The locking select, run plainly: SQLite has no FOR UPDATE."""
+        self.repository.events.append(("lock_app",))
         return (await self.session.execute(query.execution_options(populate_existing=True))).scalar_one_or_none()
 
 
@@ -172,6 +178,8 @@ async def people(engine):
         "member": ("u-member", {TEAM: False}, {}),
         "outsider": ("u-outsider", {OTHER: False}, {}),
         "admin": ("u-admin", {OTHER: False}, {"is_admin": True}),
+        "maintainer": ("u-maintainer", {OTHER: False}, {"is_maintainer": True}),
+        "oadmin": ("u-oadmin", {OTHER: True}, {}),
         "external": ("u-ext", {TEAM: False}, {"user_type": "external"}),
     }
     actors = {}
@@ -185,7 +193,7 @@ async def people(engine):
                     user_type=flags.get("user_type", "regular"),
                     is_active=True,
                     is_admin=flags.get("is_admin", False),
-                    is_maintainer=False,
+                    is_maintainer=flags.get("is_maintainer", False),
                     is_auditor=False,
                     auth_source="local",
                     email_verified=False,
@@ -207,6 +215,7 @@ async def people(engine):
             )
             # ENV=local forces is_admin on at construction; the persona decides here.
             user.is_admin = flags.get("is_admin", False)
+            user.is_maintainer = flags.get("is_maintainer", False)
             actors[name] = HostedActor(user, None)
     return actors
 
@@ -831,12 +840,16 @@ async def test_rows_the_share_writes_are_the_rows_the_grant_terms_read(catalog, 
     assert await names(catalog, people["outsider"], scope="shared") == ["Round trip"]
 
 
-class RecordingTx(FakeTx):
-    """Records ``managed_app`` locks so the share operations can be checked to run on the locked row."""
+# A locking sharing operation: the gate, then the creator's quota row, then the app row (the hosted lock order).
+LOCKED_SHARING = [("transaction", True), ("sharing_app", True), ("lock_quota", "u-creator"), ("lock_app",)]
 
-    async def managed_app(self, app_id, user, *, lock=False, states=("active",), action=Action.WRITE):
-        self.repository.events.append(("managed_app", lock))
-        return await super().managed_app(app_id, user, lock=lock, states=states, action=action)
+
+class RecordingTx(FakeTx):
+    """Records ``sharing_app`` calls so the share operations can be checked to run on the locked row."""
+
+    async def sharing_app(self, app_id, user, *, lock=False):
+        self.repository.events.append(("sharing_app", lock))
+        return await super().sharing_app(app_id, user, lock=lock)
 
 
 @pytest.fixture
@@ -867,9 +880,9 @@ def share_calls(repository, monkeypatch):
         calls.append(("list", resource_id))
         return [{"id": "u-outsider"}]
 
-    async def search(session, resource_type, query):
+    async def search(session, resource_type, query, exclude_ids=()):
         assert resource_type == ResourceType.HOSTED_APPLICATION
-        calls.append(("search", query))
+        calls.append(("search", (query, list(exclude_ids))))
         return [{"id": "u-member"}]
 
     monkeypatch.setattr(named_grant_service, "agrant", agrant)
@@ -880,12 +893,12 @@ def share_calls(repository, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_share_and_unshare_are_owner_only_on_the_locked_app(catalog, people, repository, share_calls):
+async def test_share_and_unshare_run_on_the_locked_app(catalog, people, repository, share_calls):
     app = await create(catalog, people["creator"])
     repository.events.clear()
     shared = await catalog.share(people["creator"], app["id"], ["u-outsider"])
     assert shared == {"shared_with": [{"id": "u-outsider"}]}
-    assert repository.events == [("transaction", True), ("managed_app", True)]
+    assert repository.events == LOCKED_SHARING
     kinds = [kind for kind, _ in share_calls]
     assert kinds == ["grant", "list"]
     assert share_calls[0][1]["project"] == TEAM and share_calls[0][1]["resource"].id == as_uuid(app["id"])
@@ -893,52 +906,206 @@ async def test_share_and_unshare_are_owner_only_on_the_locked_app(catalog, peopl
     assert share_calls[0][1]["owner"].id == "u-creator"
     await catalog.unshare(people["creator"], app["id"], ["u-outsider"])
     assert [kind for kind, _ in share_calls][2:] == ["revoke", "list"]
-    for operation in (catalog.share, catalog.unshare):
-        # A project admin manages the app but is not its owner; so does a platform admin.
-        for persona in ("padmin", "admin"):
-            share_calls.clear()
-            with pytest.raises(HostedApplicationError) as error:
-                await operation(people[persona], app["id"], ["u-outsider"])
-            assert (error.value.status, error.value.message) == (403, "Only the owner can share or revoke access")
-            assert share_calls == []
-    for persona in ("member", "outsider"):
-        with pytest.raises(HostedApplicationError) as error:
-            await catalog.share(people[persona], app["id"], ["u-member"])
-        assert error.value.status == 404
-    with pytest.raises(HostedApplicationError) as error:
-        await catalog.shared_with(people["padmin"], app["id"])
-    assert error.value.status == 403
-    with pytest.raises(HostedApplicationError) as error:
-        await catalog.sharable_users(people["padmin"], app["id"], "ab")
-    assert error.value.status == 403
     assert await catalog.shared_with(people["creator"], app["id"]) == {"shared_with": [{"id": "u-outsider"}]}
     assert await catalog.sharable_users(people["creator"], app["id"], "ab") == {"users": [{"id": "u-member"}]}
 
 
+MANAGERS = ("creator", "padmin", "admin", "maintainer")
+
+
 @pytest.mark.asyncio
-async def test_a_reader_who_cannot_manage_the_app_gets_403_on_every_share_operation(
-    catalog, people, engine, grants_on, share_calls
-):
+@pytest.mark.parametrize("persona", MANAGERS)
+async def test_people_search_excludes_the_creator_and_only_the_creator(catalog, people, share_calls, persona):
     app = await create(catalog, people["creator"])
-    await set_app(engine, app["id"], shared=True)
-    await grant_row(engine, app["id"], "u-outsider")
-    calls = (
-        lambda who: catalog.share(who, app["id"], ["u-x"]),
-        lambda who: catalog.unshare(who, app["id"], ["u-x"]),
-        lambda who: catalog.shared_with(who, app["id"]),
-        lambda who: catalog.sharable_users(who, app["id"], "ab"),
+    await catalog.sharable_users(people[persona], app["id"], "ab")
+    assert share_calls == [("search", ("ab", ["u-creator"]))]
+
+
+@pytest.mark.asyncio
+async def test_people_search_returns_20_others_when_the_creator_is_among_21_matches(catalog, people, engine):
+    app = await create(catalog, people["creator"])
+    async with engine.begin() as connection:
+        for number in range(14):
+            await connection.execute(
+                UserDB.__table__.insert().values(
+                    id=f"u-match-{number}",
+                    username=f"aaa{number:02}",
+                    email=f"aaa{number:02}@example.com",
+                    name=f"Aaa {number:02}",
+                    user_type="regular",
+                    is_active=True,
+                    is_admin=False,
+                    is_maintainer=False,
+                    is_auditor=False,
+                    auth_source="local",
+                    email_verified=False,
+                )
+            )
+    # The 7 eligible personas (the creator among them) and 14 more make 21 matches; the limit is 20.
+    found = (await catalog.sharable_users(people["padmin"], app["id"], "@example.com"))["users"]
+    ids = [user["id"] for user in found]
+    assert "u-creator" not in ids and len(ids) == 20
+
+
+@pytest.mark.asyncio
+async def test_a_manager_naming_the_creator_is_refused_and_nothing_is_written(catalog, people, share_calls):
+    app = await create(catalog, people["creator"])
+    with pytest.raises(HostedApplicationError) as refused:
+        await catalog.share(people["padmin"], app["id"], ["u-creator", "u-member"])
+    assert (refused.value.code, refused.value.message, refused.value.status) == (
+        "CREATOR_ALREADY_HAS_ACCESS",
+        "The app's creator already has access",
+        400,
     )
-    # A project member views the shared app; a grantee reads it through the named grant: both get 403, not 404.
-    for persona in ("member", "outsider"):
-        for call in calls:
-            with pytest.raises(HostedApplicationError) as error:
-                await call(people[persona])
-            assert (error.value.status, error.value.message) == (403, "Only the owner can share or revoke access")
     assert share_calls == []
-    # An unknown app stays 404.
+
+
+@pytest.mark.asyncio
+async def test_the_creator_naming_themselves_is_still_dropped_silently(catalog, people, share_calls):
+    app = await create(catalog, people["creator"])
+    await catalog.share(people["creator"], app["id"], ["u-creator", "u-member"])
+    assert [kind for kind, _ in share_calls] == ["grant", "list"]
+
+
+def another_manager(persona):
+    """A manager other than ``persona``, whose grant or link ``persona`` then manages."""
+    return "padmin" if persona == "creator" else "creator"
+
+
+def sharing_operations(catalog, app_id):
+    """Every sharing operation, by name, as ``call(actor)``."""
+    return {
+        "share": lambda who: catalog.share(who, app_id, ["u-member"]),
+        "unshare": lambda who: catalog.unshare(who, app_id, ["u-member"]),
+        "shared_with": lambda who: catalog.shared_with(who, app_id),
+        "sharable_users": lambda who: catalog.sharable_users(who, app_id, "ab"),
+        "get_link": lambda who: catalog.get_share_link(who, app_id),
+        "create_link": lambda who: catalog.create_share_link(who, app_id),
+        "revoke_link": lambda who: catalog.revoke_share_link(who, app_id),
+    }
+
+
+@pytest.fixture
+def activity(link_calls, monkeypatch):
+    """Link activity events as ``(event_type, actor_id)``."""
+    recorded = []
+
+    async def insert(items, session):
+        recorded.extend((item.event_type, item.actor_id) for item in items)
+
+    monkeypatch.setattr(share_link_service.activity_event_repository, "async_insert_many_strict", insert)
+    return recorded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persona", MANAGERS)
+async def test_every_manager_shares_and_manages_links(catalog, people, engine, share_calls, activity, persona):
+    manager, other = people[persona], people[another_manager(persona)]
+    me = manager.user.id
+    app = await create(catalog, people["creator"])
+    # Another manager shares the app and makes its link; this manager then manages both.
+    await catalog.share(other, app["id"], ["u-member"])
+    made = await catalog.create_share_link(other, app["id"])
+    share_calls.clear()
+    activity.clear()
+
+    assert await catalog.share(manager, app["id"], ["u-outsider"]) == {"shared_with": [{"id": "u-outsider"}]}
+    assert await catalog.unshare(manager, app["id"], ["u-member"]) == {"shared_with": [{"id": "u-outsider"}]}
+    assert await catalog.shared_with(manager, app["id"]) == {"shared_with": [{"id": "u-outsider"}]}
+    assert await catalog.sharable_users(manager, app["id"], "ab") == {"users": [{"id": "u-member"}]}
+    changes = [(kind, call["owner"].id) for kind, call in share_calls if kind in ("grant", "revoke")]
+    assert changes == [("grant", me), ("revoke", me)]
+
+    assert same_link(await catalog.get_share_link(manager, app["id"]), made)
+    assert await catalog.revoke_share_link(manager, app["id"]) == {"link": None}
+    created = await catalog.create_share_link(manager, app["id"])
+    assert created["link"]["id"] != made["link"]["id"]
+    assert activity == [
+        ("hosted_application.share_link.revoked", me),
+        ("hosted_application.share_link.created", me),
+    ]
+    async with AsyncSession(engine) as session:
+        revoked = await session.get(ShareLink, as_uuid(made["link"]["id"]))
+        fresh = await session.get(ShareLink, as_uuid(created["link"]["id"]))
+    assert revoked.revoked_by.id == me and fresh.created_by.id == me
+
+
+# case -> (persona, app columns, grant level for the persona or None, readable)
+NON_MANAGERS = {
+    "member": ("member", {"shared": True}, None, True),
+    "recipient_read": ("outsider", {}, Action.READ, True),
+    "recipient_write": ("outsider", {}, Action.WRITE, True),
+    "marketplace_viewer": ("outsider", {"is_global": True}, None, True),
+    "other_project_admin_on_a_published_app": ("oadmin", {"is_global": True}, None, True),
+    "other_project_admin_on_an_unshared_app": ("oadmin", {}, None, False),
+    "outsider": ("outsider", {}, None, False),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", list(NON_MANAGERS))
+@pytest.mark.parametrize("operation", list(sharing_operations(None, None)))
+async def test_non_managers_are_refused_on_every_sharing_operation(
+    catalog, people, engine, grants_on, share_calls, link_calls, case, operation
+):
+    events, removed = link_calls
+    persona, columns, level, can_read = NON_MANAGERS[case]
+    app = await create(catalog, people["creator"])
+    await catalog.create_share_link(people["creator"], app["id"])
+    if columns:
+        await set_app(engine, app["id"], **columns)
+    if level is not None:
+        await grant_row(engine, app["id"], people[persona].user.id, level)
+    share_calls.clear()
+    events.clear()
     with pytest.raises(HostedApplicationError) as error:
-        await catalog.share(people["member"], str(uuid4()), ["u-x"])
-    assert error.value.status == 404
+        await sharing_operations(catalog, app["id"])[operation](people[persona])
+    if can_read:
+        assert (error.value.status, error.value.message) == (403, MANAGERS_ONLY)
+    else:
+        assert error.value.status == 404
+    assert share_calls == [] and events == [] and removed == []
+
+
+GONE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+# case -> (persona, app columns, grant level for the persona or None, admitted by the sharing gate)
+SHARING_GATE = {
+    "creator": ("creator", {}, None, True),
+    "project_admin": ("padmin", {}, None, True),
+    "platform_admin": ("admin", {}, None, True),
+    "maintainer": ("maintainer", {}, None, True),
+    "recipient_read": ("outsider", {}, Action.READ, False),
+    "recipient_write": ("outsider", {}, Action.WRITE, False),
+    "member": ("member", {"shared": True}, None, False),
+    "marketplace_viewer": ("outsider", {"is_global": True}, None, False),
+    "other_project_admin": ("oadmin", {"is_global": True}, None, False),
+    "creator_on_a_purging_app": ("creator", {"lifecycle_state": "purging", "deleted_at": GONE}, None, False),
+    "project_admin_on_a_purging_app": ("padmin", {"lifecycle_state": "purging", "deleted_at": GONE}, None, False),
+    "platform_admin_on_a_purging_app": ("admin", {"lifecycle_state": "purging", "deleted_at": GONE}, None, False),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock", [False, True])
+@pytest.mark.parametrize("case", list(SHARING_GATE))
+async def test_the_real_sharing_gate_admits_only_sharing_managers_on_an_active_app(
+    catalog, people, engine, repository, grants_on, case, lock
+):
+    persona, columns, level, admitted = SHARING_GATE[case]
+    app = await create(catalog, people["creator"])
+    if columns:
+        await set_app(engine, app["id"], **columns)
+    if level is not None:
+        await grant_row(engine, app["id"], people[persona].user.id, level)
+    user = people[persona].user
+    async with repository.transaction(user, write=True) as tx:
+        if admitted:
+            assert (await tx.sharing_app(app["id"], user, lock=lock)).id == as_uuid(app["id"])
+        else:
+            with pytest.raises(HostedApplicationError) as error:
+                await tx.sharing_app(app["id"], user, lock=lock)
+            assert error.value.status == 404
 
 
 REAL_AGRANT = named_grant_service.agrant
@@ -1009,8 +1176,8 @@ async def test_owner_creates_one_link_and_reads_it_back(catalog, people, reposit
     assert await catalog.get_share_link(people["creator"], app["id"]) == {"link": None}
     repository.events.clear()
     first = await catalog.create_share_link(people["creator"], app["id"])
+    assert repository.events == LOCKED_SHARING
     second = await catalog.create_share_link(people["creator"], app["id"])
-    assert repository.events[:2] == [("transaction", True), ("managed_app", True)]
     link = first["link"]
     assert set(link) == {"id", "token", "created_at"} and isinstance(link["id"], str) and link["token"]
     assert same_link(second, first)
@@ -1042,7 +1209,7 @@ async def test_revoke_tombstones_then_removes_that_links_grants(catalog, people,
     share_calls.clear()
     repository.events.clear()
     assert await catalog.revoke_share_link(people["creator"], app["id"]) == {"link": None}
-    assert repository.events == [("transaction", True), ("managed_app", True)]
+    assert repository.events == LOCKED_SHARING
     assert events == ["hosted_application.share_link.created", "hosted_application.share_link.revoked"]
     assert [(r[0], r[1], r[2], str(r[3]), r[4]) for r in removed] == [
         ("u-creator", ResourceType.HOSTED_APPLICATION, as_uuid(app["id"]), created["link"]["id"], TEAM)
@@ -1061,25 +1228,6 @@ async def test_revoke_without_a_live_link_is_a_no_op(catalog, people, share_call
 
 
 @pytest.mark.asyncio
-async def test_link_operations_are_owner_only(catalog, people, share_calls, link_calls):
-    events, removed = link_calls
-    app = await create(catalog, people["creator"])
-    operations = (catalog.get_share_link, catalog.create_share_link, catalog.revoke_share_link)
-    for operation in operations:
-        revoke = operation == catalog.revoke_share_link
-        message = catalog_module.NOT_LINK_REVOKER if revoke else "Only the owner can share or revoke access"
-        for persona in ("padmin",) if revoke else ("padmin", "admin"):
-            with pytest.raises(HostedApplicationError) as error:
-                await operation(people[persona], app["id"])
-            assert (error.value.status, error.value.message) == (403, message)
-        for persona in ("member", "outsider"):
-            with pytest.raises(HostedApplicationError) as error:
-                await operation(people[persona], app["id"])
-            assert error.value.status == 404
-    assert events == [] and removed == []
-
-
-@pytest.mark.asyncio
 async def test_a_platform_admin_revokes_a_live_link_without_suspending_the_app(
     catalog, people, engine, repository, link_calls
 ):
@@ -1089,7 +1237,7 @@ async def test_a_platform_admin_revokes_a_live_link_without_suspending_the_app(
     created = await catalog.create_share_link(people["creator"], app["id"])
     repository.events.clear()
     assert await catalog.revoke_share_link(people["admin"], app["id"]) == {"link": None}
-    assert repository.events == [("transaction", True), ("managed_app", True)]
+    assert repository.events == LOCKED_SHARING
     assert events[-1] == "hosted_application.share_link.revoked"
     assert [(r[0], str(r[3])) for r in removed] == [("u-admin", created["link"]["id"])]
     async with AsyncSession(engine) as session:
@@ -1097,23 +1245,54 @@ async def test_a_platform_admin_revokes_a_live_link_without_suspending_the_app(
         row = await session.get(App, as_uuid(app["id"]))
     assert link.revoked_at is not None and link.revoked_by.id == "u-admin"
     assert row.security_state == "clear"
-    # The owner sees no live link; a project admin who is not the owner still may not revoke it.
+    # The owner sees no live link either.
     assert await catalog.get_share_link(people["creator"], app["id"]) == {"link": None}
 
 
 @pytest.mark.asyncio
-async def test_an_admin_may_revoke_a_link_of_a_suspended_app_but_not_create_or_read_one(
-    catalog, people, engine, link_calls
-):
+@pytest.mark.parametrize("persona", MANAGERS)
+async def test_every_manager_on_a_suspended_app(catalog, people, engine, share_calls, link_calls, monkeypatch, persona):
+    # The shared agrant runs the descriptor's before_grant, so the real one answers the suspended share.
+    monkeypatch.setattr(named_grant_service, "agrant", REAL_AGRANT)
+    manager = people[persona]
+    app = await create(catalog, people["creator"])
+    made = await catalog.create_share_link(people[another_manager(persona)], app["id"])
+    await set_app(engine, app["id"], security_state="suspended")
+    for refused in (
+        lambda: catalog.share(manager, app["id"], ["u-member"]),
+        lambda: catalog.create_share_link(manager, app["id"]),
+    ):
+        with pytest.raises(HostedApplicationError) as error:
+            await refused()
+        assert (error.value.code, error.value.status) == ("APP_SUSPENDED", 409)
+    assert await catalog.unshare(manager, app["id"], ["u-member"]) == {"shared_with": [{"id": "u-outsider"}]}
+    assert await catalog.shared_with(manager, app["id"]) == {"shared_with": [{"id": "u-outsider"}]}
+    assert same_link(await catalog.get_share_link(manager, app["id"]), made)
+    assert await catalog.revoke_share_link(manager, app["id"]) == {"link": None}
+    assert await catalog.get_share_link(manager, app["id"]) == {"link": None}
+
+
+@pytest.mark.asyncio
+async def test_read_sharing_paths_take_no_lock(catalog, people, repository, share_calls, link_calls):
     app = await create(catalog, people["creator"])
     await catalog.create_share_link(people["creator"], app["id"])
-    await set_app(engine, app["id"], security_state="suspended")
-    for operation in (catalog.get_share_link, catalog.create_share_link):
-        with pytest.raises(HostedApplicationError) as error:
-            await operation(people["admin"], app["id"])
-        assert error.value.status == 403
-    assert await catalog.revoke_share_link(people["admin"], app["id"]) == {"link": None}
-    assert await catalog.get_share_link(people["creator"], app["id"]) == {"link": None}
+    for read in (
+        lambda: catalog.shared_with(people["padmin"], app["id"]),
+        lambda: catalog.sharable_users(people["padmin"], app["id"], "ab"),
+        lambda: catalog.get_share_link(people["padmin"], app["id"]),
+    ):
+        repository.events.clear()
+        await read()
+        assert repository.events == [("transaction", True), ("sharing_app", False)]
+    for write in (
+        lambda: catalog.share(people["padmin"], app["id"], ["u-member"]),
+        lambda: catalog.unshare(people["padmin"], app["id"], ["u-member"]),
+        lambda: catalog.create_share_link(people["padmin"], app["id"]),
+        lambda: catalog.revoke_share_link(people["padmin"], app["id"]),
+    ):
+        repository.events.clear()
+        await write()
+        assert repository.events == LOCKED_SHARING
 
 
 @pytest.mark.asyncio

@@ -39,9 +39,10 @@ from codemie.repository.hosted_applications.repository import HostedTransaction
 from codemie.rest_api.models.hosted_application import HostedApplications as App
 from codemie.rest_api.models.hosted_application_requests import VersionSelection
 from codemie.rest_api.models.permission import Permission, ResourceType, ShareLink
-from codemie.rest_api.models.user_management import UserDB
+from codemie.rest_api.models.user_management import UserDB, UserProject
 from codemie.rest_api.security.user import User
 from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.service.hosted_applications.grant_descriptor import aresolve
 from codemie.service.permission import named_grant_service, share_link_service
 from tests.codemie.service.hosted_applications.test_worker import queued
 
@@ -294,6 +295,38 @@ async def test_a_platform_admin_deleting_one_permission_removes_a_single_link_gr
     assert counts(world) == {GRANT_REMOVED: 1}
     assert world.events[0].attributes["principal_id"] == SECOND
     assert (await link_rows(world, app_id))[0].revoked_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_project_admin_may_delete_a_single_grant_and_a_member_may_not(world, identity):
+    owner = identity()
+    app_id, _ = await active_app(world, owner)
+    link = await link_of(world, owner, app_id)
+    await open_link(world, identity(FIRST), link["token"])
+    async with world.engine.begin() as connection:
+        await connection.execute(
+            UserProject.__table__.update().where(UserProject.__table__.c.user_id == THIRD).values(is_project_admin=True)
+        )
+        found = await connection.execute(
+            select(Permission.__table__.c.id).where(
+                Permission.__table__.c.resource_id == UUID(app_id), Permission.__table__.c.principal_id == FIRST
+            )
+        )
+        permission_id = found.scalar_one()
+    admin = User(id=THIRD, username=THIRD, name=THIRD)
+    admin.is_admin = False  # ENV=local forces is_admin on at construction
+    member = User(id=SECOND, username=SECOND, name=SECOND)
+    member.is_admin = False
+    world.events.clear()
+
+    async with AsyncSession(world.engine, expire_on_commit=False) as session, session.begin():
+        assert (await aresolve(session, UUID(app_id), member)).may_remove is False
+        assert (await aresolve(session, UUID(app_id), admin)).may_remove is True
+        permission = await session.get(Permission, permission_id)
+        await named_grant_service.arevoke_permission(admin, permission, session, "demo")
+
+    assert await rows(world, app_id) == {}
+    assert counts(world) == {GRANT_REMOVED: 1}
 
 
 @pytest.mark.asyncio
