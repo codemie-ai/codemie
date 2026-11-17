@@ -516,6 +516,31 @@ class WebhookService:
         return True
 
     @classmethod
+    def _reject_project_mismatch(cls, setting: Settings, resource_type: str, resource_id: str, detail: str):
+        """Log and meter a webhook whose target lives in another project, then answer 401."""
+        webhook_id = setting.credential("webhook_id")
+        logger.error(
+            "Webhook invocation refused: %s '%s' does not belong to the webhook project. "
+            "Webhook: '%s', WebhookID: '%s', Project: '%s'",
+            resource_type,
+            resource_id,
+            setting.alias,
+            webhook_id,
+            setting.project_name,
+        )
+        WebhookMonitoringService.send_webhook_invocation_metric(
+            webhook_id=webhook_id,
+            project_name=setting.project_name,
+            user_id=setting.user_id,
+            success=False,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            webhook_alias=setting.alias,
+            additional_attributes={"error_cause": "project_mismatch"},
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+
+    @classmethod
     def handle_assistant(
         cls, assistant_id: str, raw_payload: bytes, background_tasks: BackgroundTasks, setting: Settings
     ):
@@ -526,9 +551,11 @@ class WebhookService:
                 status_code=status.HTTP_404_NOT_FOUND, detail=cls.ASSISTANT_NOT_FOUND.format(assistant_id)
             )
         if assistant.project != setting.project_name:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Assistant '{assistant_id}' does not belong to the webhook project '{setting.project_name}'.",
+            cls._reject_project_mismatch(
+                setting,
+                ResourceType.ASSISTANT.value,
+                assistant_id,
+                f"Assistant '{assistant_id}' does not belong to the webhook project '{setting.project_name}'.",
             )
 
         background_tasks.add_task(invoke_assistant, assistant_id, setting.user_id, assistant_id, formatted_payload)
@@ -546,9 +573,11 @@ class WebhookService:
                 status_code=status.HTTP_404_NOT_FOUND, detail=cls.WORKFLOW_NOT_FOUND.format(workflow_id)
             )
         if workflow.project != setting.project_name:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Workflow '{workflow_id}' does not belong to the webhook project '{setting.project_name}'.",
+            cls._reject_project_mismatch(
+                setting,
+                ResourceType.WORKFLOW.value,
+                workflow_id,
+                f"Workflow '{workflow_id}' does not belong to the webhook project '{setting.project_name}'.",
             )
         user = User(id=setting.user_id)
 
@@ -574,9 +603,11 @@ class WebhookService:
                 detail=f"Datasource '{resource_id}' is missing creator information.",
             )
         if datasource.project_name != setting.project_name:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Datasource '{resource_id}' project {datasource.project_name} name does not belong"
+            cls._reject_project_mismatch(
+                setting,
+                ResourceType.DATASOURCE.value,
+                resource_id,
+                f"Datasource '{resource_id}' project {datasource.project_name} name does not belong"
                 + f" to the webhook project '{setting.project_name}'.",
             )
 

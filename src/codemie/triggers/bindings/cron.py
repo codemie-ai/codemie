@@ -32,6 +32,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from codemie.configs import logger, config
 from codemie.configs.llm_provider_availability import core_availability
 from codemie.core.constants import CodeIndexType
+from codemie.triggers.bindings import cron_project_guard as project_guard
 from codemie.triggers.bindings.cron_helpers import normalize_day_of_week
 from codemie.triggers.bindings.cron_stagger import RESOURCE_TYPE_DATASOURCE, stagger_cron
 from codemie.core.models import GitRepo, SVNRepo
@@ -64,6 +65,7 @@ from codemie.triggers.bindings.utils import (
     validate_assistant,
     validate_datasource,
 )
+from codemie.triggers.bindings.webhook import ResourceType
 from codemie.triggers.trigger_exceptions import DatasourceNotValidated, NotImplementedDatasource
 from codemie.triggers.trigger_models import (
     AzureDevOpsWikiReindexTask,
@@ -135,6 +137,14 @@ async def _tracked_run(actor_fn, scheduler_id: str, **kwargs):
     if _skipped_for_inactive_owner(repo, run, started_at, scheduler_id, kwargs.get("user_id")):
         return None
 
+    # Each scheduled job targets exactly one of these: an assistant job sets assistant_id, a workflow job workflow_id.
+    if kwargs.get("assistant_id"):
+        resource_type, resource_id = ResourceType.ASSISTANT.value, kwargs["assistant_id"]
+    else:
+        resource_type, resource_id = ResourceType.WORKFLOW.value, kwargs.get("workflow_id")
+    if project_guard.skipped_for_project_mismatch(repo, run, started_at, resource_type, resource_id):
+        return None
+
     try:
         # CR-003: capture retval so conversation_id and resource_execution_id can be persisted
         retval = await actor_fn(**kwargs)
@@ -200,13 +210,20 @@ def _with_owner_resolved_now(payload, owner_id: str):
     return None if owner is None else payload.model_copy(update={"user": owner})
 
 
+def _payload_datasource_id(payload) -> str | None:
+    """Id of the datasource an untracked reindex payload targets, or None."""
+    return getattr(getattr(payload, "index_info", None), "id", None)
+
+
 def _run_unless_owner_inactive(actor_fn, scheduler_id: str, payload):
-    """Run an untracked datasource actor as its owner is now, unless the owner is not active."""
+    """Run an untracked datasource actor as its owner is now, unless owner is inactive or target left the project."""
     if owner_id := _owner_id(payload):
         payload = _with_owner_resolved_now(payload, owner_id)
         if payload is None:
             logger.warning("Skipped scheduler %s: owner user_id=%s is not active", scheduler_id, owner_id)
             return None
+    if project_guard.project_mismatch(scheduler_id, ResourceType.DATASOURCE.value, _payload_datasource_id(payload)):
+        return None
     return actor_fn(payload=payload)
 
 
@@ -263,8 +280,13 @@ def _tracked_run_sync(actor_fn, scheduler_id: str, resource_id: str | None = Non
         payload = _with_owner_resolved_now(kwargs["payload"], owner_id)
         if payload is None:
             _record_inactive_owner_skip(repo, run, started_at, scheduler_id, owner_id)
-            return None
+            return
         kwargs["payload"] = payload
+
+    if project_guard.skipped_for_project_mismatch(
+        repo, run, started_at, ResourceType.DATASOURCE.value, _payload_datasource_id(kwargs.get("payload"))
+    ):
+        return
 
     try:
         outcome = actor_fn(**kwargs)

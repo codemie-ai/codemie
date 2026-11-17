@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-11-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 6,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Project-isolation (tenant boundary) check on scheduler and webhook trigger paths; cron_project_guard.project_mismatch fails closed on any lookup error, reads fresh per run (no cache), and the webhook path rejects with 401 plus metric. Security-sensitive, so bumped from M to L." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: security/isolation requirement (project boundary enforcement for triggers)"
+  ],
+  "split_recommendation": null
+}

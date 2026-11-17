@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "branch": "epmcdme-13973",
+  "head": "afd186c81773cfedb196e180a255bf9fa790e5c6",
+  "runner": "poetry",
+  "started_at": "2026-11-09T07:30:27.660572+00:00",
+  "completed_at": "2026-11-09T07:30:27.660572+00:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1600,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9463,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1215,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8641,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 217534,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "26 failed, 29181 passed; none in tests/codemie/triggers; failures in customer_config, cli_analytics live_summary_skill_names, marketplace_management, spend attribution, usage_attribution analysis_service, code_executor filesystem_policy (OpenBLAS RLIMIT_NPROC thread init errors, missing 'scope' arg in get_skill_names_by_session)"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 151705,
+      "command": "make sonar-local",
+      "exit_code": 2,
+      "notes": "Run with SONAR_SKIP_TESTS=1 (as pre-push hook does). Server quality gate FAILED for branch epmcdme-13973; hotspot detail fetch returned 403."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "notes": "Change does not touch src/codemie/repository/cli_analytics/postgres/"
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "notes": "Coverage not requested"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Not opening an MR in this run"
+    },
+    {
+      "id": "pre-commit-ruff-license",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "scripts/git-hooks/pre_commit.sh",
+      "notes": "Covered by lint and license gates"
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "scripts/git-hooks/validate_secrets.sh",
+      "notes": "Staged-only variant; make gitleaks scanned full tree and passed"
+    },
+    {
+      "id": "ci",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml",
+      "notes": "Only pre-ci-guard wait on external contexts (ci-pipeline, compliance-report); no runnable local checks"
+    }
+  ],
+  "failures": {
+    "unit": "tests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:679: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(mcp_config.config, config_id=config_id)\n\ntests/codemie/service/test_mcp_config_service_clone.py::test_invalid_auth_config_raises_422\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:388: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/rest_api/routers/test_permission.py::test_create_permission_unprocessable_entity\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/rest_api/routers/permission.py:63: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise_unprocessable_entity(action=\"create\", resource=\"permission\", exc=e)\n\ntests/codemie/rest_api/routers/test_permission.py::test_delete_permission_unprocessable_entity\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/rest_api/routers/permission.py:79: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise_unprocessable_entity(action=\"delete\", resource=\"permission\", exc=e)\n\ntests/codemie/rest_api/routers/test_project_settings.py::test_create_git_integrity_error_maps_to_generic_422\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/rest_api/routers/project_settings.py:130: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise _map_integrity_error(request, e) from e\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_session_unions_dispatch_and_session_skills\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_dispatch_long_after_the_last_dimension_hook_is_still_classified\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_list_names_equal_classifier_input\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_dispatch_far_before_the_session_start_is_outside_the_lower_bound\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_a_session_without_started_at_keeps_its_dispatch_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_a_slash_command_row_alone_classifies_a_session_without_summary_or_dispatch\nFAILED tests/codemie/configs/test_customer_config.py::TestCustomerConfig::test_get_enabled_components\nFAILED tests/codemie/configs/test_customer_config.py::TestRuntimeFeatures::test_disabled_runtime_features_excluded_like_yaml\nFAILED tests/codemie/configs/test_customer_config.py::TestRuntimeFeatures::test_runtime_features_enterprise_installed\nFAILED tests/codemie/configs/test_customer_config.py::TestRuntimeFeatures::test_runtime_features_enterprise_not_installed\nFAILED tests/codemie/configs/test_customer_config.py::TestRuntimeFeatures::test_runtime_features_override_yaml\nFAILED tests/codemie/service/marketplace_management/test_indexing_reliability.py::test_published_assistants_are_all_indexed\nFAILED tests/codemie/service/marketplace_management/test_llm_assessment_service.py::test_model_options_respect_what_the_model_declares\nFAILED tests/codemie/service/spend/test_attribution.py::TestTheEnumsAndComposersHaveNotDrifted::test_the_mirrored_project_composer_matches_its_source\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_classification_overrides_reuse_the_cached_inputs\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_over_the_limit_the_last_good_analysis_answers_with_the_time_to_wait\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_last_good_is_kept_a_day_only_for_standard_periods_with_default_settings\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_failure_serves_the_last_good_analysis\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_refresh_drops_the_cache_at_most_once_a_minute\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_evidence_is_read_once_for_every_period_ending_at_the_same_time\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_evidence_is_reused_for_the_rest_of_the_hour\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_short_periods_reuse_only_the_evidence_of_their_quarter_hour\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_cache_lifetimes\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_matplotlib_writes_single_and_multipage_pdf\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\n= 26 failed, 29181 passed, 663 skipped, 5 xfailed, 412 warnings in 211.83s (0:03:31) =\nmake: *** [Makefile:31: test] Error 1\n",
+    "sonar": "09:29:23.510 INFO  Miss the cache for 0 out of 0\n09:29:23.510 INFO  Sensor JavaScript inside YAML analysis [javascript] (done) | time=8ms\n09:29:23.511 INFO  Sensor CSS Rules [javascript]\n09:29:23.514 INFO  No CSS, PHP, HTML or VueJS files are found in the project. CSS analysis is skipped.\n09:29:23.514 INFO  Sensor CSS Rules [javascript] (done) | time=2ms\n09:29:23.514 INFO  Sensor Ansible Lint Sensor [ansible]\n09:29:23.514 INFO  No active rules found for this plugin, skipping.\n09:29:23.514 INFO  Sensor Ansible Lint Sensor [ansible] (done) | time=1ms\n09:29:23.514 INFO  Sensor YAML Sensor [yaml]\n09:29:23.741 INFO  Sensor YAML Sensor [yaml] (done) | time=227ms\n09:29:23.741 INFO  Sensor IaC Docker Sensor [iac]\n09:29:23.767 INFO  0 source files to be analyzed\n09:29:23.767 INFO  0/0 source files have been analyzed\n09:29:23.767 INFO  Sensor IaC Docker Sensor [iac] (done) | time=26ms\n09:29:23.767 INFO  Sensor TextAndSecretsSensor [text]\n09:29:23.767 INFO  Available processors: 14\n09:29:23.767 INFO  Using 14 threads for analysis.\n09:29:24.064 INFO  Using git CLI to retrieve untracked files\n09:29:24.096 INFO  Analyzing language associated files and files included via \"sonar.text.inclusions\" that are tracked by git\n09:29:24.334 INFO  2841 source files to be analyzed\n09:29:25.671 INFO  2841/2841 source files have been analyzed\n09:29:25.673 INFO  Sensor TextAndSecretsSensor [text] (done) | time=1906ms\n09:29:25.676 INFO  ------------- Run sensors on project\n09:29:25.783 INFO  Sensor Zero Coverage Sensor\n09:29:25.877 INFO  Sensor Zero Coverage Sensor (done) | time=94ms\n09:29:25.878 INFO  ------------- Gather SCA dependencies on project\n09:29:25.879 INFO  Dependency analysis skipped\n09:29:25.906 INFO  SCM Publisher SCM provider for this project is: git\n09:29:25.907 INFO  SCM Publisher 2113 source files to be analyzed\n09:29:28.416 INFO  SCM Publisher 2113/2113 source files have been analyzed (done) | time=2507ms\n09:29:28.604 INFO  CPD Executor 122 files had no CPD blocks\n09:29:28.604 INFO  CPD Executor Calculating CPD for 1062 files\n09:29:28.908 INFO  CPD Executor CPD calculation finished (done) | time=304ms\n09:29:28.936 INFO  SCM revision ID 'afd186c81773cfedb196e180a255bf9fa790e5c6'\n09:29:29.555 INFO  Load New Code definition\n09:29:29.627 INFO  Load New Code definition (done) | time=73ms\n09:29:29.627 INFO  SCM writing changed lines\n09:29:29.658 INFO  Merge base sha1: 7fbe246ee1b8bef6bc7bf494d8f0ea5a32e16c95\n09:29:32.207 INFO  SCM writing changed lines (done) | time=2579ms\n09:29:32.285 INFO  Analysis report generated in 3283ms, dir size=70.7 MB\n09:29:34.908 INFO  Analysis report compressed in 2622ms, zip size=33.2 MB\n09:29:36.852 INFO  Analysis report uploaded in 1944ms\n09:29:36.854 INFO  ------------- Check Quality Gate status\n09:29:36.854 INFO  Waiting for the analysis report to be processed (max 300s)\n09:30:12.716 ERROR QUALITY GATE STATUS: FAILED - View details on https://sonar.core.kuberocketci.io/dashboard?id=codemie&branch=epmcdme-13973\n09:30:13.163 INFO  EXECUTION FAILURE\n09:30:13.164 INFO  Total time: 2:29.936s\n[sonar-local] Failed to fetch Sonar details after scan failure: Sonar API request failed (403) for /api/hotspots/search.\n[sonar-local] sonar-scanner exited with code 3\nmake: *** [Makefile:93: sonar-local] Error 1\n"
+  }
+}

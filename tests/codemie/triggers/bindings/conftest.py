@@ -29,6 +29,13 @@ def _trigger_owner_active():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _scheduler_target_in_project():
+    """Schedulers check their target still lives in the scheduler's project; these tests have no Settings row."""
+    with patch("codemie.triggers.bindings.cron_project_guard.project_mismatch", return_value=False):
+        yield
+
+
 def _mr_payload(action: str, state: str = "opened", **attr_overrides) -> dict:
     """Build a GitLab merge_request webhook payload for the given action.
 
