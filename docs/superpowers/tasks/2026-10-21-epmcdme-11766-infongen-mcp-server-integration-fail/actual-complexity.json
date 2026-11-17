@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-10-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 6,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Credential handling: inline credential_values are used as env only on the test and tool-fetch paths via an allow_inline_credentials flag (default False) threaded through MCPToolkitService.get_mcp_server_tools -> _collect_server_results -> _process_single_server_for_tools -> _process_single_mcp_server. The existing threading pattern does not cover the secret-handling aspect (restriction to required_env_vars, never logged or persisted), so Technical Risk was bumped to L. The diff also adds edge/error-path tests with no existing parameterized template." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk set to L: secret/credential handling (inline credential_values restricted to required_env_vars, never logged or persisted) not covered by the closest existing pattern"
+  ],
+  "split_recommendation": null
+}

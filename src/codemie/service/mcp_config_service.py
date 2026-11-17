@@ -59,6 +59,7 @@ from codemie.service.mcp.mcp_tester import (
     RESTRICTED_MODE_CATEGORY,
     MCPServerTester,
 )
+from codemie.service.mcp.models import missing_required_env_vars
 
 
 # Constants for error messages
@@ -495,16 +496,9 @@ class MCPConfigService:
     @classmethod
     def _missing_required_env_vars(cls, mcp_config: MCPConfig, setting) -> list[str]:
         """Names of required env vars provided neither by config.env literals nor by the integration (keys only)."""
-        provided = {
-            k
-            for k, v in ((mcp_config.config.env or {}).items() if mcp_config.config else [])
-            if not _is_missing_required_value(v)
-        }
-        if setting is not None:
-            provided |= {
-                cred.key for cred in setting.credential_values or [] if not _is_missing_required_value(cred.value)
-            }
-        return [v.name for v in mcp_config.required_env_vars or [] if v.required and v.name not in provided]
+        config_env = (mcp_config.config.env or {}) if mcp_config.config else {}
+        setting_env = {cred.key: cred.value for cred in setting.credential_values or []} if setting is not None else {}
+        return missing_required_env_vars(mcp_config.required_env_vars, config_env, setting_env)
 
     @classmethod
     def test(cls, config_id: str, user: User, settings_id: str | None = None) -> MCPConfigTestResponse:

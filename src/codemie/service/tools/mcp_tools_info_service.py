@@ -17,6 +17,7 @@ from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.security.user import User
 from codemie.configs import logger
+from codemie.service.mcp.models import MCPMissingCredentialsError
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 
 
@@ -60,6 +61,7 @@ class MCPToolsInfoService:
                 user_id=user.id,
                 project_name=project_name,
                 mcp_server_single_usage=True,
+                allow_inline_credentials=True,
             )
 
             if not tools:
@@ -92,6 +94,11 @@ class MCPToolsInfoService:
 
         except MCPToolsInfoServiceError:
             raise
+        except MCPMissingCredentialsError as e:
+            # Variable names are not secrets; the server was never contacted.
+            raise MCPToolsInfoServiceError(
+                str(e), f"Set a value for each listed variable of '{mcp_server_config.name}' and try again."
+            ) from e
         except BrokerAuthRequiredException:
             raise
         except MCPAuthenticationRequiredException:

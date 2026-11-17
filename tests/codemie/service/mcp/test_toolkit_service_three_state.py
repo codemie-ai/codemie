@@ -20,14 +20,18 @@ Per-user selection for a non-pinned MCP server (chat):
 - Explicit integration (real UUID): alias skipped, the chosen integration is applied by id.
 """
 
-from unittest.mock import patch
+import logging
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from codemie_tools.base.models import CredentialTypes
 
 from codemie.core.models import ToolConfig
 from codemie.rest_api.models.assistant import MCPServerDetails
-from codemie.rest_api.models.settings import SettingsBase
-from codemie.service.mcp.models import MCPServerConfig
+from codemie.rest_api.models.settings import CredentialValues, SettingsBase
+from codemie.service.mcp.models import MCPExecutionContext, MCPMissingCredentialsError, MCPServerConfig
 from codemie.service.mcp.toolkit_service import (
     MCP_TOOL_CONFIG_PREFIX,
     MCPToolkitService,
@@ -239,3 +243,346 @@ def test_default_absent_slot_applies_no_override():
     access.assert_not_called()
     resolve.assert_not_called()
     assert server_config.env == {"BASE": "1"}
+
+
+# --- inline credentials (test / tool-fetch) --------------------------------------------------
+
+_FIND_BY_ID = "codemie.rest_api.models.mcp_config.MCPConfig.find_by_id"
+_SECRET = "s3cr3t-value"
+
+
+def _inline_server(values, *, settings_id=None, config_id="cfg", custom=False, alias=None) -> MCPServerDetails:
+    settings = SettingsBase(
+        id=settings_id,
+        project_name="proj-a",
+        credential_type=CredentialTypes.ENVIRONMENT_VARS,
+        user_id="author",
+        credential_values=[CredentialValues(key=k, value=v) for k, v in values.items()],
+    )
+    return MCPServerDetails(
+        name="srv",
+        settings=settings,
+        mcp_config_id=config_id,
+        use_custom_config=custom,
+        integration_alias=alias,
+    )
+
+
+def _entry(*names: str):
+    return SimpleNamespace(required_env_vars=[SimpleNamespace(name=n) for n in names])
+
+
+def _resolve_inline(server, entry, **kwargs):
+    with (
+        patch(_FIND_BY_ID, return_value=entry),
+        patch.object(MCPToolkitService, "_resolve_credentials_by_id", return_value={"BYID": "x"}) as by_id,
+        patch("codemie.service.settings.settings.SettingsService.retrieve_setting") as retrieve,
+    ):
+        result = MCPToolkitService._resolve_credentials_with_priority(
+            server, "user", "proj", allow_inline_credentials=True, **kwargs
+        )
+    return result, by_id, retrieve
+
+
+def test_inline_returns_only_declared_names():
+    server = _inline_server({"A": "a", "B": "b"})
+    result, by_id, retrieve = _resolve_inline(server, _entry("A"))
+    assert result == {"A": "a"}
+    by_id.assert_not_called()
+    retrieve.assert_not_called()
+
+
+def test_inline_allowed_names_match_case_sensitively():
+    server = _inline_server({"a": "lower", "A": "upper"})
+    result, _, _ = _resolve_inline(server, _entry("A"))
+    assert result == {"A": "upper"}
+
+
+def test_inline_ignored_for_custom_config():
+    result, by_id, _ = _resolve_inline(_inline_server({"A": "a"}, custom=True), _entry("A"))
+    assert result == {}
+    by_id.assert_not_called()
+
+
+def test_inline_ignored_without_config_id():
+    result, by_id, _ = _resolve_inline(_inline_server({"A": "a"}, config_id=None), _entry("A"))
+    assert result == {}
+    by_id.assert_not_called()
+
+
+def test_inline_ignored_when_entry_has_no_required_env_vars():
+    result, by_id, _ = _resolve_inline(_inline_server({"A": "a"}), _entry())
+    assert result == {}
+    by_id.assert_not_called()
+
+
+def test_inline_ignored_when_entry_missing():
+    result, by_id, _ = _resolve_inline(_inline_server({"A": "a"}), None)
+    assert result == {}
+    by_id.assert_not_called()
+
+
+def test_inline_empty_values_return_empty_without_by_id():
+    result, by_id, _ = _resolve_inline(_inline_server({}), _entry("A"))
+    assert result == {}
+    by_id.assert_not_called()
+
+
+def test_settings_id_wins_over_inline():
+    server = _inline_server({"A": "a"}, settings_id="set-1")
+    result, by_id, _ = _resolve_inline(server, _entry("A"))
+    by_id.assert_called_once()
+    assert by_id.call_args.kwargs["integration_id"] == "set-1"
+    assert result == {"BYID": "x"}
+
+
+def test_flag_false_keeps_current_behaviour():
+    server = _inline_server({"A": "a"})
+    with (
+        patch(_FIND_BY_ID, return_value=_entry("A")),
+        patch.object(MCPToolkitService, "_resolve_credentials_by_id", return_value={"BYID": "x"}) as by_id,
+    ):
+        result = MCPToolkitService._resolve_credentials_with_priority(server, "user", "proj")
+    by_id.assert_called_once()
+    assert result == {"BYID": "x"}
+
+
+def test_alias_wins_over_inline():
+    server = _inline_server({"A": "a"}, alias="jira_alias")
+    with (
+        patch.object(MCPToolkitService, "_resolve_credentials_by_alias", return_value={"AL": "1"}) as by_alias,
+        patch(_FIND_BY_ID, return_value=_entry("A")),
+    ):
+        result = MCPToolkitService._resolve_credentials_with_priority(
+            server, "user", "proj", allow_inline_credentials=True
+        )
+    by_alias.assert_called_once()
+    assert result == {"AL": "1"}
+
+
+def test_inline_passes_any_value_type_untouched_and_does_not_log_or_mutate(caplog):
+    caplog.set_level(logging.DEBUG)
+    server = _inline_server({"A": _SECRET, "B": "other"})
+    before = [(c.key, c.value) for c in server.settings.credential_values]
+
+    result, _, _ = _resolve_inline(server, _entry("A"))
+
+    assert result == {"A": _SECRET}
+    assert _SECRET not in caplog.text
+    assert [(c.key, c.value) for c in server.settings.credential_values] == before
+
+
+# --- inline flag threading -------------------------------------------------------------------
+
+
+def test_build_config_forwards_inline_flag():
+    server = MCPServerDetails(name="srv", config=MCPServerConfig(command="npx"))
+    with (
+        patch(
+            "codemie.service.mcp.access_control.MCPAccessControlService.resolve_catalog_config",
+            return_value=server,
+        ),
+        patch.object(MCPToolkitService, "_resolve_credentials_with_priority", return_value={}) as resolve,
+    ):
+        MCPToolkitService._build_mcp_server_config(server, "user", "proj", allow_inline_credentials=True)
+        MCPToolkitService._build_mcp_server_config(server, "user", "proj")
+
+    assert resolve.call_args_list[0].kwargs["allow_inline_credentials"] is True
+    assert resolve.call_args_list[1].kwargs["allow_inline_credentials"] is False
+
+
+def test_prepare_server_config_forwards_inline_flag():
+    server = MCPServerDetails(name="srv", config=MCPServerConfig(command="npx"))
+    with patch.object(MCPToolkitService, "_build_mcp_server_config", return_value=None) as build:
+        MCPToolkitService._prepare_server_config(server, "user", "proj", allow_inline_credentials=True)
+
+    assert build.call_args.kwargs["allow_inline_credentials"] is True
+
+
+def test_get_mcp_server_tools_forwards_inline_flag():
+    server = MCPServerDetails(name="srv", config=MCPServerConfig(command="npx"))
+    with (
+        patch(
+            "codemie.service.mcp.access_control.MCPAccessControlService.filter_for_runtime",
+            return_value=[server],
+        ),
+        patch.object(MCPToolkitService, "get_instance"),
+        patch.object(MCPToolkitService, "_collect_server_results", return_value=([], [], [])) as collect,
+    ):
+        MCPToolkitService.get_mcp_server_tools([server], user_id="user", allow_inline_credentials=True)
+
+    assert collect.call_args.kwargs["allow_inline_credentials"] is True
+
+
+def test_collect_server_results_forwards_inline_flag():
+    server = MCPServerDetails(name="srv", config=MCPServerConfig(command="npx"))
+    with patch.object(MCPToolkitService, "_process_single_server_for_tools", return_value=([], None, None)) as process:
+        for flag in (True, False):
+            MCPToolkitService._collect_server_results(
+                mcp_servers=[server],
+                execution_context=MCPExecutionContext(user_id="user"),
+                default_toolkit_service=MagicMock(),
+                user_id="user",
+                project_name="proj",
+                conversation_id=None,
+                tools_config=None,
+                mcp_server_args_preprocessor=None,
+                mcp_server_single_usage=None,
+                allow_inline_credentials=flag,
+            )
+
+    assert process.call_args_list[0].kwargs["allow_inline_credentials"] is True
+    assert process.call_args_list[1].kwargs["allow_inline_credentials"] is False
+
+
+def test_process_single_server_for_tools_forwards_inline_flag():
+    server = MCPServerDetails(name="srv", config=MCPServerConfig(command="npx"))
+    with patch.object(MCPToolkitService, "_process_single_mcp_server", return_value=[]) as process:
+        for flag in (True, False):
+            MCPToolkitService._process_single_server_for_tools(
+                mcp_server=server,
+                per_server_context=MCPExecutionContext(user_id="user"),
+                default_toolkit_service=MagicMock(),
+                user_id="user",
+                project_name="proj",
+                conversation_id=None,
+                tools_config=None,
+                mcp_server_args_preprocessor=None,
+                mcp_server_single_usage=None,
+                allow_inline_credentials=flag,
+            )
+
+    assert process.call_args_list[0].kwargs["allow_inline_credentials"] is True
+    assert process.call_args_list[1].kwargs["allow_inline_credentials"] is False
+
+
+def test_process_single_mcp_server_forwards_inline_flag():
+    server = MCPServerDetails(name="srv", config=MCPServerConfig(command="npx"))
+    with (
+        patch.object(MCPToolkitService, "_get_toolkit_service_for_server", return_value=MagicMock()),
+        patch.object(MCPToolkitService, "_prepare_server_config", return_value=None) as prepare,
+    ):
+        for flag in (True, False):
+            MCPToolkitService._process_single_mcp_server(
+                mcp_server=server,
+                default_toolkit_service=MagicMock(),
+                user_id="user",
+                allow_inline_credentials=flag,
+            )
+
+    assert prepare.call_args_list[0].kwargs["allow_inline_credentials"] is True
+    assert prepare.call_args_list[1].kwargs["allow_inline_credentials"] is False
+
+
+# --- required env var check (test and tool-fetch paths) --------------------------------------
+
+
+def _required_entry(*names: str, optional: tuple[str, ...] = ()):
+    return SimpleNamespace(
+        required_env_vars=[SimpleNamespace(name=n, required=True) for n in names]
+        + [SimpleNamespace(name=n, required=False) for n in optional]
+    )
+
+
+def _build_with_entry(server, entry, *, catalog_env=None, by_id=None, **kwargs):
+    resolved = server.model_copy(update={"config": MCPServerConfig(command="npx", env=dict(catalog_env or {}))})
+    if server.use_custom_config:
+        resolved = server
+    with (
+        patch(
+            "codemie.service.mcp.access_control.MCPAccessControlService.resolve_catalog_config",
+            return_value=resolved,
+        ),
+        patch(_FIND_BY_ID, return_value=entry),
+        patch.object(MCPToolkitService, "_resolve_credentials_by_id", return_value=by_id or {}),
+    ):
+        return MCPToolkitService._build_mcp_server_config(server, "user", "proj", **kwargs)
+
+
+def test_required_check_names_blank_inline_value_without_leaking_values():
+    server = _inline_server({"A": "   ", "B": _SECRET})
+
+    with pytest.raises(MCPMissingCredentialsError) as exc_info:
+        _build_with_entry(server, _required_entry("A", "B"), allow_inline_credentials=True)
+
+    assert exc_info.value.missing == ["A"]
+    assert str(exc_info.value) == "Missing required credentials: A"
+    assert _SECRET not in str(exc_info.value)
+
+
+def test_required_check_names_var_when_no_settings_sent():
+    server = MCPServerDetails(name="srv", mcp_config_id="cfg")
+
+    with pytest.raises(MCPMissingCredentialsError) as exc_info:
+        _build_with_entry(server, _required_entry("A"), allow_inline_credentials=True)
+
+    assert exc_info.value.missing == ["A"]
+
+
+def test_required_check_passes_when_inline_value_provided():
+    config = _build_with_entry(_inline_server({"A": "a"}), _required_entry("A"), allow_inline_credentials=True)
+
+    assert config.env == {"A": "a"}
+
+
+def test_required_check_accepts_catalog_env_literal():
+    server = MCPServerDetails(name="srv", mcp_config_id="cfg")
+
+    config = _build_with_entry(server, _required_entry("A"), catalog_env={"A": "lit"}, allow_inline_credentials=True)
+
+    assert config.env == {"A": "lit"}
+
+
+def test_required_check_ignores_optional_vars():
+    server = _inline_server({"A": "a"})
+
+    config = _build_with_entry(server, _required_entry("A", optional=("B",)), allow_inline_credentials=True)
+
+    assert config.env == {"A": "a"}
+
+
+def test_required_check_names_var_missing_from_existing_setting():
+    server = _inline_server({}, settings_id="set-1")
+
+    with pytest.raises(MCPMissingCredentialsError) as exc_info:
+        _build_with_entry(server, _required_entry("A", "B"), by_id={"A": "a"}, allow_inline_credentials=True)
+
+    assert exc_info.value.missing == ["B"]
+
+
+def test_required_check_skipped_for_custom_config():
+    server = MCPServerDetails(
+        name="srv", mcp_config_id="cfg", use_custom_config=True, config=MCPServerConfig(command="npx", env={})
+    )
+
+    with patch(_FIND_BY_ID) as find:
+        config = _build_with_entry(server, _required_entry("A"), allow_inline_credentials=True)
+
+    assert config.env == {}
+    find.assert_not_called()
+
+
+def test_required_check_off_without_inline_flag():
+    server = MCPServerDetails(name="srv", mcp_config_id="cfg")
+
+    config = _build_with_entry(server, _required_entry("A"))
+
+    assert config.env == {}
+
+
+def test_missing_credentials_error_is_not_wrapped_as_tool_load_failure():
+    server = MCPServerDetails(name="srv", mcp_config_id="cfg")
+    error = MCPMissingCredentialsError("srv", ["A"])
+    with (
+        patch.object(MCPToolkitService, "_get_toolkit_service_for_server", return_value=MagicMock()),
+        patch.object(MCPToolkitService, "_prepare_server_config", side_effect=error),
+    ):
+        with pytest.raises(MCPMissingCredentialsError) as exc_info:
+            MCPToolkitService._process_single_mcp_server(
+                mcp_server=server,
+                default_toolkit_service=MagicMock(),
+                user_id="user",
+                allow_inline_credentials=True,
+            )
+
+    assert exc_info.value is error

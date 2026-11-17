@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-11766_infongen-mcp-inline-env-test",
+  "head": "997a04f0b7f59031ef1c1012091367faf7719094",
+  "runner": "poetry",
+  "started_at": "2026-10-21T12:21:04Z",
+  "completed_at": "2026-10-21T12:28:31Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1516,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6176,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 775,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 13873,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "gitleaks: no leaks found (Docker available)"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 679,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "poetry run pytest: 'Command not found: pytest' - .venv/bin/pytest has stale shebang pointing at /home/volhamakarava/projects/codemie/.venv; environment issue, tests unverified via gate command. Fallback .venv/bin/python -m pytest tests/ ran: 71 failed/1 error, none attributable to the changed files (missing codemie_enterprise etc.)."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make coverage",
+      "notes": "Not requested."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make verify",
+      "notes": "Composite of ruff, license, gitleaks, test already run individually."
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 35,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN (and network access) to run locally; wired in pre-push hook and Static Analysis guide gate."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "Requires docker stack, superadmin fixtures and ~/.codemie/test-harness.json; MR-time gate. Still owed before MR."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "command": "",
+      "notes": ".gitlab-ci.yml only includes remote template pre-ci-guard (wait-ci-init for ci-pipeline, compliance-report contexts); not runnable locally. Guide claims no pipeline exists - mismatch; MR-only. Also /sanity regression and auto_epm-cdme_vcs bot remain owed."
+    }
+  ],
+  "failures": {
+    "unit": "poetry run pytest tests/\nCommand not found: pytest\nmake: *** [Makefile:31: test] Error 1\n\n[runner diagnostic] stale shebang in .venv/bin/pytest: #!/home/volhamakarava/projects/codemie/.venv/bin/python\n[runner diagnostic] .venv/bin/python -m pytest tests/ (not the gate command): 71 failed, 21539 passed, 157 skipped, 1 error. Failures in enterprise/mcp_auth, linter, code_executor, openapi snapshot, auth_resolver (ModuleNotFoundError: codemie_enterprise; same 2 auth_resolver tests also fail on origin/main). All 3 changed test files pass: tests/codemie/service/mcp + test_mcp_tools_info_service.py = 498 passed, 2 failed (the 2 auth_resolver, unrelated)."
+  }
+}

@@ -14,6 +14,7 @@
 
 """Unit tests for MCPServerTester."""
 
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -23,7 +24,12 @@ from codemie.rest_api.models.assistant import MCPServerCheckRequest, MCPServerCo
 from codemie.rest_api.models.mcp_config import MCPTestStatus
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.mcp_tester import MCPServerTester, MCPTestResult, _build_hint_for_category, _get_server_command
-from codemie.service.mcp.models import MCPBridgeError, MCPErrorCategory, MCPToolLoadException
+from codemie.service.mcp.models import (
+    MCPBridgeError,
+    MCPErrorCategory,
+    MCPMissingCredentialsError,
+    MCPToolLoadException,
+)
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 
 _PATCH_TARGET = "codemie.service.mcp.toolkit_service.MCPToolkitService.get_mcp_server_tools"
@@ -102,6 +108,13 @@ class TestMCPServerTesterTest:
             tester.test()
 
         assert mock_get_tools.call_args.kwargs.get("mcp_server_single_usage") is True
+
+    def test_calls_get_mcp_server_tools_allowing_inline_credentials(self, tester):
+        """The test path opts in to inline credential_values as server env."""
+        with patch(_PATCH_TARGET, return_value=[Mock()]) as mock_get_tools:
+            tester.test()
+
+        assert mock_get_tools.call_args.kwargs["allow_inline_credentials"] is True
 
 
 class TestMCPServerTesterRunTest:
@@ -272,3 +285,51 @@ class TestMissingCredentialsCategory:
         from codemie.service.mcp.mcp_tester import MISSING_CREDENTIALS_CATEGORY
 
         assert MISSING_CREDENTIALS_CATEGORY == "missing_credentials"
+
+
+class TestMissingRequiredCredentials:
+    """A declared required env var without a value is reported by name before the server is contacted."""
+
+    def test_run_test_reports_missing_credentials(self, tester):
+        with patch(_PATCH_TARGET, side_effect=MCPMissingCredentialsError("Test MCP", ["A", "B"])):
+            result = tester.run_test(allow_inline_credentials=True)
+
+        assert result.status == MCPTestStatus.FAILURE
+        assert result.message == "Missing required credentials: A, B"
+        assert result.error_category == "missing_credentials"
+
+    def test_test_returns_missing_credentials_message(self, tester):
+        with patch(_PATCH_TARGET, side_effect=MCPMissingCredentialsError("Test MCP", ["A"])):
+            success, message = tester.test()
+
+        assert success is False
+        assert message == "Missing required credentials: A"
+
+    def test_run_test_does_not_allow_inline_credentials_by_default(self, tester):
+        with patch(_PATCH_TARGET, return_value=[Mock()]) as mock_get_tools:
+            tester.run_test()
+
+        assert mock_get_tools.call_args.kwargs["allow_inline_credentials"] is False
+
+    def test_user_test_reports_blank_required_value_without_contacting_server(self, mock_user):
+        """Seam: the real toolkit path from the user Test down to the env build, server never started."""
+        server = MCPServerDetails(name="Test MCP", enabled=True, mcp_config_id="cfg")
+        entry = SimpleNamespace(
+            config=MCPServerConfig(command="npx"),
+            required_env_vars=[SimpleNamespace(name="TOKEN", required=True)],
+            is_active=True,
+            is_public=True,
+        )
+        tester = MCPServerTester(request=MCPServerCheckRequest(mcp_server=server), user=mock_user)
+
+        with (
+            patch("codemie.rest_api.models.mcp_config.MCPConfig.find_by_id", return_value=entry),
+            patch(
+                "codemie.service.mcp.toolkit_service.MCPToolkitService._get_toolkit_service_for_server"
+            ) as get_service,
+        ):
+            success, message = tester.test()
+
+        assert success is False
+        assert message == "Missing required credentials: TOKEN"
+        get_service.return_value.get_mcp_server_tools.assert_not_called()

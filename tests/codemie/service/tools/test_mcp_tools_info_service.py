@@ -20,6 +20,7 @@ import pytest
 
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.security.user import User
+from codemie.service.mcp.models import MCPMissingCredentialsError
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.service.tools.mcp_tools_info_service import MCPToolsInfoService, MCPToolsInfoServiceError
 
@@ -76,6 +77,21 @@ class TestMCPToolsInfoServiceBrokerAuth:
         assert "Test MCP" in exc_info.value.message
         assert "connection refused" in exc_info.value.details
 
+    def test_missing_credentials_named_in_service_error(self, mock_user, mcp_server_config):
+        """A missing required env var is reported by name, not as a generic retrieval failure."""
+        with patch(
+            "codemie.service.mcp.toolkit_service.MCPToolkitService.get_mcp_server_tools",
+            side_effect=MCPMissingCredentialsError("Test MCP", ["TOKEN"]),
+        ):
+            with pytest.raises(MCPToolsInfoServiceError) as exc_info:
+                MCPToolsInfoService.get_mcp_toolkit_info(
+                    mcp_server_config=mcp_server_config,
+                    user=mock_user,
+                )
+
+        assert exc_info.value.message == "Missing required credentials: TOKEN"
+        assert "Test MCP" in exc_info.value.details
+
 
 class TestMCPToolsInfoServiceSingleUsageMode:
     """Verify get_mcp_toolkit_info uses mcp_server_single_usage=True."""
@@ -95,6 +111,22 @@ class TestMCPToolsInfoServiceSingleUsageMode:
             )
 
         assert mock_get_tools.call_args.kwargs.get("mcp_server_single_usage") is True
+
+    def test_get_mcp_server_tools_called_allowing_inline_credentials(self, mock_user, mcp_server_config):
+        mock_tool = Mock()
+        mock_tool.name = "test_tool"
+        mock_tool.description = "A test tool"
+
+        with patch(
+            "codemie.service.mcp.toolkit_service.MCPToolkitService.get_mcp_server_tools",
+            return_value=[mock_tool],
+        ) as mock_get_tools:
+            MCPToolsInfoService.get_mcp_toolkit_info(
+                mcp_server_config=mcp_server_config,
+                user=mock_user,
+            )
+
+        assert mock_get_tools.call_args.kwargs["allow_inline_credentials"] is True
 
     def test_success_path_returns_toolkit_dict(self, mock_user, mcp_server_config):
         mock_tool = Mock()

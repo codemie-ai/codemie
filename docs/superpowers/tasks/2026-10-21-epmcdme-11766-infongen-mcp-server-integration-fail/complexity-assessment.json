@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Make the MCP server test (POST /assistants/mcp/test) resolve inline settings.credential_values when settings.id is absent, limited to the catalog entry's required_env_vars and never logged or persisted, and confirm mcp_tools shares the resolution (EPMCDME-11766).",
+  "generated": "2026-10-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Credential handling is security-sensitive. The closest pattern, MCPToolkitService._apply_tool_config_to_mcp_server (tool_creds merged into server_config.env), has no allow-list, so the required_env_vars guard has no precedent (security-gap auto-bump). The acceptance criteria list specific guard cases (only catalog env names, never logged, never persisted), and no existing test template covers that defensive pattern (second auto-bump). _resolve_credentials_with_priority is shared with runtime, workflows and validation, so changing it risks regressions outside the test path. Also settings.id=None currently falls through the handler chain and may match an unrelated stored setting. Scored L rather than XL because there is no performance concern, rollback is trivial, and the helper that converts credential_values to a dict already exists."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk raised from M to L: security and credential-handling requirement (never log or persist values, allow-list of env names) with no existing allow-list precedent",
+    "Technical Risk: edge and variant cases in the acceptance criteria with no matching defensive test template (auto-bump, folded into the same L)"
+  ],
+  "split_recommendation": null
+}

@@ -1,0 +1,37 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 resolved: the fix-up adds three tests covering the previously untested hops (_collect_server_results, _process_single_server_for_tools, _process_single_mcp_server), each asserting the kwarg is forwarded as True and as False, matching the source calls at toolkit_service.py lines 310, 350 and 805. The finding's file (toolkit_service.py) is not in changed_files because the defect was missing tests and the fix is test-only; tests were read, not run (Stage 7 owns execution), so confidence is medium.",
+  "confidence": "medium",
+  "risk_flags": ["security"],
+  "business_review": [
+    {"kind": "story-ac", "item": "1. Test with catalog ref, no settings.id, inline values for declared names succeeds", "status": "pass", "notes": "MCPServerTester.test passes the flag; threaded to resolver; env merged via env_vars.update; unit tests cover declared names"},
+    {"kind": "story-ac", "item": "2. mcp_tools behaves the same as criterion 1", "status": "pass", "notes": "MCPToolsInfoService passes allow_inline_credentials=True; covered by a test"},
+    {"kind": "story-ac", "item": "3. Inline names not declared in required_env_vars are dropped", "status": "pass", "notes": "Filtered by allow-list in _resolve_inline_credentials; tests incl. case-sensitivity"},
+    {"kind": "story-ac", "item": "4. Inline ignored for custom config, no mcp_config_id, or no required_env_vars", "status": "pass", "notes": "Early returns with tests for each case"},
+    {"kind": "story-ac", "item": "5. When settings.id present, stored setting used and inline ignored", "status": "pass", "notes": "Inline branch guarded by not settings.id; precedence test"},
+    {"kind": "story-ac", "item": "6. Inline resolution never calls SettingsService and persists nothing", "status": "pass", "notes": "Returns before by-id call; tests assert no SettingsService use"},
+    {"kind": "story-ac", "item": "7. No log line or error message contains an inline value", "status": "pass", "notes": "Only a count is logged; caplog test"},
+    {"kind": "story-ac", "item": "8. Runtime, workflow and validation callers unchanged", "status": "pass", "notes": "Flag defaults to False at every signature; only two callers pass True"},
+    {"kind": "story-ac", "item": "9. No change to request/response models", "status": "pass", "notes": "Only service-layer code and tests changed"},
+    {"kind": "spec", "item": "R1 Opt-in keyword threaded through call chain; only tester and tools-info pass True", "status": "pass", "notes": "Verified in source at every hop; forwarding tests cover only some hops (see CR-001)"},
+    {"kind": "spec", "item": "R2 Resolution order unchanged except one new inline branch", "status": "pass", "notes": "Alias first, id wins, no id + flag -> inline; tests present"},
+    {"kind": "spec", "item": "R3 Inline path short-circuits before by-id and SettingsService", "status": "pass", "notes": "Return inside inline branch"},
+    {"kind": "spec", "item": "R4 Allow-list from catalog entry required_env_vars via MCPConfig.find_by_id", "status": "pass", "notes": "Allowed names built from entry.required_env_vars"},
+    {"kind": "spec", "item": "R5 No allow-list means no inline values, no error", "status": "pass", "notes": "All such paths return {}"},
+    {"kind": "spec", "item": "R6 Accepted values merged via env_vars.update; request not mutated", "status": "pass", "notes": "New dict built; non-mutation tested"},
+    {"kind": "spec", "item": "R7 No leakage of values in logs, exceptions or SettingsService", "status": "pass", "notes": "Count-only debug log; caplog test"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "3 subjects in dfffcbe6f..HEAD all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "partial", "notes": "Module Cohesion: toolkit_service.py is ~2043 lines and gains _resolve_inline_credentials; credential resolution already lives there so likely core. Types, imports, tests otherwise conform."},
+    {"kind": "security", "status": "pass", "notes": "Inline creds only on opt-in paths (default False), filtered to catalog-declared names, custom configs yield empty env, only a count is logged, never values."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Three new tests in test_toolkit_service_three_state.py patch the next hop and assert allow_inline_credentials is True and False for each previously untested hop; source forwards the kwarg at lines 320/360/815. Dropping the kwarg would fail each test. Not executed."
+    }
+  ]
+}

@@ -527,6 +527,32 @@ class MCPToolInvocationRequest(BaseModel):
     )
 
 
+def missing_required_env_vars(required_env_vars: list[Any] | None, *env_sources: dict[str, Any]) -> list[str]:
+    """
+    Names of required env vars that none of the sources provides with a non-blank value.
+
+    Only names are returned; values are never read beyond the blank check.
+    """
+    from codemie.enterprise.mcp_auth._common import _is_missing_required_value
+
+    provided = {
+        name
+        for source in env_sources
+        for name, value in (source or {}).items()
+        if not _is_missing_required_value(value)
+    }
+    return [var.name for var in required_env_vars or [] if var.required and var.name not in provided]
+
+
+class MCPMissingCredentialsError(Exception):
+    """Raised before an MCP server is contacted when declared required env vars have no value."""
+
+    def __init__(self, server_name: str, missing: list[str]):
+        self.server_name = server_name
+        self.missing = missing
+        super().__init__(f"Missing required credentials: {', '.join(missing)}")
+
+
 class MCPToolLoadException(Exception):
     """
     Custom exception raised when MCP tools fail to load from a server.

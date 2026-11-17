@@ -56,7 +56,14 @@ from codemie.service.security.principal_token_resolver import resolve_current_be
 from codemie.service.security.token_exchange_service import token_exchange_service
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.rest_api.security.user import UserContext
-from codemie.service.mcp.models import MCPBridgeError, MCPServerConfig, MCPToolLoadException, MCPExecutionContext
+from codemie.service.mcp.models import (
+    MCPBridgeError,
+    MCPExecutionContext,
+    MCPMissingCredentialsError,
+    MCPServerConfig,
+    MCPToolLoadException,
+    missing_required_env_vars,
+)
 from codemie.service.mcp.toolkit import MCPToolkit, MCPToolkitFactory, MCPTool, ContextAwareMCPTool
 from codemie.service.settings.base_settings import SearchFields
 
@@ -184,7 +191,7 @@ class MCPToolkitService:
         cls._auth_resolvers.append(resolver)
 
     @classmethod
-    def get_mcp_server_tools(
+    def get_mcp_server_tools(  # noqa: PLR0913 - keyword options threaded through the MCP load chain
         cls,
         mcp_servers: list[MCPServerDetails],
         user_id: str | None = None,
@@ -197,6 +204,7 @@ class MCPToolkitService:
         workflow_execution_id: str | None = None,
         request_headers: dict[str, str] | None = None,
         marketplace_scope: bool = False,
+        allow_inline_credentials: bool = False,
     ) -> list[MCPTool]:
         """Get MCP tools from a list of MCP servers. See get_mcp_server_tools_with_instructions."""
         return cls.get_mcp_server_tools_with_instructions(
@@ -211,10 +219,11 @@ class MCPToolkitService:
             workflow_execution_id=workflow_execution_id,
             request_headers=request_headers,
             marketplace_scope=marketplace_scope,
+            allow_inline_credentials=allow_inline_credentials,
         ).tools
 
     @classmethod
-    def get_mcp_server_tools_with_instructions(
+    def get_mcp_server_tools_with_instructions(  # noqa: PLR0913 - keyword options threaded through the MCP load chain
         cls,
         mcp_servers: list[MCPServerDetails],
         user_id: str | None = None,
@@ -227,6 +236,7 @@ class MCPToolkitService:
         workflow_execution_id: str | None = None,
         request_headers: dict[str, str] | None = None,
         marketplace_scope: bool = False,
+        allow_inline_credentials: bool = False,
     ) -> MCPToolsResult:
         """
         Get MCP tools and the instructions their servers declared at handshake.
@@ -247,6 +257,8 @@ class MCPToolkitService:
             request_headers: Optional custom HTTP headers to propagate to MCP servers
             marketplace_scope: Whether this runs a marketplace (is_global) assistant, relaxing
                 per-user integration access to any PROJECT integration (USER stays owner-only)
+            allow_inline_credentials: When True, a server whose ``settings`` has no id uses its inline
+                ``credential_values`` as env (test and tool-fetch paths only)
 
         Returns:
             MCPToolsResult: Tools from all successfully processed servers, and one instruction
@@ -287,6 +299,7 @@ class MCPToolkitService:
             mcp_server_args_preprocessor=mcp_server_args_preprocessor,
             mcp_server_single_usage=mcp_server_single_usage,
             instructions_out=instructions,
+            allow_inline_credentials=allow_inline_credentials,
         )
 
         discovery_warnings: list[dict[str, Any]] = []
@@ -325,6 +338,7 @@ class MCPToolkitService:
         mcp_server_args_preprocessor: callable | None,
         mcp_server_single_usage: bool | None,
         instructions_out: list[MCPServerInstructions] | None = None,
+        allow_inline_credentials: bool = False,
     ) -> tuple[list[MCPTool], list[dict[str, Any]], list[dict[str, Any]]]:
         """Iterate enabled servers and bucket results into tools, auth_failures, and discovery_candidates."""
         tools: list[MCPTool] = []
@@ -348,6 +362,7 @@ class MCPToolkitService:
                 mcp_server_args_preprocessor=mcp_server_args_preprocessor,
                 mcp_server_single_usage=mcp_server_single_usage,
                 instructions_out=instructions_out,
+                allow_inline_credentials=allow_inline_credentials,
             )
             if auth_failure is not None:
                 auth_failures.append(auth_failure)
@@ -371,6 +386,7 @@ class MCPToolkitService:
         mcp_server_args_preprocessor: callable | None,
         mcp_server_single_usage: bool | None,
         instructions_out: list[MCPServerInstructions] | None = None,
+        allow_inline_credentials: bool = False,
     ) -> tuple[list[MCPTool] | None, dict[str, Any] | None, dict[str, Any] | None]:
         """Process one enabled server. Returns (tools, auth_failure, discovery_candidate).
 
@@ -388,6 +404,7 @@ class MCPToolkitService:
                 mcp_server_single_usage=mcp_server_single_usage,
                 execution_context=per_server_context,
                 instructions_out=instructions_out,
+                allow_inline_credentials=allow_inline_credentials,
             )
             return server_tools, None, None
         except MCPAuthenticationRequiredException as exc:
@@ -790,7 +807,7 @@ class MCPToolkitService:
         return payload
 
     @classmethod
-    def _process_single_mcp_server(
+    def _process_single_mcp_server(  # noqa: PLR0913 - keyword options threaded through the MCP load chain
         cls,
         mcp_server: MCPServerDetails,
         default_toolkit_service: MCPToolkitService,
@@ -804,6 +821,7 @@ class MCPToolkitService:
         *,
         skip_auth_resolution: bool = False,
         instructions_out: list[MCPServerInstructions] | None = None,
+        allow_inline_credentials: bool = False,
     ) -> list[MCPTool]:
         """
         Process a single MCP server to extract its tools.
@@ -843,6 +861,7 @@ class MCPToolkitService:
                 mcp_server_single_usage=mcp_server_single_usage,
                 execution_context=execution_context,
                 skip_auth_resolution=skip_auth_resolution,
+                allow_inline_credentials=allow_inline_credentials,
             )
             if server_config is None:
                 return []
@@ -873,6 +892,8 @@ class MCPToolkitService:
         except MCPAuthenticationRequiredException:
             raise
         except BrokerAuthRequiredException:
+            raise
+        except MCPMissingCredentialsError:
             raise
         except Exception as e:
             err_msg = f"Failed to load MCP tools from {mcp_server.name}: {cls._sanitize_exception_for_log(e)}"
@@ -961,6 +982,7 @@ class MCPToolkitService:
         execution_context: MCPExecutionContext | None = None,
         *,
         skip_auth_resolution: bool = False,
+        allow_inline_credentials: bool = False,
     ) -> MCPServerConfig | None:
         """
         Prepare the complete server configuration for an MCP server.
@@ -994,6 +1016,7 @@ class MCPToolkitService:
             user_id,
             project_name,
             ignore_integration_alias=ignore_integration_alias,
+            allow_inline_credentials=allow_inline_credentials,
         )
         if server_config is None:
             return None
@@ -1517,6 +1540,7 @@ class MCPToolkitService:
         user_id: str | None,
         project_name: str | None,
         ignore_integration_alias: bool = False,
+        allow_inline_credentials: bool = False,
     ) -> dict[str, Any]:
         """
         Resolve credentials with priority logic for MCP server configuration.
@@ -1529,6 +1553,9 @@ class MCPToolkitService:
                 per-user integration selection yields a clean inline base before the chosen
                 integration is applied. Priority-2 pinned ``settings`` resolution is unaffected.
                 Defaults to False so DEFAULT and all non-chat callers keep the alias behavior.
+            allow_inline_credentials: When True and ``settings`` carries no ``id``, use the request's own
+                ``credential_values`` (restricted to the catalog entry's declared env var names) as the
+                server env. Only the MCP test and tool-fetch paths opt in; defaults to False.
 
         Returns:
             Dictionary of resolved environment variables
@@ -1546,6 +1573,11 @@ class MCPToolkitService:
 
         # Priority 2: Fallback to settings if integration_alias not provided
         elif mcp_server.settings:
+            if allow_inline_credentials and not mcp_server.settings.id:
+                resolved_env_vars = cls._resolve_inline_credentials(mcp_server)
+                if resolved_env_vars:
+                    logger.debug(f"Applied {len(resolved_env_vars)} environment variables from inline settings")
+                return resolved_env_vars
             logger.debug("Using direct settings for credential resolution")
             resolved_env_vars = cls._resolve_credentials_by_id(
                 integration_id=mcp_server.settings.id, user_id=mcp_server.settings.user_id
@@ -1557,12 +1589,56 @@ class MCPToolkitService:
         return {}
 
     @classmethod
+    def _resolve_inline_credentials(cls, mcp_server: MCPServerDetails) -> dict[str, Any]:
+        """
+        Build the server env from the request's inline ``settings.credential_values``.
+
+        Only names declared in the catalog entry's ``required_env_vars`` (required and optional) are
+        kept. Custom configs, servers without ``mcp_config_id`` and unknown catalog entries yield an
+        empty dict. Values are never logged and the request is not mutated.
+        """
+        from codemie.rest_api.models.mcp_config import MCPConfig
+
+        settings = mcp_server.settings
+        if mcp_server.use_custom_config or not mcp_server.mcp_config_id or not settings:
+            return {}
+        if not settings.credential_values:
+            return {}
+
+        entry = MCPConfig.find_by_id(mcp_server.mcp_config_id)
+        if entry is None:
+            return {}
+        allowed = {var.name for var in (entry.required_env_vars or [])}
+        if not allowed:
+            return {}
+        return {item.key: item.value for item in settings.credential_values if item.key in allowed}
+
+    @classmethod
+    def _check_required_env_vars(cls, mcp_server: MCPServerDetails, env_vars: dict[str, Any]) -> None:
+        """
+        Fail before the server is contacted when a catalog entry's required env vars have no value.
+
+        Global-mode catalog servers only: a custom config is owned by the user and may not need the
+        entry's variables. Raises MCPMissingCredentialsError naming the variables, never the values.
+        """
+        from codemie.rest_api.models.mcp_config import MCPConfig
+
+        if mcp_server.use_custom_config or not mcp_server.mcp_config_id:
+            return
+        entry = MCPConfig.find_by_id(mcp_server.mcp_config_id)
+        missing = missing_required_env_vars(entry.required_env_vars if entry else None, env_vars)
+        if missing:
+            logger.warning(f"MCP server '{mcp_server.name}': missing required env vars {missing}, not starting it")
+            raise MCPMissingCredentialsError(mcp_server.name, missing)
+
+    @classmethod
     def _build_mcp_server_config(
         cls,
         mcp_server: MCPServerDetails,
         user_id: str | None = None,
         project_name: str | None = None,
         ignore_integration_alias: bool = False,
+        allow_inline_credentials: bool = False,
     ) -> MCPServerConfig | None:
         """
         Build the actual MCP server configuration from server details.
@@ -1575,6 +1651,7 @@ class MCPToolkitService:
             project_name: Optional project name for credential resolution
             ignore_integration_alias: When True, skip the alias branch so an explicit per-user
                 selection produces a clean inline base config (see _resolve_credentials_with_priority).
+            allow_inline_credentials: Forwarded to _resolve_credentials_with_priority.
 
         Returns:
             The built MCP server configuration
@@ -1612,8 +1689,11 @@ class MCPToolkitService:
             user_id,
             project_name,
             ignore_integration_alias=ignore_integration_alias,
+            allow_inline_credentials=allow_inline_credentials,
         )
         env_vars.update(resolved_env_vars)
+        if allow_inline_credentials:
+            cls._check_required_env_vars(mcp_server, env_vars)
 
         actual_config.env = env_vars
         actual_config.mcp_config_id = mcp_server.mcp_config_id

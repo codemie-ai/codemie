@@ -19,7 +19,7 @@ from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.rest_api.models.assistant import MCPServerDetails, MCPServerCheckRequest
 from codemie.rest_api.models.mcp_config import MCPTestStatus
 from codemie.rest_api.security.user import User
-from codemie.service.mcp.models import MCPErrorCategory, MCPToolLoadException
+from codemie.service.mcp.models import MCPErrorCategory, MCPMissingCredentialsError, MCPToolLoadException
 from codemie.service.mcp.toolkit_service import MCPToolkitService
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 
@@ -95,14 +95,21 @@ class MCPServerTester:
         self.mcp_server = request.mcp_server
         self.user = user
 
-    def run_test(self) -> MCPTestResult:
+    def run_test(self, allow_inline_credentials: bool = False) -> MCPTestResult:
         """Run the connectivity test and return a structured result.
 
         Authentication exceptions are re-raised so callers can trigger the auth flow.
+
+        Args:
+            allow_inline_credentials: Use the request's id-less ``settings.credential_values`` as env and
+                check the catalog entry's required env vars before the server is contacted.
         """
         try:
             tools = MCPToolkitService.get_mcp_server_tools(
-                mcp_servers=[self.mcp_server], user_id=self.user.id, mcp_server_single_usage=True
+                mcp_servers=[self.mcp_server],
+                user_id=self.user.id,
+                mcp_server_single_usage=True,
+                allow_inline_credentials=allow_inline_credentials,
             )
 
             if not tools:
@@ -123,6 +130,11 @@ class MCPServerTester:
             raise
         except MCPAuthenticationRequiredException:
             raise
+        except MCPMissingCredentialsError as e:
+            # Variable names are not secrets; the server was never contacted.
+            return MCPTestResult(
+                status=MCPTestStatus.FAILURE, message=str(e), error_category=MISSING_CREDENTIALS_CATEGORY
+            )
         except MCPToolLoadException as e:
             is_npx = _get_server_command(self.mcp_server) == "npx"
             hint = _build_hint_for_category(e.category, is_npx)
@@ -135,5 +147,5 @@ class MCPServerTester:
             )
 
     def test(self) -> tuple[bool, str]:
-        result = self.run_test()
+        result = self.run_test(allow_inline_credentials=True)
         return result.status == MCPTestStatus.SUCCESS, result.message
