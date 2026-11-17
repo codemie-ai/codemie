@@ -32,8 +32,9 @@ from codemie.rest_api.routers.analytics._common import (
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.analytics_service import AnalyticsService
+from codemie.service.analytics.insights_feature_gate import analytics_cli_insights_guard
 
-router = APIRouter()
+router = APIRouter(dependencies=analytics_cli_insights_guard)
 
 
 @router.get(

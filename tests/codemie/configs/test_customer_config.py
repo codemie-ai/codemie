@@ -119,9 +119,10 @@ class TestCustomerConfig(unittest.TestCase):
         self.assertIn("Invalid YAML structure: 'components' must be a non-empty list", str(context.exception))
 
     @patch("codemie.enterprise.has_enterprise", new=lambda: True)
+    @patch("codemie.enterprise.litellm.is_litellm_enabled", return_value=True)
     @patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True)
     @patch("codemie.configs.customer_config.config")
-    def test_get_enabled_components(self, mock_config, mock_es_configured):
+    def test_get_enabled_components(self, mock_config, mock_es_configured, _mock_litellm):
         with patch("codemie.configs.customer_config.Path.read_text") as mock_read_text:
             mock_read_text.return_value = yaml.dump(self.valid_yaml)
             mock_config.ENABLE_USER_MANAGEMENT = False
@@ -149,7 +150,8 @@ class TestCustomerConfig(unittest.TestCase):
             # + 1 mermaid (always available outside standalone)
             # + 1 core (always available outside standalone)
             # + 1 googleOauth (always available outside standalone; sharepointPkce off)
-            self.assertEqual(len(enabled_components), 13)
+            # + 2 LiteLLM-gated analytics features (analyticsInsights, analyticsCLIInsights)
+            self.assertEqual(len(enabled_components), 15)
 
             yaml_components = [c for c in enabled_components if c.id == "component1"]
             self.assertEqual(len(yaml_components), 1)
@@ -342,9 +344,12 @@ class TestRuntimeFeatures(unittest.TestCase):
 
     @patch("codemie.configs.customer_config.Path.read_text")
     @patch("codemie.enterprise.has_enterprise", new=lambda: True)
+    @patch("codemie.enterprise.litellm.is_litellm_enabled", return_value=True)
     @patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True)
     @patch("codemie.configs.customer_config.config")
-    def test_runtime_features_enterprise_installed(self, mock_config, mock_es_configured, mock_read_text):
+    def test_runtime_features_enterprise_installed(
+        self, mock_config, mock_es_configured, _mock_litellm, mock_read_text
+    ):
         """Test runtime features when enterprise package is installed"""
         mock_read_text.return_value = yaml.dump(self.valid_yaml)
         mock_config.ENABLE_USER_MANAGEMENT = True
@@ -373,7 +378,8 @@ class TestRuntimeFeatures(unittest.TestCase):
         # + 2 code-execution features (dynamicCodeInterpreter, workspaceScriptRunner)
         # + 1 core (always available outside standalone)
         # + 1 googleOauth (always available outside standalone; sharepointPkce off)
-        self.assertEqual(len(components), 15)
+        # + 2 LiteLLM-gated analytics features (analyticsInsights, analyticsCLIInsights)
+        self.assertEqual(len(components), 17)
 
         # Check enterprise edition is enabled
         enterprise_components = [c for c in components if c.id == "features:enterpriseEdition"]
@@ -481,9 +487,10 @@ class TestRuntimeFeatures(unittest.TestCase):
 
     @patch("codemie.configs.customer_config.Path.read_text")
     @patch("codemie.enterprise.has_enterprise", new=lambda: True)
+    @patch("codemie.enterprise.litellm.is_litellm_enabled", return_value=True)
     @patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True)
     @patch("codemie.configs.customer_config.config")
-    def test_runtime_features_override_yaml(self, mock_config, mock_es_configured, mock_read_text):
+    def test_runtime_features_override_yaml(self, mock_config, mock_es_configured, _mock_litellm, mock_read_text):
         """Test that runtime features override any YAML configuration with same ID"""
         # YAML with runtime feature IDs (should be ignored)
         yaml_with_runtime_ids = {
@@ -521,7 +528,8 @@ class TestRuntimeFeatures(unittest.TestCase):
         # + 2 code-execution features (dynamicCodeInterpreter, workspaceScriptRunner)
         # + 1 core (always available outside standalone)
         # + 1 googleOauth (always available outside standalone; sharepointPkce off)
-        self.assertEqual(len(components), 14)
+        # + 2 LiteLLM-gated analytics features (analyticsInsights, analyticsCLIInsights)
+        self.assertEqual(len(components), 16)
 
         # Runtime features should be True (not False from YAML)
         self.assertTrue(config.is_feature_enabled("enterpriseEdition"))
@@ -1272,6 +1280,85 @@ class TestCapabilityHidingFlags(unittest.TestCase):
         ids = [c.id for c in cfg.get_enabled_components()]
 
         self.assertIn("features:smartToolSelection", ids)
+
+
+class TestAnalyticsInsightsCliInsightsFlags(unittest.TestCase):
+    def setUp(self):
+        self.valid_yaml = {'components': [{'id': 'component1', 'settings': {'enabled': True}}]}
+
+    def _base_mock(self, mock_config, mock_read_text):
+        mock_read_text.return_value = yaml.dump(self.valid_yaml)
+        mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.IDP_PROVIDER = "local"
+        mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
+        mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.CONVERSATION_ANALYSIS_ENABLED = False
+        mock_config.TOOL_SELECTION_ENABLED = False
+        mock_config.STANDALONE = False
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: False)
+    @patch("codemie.enterprise.litellm.is_litellm_enabled", return_value=False)
+    @patch("codemie.configs.customer_config.config")
+    def test_analytics_insights_absent_when_litellm_disabled(self, mock_config, _mock_litellm, mock_read_text):
+        self._base_mock(mock_config, mock_read_text)
+        ids = [c.id for c in CustomerConfig().get_enabled_components()]
+        self.assertNotIn("features:analyticsInsights", ids)
+        self.assertNotIn("features:analyticsCLIInsights", ids)
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: False)
+    @patch("codemie.enterprise.litellm.is_litellm_enabled", return_value=True)
+    @patch("codemie.configs.customer_config.config")
+    def test_analytics_insights_present_when_litellm_enabled(self, mock_config, _mock_litellm, mock_read_text):
+        self._base_mock(mock_config, mock_read_text)
+        ids = [c.id for c in CustomerConfig().get_enabled_components()]
+        self.assertIn("features:analyticsInsights", ids)
+        self.assertIn("features:analyticsCLIInsights", ids)
+
+
+class TestUsageAttributionRequiresLiteLLM(TestAnalyticsInsightsCliInsightsFlags):
+    def setUp(self):
+        env = patch.dict("os.environ")
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("FEATURE_USAGE_ATTRIBUTION", None)
+        self.valid_yaml = {
+            'components': [
+                {'id': 'features:usageAttribution', 'settings': {'enabled': True, 'fallbackFieldSince': '2026-10-09'}}
+            ]
+        }
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: False)
+    @patch("codemie.enterprise.litellm.is_litellm_enabled", return_value=False)
+    @patch("codemie.configs.customer_config.config")
+    def test_off_when_litellm_disabled(self, mock_config, _mock_litellm, mock_read_text):
+        self._base_mock(mock_config, mock_read_text)
+        cfg = CustomerConfig()
+        self.assertFalse(cfg.is_feature_enabled("usageAttribution"))
+        self.assertNotIn("features:usageAttribution", [c.id for c in cfg.get_enabled_components()])
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: False)
+    @patch("codemie.enterprise.litellm.is_litellm_enabled", return_value=True)
+    @patch("codemie.configs.customer_config.config")
+    def test_on_with_litellm_and_keeps_yaml_settings(self, mock_config, _mock_litellm, mock_read_text):
+        self._base_mock(mock_config, mock_read_text)
+        cfg = CustomerConfig()
+        self.assertTrue(cfg.is_feature_enabled("usageAttribution"))
+        settings = cfg.resolve_component("features:usageAttribution").settings
+        self.assertEqual(settings.model_dump()["fallbackFieldSince"], "2026-10-09")
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.enterprise.has_enterprise", new=lambda: False)
+    @patch("codemie.enterprise.litellm.is_litellm_enabled", return_value=True)
+    @patch("codemie.configs.customer_config.config")
+    def test_off_when_yaml_flag_off(self, mock_config, _mock_litellm, mock_read_text):
+        self.valid_yaml = {'components': [{'id': 'features:usageAttribution', 'settings': {'enabled': False}}]}
+        self._base_mock(mock_config, mock_read_text)
+        self.assertFalse(CustomerConfig().is_feature_enabled("usageAttribution"))
 
 
 class TestShippedHostedApplications(unittest.TestCase):

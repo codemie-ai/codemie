@@ -232,6 +232,7 @@ async def test_spending_route_unaffected_by_enterprise_guard():
         patch("codemie.enterprise.litellm.dependencies.get_customer_spending", return_value=mock_spending),
         patch("codemie.enterprise.litellm.dependencies.get_proxy_customer_spending", return_value=None),
         patch("codemie.enterprise.litellm.dependencies.is_premium_models_enabled", return_value=False),
+        patch("codemie.configs.customer_config.CustomerConfig.is_feature_enabled", return_value=True),
     ):
         transport = ASGITransport(app=_APP)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -251,6 +252,7 @@ async def test_budget_usage_route_unaffected_by_enterprise_guard():
             return_value=([], []),
         ),
         patch("codemie.clients.postgres.get_async_session", return_value=_mock_async_session()),
+        patch("codemie.configs.customer_config.CustomerConfig.is_feature_enabled", return_value=True),
     ):
         transport = ASGITransport(app=_APP)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -277,6 +279,7 @@ async def test_user_project_spending_unaffected_by_enterprise_guard():
             return_value=([], []),
         ),
         patch("codemie.rest_api.routers.analytics.spending.get_async_session", return_value=_mock_async_session()),
+        patch("codemie.configs.customer_config.CustomerConfig.is_feature_enabled", return_value=True),
     ):
         transport = ASGITransport(app=_APP)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -297,12 +300,82 @@ async def test_project_member_spending_unaffected_by_enterprise_guard():
             return_value=([], []),
         ),
         patch("codemie.rest_api.routers.analytics.spending.get_async_session", return_value=_mock_async_session()),
+        patch("codemie.configs.customer_config.CustomerConfig.is_feature_enabled", return_value=True),
     ):
         transport = ASGITransport(app=_APP)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
             response = await ac.get("/v1/analytics/project-member-spending?projects=test-project")
 
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Task 2/3 — analyticsInsights/analyticsCLIInsights router-level guards
+# ---------------------------------------------------------------------------
+
+
+def _disabled_feature_side_effect(key):
+    return key not in ("analyticsInsights", "analyticsCLIInsights")
+
+
+@pytest.mark.anyio
+async def test_insights_route_403_when_analytics_insights_disabled():
+    with patch(
+        "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
+        side_effect=_disabled_feature_side_effect,
+    ):
+        transport = ASGITransport(app=_APP)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.get("/v1/analytics/summaries")
+
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_cli_insights_route_403_when_analytics_cli_insights_disabled():
+    with patch(
+        "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
+        side_effect=_disabled_feature_side_effect,
+    ):
+        transport = ASGITransport(app=_APP)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.get("/v1/analytics/cli-insights-users")
+
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_insights_route_401_before_403_when_unauthenticated():
+    _APP.dependency_overrides.pop(authenticate, None)
+    try:
+        with patch(
+            "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
+            side_effect=_disabled_feature_side_effect,
+        ):
+            transport = ASGITransport(app=_APP)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+                response = await ac.get("/v1/analytics/summaries")
+    finally:
+        _APP.dependency_overrides[authenticate] = lambda: _MOCK_USER
+
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_cli_insights_route_401_before_403_when_unauthenticated():
+    _APP.dependency_overrides.pop(authenticate, None)
+    try:
+        with patch(
+            "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
+            side_effect=_disabled_feature_side_effect,
+        ):
+            transport = ASGITransport(app=_APP)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+                response = await ac.get("/v1/analytics/cli-insights-users")
+    finally:
+        _APP.dependency_overrides[authenticate] = lambda: _MOCK_USER
+
+    assert response.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -336,9 +409,12 @@ async def test_group_a_path_still_422s_on_invalid_query_param_when_es_unavailabl
     /summaries has no typed `page` param (extra query strings are ignored), so this
     uses /assistants-chats, which takes `AnalyticsQueryParams.page: int = Query(0, ge=0)`.
     """
-    with patch(
-        "codemie.repository.metrics_elastic_repository.ElasticSearchClient.is_configured",
-        return_value=False,
+    with (
+        patch(
+            "codemie.repository.metrics_elastic_repository.ElasticSearchClient.is_configured",
+            return_value=False,
+        ),
+        patch("codemie.configs.customer_config.CustomerConfig.is_feature_enabled", return_value=True),
     ):
         transport = ASGITransport(app=_APP)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -380,6 +456,7 @@ async def test_summaries_payload_unchanged_when_elasticsearch_available():
             new_callable=AsyncMock,
             return_value=mock_result,
         ),
+        patch("codemie.configs.customer_config.CustomerConfig.is_feature_enabled", return_value=True),
     ):
         transport = ASGITransport(app=_APP)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:

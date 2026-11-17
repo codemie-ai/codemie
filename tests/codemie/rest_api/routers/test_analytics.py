@@ -1210,10 +1210,12 @@ class TestGetProjectsUniqueDaily:
 
         from codemie.rest_api.routers.analytics.activity import router
         from codemie.rest_api.security.authentication import authenticate
+        from codemie.service.analytics.insights_feature_gate import require_analytics_insights_enabled
 
         app = FastAPI()
         app.include_router(router, prefix="/v1/analytics")
         app.dependency_overrides[authenticate] = lambda: mock_user
+        app.dependency_overrides[require_analytics_insights_enabled] = lambda: None
         client = TestClient(app)
 
         # Act

@@ -33,9 +33,10 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.utils.client_context import ClientSource
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.analytics_service import AnalyticsService
+from codemie.service.analytics.insights_feature_gate import analytics_insights_guard
 from codemie.utils.datetime_utils import to_utc
 
-router = APIRouter()
+router = APIRouter(dependencies=analytics_insights_guard)
 
 
 @router.get(

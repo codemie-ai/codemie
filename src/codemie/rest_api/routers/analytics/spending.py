@@ -54,6 +54,7 @@ from codemie.service.spend.identity_bridge import resolve_identity
 from codemie.service.spend.ledger import PersonalHolder
 from codemie.service.spend.spend_service import spend_service
 from codemie.service.analytics.handlers.member_spend_service import member_spend_service
+from codemie.service.analytics.insights_feature_gate import analytics_insights_guard
 from codemie.service.analytics.spending_formatter import (
     build_money_metric,
     build_spending_metrics,
@@ -62,7 +63,7 @@ from codemie.service.analytics.spending_formatter import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=analytics_insights_guard)
 
 
 async def _consumed_per_budget_category(

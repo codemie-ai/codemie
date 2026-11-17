@@ -55,6 +55,9 @@ CONFIG_IDS = {
     "costCenters": "features:costCenters",
     "budgetManagement": "features:budgetManagement",
     "projectChargeback": "features:projectChargeback",
+    "analyticsInsights": "features:analyticsInsights",
+    "analyticsCLIInsights": "features:analyticsCLIInsights",
+    "usageAttribution": "features:usageAttribution",
 }
 
 
@@ -294,6 +297,36 @@ class CustomerConfig(BaseModel):
             Component(
                 id=CONFIG_IDS["metricsAnalytics"],
                 settings=ComponentSetting(enabled=is_enterprise),
+            )
+        )
+
+        from codemie.enterprise.litellm import is_litellm_enabled  # noqa: PLC0415
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["analyticsInsights"],
+                settings=ComponentSetting(enabled=is_litellm_enabled()),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["analyticsCLIInsights"],
+                settings=ComponentSetting(enabled=is_litellm_enabled()),
+            )
+        )
+
+        # Usage Attribution: the YAML flag AND LiteLLM. Keeps the YAML-declared analysis settings
+        # (weights, tuning, ...) because a runtime component replaces the YAML one outright.
+        usage_attribution = _resolve_component("features:usageAttribution", self.components, [], set())
+        usage_attribution_settings = (
+            usage_attribution.settings.model_dump(exclude_none=True) if usage_attribution else {}
+        )
+        usage_attribution_settings["enabled"] = bool(usage_attribution_settings.get("enabled")) and is_litellm_enabled()
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["usageAttribution"],
+                settings=ComponentSetting(**usage_attribution_settings),
             )
         )
 
