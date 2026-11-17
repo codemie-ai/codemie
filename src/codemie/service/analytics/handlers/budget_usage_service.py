@@ -79,6 +79,16 @@ def _get_key_spending_columns() -> list[dict]:
             "format": "percentage",
             "description": "",
         },
+        {
+            "id": "is_shared_limit",
+            "label": "Shared Limit",
+            "type": "boolean",
+            "format": None,
+            "description": (
+                "Whether budget_limit is the project's whole pooled budget, shared by every member, "
+                "rather than a cap specific to this user"
+            ),
+        },
     ]
 
 
@@ -120,7 +130,9 @@ def _spend_annotation(spending: dict, figure: float | None) -> dict[str, object]
     return {name: spending.get(name, derived[name]) for name in _ANNOTATION_FIELDS}
 
 
-def _build_spending_row(label: str, spending: dict, is_default: bool = False) -> dict[str, Any]:
+def _build_spending_row(
+    label: str, spending: dict, is_default: bool = False, is_shared_limit: bool = False
+) -> dict[str, Any]:
     """Build one spending table row, **without inventing any figure it was not given**.
 
     Two absences used to be filled in with numbers, and both read as facts on a screen:
@@ -160,6 +172,7 @@ def _build_spending_row(label: str, spending: dict, is_default: bool = False) ->
         "total": consumed_percent,
         **_spend_annotation(spending, current),
         "is_default": is_default,
+        "is_shared_limit": is_shared_limit,
     }
 
 
@@ -198,10 +211,16 @@ def _expand_project_rows(
                     if f"{category.value}_{field}" in project
                 },
             }
-            if f"{category.value}_percent_spend" in project:
+            is_shared_limit = f"{category.value}_percent_spend" in project
+            if is_shared_limit:
                 spending["percent_spend"] = project[f"{category.value}_percent_spend"]
             rows.append(
-                _build_spending_row(_category_label(project["project_name"], category.value), spending, is_default)
+                _build_spending_row(
+                    _category_label(project["project_name"], category.value),
+                    spending,
+                    is_default,
+                    is_shared_limit=is_shared_limit,
+                )
             )
     return rows
 
@@ -237,7 +256,7 @@ def _build_budget_usage_rows(
             "budget_reset_at": budget.budget_reset_at,
             **spend_row_fields(spend_result),
         }
-        rows.append(_build_spending_row(label, spending, is_default))
+        rows.append(_build_spending_row(label, spending, is_default, is_shared_limit=False))
 
     return _get_key_spending_columns(), rows
 

@@ -225,6 +225,14 @@ class TestBuildSpendingRow:
         assert row["current_spending"] is None
         assert row["spend_unavailable"] is True
 
+    def test_is_shared_limit_defaults_to_false(self):
+        row = _build_spending_row("proj", {"max_budget": 100.0, "budget_reset_at": None})
+        assert row["is_shared_limit"] is False
+
+    def test_is_shared_limit_is_carried_through_when_set(self):
+        row = _build_spending_row("proj", {"max_budget": 100.0, "budget_reset_at": None}, is_shared_limit=True)
+        assert row["is_shared_limit"] is True
+
 
 class TestBudgetCategory:
     """Tests for _budget_category."""
@@ -252,6 +260,12 @@ class TestBuildBudgetUsageRows:
         a = _assignment("b1", "platform")
         _, rows = _build_budget_usage_rows("user@example.com", [a], {"b1": _budget()}, {})
         assert rows[0]["project_name"] == "user@example.com"
+
+    def test_personal_rows_are_never_flagged_as_a_shared_limit(self):
+        """A personal budget belongs to this user alone, so its limit is never shared."""
+        a = _assignment("b1", "platform")
+        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b1": _budget()}, {})
+        assert rows[0]["is_shared_limit"] is False
 
     def test_cli_category_appends_cli_suffix(self):
         a = _assignment("b2", "cli")
@@ -851,6 +865,18 @@ class TestExpandProjectRows:
         assert platform_row["current_spending"] is None
         assert platform_row["spend_unavailable"] is True
 
+    def test_expand_row_without_percent_spend_is_not_flagged_as_shared(self):
+        """No `<category>_percent_spend` means the limit is this member's own cap, not the pool."""
+        rows = _expand_project_rows([self._project_row("p")])
+        assert all(r["is_shared_limit"] is False for r in rows)
+
+    def test_expand_row_with_percent_spend_is_flagged_as_shared(self):
+        """`member_spend_service` sets `<category>_percent_spend` exactly when `limit` is the
+        project's whole pooled budget rather than a member-specific cap (`_apply_unenforced_limit`)."""
+        row = self._project_row("p", platform_percent_spend=1.0)
+        platform_row = next(r for r in _expand_project_rows([row]) if r["project_name"] == "p")
+        assert platform_row["is_shared_limit"] is True
+
 
 _UPR = "codemie.repository.user_project_repository.user_project_repository"
 _APR = "codemie.repository.application_repository.application_repository"
@@ -910,13 +936,19 @@ class TestGetBudgetUsageDefaultFlagAndOrdering:
 
     @pytest.mark.asyncio
     async def test_default_project_rows_first_and_flagged(self):
-        projects = [_project_spend_row("alpha"), _project_spend_row("zeta", cli=1.0, cli_limit=5.0)]
+        projects = [
+            _project_spend_row("alpha", platform_percent_spend=10.0),
+            _project_spend_row("zeta", cli=1.0, cli_limit=5.0),
+        ]
         memberships = [_membership("alpha"), _membership("zeta", is_default=True)]
 
         _, rows = await self._run(projects, memberships)
 
         assert [r["project_name"] for r in rows] == ["zeta", "zeta (cli)", "alice", "alpha"]
         assert [r["is_default"] for r in rows] == [True, True, False, False]
+        # "alpha" carries platform_percent_spend, i.e. its limit is the project's shared pool;
+        # "zeta"/"zeta (cli)" are member-specific caps, and the personal row "alice" is never shared.
+        assert [r["is_shared_limit"] for r in rows] == [False, False, False, True]
 
     @pytest.mark.asyncio
     async def test_personal_default_puts_personal_rows_first_and_flagged(self):
@@ -955,6 +987,12 @@ class TestGetBudgetUsageDefaultFlagAndOrdering:
         columns, _ = await self._run([], [])
 
         assert "is_default" not in [c["id"] for c in columns]
+
+    @pytest.mark.asyncio
+    async def test_columns_include_is_shared_limit(self):
+        columns, _ = await self._run([], [])
+
+        assert "is_shared_limit" in [c["id"] for c in columns]
 
 
 class TestExpandProjectRowsPercentAndDefault:
