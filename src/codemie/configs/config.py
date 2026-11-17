@@ -660,6 +660,10 @@ class Config(BaseSettings):
     WORKSPACE_SCRIPT_TOOL_CALLS_MAX_CONCURRENT: int = 10
     # Gives a call's place back after this long, even if the call is still running (see ToolRunGate).
     WORKSPACE_SCRIPT_TOOL_CALL_MAX_HOLD_SECONDS: float = 480.0
+    # Most files one workspace "download all" archive may hold; more is refused with 413.
+    WORKSPACE_DOWNLOAD_MAX_FILES: int = 200
+    # Most uncompressed bytes one workspace "download all" archive may hold (100 MiB); more is refused with 413.
+    WORKSPACE_DOWNLOAD_MAX_BYTES: int = 104857600
 
     # Cache configuration for MCP toolkit instances
     MCP_TOOLKIT_SERVICE_CACHE_SIZE: int = 100

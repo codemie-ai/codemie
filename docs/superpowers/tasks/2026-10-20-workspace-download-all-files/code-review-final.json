@@ -1,0 +1,65 @@
+{
+  "decision": "approve",
+  "rationale": "All four lenses and the standards audit ran and raised two blocking findings: the new X-Workspace-Skipped-Count header was not CORS-exposed (CR-001) and the archive code broke the documented Module Cohesion rule in a ~1200-line module (CR-002). Both were fixed in the review fix-up (commit dbf47d427) and verified resolved by the check round (code-review-check.local.json), so the final state is approve. 16 candidates dismissed (memory/concurrency design accepted in spec, duplicate paths prevented by DB constraint and seen_paths, read failures already logged, config/log/style nits); 0 deferred.",
+  "confidence": "high",
+  "risk_flags": ["security/authorization", "public API (new endpoint)", "public-api"],
+  "business_review": [
+    {"kind": "spec", "item": "Route GET /v1/workspaces/{workspace_id}/files/download-all with authenticate, application/zip attachment", "status": "pass", "notes": "Implemented; filename falls back to workspace id; openapi baseline updated"},
+    {"kind": "spec", "item": "Owner-only via get_workspace; merged file set shared with get_workspace_input_files", "status": "pass", "notes": "Foreign equals missing; _workspace_source_files shared"},
+    {"kind": "spec", "item": "get_workspace_input_files behavior unchanged", "status": "pass", "notes": "Behavior-preserving refactor"},
+    {"kind": "spec", "item": "In-memory stdlib zipfile archive, stored path entries", "status": "pass", "notes": "_zip_workspace_files"},
+    {"kind": "spec", "item": "Entry names re-validated; unsafe names skipped", "status": "pass", "notes": "_read_archive_entry"},
+    {"kind": "spec", "item": "Synchronous GET, no job or queue", "status": "pass", "notes": "Plain sync route"},
+    {"kind": "spec", "item": "File-count and byte caps return 413", "status": "pass", "notes": "Config caps 200 files / 100 MiB; tests cover both"},
+    {"kind": "spec", "item": "Empty workspace returns 400", "status": "pass", "notes": "ValidationException mapped to 400"},
+    {"kind": "spec", "item": "Partial failure: _SKIPPED_FILES.txt, X-Workspace-Skipped-Count header, no leaked detail", "status": "pass", "notes": "Implemented; header CORS-exposed after CR-001 fix"},
+    {"kind": "spec", "item": "All files failing returns 500, never empty zip", "status": "pass", "notes": "WorkspaceArchiveFailedError"},
+    {"kind": "spec", "item": "Unexpected errors return generic 500 without exception text", "status": "pass", "notes": "_archive_http_error"},
+    {"kind": "spec", "item": "Structured audit log line plus metric", "status": "pass", "notes": "_audit_archive in finally; all outcomes tested"},
+    {"kind": "spec", "item": "Fidelity limitation documented in code and guide", "status": "pass", "notes": "Docstring and rest-api-patterns.md"},
+    {"kind": "spec", "item": "Non-goals respected", "status": "pass", "notes": "Existing routes untouched"},
+    {"kind": "story-ac", "item": "AC1: owner can GET download-all and receive one application/zip", "status": "pass", "notes": "Route test passes"},
+    {"kind": "story-ac", "item": "AC2: zip includes virtual uploads and nested folders", "status": "pass", "notes": "Nested, virtual and shadowing tests"},
+    {"kind": "story-ac", "item": "AC3: entry contents equal read content, binary and text", "status": "pass", "notes": "Integrity test covers bytes and str"},
+    {"kind": "story-ac", "item": "AC4: non-owner gets same response as nonexistent workspace", "status": "pass", "notes": "Both go through get_workspace"},
+    {"kind": "story-ac", "item": "AC5: outcomes distinguishable by status and message", "status": "pass", "notes": "400/413/500/200 mappings tested"},
+    {"kind": "story-ac", "item": "AC6: unreadable files reported by path only via manifest and header", "status": "pass", "notes": "Header readable cross-origin after CR-001 fix"},
+    {"kind": "story-ac", "item": "AC7: every file failing is an error, not an empty zip", "status": "pass", "notes": "500"},
+    {"kind": "story-ac", "item": "AC8: existing single-file download and tools unchanged", "status": "pass", "notes": "Regression test present"},
+    {"kind": "story-ac", "item": "AC9: one audit log line plus a metric per request", "status": "pass", "notes": "Fields asserted in tests"},
+    {"kind": "story-ac", "item": "AC10: automated tests for the listed cases", "status": "pass", "notes": "Two new test files; router tests call handlers directly"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "3 subjects in the range all match the documented EPMCDME-####: Description format (EPMCDME-15770)"},
+    {"kind": "code-quality", "status": "pass", "notes": "Module Cohesion: archive concern moved out of the ~1200-line agent_workspace_service.py into workspace_archive.py (CR-002 fix)."},
+    {"kind": "security", "status": "pass", "notes": "Auth via Depends(authenticate) and get_workspace; entry names validated; caps bound memory; generic client errors."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/main.py",
+      "line": 1373,
+      "title": "X-Workspace-Skipped-Count not exposed through CORS",
+      "problem": "The download-all route sets the custom X-Workspace-Skipped-Count header to signal a partial archive, but CORSMiddleware only lists Content-Disposition in expose_headers. A browser client on a different origin (WEBAPP_CORS is configured) cannot read the header.",
+      "impact": "A partial archive looks complete to the UI user; the header is the only machine-readable skip signal outside the zip manifest. Whether the web app is deployed cross-origin was not confirmed, so reachability is unconfirmed.",
+      "recommendation": "Add \"X-Workspace-Skipped-Count\" to expose_headers in the CORSMiddleware configuration, next to \"Content-Disposition\".",
+      "resolution": "resolved in dbf47d427; verified by the check round"
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/agent_workspace_service.py",
+      "line": 113,
+      "title": "Archive logic bloats agent_workspace_service module",
+      "problem": "About 150 lines of archive code (WorkspaceArchive, error types, constants, _ArchiveProgress, _archive_filename, build/zip/audit/read-entry methods) are appended to a ~1200-line module whose core responsibility is workspace CRUD. code-quality.md Module Cohesion says to extract the new piece first when a file is 500+ lines and the change is not its core responsibility.",
+      "impact": "Documented blocking code-quality standard is violated; the module grows further past the size threshold.",
+      "recommendation": "Move the archive types, constants, _archive_filename and the build/zip/audit/read-entry logic into a new module next to the service (for example workspace_archive.py); have AgentWorkspaceService.build_workspace_archive delegate to it and update router and test imports.",
+      "resolution": "resolved in dbf47d427; verified by the check round"
+    }
+  ]
+}

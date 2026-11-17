@@ -1930,7 +1930,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "ETag", "Retry-After"],
+    expose_headers=["Content-Disposition", "ETag", "Retry-After", "X-Workspace-Skipped-Count"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
 

@@ -21,6 +21,7 @@ import base64
 from fastapi import APIRouter, Depends, Query, Response
 from starlette import status
 
+from codemie.configs import logger
 from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.rest_api.models.agent_workspace import (
     AgentWorkspaceResponse,
@@ -38,6 +39,7 @@ from codemie.rest_api.models.agent_workspace import (
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.agent_workspace_service import AgentWorkspaceService
+from codemie.service.workspace_archive import WorkspaceArchiveFailedError, WorkspaceArchiveTooLargeError
 
 router = APIRouter(
     tags=["Agent Workspace"],
@@ -61,6 +63,30 @@ def _as_http_error(exception: Exception) -> ExtendedHTTPException:
         code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         message="Workspace request failed",
         details=str(exception),
+        help="Please try again later. If the problem persists, contact the administrator.",
+    )
+
+
+def _archive_http_error(exception: Exception) -> ExtendedHTTPException:
+    """Map an archive failure to an HTTP error; only the typed, client-safe messages reach the response."""
+    if isinstance(exception, ValidationException):
+        return _as_http_error(exception)
+    if isinstance(exception, WorkspaceArchiveTooLargeError):
+        return ExtendedHTTPException(
+            code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            message="Workspace archive is too large",
+            details=str(exception),
+            help="Download individual files instead.",
+        )
+    if isinstance(exception, WorkspaceArchiveFailedError):
+        details = str(exception)
+    else:
+        logger.error(f"Workspace archive failed unexpectedly: {type(exception).__name__}: {exception}")
+        details = "Workspace archive could not be created"
+    return ExtendedHTTPException(
+        code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        message="Workspace request failed",
+        details=details,
         help="Please try again later. If the problem persists, contact the administrator.",
     )
 
@@ -194,6 +220,21 @@ def download_workspace_file(
         )
     except Exception as exception:
         raise _as_http_error(exception) from exception
+
+
+@router.get("/workspaces/{workspace_id}/files/download-all", dependencies=[Depends(authenticate)])
+def download_all_workspace_files(
+    workspace_id: str,
+    user: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection, same as sibling routes
+) -> Response:
+    try:
+        archive = workspace_service.build_workspace_archive(workspace_id, user)
+    except Exception as exception:
+        raise _archive_http_error(exception) from exception
+    headers = {"Content-Disposition": f'attachment; filename="{archive.filename}"'}
+    if archive.skipped_paths:
+        headers["X-Workspace-Skipped-Count"] = str(len(archive.skipped_paths))
+    return Response(content=archive.content, media_type="application/zip", headers=headers)
 
 
 @router.post(

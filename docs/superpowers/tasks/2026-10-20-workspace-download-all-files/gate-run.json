@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15770_workspace-download-all-files",
+  "head": "dbf47d427ad7c48af871c1520aa684941fd21c24",
+  "runner": "poetry",
+  "started_at": "2026-10-20T17:24:22+05:00",
+  "completed_at": "2026-10-20T17:30:01.708545+05:00",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5049,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 20879,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2417,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 65991,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Docker available; 'no leaks found'. Hook codemie-gitleaks scans staged diff only; covered by full-tree scan."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 248370,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "Re-run locally by the user: 20860 passed, 182 skipped, 262 warnings in 248.37s (0:04:08). Earlier run had 2 failures in tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py, which also failed on main and are not caused by this branch."
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "command": "make sonar-local",
+      "notes": "pre-push hook (opt-in via CODEMIE_PREPUSH_ENABLED) runs it; no .env.local and no SONAR* env vars present locally. Provide Sonar token/URL in .env.local to run."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make test-harness",
+      "notes": "Run locally by the user: 197 passed, 4 skipped, 1 rerun in 481.91s (0:08:01). JUnit report: codemie-test-reports/junit.xml.",
+      "exit_code": 0,
+      "duration_ms": 481910
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make coverage",
+      "notes": "Not requested."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make verify",
+      "notes": "Composite of ruff, license, gitleaks, test, each run individually."
+    }
+  ],
+  "failures": {},
+  "notes": "unit and test-harness results were run locally by the user and entered here; sonar-local was not run (no Sonar credentials)."
+}

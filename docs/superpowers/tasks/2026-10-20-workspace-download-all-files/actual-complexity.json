@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 9,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Four components: new workspace_archive module (builder, audit, typed errors), download-all route with error mapping in agent_workspace router, AgentWorkspaceService helpers it reuses, and config limits. Reuses shared workspace_path_rules and BaseMonitoringService." },
+    { "dimension": "technical_risk", "reason": "No exact precedent for in-memory multi-file zip. Security-sensitive: entry names validated against path rules to block zip-slip and reserved paths, size and file-count caps guard memory, errors mapped so internals are not leaked. Defensive edge cases (unreadable files, unsafe names, manifest name collision, too-large) are covered by new parameterized tests." },
+    { "dimension": "file_change_estimate", "reason": "9 files changed per diffstat (6 modified including the OpenAPI baseline and REST guide, 3 new: archive module and two test files); 767 insertions across src, tests and docs." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk held at L: security-sensitive zip entry-name validation and memory-bound archive building with no exact precedent"
+  ],
+  "split_recommendation": null
+}

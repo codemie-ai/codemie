@@ -54,6 +54,7 @@ from codemie.service.script_tool_calls.handler import build_tool_call_handlers
 from codemie.service.script_tool_calls.observer import ScriptRunObserver
 from codemie.service.script_tool_calls.outcome_metrics import ScriptCallMetricsListener
 from codemie.service.workspace_script_bridge import resolve_tool_calling_settings
+from codemie.service.workspace_archive import WorkspaceArchive, build_workspace_archive
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.base.execution_timing import SandboxRunReport, report_sandbox_run
 from codemie_tools.data_management.code_executor.run_observer import SandboxRunObserver
@@ -551,18 +552,25 @@ class AgentWorkspaceService:
         workspace = self.get_workspace(workspace_id, user)
         input_files: list[FileObject] = []
         warnings: list[str] = []
-        existing_paths: set[str] = set()
 
-        for workspace_file in self.repository.list_files(workspace.id):
-            existing_paths.add(workspace_file.path)
+        for workspace_file in self._workspace_source_files(workspace):
             self._collect_input_file(workspace_file, input_files, warnings)
 
-        for virtual_file in self._get_conversation_uploaded_files(workspace.conversation_id):
-            if virtual_file.path in existing_paths:
-                continue
-            self._collect_input_file(virtual_file, input_files, warnings)
-
         return WorkspaceInputFiles(input_files, warnings)
+
+    def _workspace_source_files(self, workspace: AgentWorkspace) -> list[AgentWorkspaceFile]:
+        """The files a workspace lists: its DB rows, then conversation uploads not shadowed by a DB path."""
+        db_files = list(self.repository.list_files(workspace.id))
+        existing_paths = {workspace_file.path for workspace_file in db_files}
+        return db_files + [
+            virtual_file
+            for virtual_file in self._get_conversation_uploaded_files(workspace.conversation_id)
+            if virtual_file.path not in existing_paths
+        ]
+
+    def build_workspace_archive(self, workspace_id: str, user: User) -> WorkspaceArchive:
+        """Zip every workspace file for download-all; see ``codemie.service.workspace_archive``."""
+        return build_workspace_archive(self, workspace_id, user)
 
     def _collect_input_file(
         self, workspace_file: AgentWorkspaceFile, input_files: list[FileObject], warnings: list[str]

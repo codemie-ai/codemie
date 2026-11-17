@@ -25,6 +25,19 @@ Use shared exception types and central handlers for consistent response bodies.
 
 Evidence: `ValidationException` is converted to a structured 400 response at `src/codemie/rest_api/main.py:1192`; `ExtendedHTTPException` is handled at `src/codemie/rest_api/main.py:1208`.
 
+## Workspace Archive Download
+
+`GET /v1/workspaces/{workspace_id}/files/download-all` returns one in-memory zip of every file the workspace lists (database rows plus conversation uploads; a database row wins on a shared path). Entries are named by the stored workspace path.
+
+| Status | When |
+|---|---|
+| 200 | Archive returned; a file that could not be read or has an unsafe path is left out and listed in `_SKIPPED_FILES.txt` (numeric suffix if the name is taken), with the count in the `X-Workspace-Skipped-Count` header |
+| 400 | Workspace is empty, missing or not the caller's (the same response for the last two) |
+| 413 | More than `WORKSPACE_DOWNLOAD_MAX_FILES` files (default 200) or more than `WORKSPACE_DOWNLOAD_MAX_BYTES` uncompressed bytes (default 100 MiB) |
+| 500 | No file could be read, or an unexpected failure (generic message, never the exception text) |
+
+Entries are byte-exact on every backend: blobs are read as `application/octet-stream`, so GCP and the filesystem backend do not decode text. Each request writes one audit log line and a `workspace_archive_download` count metric.
+
 ## Authentication Dependencies
 
 Use existing security dependencies for authenticated routes.

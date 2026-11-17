@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Add a backend endpoint that packages a user's authorized Agent Workspace files into a single zip archive preserving folder structure (EPMCDME-15770).",
+  "generated": "2026-10-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 17,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest pattern is download_workspace_file plus get_workspace_input_files, but neither covers multi-blob archive assembly. It is the first multi-blob read in one request, with unbounded in-memory buffering and no size or count cap. Byte fidelity (AC4) differs by backend: GCP decodes text with backslashreplace and the filesystem repo reads text/* in text mode. Zip entry names need re-validation against workspace_path_rules (traversal, reserved names). _as_http_error returns str(exception) on 500, which risks leaking blob details (AC8). AC10 enumerates edge cases (nested, empty, failure, authorization) and no router test harness exists for agent_workspace.py. Scored L rather than M for the security-surface divergence and the missing router-test template; not XL because the pattern is otherwise in-repo and the change is reversible and additive."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk raised from M to L: security-sensitive aspects (zip entry-name safety, error-detail leakage, per-user authorization boundary) are not covered by the closest existing pattern, and enumerated edge-case ACs have no router-level test template.",
+    "Requirements Clarity held at M (not bumped further): audit logging meaning and the progress state (AC6) are open, but the core ACs are defined."
+  ],
+  "split_recommendation": null
+}
