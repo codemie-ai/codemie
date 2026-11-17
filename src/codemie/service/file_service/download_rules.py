@@ -32,6 +32,7 @@ from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.security.user import User
 from codemie.service.file_service.blob_ref_rules import is_safe_blob_ref, is_source_owned_blob_ref
 from codemie.service.share_conversation_service import collect_message_file_tokens
+from codemie.service.workflow_icon_service import WorkflowIconService
 
 _WORKFLOW_SCHEMA_PREFIX = "workflows/"
 _WORKFLOW_SCHEMA_SUFFIX = ".svg"
@@ -108,6 +109,28 @@ def _is_readable_assistant_icon(file_object: FileObject, user: User) -> bool:
         )
     except Exception:
         logger.warning(f"Assistant icon authorization lookup failed for assistant_id={assistant_id!r}")
+        return False
+
+
+def _is_readable_workflow_icon(file_object: FileObject, user: User) -> bool:
+    """Rule B2: a workflow icon, and only for a workflow this user may read.
+
+    An icon is readable when any workflow referencing its URL is readable by the user, since duplicated
+    workflows share one icon. Lookup failures deny access.
+    """
+    bucket = config.CODEMIE_STORAGE_BUCKET_NAME
+    if (
+        not bucket
+        or file_object.owner != bucket
+        or not WorkflowIconService.is_icon_file(file_object.owner, file_object.name)
+    ):
+        return False
+
+    try:
+        workflows = WorkflowConfig.get_by_icon_url(file_object.to_encoded_url())
+        return any(Ability(user).can(Action.READ, workflow) for workflow in workflows)
+    except Exception:
+        logger.warning(f"Workflow icon authorization lookup failed for name={file_object.name!r}")
         return False
 
 
@@ -197,8 +220,8 @@ def can_download(
     if owner == user.id:
         return True
 
-    # Rule B: workflow schema, and only for a workflow this user may read.
-    if _is_readable_workflow_schema(file_object, user):
+    # Rule B: workflow schema, or Rule B2: workflow icon - each only for a workflow this user may read.
+    if _is_readable_workflow_schema(file_object, user) or _is_readable_workflow_icon(file_object, user):
         return True
 
     # Rule C: MCP screenshot stored under the shared namespace. Screenshots are normally written

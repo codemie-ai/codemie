@@ -20,8 +20,7 @@ from typing import Annotated, Any, Dict, List, Optional, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from fastapi import APIRouter, status, Depends, Query, BackgroundTasks, Request
-
+from fastapi import APIRouter, status, Depends, Query, BackgroundTasks, Request, UploadFile
 from pydantic import BaseModel
 from codemie.rest_api.dependencies.core import require_core
 from codemie.rest_api.models.assistant import MCPServerDetails
@@ -37,6 +36,8 @@ from codemie.configs import config, logger
 from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
 from codemie.service.mcp.access_control import MCPAccessControlService
+from codemie.rest_api.models.files import WriteFileResponse
+from codemie.service.workflow_icon_service import WORKFLOW_ICON_MAX_BYTES, WorkflowIconService
 from codemie.core.constants import MermaidMimeType
 from codemie.service.file_service.mermaid_service import (
     MERMAID_INVALID_DIAGRAM_HELP,
@@ -648,6 +649,22 @@ def _persist_and_finalize_new_workflow(
         ) from e
 
 
+@router.post("/workflows/icon", response_model=WriteFileResponse, dependencies=[Depends(authenticate)])
+def upload_workflow_icon(file: UploadFile) -> WriteFileResponse:
+    """Store an uploaded workflow icon image and return the file URL to save as the workflow's icon_url."""
+    WorkflowIconService.check_filename(file.filename or "", file.content_type or "")
+    # Read one byte past the limit so an oversize upload is detected without buffering all of it.
+    data = file.file.read(WORKFLOW_ICON_MAX_BYTES + 1)
+    if len(data) > WORKFLOW_ICON_MAX_BYTES:
+        raise ExtendedHTTPException(
+            code=400,
+            message="Unsupported icon file size",
+            details="Maximum icon size is 0.5 MB",
+        )
+    stored = WorkflowIconService.store(data, file.content_type or "")
+    return WriteFileResponse(file_url=stored.to_encoded_url())
+
+
 @router.post(
     "/workflows",
     status_code=status.HTTP_200_OK,
@@ -662,6 +679,7 @@ def create_workflow(
         WorkflowErrorFormat.STRING, description=WORKFLOW_ERROR_FORMAT_DESCRIPTION
     ),
 ):
+    request.icon_url = WorkflowConfig.validate_icon_url(request.icon_url, user)
     workflow_config = WorkflowConfig(**request.model_dump())
     # Ensure assistants/custom_nodes/states are populated from yaml_config (if present).
     # Parsing errors are deferred to WorkflowExecutor.validate_workflow below, which validates
@@ -691,6 +709,38 @@ def create_workflow(
     return _persist_and_finalize_new_workflow(workflow_config, request, background_tasks, user, error_format)
 
 
+def _build_updated_workflow_config(
+    request: UpdateWorkflowRequest, workflow: WorkflowConfig, user: User
+) -> WorkflowConfig:
+    """Validate the icon and build the normalized WorkflowConfig for an update request."""
+    if request.icon_url != workflow.icon_url:
+        request.icon_url = WorkflowConfig.validate_icon_url(request.icon_url, user)
+    try:
+        updated_config = WorkflowConfig(**request.model_dump())
+        updated_config.parse_execution_config()
+        _assert_workflow_model_selections_selectable(updated_config, workflow)
+        if request.categories is None:
+            # WorkflowConfig coerces None to []; keep None so an omitted field preserves stored categories
+            updated_config.categories = None
+
+        # Normalize model ids before validation/save so YAML persists deployment ids
+        _normalize_workflow_model_ids(updated_config, user)
+        _rewrite_yaml_config_from_objects(updated_config)
+    except ExtendedHTTPException:
+        # _assert_workflow_model_selections_selectable raises a fully-populated ExtendedHTTPException
+        # (message + details). ExtendedHTTPException never calls super().__init__(), so re-wrapping
+        # it below via str(e) would silently discard that message/details - re-raise it as-is.
+        raise
+    except Exception as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message=WORKFLOW_CONFIGURATION_ERROR,
+            details=str(e).strip(),
+            help="",
+        ) from e
+    return updated_config
+
+
 @router.put(
     "/workflows/{workflow_id}",
     status_code=status.HTTP_200_OK,
@@ -716,30 +766,7 @@ async def update_workflow(
     if not Ability(user).can(Action.WRITE, workflow):
         raise_access_denied("update")
 
-    try:
-        updated_config = WorkflowConfig(**request.model_dump())
-        updated_config.parse_execution_config()
-        _assert_workflow_model_selections_selectable(updated_config, workflow)
-        if request.categories is None:
-            # WorkflowConfig coerces None to []; keep None so an omitted field preserves stored categories
-            updated_config.categories = None
-
-        # Normalize model ids before validation/save so YAML persists deployment ids
-        _normalize_workflow_model_ids(updated_config, user)
-        _rewrite_yaml_config_from_objects(updated_config)
-    except ExtendedHTTPException:
-        # _assert_workflow_model_selections_selectable raises a fully-populated ExtendedHTTPException
-        # (message + details). ExtendedHTTPException never calls super().__init__(), so re-wrapping
-        # it below via str(e) would silently discard that message/details - re-raise it as-is.
-        raise
-    except Exception as e:
-        raise ExtendedHTTPException(
-            code=status.HTTP_400_BAD_REQUEST,
-            message=WORKFLOW_CONFIGURATION_ERROR,
-            details=str(e).strip(),
-            help="",
-        ) from e
-
+    updated_config = _build_updated_workflow_config(request, workflow, user)
     updated_config.id = workflow_id
     logger.debug(f"Update workflow. Request: {request}")
     was_global = bool(workflow.is_global)  # the request carries no is_global; the stored state decides

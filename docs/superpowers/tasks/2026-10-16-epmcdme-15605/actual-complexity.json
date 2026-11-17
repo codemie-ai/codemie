@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "generated": "2026-10-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 9,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Bumped L to XL: the change touches the workflow router (create/update/new upload route), the new workflow_icon_service, WorkflowConfig model and queries, and download_rules.py, which is the shared file-download authorization used by every stored file. Reuses FileRepositoryFactory from the shared storage layer." },
+    { "dimension": "requirements_clarity", "reason": "Acceptance is concrete in code: MIME allow-list and 2 MB limit, extension and magic-byte checks, canonical URL write-back, and the read/edit gates. Design decisions (reuse of the assistant icon mechanism, no migration) were resolved in the diff, so clarity is M rather than L." },
+    { "dimension": "technical_risk", "reason": "Security-sensitive file upload: content sniffing, extension-to-type checks, size cap, and uuid4 names with a fullmatch name regex. Authorization changed on both sides: icon URL reuse requires READ on a referencing workflow, and icon reads go through the Ability check in download_rules. No exact precedent, so the base is L and the auth and upload red flags bump it to XL." },
+    { "dimension": "file_change_estimate", "reason": "9 files in the diff: 2 new (workflow_icon_service.py, test_workflow_icon_service.py) and 7 modified (router, workflow_config, download_rules, openapi baseline, and 3 test modules). Falls in the 7-10 band, which maps to L." },
+    { "dimension": "affected_layers", "reason": "Four layers: API (router endpoint and validation), Service (icon service and download rules), DB-Persistence (get_by_icon_url query on the existing icon_url column, no schema change), and Infrastructure (file storage repository). Four layers, but no migration, so L rather than XL." },
+    { "dimension": "dependencies", "reason": "No new packages or manifest changes. Only the OpenAPI baseline JSON is updated for the new route." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utility download_rules.py (file-download authorization for all stored files)",
+    "Technical Risk bumped from L to XL: security-sensitive file upload (content and extension validation, size limit)",
+    "Technical Risk bumped from L to XL: authorization change (edit gate on icon reuse and viewer-readable icon files)"
+  ],
+  "split_recommendation": null
+}

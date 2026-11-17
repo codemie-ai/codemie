@@ -22,6 +22,7 @@ import pytest
 
 from codemie_tools.base.file_object import FileObject
 
+from codemie.configs import config
 from codemie.rest_api.security.user import User
 from codemie.service.file_service.download_rules import can_download
 
@@ -222,3 +223,43 @@ def test_memory_snapshot_in_bucket_namespace_denied(mocker) -> None:
 
     assert can_download(_icon("memory_snapshots/snap.json.gz"), _user(), None, "tok", _repo()) is False
     find.assert_not_called()
+
+
+ICON_NAME = "workflow-icons/" + "b" * 32 + ".png"
+_ICON_TARGET = "codemie.service.file_service.download_rules.WorkflowConfig"
+
+
+def _workflow_icon(name: str = ICON_NAME) -> FileObject:
+    return FileObject(name=name, mime_type="image/png", owner=config.CODEMIE_STORAGE_BUCKET_NAME)
+
+
+def test_viewer_of_referencing_workflow_can_download_icon(mocker) -> None:
+    workflow_model = mocker.patch(_ICON_TARGET)
+    workflow_model.get_by_icon_url.return_value = [MagicMock()]
+    mocker.patch("codemie.core.ability.Ability.can", return_value=True)
+
+    assert can_download(_workflow_icon(), _user(), None, "tok", _repo()) is True
+    workflow_model.get_by_icon_url.assert_called_once_with(_workflow_icon().to_encoded_url())
+
+
+def test_referencing_workflow_without_view_access_denies_icon(mocker) -> None:
+    workflow_model = mocker.patch(_ICON_TARGET)
+    workflow_model.get_by_icon_url.return_value = [MagicMock()]
+    mocker.patch("codemie.core.ability.Ability.can", return_value=False)
+
+    assert can_download(_workflow_icon(), _user(), None, "tok", _repo()) is False
+
+
+def test_icon_no_workflow_references_denies_non_owner(mocker) -> None:
+    workflow_model = mocker.patch(_ICON_TARGET)
+    workflow_model.get_by_icon_url.return_value = []
+
+    assert can_download(_workflow_icon(), _user(), None, "tok", _repo()) is False
+
+
+def test_bucket_non_icon_file_skips_icon_rule(mocker) -> None:
+    workflow_model = mocker.patch(_ICON_TARGET)
+    mocker.patch("codemie.core.ability.Ability.can", return_value=False)
+
+    assert can_download(_workflow_icon("memory/snapshot.json"), _user(), None, "tok", _repo()) is False
+    workflow_model.get_by_icon_url.assert_not_called()

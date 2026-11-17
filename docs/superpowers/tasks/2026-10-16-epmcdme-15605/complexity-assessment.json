@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Allow users to upload a workflow icon image (same mechanism and limits as assistant icons) alongside icon_url, with preview, replace/remove, edit-permission gating, and no migration of existing icon_url workflows (EPMCDME-15605).",
+  "generated": "2026-10-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Backend router (workflow.py create/update), WorkflowService create/update and _update_workflow_values, WorkflowConfig/request models, plus UI create/edit form and display locations (codemie-ui, not indexed). Reuse of the assistant icon upload path spans a shared storage utility (FileRepository)." },
+    { "dimension": "requirements_clarity", "reason": "Nine acceptance criteria are concrete, but the assistant icon upload mechanism and its limits were not located in codegraph, the icon_url persistence path is unverified, and the reference design (separate uploaded-icon field vs URL write-back) is an open decision." },
+    { "dimension": "technical_risk", "reason": "Base L: no exact precedent for a workflow upload path, reuse target unresolved, storage delete path for replaced/removed icons is new. Bumped to XL: file upload is security-sensitive (type/size validation, invalid-file rejection) and the edit gate is an authorization change (red flags applied). Closest pattern is GenerateImageTool._store_b64_image / SkillFileStorage, which covers storage but not the icon-specific validation." },
+    { "dimension": "file_change_estimate", "reason": "About 4 confirmed backend files modified (workflow router, workflow service, workflow_config, workflow_models) plus UI form and display files (count unknown, estimated 3-5), plus 1-2 new files for upload handling and icon storage glue." },
+    { "dimension": "affected_layers", "reason": "UI, API, Service, and DB-Persistence (new icon reference field on the workflows table, possibly a schema change), plus Infrastructure via file storage. Four layers including persistence." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: security-sensitive file upload (input validation, invalid-file rejection)",
+    "Technical Risk bumped from L to XL: affects authorization (edit-permission gating on icon change)"
+  ],
+  "split_recommendation": null
+}

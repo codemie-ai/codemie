@@ -4891,6 +4891,20 @@
         "title": "Body_update_knowledge_base_files_v1_index_knowledge_base_file_put",
         "type": "object"
       },
+      "Body_upload_workflow_icon_v1_workflows_icon_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_workflow_icon_v1_workflows_icon_post",
+        "type": "object"
+      },
       "Body_validate_users_from_csv_v1_projects__projectName__import_users_validate_post": {
         "properties": {
           "file": {
@@ -84388,6 +84402,56 @@
           }
         ],
         "summary": "Generate Workflow",
+        "tags": [
+          "Workflow"
+        ]
+      }
+    },
+    "/v1/workflows/icon": {
+      "post": {
+        "description": "Store an uploaded workflow icon image and return the file URL to save as the workflow's icon_url.",
+        "operationId": "upload_workflow_icon_v1_workflows_icon_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_workflow_icon_v1_workflows_icon_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WriteFileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Upload Workflow Icon",
         "tags": [
           "Workflow"
         ]

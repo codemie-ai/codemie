@@ -24,14 +24,14 @@ from langgraph.pregel._retry import RetryPolicy
 from pydantic import BaseModel, Field, PrivateAttr, ValidationError, computed_field, model_validator
 
 from codemie.configs import config, logger
-from codemie.core.ability import Owned, Action
+from codemie.core.ability import Ability, Owned, Action
 from codemie.workflows.placeholders import (
     substitute_placeholders_for_yaml_load,
     restore_sentinels_in_obj,
     extract_placeholder_names,
 )
 from codemie.core.constants import DEMO_PROJECT
-from codemie.core.exceptions import NotFoundException
+from codemie.core.exceptions import ExtendedHTTPException, NotFoundException
 from codemie.core.models import UserEntity
 from codemie.rest_api.models.base import (
     CommonBaseModel,
@@ -41,6 +41,8 @@ from codemie.rest_api.models.base import (
 )
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem
 from codemie.rest_api.security.user import User
+from codemie.service.workflow_icon_service import WorkflowIconService
+from codemie_tools.base.file_object import FileObject
 from codemie.core.workflow_models.constants import (
     RETRY_POLICY_DEFAULT_BACKOFF_FACTOR,
     RETRY_POLICY_DEFAULT_INITIAL_INTERVAL,
@@ -318,6 +320,9 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
         return self.project in user.project_names and self.shared
 
 
+INVALID_WORKFLOW_ICON_MESSAGE = "Invalid workflow icon"
+
+
 class WorkflowConfig(BaseModelWithSQLSupport, WorkflowConfigBase, table=True):
     __tablename__ = "workflows"
 
@@ -370,6 +375,49 @@ class WorkflowConfig(BaseModelWithSQLSupport, WorkflowConfigBase, table=True):
         with Session(cls.get_engine()) as session:
             statement = select(cls.id, cls.name).where(cls.name.in_(names))  # type: ignore[arg-type]
             return [tuple(row) for row in session.exec(statement).all()]
+
+    @classmethod
+    def get_by_icon_url(cls, icon_url: str) -> list[WorkflowConfig]:
+        """All workflows whose icon_url is this exact URL; duplicated workflows share one icon."""
+        with Session(cls.get_engine()) as session:
+            statement = select(cls).where(cls.icon_url == icon_url)
+            return session.exec(statement).all()
+
+    @classmethod
+    def validate_icon_url(cls, icon_url: str | None, user: User) -> str | None:
+        """Validate an icon_url and return the value to store.
+
+        External URLs are returned unchanged. A stored-file URL must belong to the storage bucket and name an
+        existing workflow icon; it is returned in canonical form so the lookup in get_by_icon_url always matches it.
+        An icon already referenced by workflows must be readable by the saving user through at least one of them.
+        """
+        if not icon_url:
+            return icon_url
+        try:
+            file_object = FileObject.from_encoded_url(icon_url)
+        except Exception:
+            return icon_url
+        if file_object.owner != config.CODEMIE_STORAGE_BUCKET_NAME:
+            raise ExtendedHTTPException(
+                code=400,
+                message=INVALID_WORKFLOW_ICON_MESSAGE,
+                details="Icon must be an external URL or a workflow icon uploaded through this service",
+            )
+        if not WorkflowIconService.exists(icon_url):
+            raise ExtendedHTTPException(
+                code=400,
+                message=INVALID_WORKFLOW_ICON_MESSAGE,
+                details="The referenced icon file was not found",
+            )
+        canonical_url = file_object.to_encoded_url()
+        referencing = cls.get_by_icon_url(canonical_url)
+        if referencing and not any(Ability(user).can(Action.READ, wf) for wf in referencing):
+            raise ExtendedHTTPException(
+                code=400,
+                message=INVALID_WORKFLOW_ICON_MESSAGE,
+                details="The referenced icon is not available to this user",
+            )
+        return canonical_url
 
     @classmethod
     def is_not_global_filter(cls) -> ColumnElement[bool]:

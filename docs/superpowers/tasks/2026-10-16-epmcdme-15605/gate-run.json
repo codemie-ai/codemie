@@ -1,0 +1,152 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15605_workflow-allow-uploading-icon-file",
+  "head": "8c29e4fc6dd07afa532573d0167fcb9d53a69da4",
+  "runner": "poetry",
+  "started_at": "2026-10-19T16:44:28+00:00",
+  "completed_at": "2026-10-19T17:52:22+00:00",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4747,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 15026,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3480,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 50783,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 250360,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "Run locally by the user via make verify: 20845 passed, 182 skipped in 250.36s. The 9 failures seen earlier (cli_analytics postgres, code_executor filesystem policy) did not occur in that run."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: the user did not request coverage."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 91,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip quote: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable locally by setting SONAR_TOKEN (SONAR_* vars are read from .env.local) and rerun make sonar-local."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1004280,
+      "command": "make test-harness",
+      "exit_code": 0,
+      "notes": "Run locally by the user via make test-harness: 197 passed, 4 skipped, 5 rerun in 1004.28s (0:16:44)."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": 0,
+      "notes": "Run locally by the user: 20845 passed, 182 skipped in 250.36s; composite of ruff, license-check, gitleaks and test."
+    },
+    {
+      "id": "pre-commit-ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 11,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip quote: '[pre-commit] No staged Python files - skipping Ruff format/fix check.' Stage Python changes to exercise the staged format check. Full-tree ruff format already PASSED in make ruff."
+    },
+    {
+      "id": "pre-commit-ruff-check",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1321,
+      "command": "poetry run ruff check",
+      "exit_code": 0,
+      "notes": "Command component 2.a of scripts/git-hooks/pre_commit.sh; run standalone."
+    },
+    {
+      "id": "pre-commit-license-check",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 2190,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0,
+      "notes": "Command component 2.b of scripts/git-hooks/pre_commit.sh; run standalone."
+    },
+    {
+      "id": "commit-msg-hook",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 10,
+      "command": "bash scripts/git-hooks/commit_msg.sh <HEAD commit message file>",
+      "exit_code": 0,
+      "notes": "Checked HEAD commit subject only."
+    },
+    {
+      "id": "pre-push-hook",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 3,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": 0,
+      "notes": "Self-skip quote: '[pre-push] CODEMIE_PREPUSH_ENABLED=false -> skipping heavy checks.' Enable with CODEMIE_PREPUSH_ENABLED=true. Its pytest and sonar components are covered by guide gates test and sonar-local (sonar itself SKIPPED)."
+    },
+    {
+      "id": "gitleaks-staged-hook",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1953,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip quote: 'scanned ~0 bytes (0)' and '0 commits scanned' (nothing staged, so nothing scanned). Stage the change to scan it; full-tree scan is covered by guide gate gitleaks (PASS)."
+    },
+    {
+      "id": "gitlab-ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml",
+      "exit_code": null,
+      "notes": "Not runnable locally: includes remote template epm-cdme/codemie-gitlab-templates@0.1.2 and wait-ci-init waits on external contexts (ci-pipeline, compliance-report). Guide says no pipeline runs these gates; .gitlab-ci.yml exists, so the guide and repo disagree. Only CI can settle this."
+    }
+  ]
+}

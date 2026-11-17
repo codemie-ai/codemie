@@ -1,0 +1,165 @@
+{
+  "decision": "approve",
+  "rationale": "All 15 prior findings are addressed at HEAD. CR-005 (reused icon not bound to a viewer) and CR-014 (storage errors) were the two still open in the previous re-check and are fixed in 38b9d5079; CR-014 uses a deliberate 'any storage failure means missing' approach because cloud repositories do not raise FileNotFoundError. CR-001, CR-006 and CR-012 are closed by recorded user decisions. The commit-format item is fixed: the planning-artifacts commit is now 'EPMCDME-15605: Add planning artifacts'. Workflow icon test files pass (143 passed, 3 skipped). The 9 failures in the full test run are in cli_analytics postgres and code_executor filesystem-policy tests that this branch does not touch. No new findings raised; this round verifies only the prior ids per contract.",
+  "confidence": "medium",
+  "risk_flags": [
+    "security"
+  ],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1: user can upload an image as icon during create and edit and see a preview before saving",
+      "status": "pass",
+      "notes": "Backend upload and create/update acceptance exist; the upload control and preview are in the codemie-ui change for the same ticket."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: allowed types and size cap match assistant icon values; invalid files rejected with a message naming the reason",
+      "status": "pass",
+      "notes": "Reject messages name the reason; allowlist and 2 MB cap kept by user decision (CR-012); the UI sends the same types with a stricter 500 kb limit."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: uploaded icon displays wherever the workflow icon appears",
+      "status": "pass",
+      "notes": "Backend read path implemented and tested; rendering is covered in the codemie-ui change."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: user can replace or remove an uploaded icon",
+      "status": "pass",
+      "notes": "Backend accepts an empty icon_url and a replacement icon_url; replace and remove controls are in the codemie-ui change."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: user can still set a workflow icon by URL",
+      "status": "pass",
+      "notes": "External https URL saved unchanged; covered by test_create_workflow_saves_plain_https_icon_unchanged."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: existing icon_url and YAML icon_url workflows keep working with no migration",
+      "status": "pass",
+      "notes": "An unchanged stored icon_url is no longer re-validated on update (CR-009 fixed); YAML path unchanged."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: only users who can edit a workflow can change its icon",
+      "status": "pass",
+      "notes": "WRITE check runs before icon validation in update_workflow."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8: assistant icon upload and read behaviour unchanged",
+      "status": "pass",
+      "notes": "No assistant files in the diff; the new read rule matches only workflow-icons/ names."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9: icon cropping and editing are not part of this change",
+      "status": "na",
+      "notes": "Non-goal; nothing implemented or required."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC10: non-viewer cannot read a workflow icon; files outside the icon namespace cannot be set as icons",
+      "status": "pass",
+      "notes": "Backend upload and create/update acceptance exist; the upload control and preview are in the codemie-ui change for the same ticket."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "The one non-conforming subject (planning artifacts) was reworded to 'EPMCDME-15605: Add planning artifacts'; all branch subjects match EPMCDME-XXXX: Capital sentence."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "License header and __future__ import added, upload function annotated (CR-007, CR-010, CR-011); ruff check and format pass."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Icon name pattern uses fullmatch (CR-013); non-bucket owners rejected (CR-004); reuse requires read access (CR-005)."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Decision recorded by the user: accept the icon_url scan, no index (schema change is out of scope per spec)."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "test_get_by_icon_url_returns_only_workflows_with_that_exact_url in test_workflow_config.py runs the real query on an in-memory sqlite engine and asserts the exact-match result set. Passes at HEAD."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "_validate_workflow_icon_url returns file_object.to_encoded_url(); create stores that value and update stores it when icon_url changes."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "A file URL owned by anyone but the storage bucket now raises 400 'Invalid workflow icon'; external https URLs still pass through unchanged."
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "notes": "Fixed in 38b9d5079: when an icon is already referenced by workflows, the save is allowed only if the saving user can READ at least one of them (Ability(user).can(Action.READ, wf)); otherwise 400 'The referenced icon is not available to this user'. Router tests added."
+    },
+    {
+      "id": "CR-006",
+      "status": "resolved",
+      "notes": "Decision recorded by the user: no per-user quota or rate limit on POST /v1/workflows/icon."
+    },
+    {
+      "id": "CR-007",
+      "status": "resolved",
+      "notes": "upload_workflow_icon is annotated '-> WriteFileResponse'."
+    },
+    {
+      "id": "CR-008",
+      "status": "resolved",
+      "notes": "upload_workflow_icon calls check_icon_filename first; an extension outside ICON_EXTENSION_MIME_TYPES or one that mismatches the declared type returns 400."
+    },
+    {
+      "id": "CR-009",
+      "status": "resolved",
+      "notes": "update_workflow validates only when request.icon_url != workflow.icon_url; the stale-icon edit case has a router test."
+    },
+    {
+      "id": "CR-010",
+      "status": "resolved",
+      "notes": "Apache 2.0 header added above the module docstring of workflow_icon_service.py."
+    },
+    {
+      "id": "CR-011",
+      "status": "resolved",
+      "notes": "'from __future__ import annotations' added after the module docstring."
+    },
+    {
+      "id": "CR-012",
+      "status": "resolved",
+      "notes": "Decision recorded by the user: keep the PNG/JPEG/WebP/GIF allowlist and 2 MB cap. The workflow UI accepts the same types with a stricter 500 kb limit, so every file the UI sends is within the backend cap."
+    },
+    {
+      "id": "CR-013",
+      "status": "resolved",
+      "notes": "_ICON_NAME_RE is unanchored and is_workflow_icon_file uses fullmatch, so a trailing newline no longer passes."
+    },
+    {
+      "id": "CR-014",
+      "status": "resolved",
+      "notes": "Fixed in 38b9d5079 with a different approach than recommended: icon_exists treats any storage read failure as a missing icon, because the S3, GCP and Azure repositories do not raise FileNotFoundError, so a not-found-only catch would surface a missing icon as a 5xx. Trade-off: a transient storage outage on save is reported as 'referenced icon file was not found' (400) instead of a 5xx."
+    },
+    {
+      "id": "CR-015",
+      "status": "resolved",
+      "notes": "test_create_workflow_rejects_bucket_icon_outside_namespace, test_create_workflow_rejects_private_user_file_as_icon and test_update_workflow_keeps_unchanged_stale_icon_url exist in test_workflow.py; the 143 tests in the workflow icon test files pass at HEAD."
+    }
+  ]
+}

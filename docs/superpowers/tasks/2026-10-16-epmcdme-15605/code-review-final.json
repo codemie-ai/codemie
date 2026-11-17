@@ -1,0 +1,88 @@
+{
+  "decision": "approve",
+  "rationale": "All 15 prior findings are addressed at HEAD. CR-005 (reused icon not bound to a viewer) and CR-014 (storage errors) were the two still open in the previous re-check and are fixed in 38b9d5079; CR-014 uses a deliberate 'any storage failure means missing' approach because cloud repositories do not raise FileNotFoundError. CR-001, CR-006 and CR-012 are closed by recorded user decisions. The commit-format item is fixed: the planning-artifacts commit is now 'EPMCDME-15605: Add planning artifacts'. Workflow icon test files pass (143 passed, 3 skipped). The 9 failures in the full test run are in cli_analytics postgres and code_executor filesystem-policy tests that this branch does not touch. No new findings raised; this round verifies only the prior ids per contract.",
+  "confidence": "medium",
+  "risk_flags": [
+    "security"
+  ],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1: user can upload an image as icon during create and edit and see a preview before saving",
+      "status": "pass",
+      "notes": "Backend upload and create/update acceptance exist; the upload control and preview are in the codemie-ui change for the same ticket."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: allowed types and size cap match assistant icon values; invalid files rejected with a message naming the reason",
+      "status": "pass",
+      "notes": "Reject messages name the reason; allowlist and 2 MB cap kept by user decision (CR-012); the UI sends the same types with a stricter 500 kb limit."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: uploaded icon displays wherever the workflow icon appears",
+      "status": "pass",
+      "notes": "Backend read path implemented and tested; rendering is covered in the codemie-ui change."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: user can replace or remove an uploaded icon",
+      "status": "pass",
+      "notes": "Backend accepts an empty icon_url and a replacement icon_url; replace and remove controls are in the codemie-ui change."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: user can still set a workflow icon by URL",
+      "status": "pass",
+      "notes": "External https URL saved unchanged; covered by test_create_workflow_saves_plain_https_icon_unchanged."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: existing icon_url and YAML icon_url workflows keep working with no migration",
+      "status": "pass",
+      "notes": "An unchanged stored icon_url is no longer re-validated on update (CR-009 fixed); YAML path unchanged."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: only users who can edit a workflow can change its icon",
+      "status": "pass",
+      "notes": "WRITE check runs before icon validation in update_workflow."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8: assistant icon upload and read behaviour unchanged",
+      "status": "pass",
+      "notes": "No assistant files in the diff; the new read rule matches only workflow-icons/ names."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9: icon cropping and editing are not part of this change",
+      "status": "na",
+      "notes": "Non-goal; nothing implemented or required."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC10: non-viewer cannot read a workflow icon; files outside the icon namespace cannot be set as icons",
+      "status": "pass",
+      "notes": "Backend upload and create/update acceptance exist; the upload control and preview are in the codemie-ui change for the same ticket."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "The one non-conforming subject (planning artifacts) was reworded to 'EPMCDME-15605: Add planning artifacts'; all branch subjects match EPMCDME-XXXX: Capital sentence."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "License header and __future__ import added, upload function annotated (CR-007, CR-010, CR-011); ruff check and format pass."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Icon name pattern uses fullmatch (CR-013); non-bucket owners rejected (CR-004); reuse requires read access (CR-005)."
+    }
+  ],
+  "findings": []
+}

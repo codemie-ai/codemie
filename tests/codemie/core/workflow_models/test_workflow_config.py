@@ -396,6 +396,20 @@ class TestWorkflowConfigUpdatePreservesHistory:
                 assert session.get(WorkflowConfig, "wf_stale") is None
 
 
+def test_get_by_icon_url_returns_only_workflows_with_that_exact_url():
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine, tables=[WorkflowConfig.__table__])
+
+    with patch.object(WorkflowConfig, "get_engine", return_value=engine):
+        WorkflowConfig(id="wf_a", name="A", description="d", icon_url="icon-a").save()
+        WorkflowConfig(id="wf_b", name="B", description="d", icon_url="icon-b").save()
+        WorkflowConfig(id="wf_c", name="C", description="d", icon_url="icon-a").save()
+
+        matches = WorkflowConfig.get_by_icon_url("icon-a")
+
+    assert sorted(workflow.id for workflow in matches) == ["wf_a", "wf_c"]
+
+
 def test_template_from_yaml_extracts_required_variables():
     raw = (
         "name: Example\n"

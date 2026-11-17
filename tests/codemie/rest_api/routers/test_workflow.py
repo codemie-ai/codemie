@@ -21,6 +21,8 @@ from fastapi import status
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
 
+from codemie_tools.base.file_object import FileObject
+
 from codemie.core.constants import DEMO_PROJECT
 from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
 from codemie.core.models import AssistantChatRequest
@@ -3146,3 +3148,258 @@ class TestGetPrebuiltWorkflowsSearchRelevance:
         ]
         result = get_prebuilt_workflows(filters='{"name": "solar"}')
         assert [t.name for t in result] == ["Solar A", "Renewable"]
+
+
+ICON_UPLOAD_PATH = "/v1/workflows/icon"
+ICON_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+
+@pytest.fixture
+def icon_user_override():
+    app.dependency_overrides[workflow_router.authenticate] = lambda: user
+    yield
+    app.dependency_overrides = {}
+
+
+@pytest.fixture
+def icon_repo(mocker):
+    factory = mocker.patch("codemie.service.workflow_icon_service.FileRepositoryFactory")
+    repo = MagicMock()
+    repo.write_file.return_value = FileObject(
+        name="workflow-icons/x.png", mime_type="image/png", owner=config.CODEMIE_STORAGE_BUCKET_NAME
+    )
+    factory.get_current_repository.return_value = repo
+    return repo
+
+
+def test_upload_workflow_icon_rejects_gif_with_type_message(icon_user_override, icon_repo):
+    response = client.post(ICON_UPLOAD_PATH, files={"file": ("icon.gif", b"GIF89a", "image/gif")})
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "type" in response.text.lower()
+    icon_repo.write_file.assert_not_called()
+
+
+def test_upload_workflow_icon_rejects_oversize_png_with_size_message(icon_user_override, icon_repo):
+    oversize = ICON_PNG + b"\x00" * (512 * 1024)
+
+    response = client.post(ICON_UPLOAD_PATH, files={"file": ("icon.png", oversize, "image/png")})
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "size" in response.text.lower()
+    icon_repo.write_file.assert_not_called()
+
+
+def test_upload_workflow_icon_rejects_extension_that_contradicts_declared_type(icon_user_override, icon_repo):
+    response = client.post(ICON_UPLOAD_PATH, files={"file": ("icon.gif", ICON_PNG, "image/png")})
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "type" in response.text.lower()
+    icon_repo.write_file.assert_not_called()
+
+
+def test_upload_workflow_icon_stores_valid_png_and_returns_file_url(icon_user_override, icon_repo):
+    response = client.post(ICON_UPLOAD_PATH, files={"file": ("icon.png", ICON_PNG, "image/png")})
+
+    assert response.status_code == status.HTTP_200_OK
+    stored = FileObject.from_encoded_url(response.json()["file_url"])
+    assert stored.name.startswith("workflow-icons/")
+    assert stored.owner == config.CODEMIE_STORAGE_BUCKET_NAME
+
+
+def test_upload_workflow_icon_requires_authentication(icon_repo):
+    app.dependency_overrides = {}
+
+    response = client.post(ICON_UPLOAD_PATH, files={"file": ("icon.png", ICON_PNG, "image/png")})
+
+    assert response.status_code in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN)
+    icon_repo.write_file.assert_not_called()
+
+
+NAMESPACE_ICON_NAME = "workflow-icons/" + "a" * 32 + ".png"
+
+
+def _namespace_icon_url(name: str = NAMESPACE_ICON_NAME) -> str:
+    return FileObject(name=name, mime_type="image/png", owner=config.CODEMIE_STORAGE_BUCKET_NAME).to_encoded_url()
+
+
+@pytest.fixture
+def icon_store(mocker):
+    factory = mocker.patch("codemie.service.workflow_icon_service.FileRepositoryFactory")
+    repo = MagicMock()
+    factory.get_current_repository.return_value = repo
+    return repo
+
+
+def test_create_workflow_rejects_missing_namespace_icon(icon_user_override, icon_store, create_workflow_request):
+    icon_store.read_file.side_effect = FileNotFoundError(NAMESPACE_ICON_NAME)
+    request = create_workflow_request.model_copy(update={"icon_url": _namespace_icon_url()})
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.create_workflow") as mock_create,
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        response = client.post("/v1/workflows", json=request.model_dump())
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "icon" in response.text.lower()
+    mock_create.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_accepts_existing_namespace_icon(
+    mock_get_guardrail_assignments, create_workflow_request, request_header, icon_store
+):
+    mock_get_guardrail_assignments.return_value = None
+    request = create_workflow_request.model_copy(update={"icon_url": _namespace_icon_url()})
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+        patch("codemie.rest_api.routers.workflow.WorkflowConfig.get_by_icon_url", return_value=[]),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+
+    assert response.status_code == status.HTTP_200_OK
+    icon_store.read_file.assert_called_once_with(NAMESPACE_ICON_NAME, config.CODEMIE_STORAGE_BUCKET_NAME)
+
+
+def test_validate_workflow_icon_url_rejects_icon_referenced_only_by_unreadable_workflows() -> None:
+    with (
+        patch("codemie.core.workflow_models.workflow_config.WorkflowIconService.exists", return_value=True),
+        patch("codemie.rest_api.routers.workflow.WorkflowConfig.get_by_icon_url", return_value=[MagicMock()]),
+        patch("codemie.core.workflow_models.workflow_config.Ability") as ability,
+    ):
+        ability.return_value.can.return_value = False
+        with pytest.raises(ExtendedHTTPException):
+            WorkflowConfig.validate_icon_url(_namespace_icon_url(), MagicMock())
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_saves_plain_https_icon_unchanged(
+    mock_get_guardrail_assignments, create_workflow_request, request_header, icon_store
+):
+    mock_get_guardrail_assignments.return_value = None
+    request = create_workflow_request.model_copy(update={"icon_url": "https://example.com/icon.png"})
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+
+    assert response.status_code == status.HTTP_200_OK
+    icon_store.read_file.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can", return_value=True)
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_update_workflow_rejects_missing_namespace_icon(
+    mock_get_wf, mock_ability, workflow_config, update_workflow_request, request_header, icon_store
+):
+    mock_get_wf.return_value = workflow_config
+    icon_store.read_file.side_effect = FileNotFoundError(NAMESPACE_ICON_NAME)
+    request = update_workflow_request.model_copy(update={"icon_url": _namespace_icon_url()})
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}", json=request.model_dump(), headers=request_header
+            )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "icon" in response.text.lower()
+    mock_update.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can", return_value=False)
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_update_workflow_viewer_cannot_change_icon(
+    mock_get_wf, mock_ability, workflow_config, update_workflow_request, request_header, icon_store
+):
+    mock_get_wf.return_value = workflow_config
+    request = update_workflow_request.model_copy(update={"icon_url": _namespace_icon_url()})
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}", json=request.model_dump(), headers=request_header
+            )
+
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    mock_update.assert_not_called()
+    icon_store.read_file.assert_not_called()
+
+
+def test_create_workflow_rejects_bucket_icon_outside_namespace(icon_user_override, icon_store, create_workflow_request):
+    request = create_workflow_request.model_copy(update={"icon_url": _namespace_icon_url("memory/snapshot.json")})
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.create_workflow") as mock_create,
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        response = client.post("/v1/workflows", json=request.model_dump())
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "icon" in response.text.lower()
+    mock_create.assert_not_called()
+
+
+def test_create_workflow_rejects_private_user_file_as_icon(icon_user_override, icon_store, create_workflow_request):
+    private_url = FileObject(name="notes/private.png", mime_type="image/png", owner="user-1").to_encoded_url()
+    request = create_workflow_request.model_copy(update={"icon_url": private_url})
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.create_workflow") as mock_create,
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        response = client.post("/v1/workflows", json=request.model_dump())
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "invalid workflow icon" in response.text.lower()
+    mock_create.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can", return_value=True)
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_update_workflow_keeps_unchanged_stale_icon_url(
+    mock_get_wf, mock_ability, workflow_config, update_workflow_request, request_header, icon_store
+):
+    stale_url = _namespace_icon_url()
+    workflow_config.icon_url = stale_url
+    mock_get_wf.return_value = workflow_config
+    icon_store.read_file.side_effect = FileNotFoundError(NAMESPACE_ICON_NAME)
+    request = update_workflow_request.model_copy(update={"icon_url": stale_url})
+
+    with patch("codemie.rest_api.routers.workflow.project_access_check"):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}", json=request.model_dump(), headers=request_header
+            )
+
+    assert "referenced icon" not in response.text
+    icon_store.read_file.assert_not_called()
