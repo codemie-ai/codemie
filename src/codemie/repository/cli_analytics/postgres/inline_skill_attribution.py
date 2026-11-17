@@ -99,7 +99,8 @@ _PAIRING = f"""WITH RECURSIVE
 
 _PAIRED_REQUESTS = f"""{_PAIRING}
             SELECT o.okey, o.ts, o.prompt_id, o.model, o.cost_usd, o.input_tokens, o.output_tokens, o.cache_read_tokens,
-                   o.cache_creation_tokens, o.attrs, t.scope_kind, t.scope_name, coalesce(t.agent_id, '') AS agent_id
+                   o.cache_creation_tokens, o.attrs, t.scope_kind, t.scope_name,
+                   coalesce(t.agent_id, '') AS agent_id, t.cache_5m, t.cache_1h
             FROM p
             JOIN t ON t.tid = p.tid
             JOIN o ON o.oid = p.oid"""
@@ -149,7 +150,7 @@ INLINE_SKILL_CTES = f"""{REQUEST_ROUTES_CTE}, paired_requests AS MATERIALIZED (
         ), inline_attributed AS (
             -- the paired main-thread requests the plugin attributed to a skill
             SELECT okey, ts, prompt_id, model, cost_usd, input_tokens, output_tokens, cache_read_tokens,
-                   cache_creation_tokens, attrs, scope_name AS skill_name
+                   cache_creation_tokens, attrs, scope_name AS skill_name, cache_5m, cache_1h
             FROM paired_requests
             WHERE scope_kind = 'skill' AND agent_id = ''
         ), inline_window AS (
@@ -169,7 +170,7 @@ INLINE_SKILL_CTES = f"""{REQUEST_ROUTES_CTE}, paired_requests AS MATERIALIZED (
             -- (usage_requests scope_kind = skill) and the rollups' pairing matched (see inline_attributed). Read once
             -- here, so the sums and the per-model sums below never scan the session again per dispatch
             -- `model`: the price name (see request_routes)
-            SELECT w.ts AS dispatch_ts, w.skill_name, w.prompt_id, x.ts,
+            SELECT w.ts AS dispatch_ts, w.skill_name, w.prompt_id, x.okey, x.ts,
                    coalesce({request_route("x.okey")}, x.model, '') AS model,
                    x.cost_usd, x.input_tokens, x.output_tokens, x.cache_read_tokens, x.cache_creation_tokens, x.attrs
             FROM inline_window w
@@ -196,4 +197,68 @@ INLINE_SKILL_CTES = f"""{REQUEST_ROUTES_CTE}, paired_requests AS MATERIALIZED (
                         GROUP BY 1) m) AS models
             FROM inline_matched g
             GROUP BY g.dispatch_ts, g.skill_name, g.prompt_id
+        ), skill_call AS (
+            -- an inline Skill call (no fork) with the prompt its hooks name; none without a tool_use_id or prompt_id
+            SELECT t.span_id, t.skill_name, t.span_start AS ts, cp.prompt_id
+            FROM t
+            JOIN (SELECT DISTINCT ON (tool_use_id) tool_use_id, prompt_id FROM hook_events
+                  WHERE session_id = $sid::text AND tool_name = 'Skill' AND coalesce(prompt_id, '') <> ''
+                    AND event_type IN ('agent.tool.start', 'agent.tool.end') AND tool_use_id <> ''
+                  ORDER BY tool_use_id, ts) cp ON cp.tool_use_id = t.tool_use_id
+            WHERE t.skill_name <> '' AND NOT EXISTS (SELECT 1 FROM skill_fork sf WHERE sf.tool_use_id = t.tool_use_id
+                                                         AND sf.agent_id IS NOT NULL)
+        ), skill_matched AS (
+            -- the main-thread requests of an inline Skill call: its own prompt, from the call to the next later start
+            -- of the same skill in that prompt (another Skill call or a slash dispatch), that the plugin attributed
+            -- to this skill and the pairing matched. A request is the latest-starting call's alone (DISTINCT ON), so
+            -- calls starting together never share one
+            SELECT DISTINCT ON (x.okey) c.span_id, c.ts AS call_ts, x.okey, x.ts,
+                   coalesce({request_route("x.okey")}, x.model, '') AS model,
+                   x.cost_usd, x.input_tokens, x.output_tokens, x.cache_read_tokens,
+                   CASE WHEN x.cache_5m IS NOT NULL OR x.cache_1h IS NOT NULL
+                        THEN coalesce(x.cache_5m, 0) + coalesce(x.cache_1h, 0)
+                        ELSE x.cache_creation_tokens END AS cache_creation_tokens,
+                   coalesce(x.cache_5m, CASE WHEN x.cache_1h IS NOT NULL THEN 0 END,
+                            {_attr_ms("x", "cache_creation_5m_tokens")}) AS cache_5m,
+                   coalesce(x.cache_1h, CASE WHEN x.cache_5m IS NOT NULL THEN 0 END,
+                            {_attr_ms("x", "cache_creation_1h_tokens")}) AS cache_1h
+            FROM skill_call c
+            JOIN inline_attributed x ON x.skill_name = c.skill_name AND x.prompt_id = c.prompt_id AND x.ts >= c.ts
+            WHERE NOT EXISTS (SELECT 1 FROM t t2
+                              WHERE t2.skill_name = c.skill_name AND t2.span_start > c.ts AND x.ts >= t2.span_start)
+              AND NOT EXISTS (SELECT 1 FROM hook_events d2
+                              WHERE d2.session_id = $sid::text AND d2.event_type = '{SKILL_DISPATCH_EVENT}'
+                                AND d2.skill_name = c.skill_name AND d2.prompt_id = c.prompt_id AND d2.ts > c.ts
+                                AND x.ts >= d2.ts)
+            ORDER BY x.okey, c.ts DESC, c.span_id
+        ), skill_usage AS (
+            SELECT g.span_id, max(g.ts) AS last_ts,
+                   sum(coalesce(g.cost_usd, 0)) AS cost_usd,
+                   sum(coalesce(g.input_tokens, 0)) AS input_tokens,
+                   sum(coalesce(g.output_tokens, 0)) AS output_tokens,
+                   sum(coalesce(g.cache_read_tokens, 0)) AS cache_read_tokens,
+                   sum(coalesce(g.cache_creation_tokens, 0)) AS cache_creation_tokens,
+                   (SELECT jsonb_agg(m ORDER BY m.model_name {_C}) FROM (
+                        SELECT r.model AS model_name,
+                               sum(coalesce(r.input_tokens, 0)) AS input_tokens,
+                               sum(coalesce(r.output_tokens, 0)) AS output_tokens,
+                               sum(coalesce(r.cache_read_tokens, 0)) AS cache_read_tokens,
+                               sum(coalesce(r.cache_creation_tokens, 0)) AS cache_creation_tokens,
+                               sum(r.cache_5m) AS cache_creation_5m_tokens,
+                               sum(r.cache_1h) AS cache_creation_1h_tokens
+                        FROM skill_matched r
+                        WHERE r.span_id = g.span_id
+                        GROUP BY 1) m) AS models
+            FROM skill_matched g
+            GROUP BY g.span_id
+        ), attributed_okeys AS MATERIALIZED (
+            -- every request an inline dispatch or Skill call owns: the parent-request fallback never prices it again
+            SELECT okey FROM inline_matched UNION SELECT okey FROM skill_matched
         )"""  # noqa: S608 - code constants
+
+
+def not_attributed(alias: str) -> str:
+    """SQL: the log_events row `alias` is no request an inline dispatch or Skill call owns (`attributed_okeys`)."""
+    return (
+        f"NOT EXISTS (SELECT 1 FROM attributed_okeys ao WHERE ao.okey = {alias}.tableoid::text || {alias}.ctid::text)"  # noqa: S608  # internal SQL aliases only
+    )

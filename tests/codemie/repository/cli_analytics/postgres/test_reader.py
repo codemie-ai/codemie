@@ -2407,7 +2407,7 @@ async def test_an_agent_dispatch_falls_back_to_its_parent_span_only_when_it_has_
     # (the main thread, whose cost is not the subagent's): only its own paired requests, else NULL.
     sql = await _dispatches_sql()
 
-    assert "coalesce(au.cost_usd, pu.cost_usd)::float8 AS cost_usd" in sql
+    assert "coalesce(au.cost_usd, su.cost_usd, pu.cost_usd)::float8 AS cost_usd" in sql
     # parent_usage lists only the rows that take the parent's requests (takes_parent), so the join needs no more
     assert "LEFT JOIN parent_usage pu ON pu.fallback_id = t.span_id" in sql
     assert "WHERE w.takes_parent GROUP BY w.fallback_id" in sql

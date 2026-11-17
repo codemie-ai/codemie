@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-11-17T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New inline_skill_attribution.py CTE module wired into reader.py get_session_detail_dispatches; one subsystem, two components." },
+    { "dimension": "technical_risk", "reason": "Non-trivial SQL attribution with legacy fallback and duration alignment, read-only analytics path, covered by a live PostgreSQL test; no schema change." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

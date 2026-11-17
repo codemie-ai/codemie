@@ -112,6 +112,7 @@ from codemie.repository.cli_analytics.postgres.hook_row_sql import is_claude_cod
 from codemie.repository.cli_analytics.postgres.inline_skill_attribution import (
     INLINE_SKILL_CTES,
     REQUEST_PAIRS_CTES,
+    not_attributed,
     pair_split,
 )
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
@@ -3270,6 +3271,10 @@ class PostgresCliAnalyticsReader:
         from there to the stop's timestamp, less the same idle time: both ends come from the same clock there, so
         they already agree. It is NULL when the stop never arrived. The handler clamps it to the
         session end. A forked skill's or command's run stays its fork's start to its stop timestamp.
+        An inline Skill call (no fork) takes, like an inline slash command, the main-thread requests the plugin
+        attributed to its skill in its own prompt, from the call to the next start of the same skill, each request
+        once (`skill_matched`); its run ends at the last of them. With none, it keeps the sibling-window fallback
+        below, which never prices a request an inline dispatch or Skill call owns (`attributed_okeys`).
         The tool-execution span duration (`duration_ms`) is selected for the row shape but no agent row
         uses it: it closes when a background agent is launched. An agent dispatch's cost and tokens
         are an exact ID chain, not an estimate: the Agent call's hook rows name the agentId the subagent was
@@ -3302,7 +3307,7 @@ class PostgresCliAnalyticsReader:
         def window_requests(a: str) -> str:
             return (
                 f"{a}.span_id = w.parent_span_id AND {a}.ts >= w.start_ts"
-                f" AND (w.window_end IS NULL OR {a}.ts < w.window_end)"
+                f" AND (w.window_end IS NULL OR {a}.ts < w.window_end) AND {not_attributed(a)}"
             )
 
         gate, gate_params = detail_gate(scope)
@@ -3535,7 +3540,7 @@ class PostgresCliAnalyticsReader:
                    (SELECT count(*) FROM sibling_window w2 WHERE w2.parent_span_id = l.span_id AND w2.takes_parent
                         AND l.ts >= w2.start_ts AND (w2.window_end IS NULL OR l.ts < w2.window_end)) AS siblings
             FROM log_events l
-            WHERE l.session_id = $sid::text AND l.event_kind = {_API_REQUEST}
+            WHERE l.session_id = $sid::text AND l.event_kind = {_API_REQUEST} AND {not_attributed("l")}
                 AND EXISTS (SELECT 1 FROM sibling_window w3 WHERE w3.parent_span_id = l.span_id AND w3.takes_parent)
             GROUP BY l.span_id, l.ts
         ), parent_usage AS (
@@ -3573,11 +3578,13 @@ class PostgresCliAnalyticsReader:
                                   ELSE la.launch_ts END
                         END, t.span_start) AS dispatch_start,
                coalesce(ex.duration_ms, 0)::bigint AS duration_ms,
-               -- a forked skill's: its fork's run, NULL when it never stopped; another skill's: to the end of its
-               -- interaction, NULL when it has none
+               -- a forked skill's: its fork's run, NULL when it never stopped; an inline skill with attributed
+               -- requests: to the last of them; another skill's: to the end of its interaction, NULL when it has none
                CASE WHEN sf.agent_id IS NOT NULL
                     THEN CASE WHEN st.ended_at >= fs.ts
                               THEN (extract(epoch FROM st.ended_at - fs.ts) * 1000)::bigint END
+                    WHEN su.span_id IS NOT NULL
+                    THEN (extract(epoch FROM su.last_ts - t.span_start) * 1000)::bigint
                     WHEN ia.ts IS NOT NULL
                     THEN (({_ns("ia.ts")} + coalesce(ia.duration_ns, 0) - {_ns("t.span_start")})
                           / 1000000)::bigint END AS real_duration_ms,
@@ -3587,12 +3594,14 @@ class PostgresCliAnalyticsReader:
                CASE WHEN la.agent_id IS NOT NULL AND st.stop_duration_ms IS NOT NULL THEN st.stop_duration_ms
                     WHEN st.ended_at >= la.launch_ts
                     THEN (extract(epoch FROM st.ended_at - la.launch_ts) * 1000)::bigint END AS subagent_duration_ms,
-               coalesce(au.cost_usd, pu.cost_usd)::float8                AS cost_usd,
-               coalesce(au.input_tokens, pu.input_tokens)::bigint        AS input_tokens,
-               coalesce(au.output_tokens, pu.output_tokens)::bigint      AS output_tokens,
-               coalesce(au.cache_read_tokens, pu.cache_read_tokens)::bigint AS cache_read_tokens,
-               coalesce(au.cache_creation_tokens, pu.cache_creation_tokens)::bigint AS cache_creation_tokens,
-               coalesce(au.models, pu.models) AS models
+               coalesce(au.cost_usd, su.cost_usd, pu.cost_usd)::float8                AS cost_usd,
+               coalesce(au.input_tokens, su.input_tokens, pu.input_tokens)::bigint    AS input_tokens,
+               coalesce(au.output_tokens, su.output_tokens, pu.output_tokens)::bigint AS output_tokens,
+               coalesce(au.cache_read_tokens, su.cache_read_tokens, pu.cache_read_tokens)::bigint
+                   AS cache_read_tokens,
+               coalesce(au.cache_creation_tokens, su.cache_creation_tokens, pu.cache_creation_tokens)::bigint
+                   AS cache_creation_tokens,
+               coalesce(au.models, su.models, pu.models) AS models
         FROM t
         LEFT JOIN ex ON ex.tool_use_id = t.tool_use_id AND t.tool_use_id <> ''
         LEFT JOIN ia ON ia.span_id = t.parent_span_id
@@ -3604,6 +3613,9 @@ class PostgresCliAnalyticsReader:
         -- only a row that takes the parent's requests (see takes_parent): a known agent or fork with no API
         -- requests has no cost, not the main thread's, and a call that never ended or lost its agent has none
         LEFT JOIN parent_usage pu ON pu.fallback_id = t.span_id
+        -- an inline Skill call takes its own prompt's attributed requests (see skill_matched), the sibling-window
+        -- fallback only when it has none
+        LEFT JOIN skill_usage su ON su.span_id = t.span_id
         UNION ALL
         -- A forked skill (a skill-tagged agent.subagent.start) whose initiator has no row of its own: no
         -- Skill span names it by agentId and no slash-command dispatch paired with it (an older CLI, or a
