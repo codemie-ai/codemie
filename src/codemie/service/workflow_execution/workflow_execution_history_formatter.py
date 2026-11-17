@@ -136,6 +136,27 @@ def _get_workflow_output(execution: WorkflowExecution) -> str:
     return 'N/A'
 
 
+def _get_user_input(execution: WorkflowExecution) -> str:
+    """
+    Get the user's own input for an execution, not the history-augmented prompt.
+
+    WorkflowExecution.prompt holds the prompt with the previous-executions block prepended,
+    so using it would embed earlier history again. The raw text lives in history[0].message_raw.
+    File-only runs have no raw text and get a placeholder (file names are opaque tokens).
+    """
+    if execution.history:
+        raw = execution.history[0].message_raw
+        if raw is not None and raw.strip():
+            return raw
+
+    if execution.file_names:
+        n = len(execution.file_names)
+        return "[1 file attached]" if n == 1 else f"[{n} files attached]"
+
+    # With history, prompt is history-augmented: never fall back to it. Legacy rows (no history) only.
+    return 'N/A' if execution.history else (execution.prompt or 'N/A')
+
+
 def _format_executions_as_markdown(executions: List[WorkflowExecution]) -> str:
     """
     Format workflow executions into structured markdown.
@@ -155,7 +176,7 @@ def _format_executions_as_markdown(executions: List[WorkflowExecution]) -> str:
         workflow_output = _get_workflow_output(execution)
 
         history_parts.append(f"\n## Execution {idx}")
-        history_parts.append(f"**User Input:** {execution.prompt or 'N/A'}")
+        history_parts.append(f"**User Input:** {_get_user_input(execution)}")
         history_parts.append(f"**Workflow Output:** {workflow_output}\n")
 
     history_parts.append("\n## Current Request")

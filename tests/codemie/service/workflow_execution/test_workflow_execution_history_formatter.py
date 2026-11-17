@@ -22,7 +22,9 @@ including execution ID extraction, filtering, output retrieval, and markdown for
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import pytest
 
+from codemie.core.constants import ChatRole
 from codemie.core.workflow_models import (
     WorkflowExecution,
     WorkflowExecutionState,
@@ -36,6 +38,16 @@ from codemie.service.workflow_execution.workflow_execution_history_formatter imp
     _format_executions_as_markdown,
     format_execution_history,
 )
+
+_OUT = 'codemie.service.workflow_execution.workflow_execution_history_formatter._get_workflow_output'
+
+
+def _fake_execution(prompt, message_raw, file_names):
+    ex = MagicMock(spec=WorkflowExecution)
+    ex.prompt = prompt
+    ex.file_names = file_names
+    ex.history = [GeneratedMessage(role=ChatRole.USER, message_raw=message_raw)]
+    return ex
 
 
 class TestGetExecutionIdsFromConversation:
@@ -343,6 +355,8 @@ class TestFormatExecutionsAsMarkdown:
         """Test formatting a single execution."""
         mock_execution = MagicMock(spec=WorkflowExecution)
         mock_execution.prompt = "What is the weather?"
+        mock_execution.history = []
+        mock_execution.file_names = []
         mock_execution.output = "It is sunny"
         mock_execution.execution_id = "exec-1"
 
@@ -362,11 +376,15 @@ class TestFormatExecutionsAsMarkdown:
         """Test formatting multiple executions."""
         mock_exec1 = MagicMock(spec=WorkflowExecution)
         mock_exec1.prompt = "First question"
+        mock_exec1.history = []
+        mock_exec1.file_names = []
         mock_exec1.output = "First answer"
         mock_exec1.execution_id = "exec-1"
 
         mock_exec2 = MagicMock(spec=WorkflowExecution)
         mock_exec2.prompt = "Second question"
+        mock_exec2.history = []
+        mock_exec2.file_names = []
         mock_exec2.output = "Second answer"
         mock_exec2.execution_id = "exec-2"
 
@@ -387,6 +405,8 @@ class TestFormatExecutionsAsMarkdown:
         """Test handling of None prompt."""
         mock_execution = MagicMock(spec=WorkflowExecution)
         mock_execution.prompt = None
+        mock_execution.history = []
+        mock_execution.file_names = []
         mock_execution.output = "Some output"
         mock_execution.execution_id = "exec-1"
 
@@ -397,6 +417,76 @@ class TestFormatExecutionsAsMarkdown:
             result = _format_executions_as_markdown([mock_execution])
 
             assert "**User Input:** N/A" in result
+
+    def test_uses_raw_input_from_history_not_augmented_prompt(self):
+        ex = _fake_execution("# Previous Workflow Executions\n...raw q", "raw q", [])
+        with patch(_OUT, return_value="a"):
+            result = _format_executions_as_markdown([ex])
+
+        assert "**User Input:** raw q" in result
+        assert result.count("# Previous Workflow Executions") == 1
+
+    @pytest.mark.parametrize("raw", ["", None])
+    def test_file_only_execution_renders_placeholder(self, raw):
+        ex = _fake_execution("# Previous Workflow Executions\n...", raw, ["tok"])
+        with patch(_OUT, return_value="a"):
+            result = _format_executions_as_markdown([ex])
+
+        assert "**User Input:** [1 file attached]" in result
+        assert result.count("# Previous Workflow Executions") == 1
+
+    def test_multiple_files_placeholder(self):
+        ex = _fake_execution("p", "", ["a", "b"])
+        with patch(_OUT, return_value="a"):
+            assert "[2 files attached]" in _format_executions_as_markdown([ex])
+
+    @pytest.mark.parametrize("history", [[], None])
+    def test_falls_back_to_prompt_when_history_empty(self, history):
+        ex = _fake_execution("legacy prompt", None, [])
+        ex.history = history
+        with patch(_OUT, return_value="a"):
+            assert "**User Input:** legacy prompt" in _format_executions_as_markdown([ex])
+
+    @pytest.mark.parametrize("raw", ["", "   ", None])
+    @pytest.mark.parametrize("file_names", [[], None])
+    def test_blank_input_without_files_renders_na_not_augmented_prompt(self, raw, file_names):
+        ex = _fake_execution("# Previous Workflow Executions\n...old q", raw, file_names)
+        with patch(_OUT, return_value="a"):
+            result = _format_executions_as_markdown([ex])
+
+        assert "**User Input:** N/A" in result
+        assert "old q" not in result
+        assert result.count("# Previous Workflow Executions") == 1
+
+    def test_chain_of_three_executions_has_no_duplication(self):
+        # Stored prompts are hardcoded "poisoned" shapes the service would have saved
+        # (history block prepended), so the test does not depend on the code under test.
+        ex1 = _fake_execution("raw_1", "raw_1", [])
+        ex2 = _fake_execution(
+            "# Previous Workflow Executions\n## Execution 1\n**User Input:** raw_1\n**Workflow Output:** out_1\n",
+            "",
+            ["tok"],
+        )
+        ex3 = _fake_execution(
+            "# Previous Workflow Executions\n"
+            "## Execution 1\n**User Input:** raw_1\n**Workflow Output:** out_1\n"
+            "## Execution 2\n**User Input:** raw_1\n**Workflow Output:** out_1\n"
+            "## Execution 3\n**User Input:** [1 file attached]\n**Workflow Output:** out_2\n"
+            "## Current Request\nraw_3",
+            "raw_3",
+            [],
+        )
+        executions = [ex1, ex2, ex3]
+        for ex, out in zip(executions, ["out_1", "out_2", "out_3"]):
+            ex.output = out
+
+        with patch(_OUT, side_effect=lambda e: e.output):
+            result = _format_executions_as_markdown(executions)
+
+        for token in ("raw_1", "out_1", "out_2", "raw_3", "out_3"):
+            assert result.count(token) == 1, token
+        assert "[1 file attached]" in result
+        assert result.count("# Previous Workflow Executions") == 1
 
 
 class TestFormatExecutionHistory:

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-27T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 2,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Single service module (workflow_execution_history_formatter) gained one helper, _get_user_input, used by _format_executions_as_markdown; no layer boundary crossed." },
+    { "dimension": "technical_risk", "reason": "Fix swaps the history-augmented WorkflowExecution.prompt for history[0].message_raw, with file-only and legacy-row fallbacks. Low risk, well-contained, no security or performance impact, and the change is easy to roll back." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

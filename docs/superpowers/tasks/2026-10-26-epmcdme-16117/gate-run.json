@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "branch": "epmcdme-16117",
+  "head": "4c7ac910359544017eefea3ee5e1a583773d151d",
+  "runner": "poetry",
+  "started_at": "2026-10-27T09:35:40.287896+00:00",
+  "completed_at": "2026-10-27T09:39:22.467766+00:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 900,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4072,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 536,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6824,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 105520,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "3 failed, 21701 passed, 332 skipped with the user's local Makefile exclusions (tests/enterprise ignored + 6 deselects). All 3 are tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py; env-dependent (OpenBLAS pthread_create failed, RLIMIT_NPROC 64; with OPENBLAS_NUM_THREADS=1 only 2 of 3 still fail), also failed in previous run/merge base. Unrelated to workflow_execution_history_formatter."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-cli-analytics-live",
+      "notes": "Diff does not touch src/codemie/repository/cli_analytics/postgres/"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make sonar-local",
+      "notes": "Needs Sonar server/token not available locally; only runs in opt-in pre-push hook (CODEMIE_PREPUSH_ENABLED=true). Still owed."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "MR-only gate; requires docker stack, fixtures and ~/.codemie/test-harness.json."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "N/A",
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "notes": "Staged-diff scan; nothing staged. Full-tree make gitleaks passed."
+    },
+    {
+      "id": "ci",
+      "source": "ci",
+      "status": "N/A",
+      "command": ".gitlab-ci.yml",
+      "notes": "Only pre-ci-guard/wait-ci-init contexts; no runnable test/lint jobs."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_matplotlib_writes_single_and_multipage_pdf\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\n==== 3 failed, 21701 passed, 332 skipped, 312 warnings in 105.52s ===="
+  }
+}
