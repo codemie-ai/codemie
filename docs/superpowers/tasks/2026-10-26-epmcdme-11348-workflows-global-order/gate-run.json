@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-11348-workflows-global-order",
+  "head": "5242515be29125751d3169d51faba517c1e3ba56",
+  "runner": "poetry",
+  "started_at": "2026-10-26T12:00:43Z",
+  "completed_at": "2026-10-26T12:02:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "ruff format left 2996 files unchanged; ruff check --fix and ruff check passed. Log: qa-ruff.local.log"
+    },
+    {
+      "id": "unit-analytics",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 11000,
+      "command": "poetry run pytest -q tests/codemie/service/analytics/ tests/codemie/rest_api/routers/test_analytics.py -rs",
+      "exit_code": 0,
+      "notes": "760 passed, 8 skipped. The 8 skips are explicit skip markers in tests/codemie/service/analytics/handlers/test_summary_handler.py ('Cost metrics are hidden (EPMCDME-10598)'), not environment skips. Scoped subset only; full make test not run. Log: qa-test.local.log"
+    },
+    {
+      "id": "license-check",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0,
+      "notes": "Checked 2696 files, 0 missing license headers. Enforced by the codemie-pre-commit hook (scripts/git-hooks/pre_commit.sh, step 2.b)."
+    },
+    {
+      "id": "gitleaks-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1000,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: output reads 'scanned ~0 bytes', 'Commits scanned: 0' because nothing is staged (git diff --cached is empty). The hook is staged-only, so this run gave no evidence. Enablement: stage the change and rerun, or rely on gitleaks-dir below for the full tree."
+    },
+    {
+      "id": "gitleaks-dir",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Real full-tree scan: scanned ~57.97 MB in 5.15s, no leaks found. Log: qa-gitleaks-dir.local.log"
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test",
+      "exit_code": null,
+      "notes": "Out of requested scope (caller limited the run to analytics subset). Full tests/ suite not run."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make build",
+      "exit_code": null,
+      "notes": "Out of requested scope (scoped run: lint and analytics tests only)."
+    },
+    {
+      "id": "prepush-pytest",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "poetry run pytest tests/",
+      "exit_code": null,
+      "notes": "Enforced by the codemie-pre-push hook (scripts/git-hooks/pre_push.sh). Out of requested scope. Full pytest suite is owed before push."
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Enforced by the codemie-pre-push hook and listed as a guide gate. Out of requested scope. Needs SONAR token and network access; owed before push and only CI/Sonar can settle it."
+    },
+    {
+      "id": "test-cli-analytics-live",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "Change does not touch src/codemie/repository/cli_analytics/postgres/ (diff is limited to src/codemie/service/analytics/ and tests/codemie/service/analytics/)."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Out of requested scope (coverage not requested)."
+    }
+  ],
+  "failures": {}
+}

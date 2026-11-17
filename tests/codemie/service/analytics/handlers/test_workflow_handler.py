@@ -212,9 +212,8 @@ class TestTheAggregationsGroupOnTheNameAndCarryMoneyOnlyBelowTheFloor:
 
         assert agg["terms"]["field"] == WORKFLOW_NAME_KEYWORD_FIELD
         assert agg["terms"]["size"] == 100
-        # Candidate order stays document count: it is the only activity proxy Elasticsearch still
-        # holds now that the money it could have ranked by lives in the ledger.
-        assert agg["terms"]["order"] == {"_count": "desc"}
+        # Candidates rank by unique executions, then name, so the bucket cap keeps the busiest workflows.
+        assert agg["terms"]["order"] == [{"unique_executions": "desc"}, {"_key": "asc"}]
 
     def test_without_a_floor_the_workflows_aggregation_names_no_money_field_at_all(self, handler):
         """Asserted on the serialised body, because that is where the rule can be broken silently:
@@ -454,11 +453,10 @@ class TestWorkflowsMoneyComesFromTheSpendPort:
         assert enriched.rows[0]["avg_cost_usd"] is None
 
     @pytest.mark.asyncio
-    async def test_the_money_order_puts_an_absent_figure_last_rather_than_at_zero(self, handler):
-        """A **measured zero** stands between the figures and the absence, which is what makes this
-        assertion falsifiable: ranking an absent figure as `0.0` ties it with the measured zero, and
-        only their relative order tells the two apart."""
-        rows = [_candidate("absent"), _candidate("zero"), _candidate("small"), _candidate("large")]
+    async def test_an_absent_figure_keeps_its_place_in_the_run_order_and_the_footer_says_so(self, handler):
+        """Cost does not order this table, so an absent figure is not moved to the bottom: the row sits
+        where its runs put it, and the footer is labelled short by the figure nobody has."""
+        rows = [_candidate("absent", total_runs=9), _candidate("zero"), _candidate("small"), _candidate("large")]
         answers = {
             "id-absent": SpendResult.no_figure(PERIOD),
             "id-zero": SpendResult(figure=Decimal("0")),
@@ -472,7 +470,7 @@ class TestWorkflowsMoneyComesFromTheSpendPort:
         ):
             enriched = await handler._enrich_workflows_spending(rows, PERIOD_START, PERIOD_END)
 
-        assert [row["workflow_name"] for row in enriched.rows] == ["large", "small", "zero", "absent"]
+        assert [row["workflow_name"] for row in enriched.rows] == ["absent", "large", "small", "zero"]
         # The footer is short by the row nobody has a figure for, and says so rather than looking whole.
         assert enriched.totals["total_cost_usd"] == 91.0
         assert enriched.totals["total_cost_usd_spend_partial"] is True
@@ -591,7 +589,7 @@ class TestNameResolution:
             enriched = await handler._enrich_workflows_spending(rows, PERIOD_START, PERIOD_END)
 
         port.assert_not_awaited()
-        assert [row["workflow_name"] for row in enriched.rows] == ["Nightly Report", "Deploy"]
+        assert [row["workflow_name"] for row in enriched.rows] == ["Deploy", "Nightly Report"]
         assert all(row["total_cost_usd"] is None and row["spend_unavailable"] is True for row in enriched.rows)
         # Worth a warning, unlike a name the directory simply does not hold.
         log.warning.assert_called_once()
@@ -925,6 +923,81 @@ class TestTopWorkflowUsageMoneyComesFromTheSpendPort:
         assert [row["workflow_name"] for row in enriched.rows] == ["large", "zero", "absent"]
 
 
+class TestWorkflowsAreOrderedByRunsThenName:
+    """The table reads in the order the metric store's terms aggregation gives it - runs descending,
+    then name ascending. Money is totalled by cost and never decides which row leads the page."""
+
+    @staticmethod
+    async def _enrich_and_page(handler, candidates: list[dict], *, page: int = 0, per_page: int = 20):
+        return await handler._pipeline._enrich_and_page(
+            candidates=candidates,
+            columns=handler._get_workflows_columns(),
+            row_enricher=handler._enrich_workflows_spending,
+            window=(PERIOD_START, PERIOD_END),
+            page=page,
+            per_page=per_page,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_workflow_with_more_runs_leads_the_page_even_when_it_costs_less(self, handler):
+        candidates = [_candidate("X", total_runs=2), _candidate("Y", total_runs=9)]
+        answers = {"id-x": SpendResult(figure=Decimal("12")), "id-y": SpendResult(figure=Decimal("3"))}
+
+        with _directory(X="id-x", Y="id-y"), _patched_port(answers):
+            page, total_count, totals = await self._enrich_and_page(handler, candidates)
+
+        assert [row["workflow_name"] for row in page] == ["Y", "X"]
+        assert [row["total_cost_usd"] for row in page] == [3.0, 12.0]
+        assert total_count == 2
+        assert totals["total_cost_usd"] == 15.0
+
+    @pytest.mark.asyncio
+    async def test_a_tie_on_runs_is_broken_by_workflow_name_ascending(self, handler):
+        candidates = [_candidate("beta", total_runs=4), _candidate("alpha", total_runs=4)]
+        answers = {"id-beta": SpendResult(figure=Decimal("9")), "id-alpha": SpendResult(figure=Decimal("1"))}
+
+        with _directory(beta="id-beta", alpha="id-alpha"), _patched_port(answers):
+            page, _, _ = await self._enrich_and_page(handler, candidates)
+
+        assert [row["workflow_name"] for row in page] == ["alpha", "beta"]
+
+    @pytest.mark.asyncio
+    async def test_a_later_page_slices_the_run_order_not_the_cost_order(self, handler):
+        candidates = [_candidate("A", total_runs=10), _candidate("B", total_runs=5), _candidate("C", total_runs=2)]
+        answers = {
+            "id-a": SpendResult(figure=Decimal("1")),
+            "id-b": SpendResult(figure=Decimal("9")),
+            "id-c": SpendResult(figure=Decimal("5")),
+        }
+
+        with _directory(A="id-a", B="id-b", C="id-c"), _patched_port(answers):
+            page, total_count, _ = await self._enrich_and_page(handler, candidates, page=1, per_page=1)
+
+        assert [row["workflow_name"] for row in page] == ["B"]
+        assert total_count == 3
+
+
+class TestTopWorkflowUsageStillOrdersByCost:
+    """Regression: the top-usage table is the cost-ordered one, and the workflows table's run order
+    must not have leaked into it."""
+
+    @pytest.mark.asyncio
+    async def test_the_top_usage_table_is_ordered_by_cost_not_by_invocations(self, handler, mock_repository):
+        mock_repository.execute_aggregation_query.return_value = _as_result(
+            [_top_usage_bucket("Busy", invocations=20), _top_usage_bucket("Costly", invocations=1)]
+        )
+        answers = {"wf-busy": SpendResult(figure=Decimal("1")), "wf-costly": SpendResult(figure=Decimal("9"))}
+
+        with (
+            _cutover_at(ABOVE_FLOOR_ONLY),
+            _directory(Busy="wf-busy", Costly="wf-costly"),
+            _patched_port(answers),
+        ):
+            result = await handler.get_top_workflow_usage(start_date=PERIOD_START, end_date=PERIOD_END)
+
+        assert [row["workflow_name"] for row in result["data"]["rows"]] == ["Costly", "Busy"]
+
+
 class TestAClientSourceFilterReadsNoMoney:
     """No ledger row records which client a call came from, so a client-narrowed table's figure would be
     the unnarrowed one under the narrowed label. The port is not asked; the counts Elasticsearch narrowed
@@ -1021,3 +1094,12 @@ class TestTheDashboardFilterReachesTheMoneyRead:
         with _directory(**{"Nightly Report": "wf-42"}), _patched_port({}, expect_period=AT_OR_ABOVE_FLOOR_LEG) as port:
             await captured["enricher"](rows, PERIOD_START, PERIOD_END)
         assert port.await_args.kwargs["report_filter"] is self.ASKED
+
+
+def test_workflows_request_uses_unique_executions_then_key_order(handler):
+    """Workflows terms agg orders by unique executions desc, then name asc, for a single global order."""
+    agg_body = handler._build_workflows_aggregation({"bool": {"filter": []}}, fetch_size=20)
+
+    order = agg_body["aggs"]["paginated_results"]["terms"]["order"]
+
+    assert order == [{"unique_executions": "desc"}, {"_key": "asc"}]

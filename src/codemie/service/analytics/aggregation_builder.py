@@ -30,7 +30,7 @@ class AggregationBuilder:
     def build_terms_agg(
         group_by_field: str,
         fetch_size: int,
-        order: dict[str, str],
+        order: dict[str, str] | list[dict[str, str]],
         sub_aggs: dict[str, Any],
         script: str | None = None,
     ) -> dict[str, Any]:
@@ -39,7 +39,9 @@ class AggregationBuilder:
         Args:
             group_by_field: Field to group by (e.g., "attributes.project.keyword")
             fetch_size: Number of buckets to fetch (page+1) * per_page
-            order: Sort order dict (e.g., {"total_cost": "desc"})
+            order: Sort order, either a single dict (e.g., {"total_cost": "desc"}) or a list of
+                dicts applied in sequence as tie-breakers (e.g.,
+                [{"unique_executions": "desc"}, {"_key": "asc"}])
             sub_aggs: Sub-aggregations (metrics) to include
             script: Optional Painless script source; when provided, replaces the field-based
                 grouping (e.g. to normalise bucket keys before aggregation)

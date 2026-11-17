@@ -292,7 +292,7 @@ class WorkflowHandler:
         terms_agg = AggregationBuilder.build_terms_agg(
             group_by_field=WORKFLOW_NAME_KEYWORD_FIELD,
             fetch_size=fetch_size,
-            order={"_count": "desc"},
+            order=[{"unique_executions": "desc"}, {"_key": "asc"}],
             sub_aggs=sub_aggs,
         )
 
@@ -373,7 +373,11 @@ class WorkflowHandler:
         report_filter: ReportFilter | None = None,
         filters: AnalyticsQueryFilters | None = None,
     ) -> EnrichedRows:
-        """Fill each workflow's cost and per-run cost, then order and total the table by it.
+        """Fill each workflow's cost and per-run cost, and total the table by cost.
+
+        Rows are ordered by total runs descending, then workflow name ascending, which is the order
+        the Elasticsearch terms aggregation returns them in (Kibana parity). Money is totalled by cost
+        and does not decide the order.
 
         Under an `attributes` filter the ledger cannot narrow a workflow's spend to the labelled runs, so
         each workflow's cost is the sum of its filtered executions, priced per execution id.
@@ -402,7 +406,11 @@ class WorkflowHandler:
             # thing to keep in sync, saying nothing the first does not.
             row[WORKFLOWS_AVG_COST_COLUMN] = self._avg_cost(figure.figure, row["total_runs"])
 
-        return ordered_spend_rows(rows, rendered, WORKFLOWS_MONEY_COLUMN)
+        return EnrichedRows(
+            rows=sorted(rows, key=lambda row: (-row["total_runs"], row["workflow_name"])),
+            columns=(WORKFLOWS_MONEY_COLUMN,),
+            totals=spend_footer(WORKFLOWS_MONEY_COLUMN, rendered),
+        )
 
     def _get_workflows_columns(self) -> list[dict]:
         """Get column definitions for workflows."""

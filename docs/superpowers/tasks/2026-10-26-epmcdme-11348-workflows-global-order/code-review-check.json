@@ -1,0 +1,23 @@
+{
+  "ticket": "EPMCDME-11348",
+  "gate_id": "code-review.final",
+  "decision": "approve",
+  "approved_by": "MR author (session user), recorded in sdlc-light gate log",
+  "reviewer_verdict": "request-changes",
+  "review_scope": "compact profile, edge-case lens, frozen diff sha256 cd36fc0cdfe029b2083c0311c1fff3f97b21c53bd6b93d80e14fb0f91eb4c403",
+  "confidence": "low (no spec supplied; by design of the sdlc-light flow)",
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "minor",
+      "summary": "Total Runs ordering uses HyperLogLog++ cardinality, so order can differ from exact counts above about 3,000 executions per workflow.",
+      "resolution": "accepted",
+      "rationale": "Kibana's Unique count uses the same cardinality approximation with the same default precision, so ordering matches Kibana's behaviour. Documented in the MR description."
+    }
+  ],
+  "tests": {
+    "analytics_subset": "passed",
+    "lint": "passed",
+    "full_make_test": "58 failed, 1 error: pre-existing on main, not introduced by this change"
+  }
+}

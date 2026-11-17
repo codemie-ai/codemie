@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-26T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two modified components in the analytics service (the shared AggregationBuilder helper in aggregation_builder.py and WorkflowHandler in handlers/workflow_handler.py), plus two test modules. The change to the shared helper raises scope to L. Single layer (Service), no new abstractions." },
+    { "dimension": "technical_risk", "reason": "Changes Elasticsearch terms-aggregation ordering (single dict order replaced by a list with a _key tie-breaker) and adds a Painless script option to build_terms_agg. Ordering drives fetch-and-slice pagination correctness, so a regression would shift pages. An existing pattern (list order support, top_workflow_usage ordering) covers the approach, so risk stays M." },
+    { "dimension": "requirements_clarity", "reason": "Acceptance criteria are encoded in the tests: workflows order by unique_executions desc then _key asc; top_workflow_usage keeps its 1-bucket order. No open decisions." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared utility (AggregationBuilder.build_terms_agg used across analytics handlers)"
+  ],
+  "split_recommendation": null
+}

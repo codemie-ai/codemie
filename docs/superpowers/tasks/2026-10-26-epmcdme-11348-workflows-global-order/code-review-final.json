@@ -1,0 +1,26 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec was supplied, so acceptance was skipped as a genuine no-spec and confidence is low; only the edge-case lens ran in the compact roster. Reachability was checked for all four edge-case candidates: three were dismissed (the empty order list and unknown order key are not reached by any caller in the diff, and the key-drift case is hypothetical) and one is a patch, since the unique_executions cardinality sort keeps the default precision_threshold and can diverge from Kibana above ~3000 executions per workflow. Deferred: 0. Dismissed: 3. Brief written to code-review-brief.md; no deferred backlog file.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not dispatched (compact profile; no standards path)." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not dispatched (compact profile; no standards path)." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not dispatched (compact profile; no standards path)." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/workflow_handler.py",
+      "line": 128,
+      "title": "Primary sort on approximate cardinality may diverge from Kibana",
+      "problem": "The new primary order key unique_executions is a cardinality aggregation with the default precision_threshold (3000). Above that count the value is approximate, so the page order can rank near-equal high-volume workflows differently from the exact Total Runs shown in the table and in Kibana. The edge-case lens's claim that rows duplicate or skip between page requests does not hold for unchanged data: the estimator is deterministic, so repeated fetch-and-slice requests over the same index produce the same order.",
+      "impact": "For workflows with more than about 3000 unique executions, the Insights Workflows order may not match Kibana, which the ticket requires. On unchanged data no rows are lost or repeated across pages.",
+      "recommendation": "Set precision_threshold on the unique_executions cardinality sub-agg (add_cardinality_for_total already uses 40000 for total_buckets), or document the approximation and accept the divergence explicitly."
+    }
+  ]
+}
