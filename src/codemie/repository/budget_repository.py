@@ -23,6 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, select
 
+from codemie.rest_api.models.user_management import UserDB
 from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.budget.budget_models import Budget, UserBudgetAssignment
 
@@ -43,6 +44,12 @@ class BudgetRepository:
     async def get_by_id(self, session: AsyncSession, budget_id: str) -> Budget | None:
         """Return Budget by primary key or None."""
         stmt = select(Budget).where(Budget.budget_id == budget_id)
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    async def get_by_id_for_update(self, session: AsyncSession, budget_id: str) -> Budget | None:
+        """Return Budget by primary key, locking the row (SELECT ... FOR UPDATE) until the transaction ends."""
+        stmt = select(Budget).where(Budget.budget_id == budget_id).with_for_update()
         result = await session.execute(stmt)
         return result.scalars().first()
 
@@ -197,6 +204,23 @@ class BudgetRepository:
         uba_count_stmt = select(func.count()).where(UserBudgetAssignment.budget_id == budget_id)
 
         return int((await session.execute(uba_count_stmt)).scalar_one())
+
+    async def count_users_by_budget_ids(self, session: AsyncSession, budget_ids: list[str]) -> dict[str, int]:
+        """Count distinct non-deleted users per budget in one grouped query.
+
+        Deactivated users (is_active=False) are intentionally counted; only soft-deleted users are excluded.
+        Budgets without matching rows are absent from the result.
+        """
+        if not budget_ids:
+            return {}
+        stmt = (
+            select(UserBudgetAssignment.budget_id, func.count(UserBudgetAssignment.user_id.distinct()))
+            .join(UserDB, UserDB.id == UserBudgetAssignment.user_id)
+            .where(UserBudgetAssignment.budget_id.in_(budget_ids), UserDB.deleted_at.is_(None))
+            .group_by(UserBudgetAssignment.budget_id)
+        )
+        result = await session.execute(stmt)
+        return dict(result.all())
 
     async def count_project_assignments(self, session: AsyncSession, budget_id: str) -> int:
         """Return active project_budget_assignments referencing this budget_id."""

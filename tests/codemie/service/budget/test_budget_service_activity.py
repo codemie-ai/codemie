@@ -18,6 +18,7 @@ Covers:
   - create_budget emits BudgetManagementEvent.BUDGET_CREATED
   - update_budget emits BudgetManagementEvent.BUDGET_UPDATED
   - assign_budget_to_user emits BudgetManagementEvent.USER_BUDGET_ASSIGNED
+  - delete_budget emits BudgetManagementEvent.BUDGET_DELETED and enforces its guards
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from codemie.service.activity.activity_models import (
     ActivityEntityType,
     BudgetManagementEvent,
 )
-from codemie.service.budget.budget_enums import BudgetCategory
+from codemie.service.budget.budget_enums import BudgetCategory, BudgetType
 from codemie.service.budget.budget_models import Budget
 from codemie.service.budget.budget_service import BudgetService
 
@@ -677,3 +678,217 @@ class TestBulkSetUserBudgetsLogger:
 
         mock_logger.info.assert_called_once()
         assert "bulk_user_budget_assignment_completed" in mock_logger.info.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# TestDeleteBudget (EPMCDME-15633)
+# ---------------------------------------------------------------------------
+
+
+def _mock_delete_repo(
+    mock_budget_repo, *, budget=None, assignment_count: int = 0, all_assignment_count: int | None = None
+) -> None:
+    """assignment_count: non-deleted users; all_assignment_count: every assignment row (deleted users too)."""
+    mock_budget_repo.get_by_id_for_update = AsyncMock(return_value=budget)
+    live_counts = {budget.budget_id: assignment_count} if budget is not None and assignment_count else {}
+    mock_budget_repo.count_users_by_budget_ids = AsyncMock(return_value=live_counts)
+    mock_budget_repo.count_assignments = AsyncMock(
+        return_value=assignment_count if all_assignment_count is None else all_assignment_count
+    )
+    mock_budget_repo.delete = AsyncMock()
+
+
+def _mock_provider(mock_get_provider, **kwargs) -> AsyncMock:
+    provider = AsyncMock()
+    provider.provider_name = "litellm"
+    provider.delete_global_budget = AsyncMock(**kwargs)
+    mock_get_provider.return_value = provider
+    return provider
+
+
+@patch("codemie.service.budget.budget_service.activity_event_repository")
+@patch("codemie.service.budget.budget_service.get_active_provider")
+@patch("codemie.service.budget.budget_service.budget_config")
+@patch("codemie.service.budget.budget_service.budget_repository")
+class TestDeleteBudget:
+    @pytest.mark.asyncio
+    async def test_deletes_budget_calls_provider_and_emits_event(
+        self, mock_budget_repo, mock_budget_cfg, mock_get_provider, mock_activity
+    ):
+        mock_activity.async_insert = AsyncMock()
+        mock_budget_cfg.predefined_budgets = []
+        _mock_delete_repo(mock_budget_repo, budget=_make_budget(budget_id="manual-budget"))
+        provider = _mock_provider(mock_get_provider)
+        session = AsyncMock()
+
+        await _make_service().delete_budget(session, "manual-budget", actor_id="maintainer-1", actor_name="M")
+
+        mock_budget_repo.delete.assert_awaited_once_with(session, "manual-budget")
+        provider.delete_global_budget.assert_awaited_once_with(budget_id="manual-budget")
+        mock_activity.async_insert.assert_awaited_once()
+        event_dto, event_session = mock_activity.async_insert.await_args.args
+        assert event_dto.domain == ActivityDomain.BUDGET_MANAGEMENT
+        assert event_dto.event_type == BudgetManagementEvent.BUDGET_DELETED
+        assert event_dto.entity_type == ActivityEntityType.BUDGET
+        assert event_dto.entity_id == "manual-budget"
+        assert event_dto.actor_id == "maintainer-1"
+        assert event_dto.attributes == {"reason": "manual_delete"}
+        assert event_session is session
+
+    @pytest.mark.asyncio
+    async def test_locks_row_before_counting_assignments(
+        self, mock_budget_repo, mock_budget_cfg, mock_get_provider, mock_activity
+    ):
+        """The row lock must be taken before the count so a concurrent assignment cannot slip in."""
+        mock_activity.async_insert = AsyncMock()
+        mock_budget_cfg.predefined_budgets = []
+        _mock_delete_repo(mock_budget_repo, budget=_make_budget(budget_id="manual-budget"))
+        _mock_provider(mock_get_provider)
+        call_order = MagicMock()
+        call_order.attach_mock(mock_budget_repo.get_by_id_for_update, "lock")
+        call_order.attach_mock(mock_budget_repo.count_users_by_budget_ids, "count")
+        call_order.attach_mock(mock_budget_repo.delete, "delete")
+
+        await _make_service().delete_budget(AsyncMock(), "manual-budget", actor_id="maintainer-1")
+
+        assert [c[0] for c in call_order.mock_calls] == ["lock", "count", "delete"]
+        mock_budget_repo.get_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provider_failure_rolls_back_and_returns_502(
+        self, mock_budget_repo, mock_budget_cfg, mock_get_provider, mock_activity
+    ):
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        mock_activity.async_insert = AsyncMock()
+        mock_budget_cfg.predefined_budgets = []
+        _mock_delete_repo(mock_budget_repo, budget=_make_budget(budget_id="manual-budget"))
+        _mock_provider(mock_get_provider, side_effect=RuntimeError("provider down"))
+        session = AsyncMock()
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await _make_service().delete_budget(session, "manual-budget", actor_id="maintainer-1")
+
+        assert exc_info.value.code == 502
+        assert exc_info.value.message == "Failed to delete budget in enforcement provider"
+        session.rollback.assert_awaited_once()
+        mock_activity.async_insert.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("count", "suffix"), [(1, "1 user assigned"), (3, "3 users assigned")])
+    async def test_rejects_budget_with_user_assignments(
+        self, mock_budget_repo, mock_budget_cfg, mock_get_provider, mock_activity, count, suffix
+    ):
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        mock_activity.async_insert = AsyncMock()
+        mock_budget_cfg.predefined_budgets = []
+        _mock_delete_repo(mock_budget_repo, budget=_make_budget(budget_id="busy-budget"), assignment_count=count)
+        provider = _mock_provider(mock_get_provider)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await _make_service().delete_budget(AsyncMock(), "busy-budget", actor_id="maintainer-1")
+
+        assert exc_info.value.code == 409
+        assert exc_info.value.message == f"Budget 'busy-budget' is in use: {suffix}"
+        mock_budget_repo.delete.assert_not_called()
+        provider.delete_global_budget.assert_not_called()
+        mock_activity.async_insert.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_deletes_budget_whose_only_user_is_deleted(
+        self, mock_budget_repo, mock_budget_cfg, mock_get_provider, mock_activity
+    ):
+        mock_activity.async_insert = AsyncMock()
+        mock_budget_cfg.predefined_budgets = []
+        _mock_delete_repo(
+            mock_budget_repo,
+            budget=_make_budget(budget_id="orphan-budget"),
+            assignment_count=0,
+            all_assignment_count=1,
+        )
+        _mock_provider(mock_get_provider)
+        session = AsyncMock()
+
+        await _make_service().delete_budget(session, "orphan-budget", actor_id="maintainer-1")
+
+        mock_budget_repo.delete.assert_awaited_once_with(session, "orphan-budget")
+        mock_budget_repo.count_assignments.assert_not_called()
+        mock_activity.async_insert.assert_awaited_once()
+        event_dto = mock_activity.async_insert.await_args.args[0]
+        assert event_dto.event_type == BudgetManagementEvent.BUDGET_DELETED
+        assert event_dto.attributes == {"reason": "manual_delete"}
+
+    @pytest.mark.asyncio
+    async def test_ignores_deleted_users_in_in_use_count(
+        self, mock_budget_repo, mock_budget_cfg, mock_get_provider, mock_activity
+    ):
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        mock_activity.async_insert = AsyncMock()
+        mock_budget_cfg.predefined_budgets = []
+        _mock_delete_repo(
+            mock_budget_repo,
+            budget=_make_budget(budget_id="mixed-budget"),
+            assignment_count=1,
+            all_assignment_count=2,
+        )
+        provider = _mock_provider(mock_get_provider)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await _make_service().delete_budget(AsyncMock(), "mixed-budget", actor_id="maintainer-1")
+
+        assert exc_info.value.code == 409
+        assert exc_info.value.message == "Budget 'mixed-budget' is in use: 1 user assigned"
+        mock_budget_repo.delete.assert_not_called()
+        provider.delete_global_budget.assert_not_called()
+        mock_activity.async_insert.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejects_predefined_budget_before_lookup(
+        self, mock_budget_repo, mock_budget_cfg, mock_get_provider, mock_activity
+    ):
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        mock_activity.async_insert = AsyncMock()
+        predefined = MagicMock()
+        predefined.budget_id = "predefined-budget"
+        mock_budget_cfg.predefined_budgets = [predefined]
+        _mock_delete_repo(mock_budget_repo, budget=_make_budget(budget_id="predefined-budget"))
+        provider = _mock_provider(mock_get_provider)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await _make_service().delete_budget(AsyncMock(), "predefined-budget", actor_id="maintainer-1")
+
+        assert exc_info.value.code == 403
+        assert exc_info.value.message == "Budget 'predefined-budget' is preconfigured and cannot be deleted via API"
+        mock_budget_repo.get_by_id_for_update.assert_not_called()
+        mock_budget_repo.delete.assert_not_called()
+        provider.delete_global_budget.assert_not_called()
+        mock_activity.async_insert.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "budget",
+        [None, _make_budget(budget_id="missing-budget", budget_type=BudgetType.PROJECT)],
+        ids=["unknown", "project_budget"],
+    )
+    async def test_returns_404_for_unknown_or_non_global_budget(
+        self, mock_budget_repo, mock_budget_cfg, mock_get_provider, mock_activity, budget
+    ):
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        mock_activity.async_insert = AsyncMock()
+        mock_budget_cfg.predefined_budgets = []
+        _mock_delete_repo(mock_budget_repo, budget=budget)
+        provider = _mock_provider(mock_get_provider)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await _make_service().delete_budget(AsyncMock(), "missing-budget", actor_id="maintainer-1")
+
+        assert exc_info.value.code == 404
+        assert exc_info.value.message == "Budget 'missing-budget' not found"
+        mock_budget_repo.count_assignments.assert_not_called()
+        mock_budget_repo.delete.assert_not_called()
+        provider.delete_global_budget.assert_not_called()
+        mock_activity.async_insert.assert_not_called()

@@ -1287,6 +1287,26 @@ class TestUpdateBudgetResetsSoftLimitNotifiedAt:
         assert "soft_limit_notified_at" not in primary
 
 
+class TestGetUserCounts:
+    @pytest.mark.asyncio
+    async def test_missing_ids_are_zero_filled(self):
+        service = BudgetService()
+        repo_mock = AsyncMock(return_value={"b1": 3})
+        with patch("codemie.service.budget.budget_service.budget_repository.count_users_by_budget_ids", repo_mock):
+            result = await service.get_user_counts(AsyncMock(), ["b1", "b2"])
+
+        assert result == {"b1": 3, "b2": 0}
+
+    @pytest.mark.asyncio
+    async def test_empty_ids_return_empty_dict(self):
+        service = BudgetService()
+        repo_mock = AsyncMock(return_value={})
+        with patch("codemie.service.budget.budget_service.budget_repository.count_users_by_budget_ids", repo_mock):
+            result = await service.get_user_counts(AsyncMock(), [])
+
+        assert result == {}
+
+
 # ---------------------------------------------------------------------------
 # TestResetUserBudgetSpending
 # ---------------------------------------------------------------------------

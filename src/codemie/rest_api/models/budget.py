@@ -80,6 +80,7 @@ class BudgetResponse(BaseModel):
     notification_owner_email: Optional[str] = None
     soft_limit_notification_enabled: bool = False
     soft_limit_notify_once: bool = False
+    user_count: int | None = None
 
     model_config = {"from_attributes": True}
 

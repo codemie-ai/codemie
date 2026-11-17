@@ -48,10 +48,42 @@ class TestBudgetRouterAuditor:
         mock_session_ctx.return_value = mock_session
         mock_service.list_budgets = AsyncMock(return_value=([], 0))
         mock_service.resolve_creator_names = AsyncMock(return_value={})
+        mock_service.get_user_counts = AsyncMock(return_value={})
 
         auditor = _make_auditor()
         result = await list_budgets(page=0, per_page=20, category=None, user=auditor)
         assert result is not None
+
+    @patch("codemie.rest_api.routers.budget_router.require_litellm_enabled")
+    @patch("codemie.rest_api.routers.budget_router.get_async_session")
+    @patch("codemie.rest_api.routers.budget_router.budget_service")
+    @pytest.mark.anyio
+    async def test_auditor_sees_user_count(self, mock_service, mock_session_ctx, mock_litellm):
+        from datetime import datetime, timezone
+
+        from codemie.rest_api.routers.budget_router import list_budgets
+        from codemie.service.budget.budget_models import Budget
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session_ctx.return_value = mock_session
+        budget = Budget(
+            budget_id="b1",
+            name="B1",
+            soft_budget=1.0,
+            max_budget=2.0,
+            budget_duration="30d",
+            budget_category="platform",
+            created_by="x",
+            created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        )
+        mock_service.list_budgets = AsyncMock(return_value=([budget], 1))
+        mock_service.resolve_creator_names = AsyncMock(return_value={})
+        mock_service.get_user_counts = AsyncMock(return_value={"b1": 7})
+
+        result = await list_budgets(page=0, per_page=20, category=None, user=_make_auditor())
+        assert result.data[0].user_count == 7
 
     @patch("codemie.rest_api.routers.budget_router.require_litellm_enabled")
     @patch("codemie.rest_api.routers.budget_router.get_async_session")
@@ -90,6 +122,20 @@ class TestBudgetRouterAuditor:
         auditor = _make_auditor()
         result = await get_budget(budgetId="b1", user=auditor)
         assert result is not None
+
+    @pytest.mark.anyio
+    async def test_auditor_cannot_delete_budget(self):
+        """EPMCDME-15633: DELETE is maintainer-only, so an auditor is rejected by maintainer_access_only."""
+        from codemie.core.exceptions import ExtendedHTTPException
+        from codemie.rest_api.security.authentication import maintainer_access_only
+
+        request = MagicMock()
+        request.state.user = _make_auditor()
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await maintainer_access_only(request)
+
+        assert exc_info.value.code == 403
 
 
 class TestProjectBudgetRouterAuditor:

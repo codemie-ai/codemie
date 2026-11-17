@@ -721,10 +721,35 @@ class LiteLLMBudgetEnforcementProvider:
         )
 
     async def delete_global_budget(self, *, budget_id: str) -> None:
-        """No-op: LiteLLM has no budget deletion API."""
+        """Delete the budget in LiteLLM via POST /budget/delete.
+
+        A missing budget counts as already deleted. Any other provider error propagates so the caller can
+        fail the request; otherwise the budget would survive in LiteLLM and be re-created by the next sync.
+        """
+        service = self._get_service()
+        if service is None:
+            logger.debug(
+                f"budget_event=provider_global_budget_delete_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} budget_id={budget_id!r} reason=provider_unavailable"
+            )
+            return
+        try:
+            await asyncio.to_thread(service.api_client.post, "/budget/delete", data={"id": budget_id})
+        except Exception as exc:
+            if _is_not_found_error(exc):
+                logger.debug(
+                    f"budget_event=provider_global_budget_delete_completed component=litellm_budget_provider "
+                    f"provider={_PROVIDER_NAME!r} budget_id={budget_id!r} reason=already_absent"
+                )
+                return
+            logger.warning(
+                f"budget_event=provider_global_budget_delete_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} budget_id={budget_id!r} error={exc}"
+            )
+            raise
         logger.debug(
-            f"budget_event=provider_global_budget_delete_skipped component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} budget_id={budget_id!r} reason=provider_has_no_delete_api"
+            f"budget_event=provider_global_budget_delete_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} budget_id={budget_id!r}"
         )
 
     async def assign_user_budget(

@@ -5206,6 +5206,17 @@
               }
             ],
             "title": "Updated At"
+          },
+          "user_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Count"
           }
         },
         "required": [
@@ -40413,6 +40424,48 @@
       }
     },
     "/v1/admin/budgets/{budgetId}": {
+      "delete": {
+        "description": "Hard-delete a manually-created global budget with no user assignments. Maintainer only.",
+        "operationId": "delete_budget_v1_admin_budgets__budgetId__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "budgetId",
+            "required": true,
+            "schema": {
+              "title": "Budgetid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Delete Budget",
+        "tags": [
+          "Budgets"
+        ]
+      },
       "get": {
         "description": "Get budget detail. Maintainer or auditor.",
         "operationId": "get_budget_v1_admin_budgets__budgetId__get",

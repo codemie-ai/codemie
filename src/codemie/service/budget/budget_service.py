@@ -325,6 +325,11 @@ class BudgetService:
             budget_type=BudgetType.GLOBAL,
         )
 
+    async def get_user_counts(self, session: AsyncSession, budget_ids: list[str]) -> dict[str, int]:
+        """Return user counts for every requested budget id; budgets without users map to 0."""
+        counts = await budget_repository.count_users_by_budget_ids(session, budget_ids)
+        return {budget_id: counts.get(budget_id, 0) for budget_id in budget_ids}
+
     async def get_budget(self, session: AsyncSession, budget_id: str) -> Budget:
         """Return single Budget row or raise NotFoundException."""
         budget = await budget_repository.get_by_id(session, budget_id)
@@ -417,6 +422,87 @@ class BudgetService:
                 session,
             )
         return budget
+
+    async def delete_budget(
+        self,
+        session: AsyncSession,
+        budget_id: str,
+        actor_id: str,
+        actor_name: str = "",
+    ) -> None:
+        """Hard-delete a manually-created global budget that has no user assignments.
+
+        Check order: predefined (403) -> exists as a global budget (404) -> user assignments (409) -> delete.
+        The caller commits.
+        """
+        logger.debug(
+            f"budget_event=budget_delete_started component=budget_service budget_id={budget_id!r} "
+            f"actor_id={actor_id!r} actor_name={actor_name!r}"
+        )
+        if any(b.budget_id == budget_id for b in budget_config.predefined_budgets):
+            logger.debug(
+                f"budget_event=budget_delete_rejected component=budget_service budget_id={budget_id!r} "
+                f"reason=predefined_budget actor_id={actor_id!r} actor_name={actor_name!r}"
+            )
+            raise ExtendedHTTPException(
+                code=403,
+                message=f"Budget '{budget_id}' is preconfigured and cannot be deleted via API",
+            )
+
+        # Lock the row until commit. user_budget_assignments.budget_id is ON DELETE CASCADE, so without the lock
+        # a concurrent assignment could land between the count and the delete and be silently cascade-deleted.
+        # A concurrent assignment insert takes FOR KEY SHARE on this row: it blocks until we commit and then
+        # fails its FK check instead.
+        budget = await budget_repository.get_by_id_for_update(session, budget_id)
+        # Project budgets have their own delete flow; this endpoint only manages global budgets.
+        if budget is None or budget.budget_type != BudgetType.GLOBAL:
+            raise ExtendedHTTPException(code=404, message=f"Budget '{budget_id}' not found")
+
+        # Deleted users are ignored: deletion is permanent, they can't be unassigned via User Management,
+        # and their assignment rows are removed by ON DELETE CASCADE with the budget.
+        user_counts = await budget_repository.count_users_by_budget_ids(session, [budget_id])
+        assignment_count = user_counts.get(budget_id, 0)
+        if assignment_count > 0:
+            logger.debug(
+                f"budget_event=budget_delete_rejected component=budget_service budget_id={budget_id!r} "
+                f"reason=in_use assignment_count={assignment_count} actor_id={actor_id!r} actor_name={actor_name!r}"
+            )
+            users_label = "user" if assignment_count == 1 else "users"
+            raise ExtendedHTTPException(
+                code=409,
+                message=f"Budget '{budget_id}' is in use: {assignment_count} {users_label} assigned",
+            )
+
+        await budget_repository.delete(session, budget_id)
+
+        provider = get_active_provider()
+        try:
+            await provider.delete_global_budget(budget_id=budget_id)
+        except Exception as exc:
+            logger.error(
+                f"budget_event=provider_global_budget_delete_failed component=budget_service "
+                f"provider={getattr(provider, 'provider_name', 'unknown')!r} budget_id={budget_id!r} "
+                f"actor_id={actor_id!r} error={exc}",
+                exc_info=True,
+            )
+            await session.rollback()
+            raise ExtendedHTTPException(code=502, message="Failed to delete budget in enforcement provider") from exc
+
+        await activity_event_repository.async_insert(
+            ActivityEventCreate(
+                domain=ActivityDomain.BUDGET_MANAGEMENT,
+                event_type=BudgetManagementEvent.BUDGET_DELETED,
+                entity_type=ActivityEntityType.BUDGET,
+                entity_id=budget_id,
+                actor_id=actor_id,
+                attributes={"reason": "manual_delete"},
+            ),
+            session,
+        )
+        logger.info(
+            f"budget_event=budget_delete_completed component=budget_service budget_id={budget_id!r} "
+            f"actor_id={actor_id!r} actor_name={actor_name or actor_id!r}"
+        )
 
     async def _validate_budget_update_request(
         self,

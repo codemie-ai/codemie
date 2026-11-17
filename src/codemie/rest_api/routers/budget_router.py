@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 
 from codemie.clients.postgres import get_async_session
 from codemie.configs.budget_config import budget_config
@@ -96,8 +96,12 @@ async def list_budgets(
             category=category.value if category is not None else None,
         )
         creator_names = await budget_service.resolve_creator_names(session, budgets)
+        counts = await budget_service.get_user_counts(session, [b.budget_id for b in budgets])
+        data = [_build_budget_response(b, creator_names) for b in budgets]
+        for item in data:
+            item.user_count = counts.get(item.budget_id, 0)
         return PaginatedBudgetListResponse(
-            data=[_build_budget_response(b, creator_names) for b in budgets],
+            data=data,
             pagination=PaginationInfo(total=total, page=page, per_page=per_page),
         )
 
@@ -164,3 +168,16 @@ async def update_budget(
         await session.refresh(budget)
         creator_names = await budget_service.resolve_creator_names(session, [budget])
         return _build_budget_response(budget, creator_names)
+
+
+@router.delete("/{budgetId}", status_code=204)
+async def delete_budget(
+    budget_id: str = Path(alias="budgetId"),
+    user: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection
+    _: None = Depends(maintainer_access_only),
+) -> None:
+    """Hard-delete a manually-created global budget with no user assignments. Maintainer only."""
+    require_litellm_enabled()
+    async with get_async_session() as session:
+        await budget_service.delete_budget(session, budget_id, actor_id=user.id, actor_name=user.username)
+        await session.commit()

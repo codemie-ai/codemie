@@ -44,6 +44,22 @@ async def test_get_all_keyed_by_id_returns_budget_map(repository: BudgetReposito
 
 
 @pytest.mark.asyncio
+async def test_get_by_id_for_update_locks_budget_row(repository: BudgetRepository):
+    session = AsyncMock()
+    budget = SimpleNamespace(budget_id="budget-1")
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.first.return_value = budget
+    session.execute.return_value = execute_result
+
+    result = await repository.get_by_id_for_update(session, "budget-1")
+
+    assert result is budget
+    stmt = session.execute.await_args.args[0]
+    assert stmt._for_update_arg is not None
+    assert "FOR UPDATE" in str(stmt.compile(dialect=postgresql.dialect()))
+
+
+@pytest.mark.asyncio
 async def test_get_user_id_by_identifier_returns_matching_id(repository: BudgetRepository):
     session = AsyncMock()
     execute_result = MagicMock()
@@ -220,6 +236,47 @@ def test_clear_project_on_deleted_budgets_flushes_without_commit(repository: Bud
 
     session.flush.assert_called_once()
     session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_count_users_by_budget_ids_returns_empty_for_empty_input(repository: BudgetRepository):
+    session = AsyncMock()
+
+    result = await repository.count_users_by_budget_ids(session, [])
+
+    assert result == {}
+    session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_count_users_by_budget_ids_returns_grouped_counts(repository: BudgetRepository):
+    session = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.all.return_value = [("b1", 2), ("b2", 1)]
+    session.execute.return_value = execute_result
+
+    result = await repository.count_users_by_budget_ids(session, ["b1", "b2", "b3"])
+
+    assert result == {"b1": 2, "b2": 1}
+    assert "b3" not in result
+
+
+@pytest.mark.asyncio
+async def test_count_users_by_budget_ids_statement_shape(repository: BudgetRepository):
+    session = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.all.return_value = []
+    session.execute.return_value = execute_result
+
+    await repository.count_users_by_budget_ids(session, ["b1", "b2"])
+
+    stmt = session.execute.await_args.args[0]
+    sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "deleted_at IS NULL" in sql
+    assert "count(DISTINCT" in sql
+    assert "GROUP BY" in sql
+    assert "is_active" not in sql
+    assert "budget_id IN ('b1', 'b2')" in sql
 
 
 @pytest.mark.asyncio

@@ -18,7 +18,7 @@ Covers:
   - 400 when LiteLLM is disabled (require_litellm_enabled raises)
   - 409 on duplicate budget_id at create
   - 404 on missing budget at get / patch / delete
-  - 204 on successful delete
+  - 204 on successful delete (maintainer only)
   - 201 on successful create
 """
 
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, UTC
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -33,6 +34,7 @@ from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from codemie.configs import config
 from codemie.configs.customer_config import CustomerConfig
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.enterprise.litellm.budget_categories import BudgetCategory
@@ -41,12 +43,13 @@ from codemie.rest_api.models.budget import BudgetCreateRequest, BudgetUpdateRequ
 from codemie.rest_api.routers.budget_router import (
     router,
     create_budget,
+    delete_budget,
     get_budget,
     list_budgets,
     sync_budgets,
     update_budget,
 )
-from codemie.rest_api.security.authentication import authenticate
+from codemie.rest_api.security.authentication import authenticate, maintainer_access_only
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_models import Budget
 
@@ -316,6 +319,82 @@ class TestUpdateBudgetEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# TestDeleteBudgetEndpoint (EPMCDME-15633)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteBudgetEndpoint:
+    @pytest.mark.asyncio
+    async def test_maintainer_deletes_budget_and_commits(self):
+        mock_session = AsyncMock()
+        mock_session.commit = AsyncMock()
+        mock_delete = AsyncMock(return_value=None)
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch("codemie.rest_api.routers.budget_router.budget_service.delete_budget", new=mock_delete),
+        ):
+            result = await delete_budget(budget_id="test-budget", user=_maintainer_user(), _=None)
+
+        assert result is None
+        mock_delete.assert_awaited_once_with(
+            mock_session, "test-budget", actor_id="maintainer-1", actor_name="maintainer"
+        )
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("code", [403, 404, 409])
+    async def test_service_errors_propagate_without_commit(self, code):
+        mock_session = AsyncMock()
+        mock_session.commit = AsyncMock()
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.delete_budget",
+                new=AsyncMock(side_effect=ExtendedHTTPException(code=code, message="rejected")),
+            ),
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                await delete_budget(budget_id="test-budget", user=_maintainer_user(), _=None)
+
+        assert exc_info.value.code == code
+        mock_session.commit.assert_not_called()
+
+    def test_delete_route_is_maintainer_only_and_returns_204(self):
+        route = next(
+            route
+            for route in router.routes
+            if isinstance(route, APIRoute)
+            and route.path == "/v1/admin/budgets/{budgetId}"
+            and "DELETE" in (route.methods or set())
+        )
+
+        dependency_calls = {dependency.call.__name__ for dependency in route.dependant.dependencies}
+        assert "maintainer_access_only" in dependency_calls
+        assert route.status_code == 204
+
+    @pytest.mark.asyncio
+    async def test_maintainer_access_only_allows_maintainer(self):
+        request = SimpleNamespace(state=SimpleNamespace(user=_maintainer_user()))
+
+        assert await maintainer_access_only(request) is None
+
+    @pytest.mark.asyncio
+    async def test_maintainer_access_only_rejects_plain_admin(self):
+        with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+            plain_admin = User(id="admin-1", username="admin", is_admin=True, is_maintainer=False)
+        request = SimpleNamespace(state=SimpleNamespace(user=plain_admin))
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await maintainer_access_only(request)
+
+        assert exc_info.value.code == 403
+
+
+# ---------------------------------------------------------------------------
 # TestListBudgetsEndpoint
 # ---------------------------------------------------------------------------
 
@@ -333,11 +412,16 @@ class TestListBudgetsEndpoint:
                 "codemie.rest_api.routers.budget_router.budget_service.list_budgets",
                 new=AsyncMock(return_value=(budgets, 2)),
             ),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.get_user_counts",
+                new=AsyncMock(return_value={"test-budget": 4, "budget-2": 0}),
+            ),
         ):
             result = await list_budgets(page=0, per_page=20, category=None, user=_admin_user(), _=None)
 
         assert result.pagination.total == 2
         assert len(result.data) == 2
+        assert [item.user_count for item in result.data] == [4, 0]
 
     @pytest.mark.asyncio
     async def test_filters_by_category(self):
@@ -350,10 +434,14 @@ class TestListBudgetsEndpoint:
                 "codemie.rest_api.routers.budget_router.budget_service.list_budgets",
                 new=AsyncMock(return_value=([], 0)),
             ) as mock_list,
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.get_user_counts",
+                new=AsyncMock(return_value={}),
+            ),
         ):
             await list_budgets(
-                page=0,
-                per_page=20,
+                page=2,
+                per_page=5,
                 category=BudgetCategory.CLI,
                 user=_admin_user(),
                 _=None,
@@ -362,6 +450,51 @@ class TestListBudgetsEndpoint:
         mock_list.assert_called_once()
         _, kwargs = mock_list.call_args
         assert kwargs["category"] == "cli"
+        assert kwargs["page"] == 2
+        assert kwargs["per_page"] == 5
+
+    @pytest.mark.asyncio
+    async def test_get_user_counts_called_with_page_budget_ids(self):
+        budgets = [_make_budget_row(), _make_budget_row(budget_id="budget-2", name="Budget 2")]
+
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(AsyncMock()),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.list_budgets",
+                new=AsyncMock(return_value=(budgets, 2)),
+            ),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.get_user_counts",
+                new=AsyncMock(return_value={"test-budget": 1, "budget-2": 1}),
+            ) as mock_counts,
+        ):
+            await list_budgets(page=0, per_page=20, category=None, user=_admin_user(), _=None)
+
+        assert mock_counts.call_args.args[1] == ["test-budget", "budget-2"]
+
+    @pytest.mark.asyncio
+    async def test_create_response_user_count_is_none(self):
+        mock_session = AsyncMock()
+        with (
+            _patch_litellm_enabled(),
+            _patch_session(mock_session),
+            patch(
+                "codemie.rest_api.routers.budget_router.budget_service.create_budget",
+                new=AsyncMock(return_value=_make_budget_row()),
+            ),
+        ):
+            payload = BudgetCreateRequest(
+                budget_id="test-budget",
+                name="Test Budget",
+                soft_budget=10.0,
+                max_budget=100.0,
+                budget_duration="30d",
+                budget_category=BudgetCategory.PLATFORM,
+            )
+            result = await create_budget(payload=payload, user=_admin_user(), _=None)
+
+        assert result.user_count is None
 
 
 def test_budget_read_routes_use_admin_or_maintainer_dependency():
@@ -507,6 +640,13 @@ def _patch_resolve_creator_names(mapping: dict):
     )
 
 
+def _patch_user_counts(mapping: dict):
+    return patch(
+        "codemie.rest_api.routers.budget_router.budget_service.get_user_counts",
+        new=AsyncMock(return_value=mapping),
+    )
+
+
 class TestCreatedByName:
     @pytest.mark.asyncio
     async def test_list_budgets_returns_created_by_name_for_human_creator(self):
@@ -521,6 +661,7 @@ class TestCreatedByName:
                 new=AsyncMock(return_value=(budgets, 1)),
             ),
             _patch_resolve_creator_names({"user-1": "Alice Smith"}),
+            _patch_user_counts({}),
         ):
             result = await list_budgets(page=0, per_page=20, category=None, user=_admin_user(), _=None)
 
@@ -540,6 +681,7 @@ class TestCreatedByName:
                 new=AsyncMock(return_value=(budgets, 1)),
             ),
             _patch_resolve_creator_names({}),
+            _patch_user_counts({}),
         ):
             result = await list_budgets(page=0, per_page=20, category=None, user=_admin_user(), _=None)
 
@@ -559,6 +701,7 @@ class TestCreatedByName:
                 new=AsyncMock(return_value=(budgets, 1)),
             ),
             _patch_resolve_creator_names({}),
+            _patch_user_counts({}),
         ):
             result = await list_budgets(page=0, per_page=20, category=None, user=_admin_user(), _=None)
 
@@ -584,6 +727,7 @@ class TestCreatedByName:
                 "codemie.rest_api.routers.budget_router.budget_service.resolve_creator_names",
                 new=resolve_mock,
             ),
+            _patch_user_counts({}),
         ):
             result = await list_budgets(page=0, per_page=20, category=None, user=_admin_user(), _=None)
 
