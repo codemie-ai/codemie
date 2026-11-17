@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from copy import deepcopy
+from collections.abc import Collection
 from typing import List, Dict, Optional
 
 from codemie_tools.base.models import ToolKit, ToolSet
@@ -39,6 +40,7 @@ class ToolsInfoService:
         show_for_ui: bool = False,
         user: Optional[User] = None,
         exclude_toolkits: Optional[list[str]] = None,
+        exclude_tools: Collection[str] | None = None,
         offered_only: bool = False,
     ) -> List[Dict[str, str]]:
         """
@@ -48,6 +50,7 @@ class ToolsInfoService:
             show_for_ui: UI-specific formatting
             user: Current user (used for admin tools)
             exclude_toolkits: Toolkit names to exclude from the result
+            exclude_tools: Tool names to exclude from every toolkit in the result
             offered_only: Hide tools that are unusable in this deployment (offering paths only; lookups keep all)
         """
 
@@ -88,10 +91,9 @@ class ToolsInfoService:
         toolkits.extend(standard_toolkits)
 
         if ElasticSearchClient.is_configured():
-            ToolsInfoService._merge_code_toolkit(toolkits, show_for_ui)
-
-        if ElasticSearchClient.is_configured() and not show_for_ui:
-            toolkits.append(KBToolkit.get_tools_ui_info())
+            ToolsInfoService._merge_code_toolkit(
+                toolkits, show_for_ui, extra_tools=KBToolkit.get_tools_ui_info()["tools"]
+            )
 
         toolkits.append(PlatformToolkit.get_tools_ui_info(show_admin_tools))
 
@@ -101,8 +103,22 @@ class ToolsInfoService:
         if exclude_toolkits:
             toolkits = [t for t in toolkits if t.get("toolkit") not in exclude_toolkits]
 
+        if exclude_tools:
+            toolkits = ToolsInfoService._exclude_tools(toolkits, exclude_tools)
+
         ToolsInfoService._mark_script_callable(toolkits)
         return toolkits
+
+    @staticmethod
+    def _exclude_tools(toolkits: List[Dict], exclude_tools: Collection[str]) -> List[Dict]:
+        excluded = set(exclude_tools)
+        result = []
+        for toolkit in toolkits:
+            tools = toolkit.get("tools") or []
+            kept = [tool for tool in tools if tool.get("name") not in excluded]
+            if kept or not tools:
+                result.append({**toolkit, "tools": kept})
+        return result
 
     @staticmethod
     def _mark_script_callable(toolkits: List[Dict]) -> None:
@@ -127,8 +143,8 @@ class ToolsInfoService:
         return list(toolkit_provider.get_hedgeable_toolkits())
 
     @staticmethod
-    def _merge_code_toolkit(toolkits: List[Dict], show_for_ui: bool) -> None:
-        """Merge backend code tools into autodiscovered CodeToolkit (if exists), or add it."""
+    def _merge_code_toolkit(toolkits: list[dict], show_for_ui: bool, extra_tools: list[dict] | None = None) -> None:
+        """Merge backend code tools (plus extra_tools) into autodiscovered CodeToolkit (if exists), or add it."""
         from codemie.agents.tools.code.code_toolkit import CodeToolkit as BackendCodeToolkit
 
         code_toolkit = next((t for t in toolkits if t.get('toolkit') == ToolSet.CODEBASE_TOOLS.value), None)
@@ -136,13 +152,17 @@ class ToolsInfoService:
             BackendCodeToolkit.get_tools_ui_info() if show_for_ui else BackendCodeToolkit.get_tools_api_info()
         )
 
+        extras = deepcopy(extra_tools or [])
+
         if code_toolkit:
             code_toolkit.setdefault('tools', []).extend(backend_tools['tools'])
+            code_toolkit['tools'].extend(extras)
         else:
+            backend_tools['tools'] = [*backend_tools['tools'], *extras]
             toolkits.append(backend_tools)
 
     @staticmethod
-    def _provider_toolkits_info() -> List[Dict[str, str]]:
+    def _provider_toolkits_info() -> list[dict[str, str]]:
         """Get provider toolkits info"""
         provider_toolkits = ProviderToolkitsFactory.get_toolkits()
 

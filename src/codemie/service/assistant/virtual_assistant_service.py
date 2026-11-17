@@ -59,6 +59,7 @@ class VirtualAssistantService:
             datasource_ids=config.datasource_ids,
             mcp_servers=config.mcp_servers,
             skill_ids=config.skill_ids,
+            disabled_context_tools=config.disabled_context_tools,
         )
 
     @classmethod
@@ -125,7 +126,7 @@ class VirtualAssistantService:
         )
 
     @classmethod
-    def create(
+    def create(  # noqa: PLR0913  # existing factory signature, one more optional field is cheaper than a params object
         cls,
         toolkits: List[ToolKitDetails],
         project: str,
@@ -134,6 +135,7 @@ class VirtualAssistantService:
         datasource_ids: Optional[List[str]] = None,
         mcp_servers: Optional[List[MCPServerDetails]] = None,
         skill_ids: Optional[List[str]] = None,
+        disabled_context_tools: list[str] | None = None,
         is_tool_step: bool = False,
     ) -> VirtualAssistant:
         """Create assistant instance and save in memory"""
@@ -161,6 +163,7 @@ class VirtualAssistantService:
             context=context,
             mcp_servers=mcp_servers or [],
             skill_ids=skill_ids or [],
+            disabled_context_tools=disabled_context_tools or [],
             is_tool_step=is_tool_step,
         )
 

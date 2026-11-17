@@ -128,6 +128,26 @@ def test_generate_returns_response(mock_llm_svc, mock_tools_svc, mock_graph_clas
 @patch("codemie.service.workflow_generator_service.WorkflowGeneratorGraph")
 @patch("codemie.service.workflow_generator_service.ToolsInfoService")
 @patch("codemie.service.workflow_generator_service.llm_service")
+def test_generate_excludes_default_context_tools_from_available_tools(mock_llm_svc, mock_tools_svc, mock_graph_class):
+    from codemie.service.default_tool_names import DEFAULT_CONTEXT_TOOL_NAMES
+    from codemie.service.workflow_generator_service import WorkflowGeneratorService
+
+    mock_llm_svc.default_llm_model = "gpt-4o"
+    mock_tools_svc.get_tools_info.return_value = []
+
+    create_req = _make_create_request()
+    mock_graph = Mock()
+    mock_graph.run.return_value = {"result": create_req, "error": None, "validation_errors": []}
+    mock_graph_class.return_value = mock_graph
+
+    WorkflowGeneratorService.generate(nl_query="Create a workflow", user=_make_user())
+
+    assert mock_tools_svc.get_tools_info.call_args.kwargs["exclude_tools"] == DEFAULT_CONTEXT_TOOL_NAMES
+
+
+@patch("codemie.service.workflow_generator_service.WorkflowGeneratorGraph")
+@patch("codemie.service.workflow_generator_service.ToolsInfoService")
+@patch("codemie.service.workflow_generator_service.llm_service")
 def test_generate_raises_on_graph_error(mock_llm_svc, mock_tools_svc, mock_graph_class):
     from codemie.service.workflow_generator_service import WorkflowGeneratorService
 

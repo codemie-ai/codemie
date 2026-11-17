@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 25,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 17,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches multiple subsystems: assistant versioning (assistant_version_service.py, assistant_version_compare_service.py, assistant_version_migration_service.py), tool execution gating (tool_execution_service.py), default toolkit assembly (toolkit_service.py, tools_info_service.py), and the code toolkit itself (code_toolkit.py, tools_vars.py) plus a new REST model field and DB migration — core shared services (toolkit_service.py, tool_execution_service.py) used by all assistants are modified." },
+    { "dimension": "technical_risk", "reason": "No exact precedent for the alias-mapping gate added in tool_execution_service.py (DESELECTABLE_TOOL_NAME_BY_ALIAS) that must stay consistent with toolkit_service.py's default-tool assembly gating; a follow-up commit ('Fix V2 tool suppression and migration backfill from code review') shows the V1/V2 tool-name aliasing and migration backfill were not right on the first pass. The alembic migration backfills existing rows to avoid None-valued deselected_default_tools breaking unguarded `in`/`not in` checks at chat time — a data migration with a real rollback path (downgrade drops the columns)." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 17 files changed (788 insertions, 14 deletions), which maps to the XXL band (16+) per the file-count rule; files span src/codemie/agents/tools/code/, src/codemie/rest_api/models/, src/codemie/service/assistant/, src/codemie/service/tools/, src/external/alembic/versions/, and multiple tests/ directories." },
+    { "dimension": "affected_layers", "reason": "Touches DB-Persistence (alembic migration adding deselected_default_tools to assistants and assistant_configurations), the REST/data model layer (Assistant, AssistantConfiguration in assistant.py), and the Service layer (versioning, migration, compare, tool execution, toolkit assembly services) — three distinct layers including a schema migration." }
+  ],
+  "red_flags_applied": [
+    "Requires data migration (alembic backfill of deselected_default_tools on assistants and assistant_configurations) -> bumped Technical Risk",
+    "Touches core shared utilities (toolkit_service.py default-tool assembly, tool_execution_service.py invoke gating used across all assistants) -> bumped Component Scope to XXL"
+  ],
+  "split_recommendation": null
+}

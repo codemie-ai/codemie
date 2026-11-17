@@ -615,6 +615,13 @@
         "description": {
           "type": "string"
         },
+        "disabled_context_tools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "default": []
+        },
         "enable_image_generation": {
           "anyOf": [
             {

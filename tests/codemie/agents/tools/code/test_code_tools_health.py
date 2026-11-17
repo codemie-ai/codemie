@@ -19,6 +19,7 @@ import pytest
 
 from codemie.agents.tools.code.tools import SearchCodeRepoTool, SearchCodeRepoByPathsTool
 from codemie.agents.tools.code.read_files_tools import ReadFileFromStorageTool, ReadFileFromStorageWithSummaryTool
+from codemie.agents.tools.code.tools_vars import CODE_SEARCH_TOOL, CODE_SEARCH_TOOL_NO_REPO_TREE
 from langchain_core.tools import ToolException
 
 
@@ -352,3 +353,11 @@ class TestReadFileToolsHealth:
         assert "re-indexed" not in result
         assert "indexing attempt failed" not in result
         assert "scheduled reindex" not in result
+
+
+class TestCodeSearchToolDescription:
+    def test_code_search_tool_references_repo_tree_only_when_tree_is_available(self):
+        assert "from repository tree" in CODE_SEARCH_TOOL.description
+        assert "from repository tree" in CODE_SEARCH_TOOL.react_description
+        assert "repository tree" not in CODE_SEARCH_TOOL_NO_REPO_TREE.description.lower()
+        assert "repository tree" not in CODE_SEARCH_TOOL_NO_REPO_TREE.react_description.lower()

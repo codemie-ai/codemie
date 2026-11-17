@@ -35,6 +35,7 @@ from codemie.service.file_service.file_service import FileService
 from codemie.service.search_and_rerank import SearchAndRerankKB
 from codemie.service.search_and_rerank.marketplace import SearchAndRerankMarketplace
 from codemie.service.constants import FullDatasourceTypes
+from codemie.service.default_tool_names import SEARCH_KB_TOOL_NAME
 from codemie.templates.knowledge_base_prompt import LLM_ROUTING_KB_PROMPT
 
 _SUPPRESSED_CALLBACK_TYPES = AgentStreamingCallback | AgentInvokeCallback
@@ -74,7 +75,8 @@ OVERLIMIT_NOTICE = (
 
 
 SEARCH_KB_TOOL = ToolMetadata(
-    name="search_kb",
+    name=SEARCH_KB_TOOL_NAME,
+    label="Search Knowledge Base",
     description="""Use this tool to retrieve or search for additional project context needed to resolve a user's query.
 It accepts the following input parameter:
   - query: A string containing the detailed user query, which will be used to locate relevant context.

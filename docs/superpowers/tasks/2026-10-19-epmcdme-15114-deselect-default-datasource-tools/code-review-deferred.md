@@ -1,0 +1,3 @@
+# Deferred from code review — 2026-10-19-deselect-default-datasource-tools (2026-10-19)
+
+- **KB toolkit visibility tied to Elasticsearch configuration state** — `src/codemie/service/tools/tools_info_service.py:82` — When Elasticsearch is unconfigured, the KB toolkit (and `search_kb` with it) is absent from both the UI and API tool listings, so an assistant that deselected `search_kb` while ES was configured has no way to re-select it once ES becomes unconfigured, and the deselect option simply disappears with no explanation either way. Pre-existing: the `ElasticSearchClient.is_configured()` gate predates this diff — the diff only removed the `and not show_for_ui` clause alongside it — so the interaction is inherited, not introduced by this change.

@@ -171,6 +171,22 @@ class TestCreateInitialVersion:
         mock_config_instance.save.assert_called_once()
 
     @patch('codemie.service.assistant.assistant_version_service.AssistantConfiguration')
+    def test_create_initial_version_carries_disabled_context_tools(self, mock_config_class, mock_assistant, mock_user):
+        """Version 1 keeps the deselected default tools from the request"""
+        request = AssistantRequest(
+            name="Test Assistant",
+            description="d",
+            system_prompt="Test Prompt",
+            llm_model_type="gpt-4",
+            disabled_context_tools=["search_kb"],
+        )
+        mock_config_class.return_value = MagicMock()
+
+        AssistantVersionService.create_initial_version(assistant=mock_assistant, request=request, user=mock_user)
+
+        assert mock_config_class.call_args[1]['disabled_context_tools'] == ["search_kb"]
+
+    @patch('codemie.service.assistant.assistant_version_service.AssistantConfiguration')
     def test_create_initial_version_with_none_description(self, mock_config_class, mock_assistant, mock_user):
         """Test creation with None description in request"""
         # Setup request with None description

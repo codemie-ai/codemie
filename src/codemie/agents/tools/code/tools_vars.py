@@ -14,8 +14,10 @@
 
 from codemie_tools.base.models import ToolMetadata
 
+from codemie.service.default_tool_names import CODE_SEARCH_TOOL_NAME, REPO_TREE_TOOL_NAME
+
 CODE_SEARCH_TOOL = ToolMetadata(
-    name="search_code_repo",
+    name=CODE_SEARCH_TOOL_NAME,
     description="""
     Tool to search code context for repository in generic approach.
     Repository description: {}.
@@ -72,7 +74,7 @@ CODE_SEARCH_BY_PATHS_TOOL = ToolMetadata(
 )
 
 REPO_TREE_TOOL = ToolMetadata(
-    name="get_repository_file_tree",
+    name=REPO_TREE_TOOL_NAME,
     description="""
     Useful when you want to get code repository file tree for repository.
     Repository description: {}.
@@ -244,3 +246,35 @@ READ_FILES_WITH_SUMMARY_TOOL = ToolMetadata(
     it will be clearly marked as such.
     """,
 )
+
+_REPO_TREE_REFERENCE = " from repository tree"
+
+
+def _without_repo_tree_reference(metadata: ToolMetadata) -> ToolMetadata:
+    return metadata.model_copy(
+        update={
+            "description": metadata.description.replace(_REPO_TREE_REFERENCE, ""),
+            "react_description": metadata.react_description.replace(_REPO_TREE_REFERENCE, ""),
+        }
+    )
+
+
+CODE_SEARCH_TOOL_NO_REPO_TREE = _without_repo_tree_reference(CODE_SEARCH_TOOL)
+CODE_SEARCH_TOOL_V2_NO_REPO_TREE = _without_repo_tree_reference(CODE_SEARCH_TOOL_V2)
+
+_TREE_FIRST_INSTRUCTIONS = (
+    "It must be the first tool to use to get project context if direct file name or path is not specified in query.\n    ",
+    "It must be the first tool to use to get project context. ",
+)
+
+
+def _without_tree_first_instruction(metadata: ToolMetadata) -> ToolMetadata:
+    description = metadata.description
+    react_description = metadata.react_description
+    for sentence in _TREE_FIRST_INSTRUCTIONS:
+        description = description.replace(sentence, "")
+        react_description = react_description.replace(sentence, "")
+    return metadata.model_copy(update={"description": description, "react_description": react_description})
+
+
+REPO_TREE_TOOL_V2_NO_FIRST_INSTRUCTION = _without_tree_first_instruction(REPO_TREE_TOOL_V2)

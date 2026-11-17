@@ -237,6 +237,27 @@ def test_create_from_virtual_asst_config_valid_integration(
 
 @patch("codemie.service.tools.tools_info_service.ToolsInfoService._provider_toolkits_info", return_value=[])
 @patch("codemie.rest_api.models.settings.Settings.get_by_fields")
+def test_create_from_virtual_asst_config_propagates_disabled_context_tools(
+    mock_get_setting, _mock_provider_tools, workflow_assistant_config
+):
+    mock_get_setting.return_value = MagicMock(spec=Settings)
+    workflow_assistant_config.disabled_context_tools = ["search_kb"]
+
+    assistant = VirtualAssistantService.create_from_virtual_asst_config(
+        config=workflow_assistant_config, project_name="Test", user=User(id="test_user"), execution_id="test_execution"
+    )
+
+    assert assistant.disabled_context_tools == ["search_kb"]
+
+
+def test_create_defaults_disabled_context_tools_to_empty():
+    assistant = VirtualAssistantService.create(toolkits=[], project="Test")
+
+    assert assistant.disabled_context_tools == []
+
+
+@patch("codemie.service.tools.tools_info_service.ToolsInfoService._provider_toolkits_info", return_value=[])
+@patch("codemie.rest_api.models.settings.Settings.get_by_fields")
 def test_create_from_virtual_asst_config_no_integration(
     mock_get_setting, _mock_provider_tools, workflow_assistant_config
 ):

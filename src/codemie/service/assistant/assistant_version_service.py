@@ -70,6 +70,7 @@ class AssistantVersionService:
             tools_tokens_size_limit=request.tools_tokens_size_limit,
             context=request.context,
             toolkits=request.toolkits,
+            disabled_context_tools=request.disabled_context_tools or [],
             mcp_servers=request.mcp_servers,
             assistant_ids=request.assistant_ids,
             conversation_starters=request.conversation_starters,
@@ -130,6 +131,7 @@ class AssistantVersionService:
             tools_tokens_size_limit=versioned('tools_tokens_size_limit'),
             context=versioned('context'),
             toolkits=versioned('toolkits'),
+            disabled_context_tools=versioned('disabled_context_tools') or [],
             mcp_servers=versioned('mcp_servers'),
             assistant_ids=versioned('assistant_ids'),
             conversation_starters=versioned('conversation_starters'),
@@ -303,6 +305,7 @@ class AssistantVersionService:
             tools_tokens_size_limit=target_config.tools_tokens_size_limit,
             context=target_config.context,
             toolkits=target_config.toolkits,
+            disabled_context_tools=target_config.disabled_context_tools or [],
             mcp_servers=restored_mcp_servers,
             assistant_ids=target_config.assistant_ids,
             conversation_starters=target_config.conversation_starters,
@@ -392,6 +395,7 @@ class AssistantVersionService:
         assistant.tools_tokens_size_limit = config.tools_tokens_size_limit
         assistant.context = config.context
         assistant.toolkits = config.toolkits
+        assistant.disabled_context_tools = config.disabled_context_tools or []
         assistant.mcp_servers = config.mcp_servers
         assistant.assistant_ids = config.assistant_ids
         assistant.conversation_starters = config.conversation_starters

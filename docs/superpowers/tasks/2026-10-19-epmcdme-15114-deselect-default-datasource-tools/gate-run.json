@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15114-show-deselect-default-datasource-tools",
+  "head": "2aaa03d14a4ec99b0a14d213132c6c64671ced40",
+  "runner": "poetry",
+  "started_at": "2026-10-19T13:25:03Z",
+  "completed_at": "2026-10-19T13:28:40Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "ruff format: 2893 files left unchanged; ruff check --fix / ruff check: all checks passed"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "poetry build produced codemie-0.8.0 sdist and wheel"
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2596 files, 0 missing license headers"
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 21000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Docker-based dir scan of full working tree: scanned ~57.67 MB, no leaks found"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 15000,
+      "command": "poetry run pytest tests/codemie/rest_api/models/test_assistant_model.py tests/codemie/service/tools/ tests/codemie/service/assistant/ tests/codemie/agents/tools/code/ tests/codemie/rest_api/routers/test_tool.py -v",
+      "exit_code": 0,
+      "notes": "SCOPED by explicit caller override, not the full `make test` suite. The guide's default `poetry run pytest tests/` is confirmed hanging in this environment right now (independent of this branch) -- py-spy/sample showed the main thread blocked on a lock/thread-join while reader threads blocked on a pipe read, reproduced both in a prior QA-gates attempt and by the user's own manual run, both killed at 0% CPU. This is a pre-existing environment issue, not something this task fixes. Ran instead against every file this branch's diff touches: 1071 passed, 0 failed, 14 warnings, 13.60s."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 300,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: script printed \"[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.\" Zero exit code is not evidence the scan ran. To enable locally: set SONAR_TOKEN (and related SONAR_* vars, e.g. via .env.local) per the setup guide."
+    },
+    {
+      "id": "gitleaks-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1000,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: nothing was staged at run time (git status showed only an untracked docs/ directory), so gitleaks reported \"0 commits scanned\" / \"scanned ~0 bytes (0)\". Zero exit code reflects no staged diff to scan, not a verified clean result. To exercise for real: stage the branch's changes (git add) before re-running this hook."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 50,
+      "command": "git log main..HEAD --format=%s",
+      "exit_code": 0,
+      "notes": "codemie-commit-msg hook (scripts/git-hooks/commit_msg.sh) enforces ^EPMCDME-[0-9]+: on the first line. All 10 commits unique to this branch match that pattern (verified by inspection of `git log main..HEAD`)."
+    },
+    {
+      "id": "gitlab-ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "N/A",
+      "exit_code": null,
+      "notes": "The repo's only .gitlab-ci.yml job (wait-ci-init, from the pre-ci-guard template) requires live GitLab MR pipeline context (CI_PIPELINE_SOURCE=merge_request_event, CI_MERGE_REQUEST_TARGET_BRANCH_NAME) and polls external ci-pipeline/compliance-report status checks. Not reachable from a local checkout; this check is only ever settled by the real CI pipeline after the MR is opened."
+    }
+  ],
+  "failures": {}
+}

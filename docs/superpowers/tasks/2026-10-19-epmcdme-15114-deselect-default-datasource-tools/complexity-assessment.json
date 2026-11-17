@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Add an assistant-level persisted list of deselected datasource default tools with listing, runtime gating, direct-invoke rejection and server-side validation in the backend.",
+  "generated": "2026-10-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches assistant models, version/compare/migration services, toolkit_service, tools_info_service, tool_execution_service, code and KB toolkits, tool descriptions, virtual assistants and export/import; no new abstractions, all in one repo." },
+    { "dimension": "technical_risk", "reason": "No exact precedent for assistant-level deselects; closest pattern is toolkits/tool_exists gating, which does not cover server-side variant-conflict and unknown-name validation or direct-invoke rejection (security-relevant gate). Schema migration needs rollback plan; weak test coverage on versions and import/export." },
+    { "dimension": "file_change_estimate", "reason": "Dozen-plus modified files plus an alembic migration and tests across several directories." },
+    { "dimension": "affected_layers", "reason": "API, Service, DB-Persistence (migration on assistants and versions) and agent tools layer." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk raised to L: changes database schema on assistants and versions, with migration",
+    "Technical Risk: security-relevant validation and direct-invoke gating with no existing adequate pattern"
+  ],
+  "split_recommendation": null
+}

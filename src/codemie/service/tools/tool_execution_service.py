@@ -29,7 +29,7 @@ from codemie.agents.tools.code.tools_vars import (
     CODE_SEARCH_TOOL_V2,
     REPO_TREE_TOOL_V2,
 )
-from codemie.agents.tools.kb.search_kb import SearchKBTool
+from codemie.agents.tools.kb.search_kb import SearchKBTool, SEARCH_KB_TOOL
 
 # Plugin toolkit now provided via enterprise package
 from codemie.configs import logger
@@ -54,7 +54,7 @@ from codemie.service.request_summary_manager import request_summary_manager
 from codemie.service.spend.origin_context import spend_origin
 from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.tools.discovery import ToolDiscoveryService, ToolInfo
-from codemie.service.tools.tool_service import ToolsService
+from codemie.service.tools.tool_service import ToolsService, TOOL_NOT_FOUND_ERROR
 from codemie.service.tools.toolkit_service import ToolkitService
 from codemie.service.tools.toolkit_settings_service import ToolkitSettingService
 
@@ -334,13 +334,13 @@ class ToolExecutionService:
             return cls._get_kb_tools(context, request)
 
         if context.context_type == ContextType.CODE:
+            if tool_name == SEARCH_KB_TOOL.name:
+                raise ValueError(TOOL_NOT_FOUND_ERROR.format(tool_name=tool_name, available_tools=[]))
             code_fields = AssistantService._get_code_fields(assistant, context)
             if toolkit_name == ToolSet.CODEBASE_TOOLS:
                 return cls._get_code_tools(code_fields, request, tool_name)
             if toolkit_name == ToolSet.GIT:
                 return cls._get_git_tools(code_fields, assistant, request, tool_name, user)
-            if toolkit_name == ToolSet.KB_TOOLS:
-                raise ValueError(f"Invalid tool: {tool_name} for given datasource type: {context.context_type}")
 
     @classmethod
     def _get_plugin_tools(cls, tool_name: str, creds: dict) -> BaseTool:

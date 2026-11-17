@@ -1117,6 +1117,40 @@ class TestAssistantValidateMCPServerNames:
         assert "Duplicate MCP server names" in result
 
 
+class TestAssistantValidateDisabledContextTools:
+    def _make_assistant(self, disabled_context_tools=None):
+        return Assistant(
+            name="a",
+            description="d",
+            system_prompt="s",
+            disabled_context_tools=disabled_context_tools or [],
+        )
+
+    def test_no_disabled_tools_no_error(self):
+        a = self._make_assistant()
+        assert a._validate_disabled_context_tools() is None
+
+    def test_validate_accepts_known_disabled_tools(self):
+        a = self._make_assistant(["get_repository_file_tree", "search_kb"])
+        assert a._validate_disabled_context_tools() is None
+
+    def test_validate_rejects_unknown_disabled_tool(self):
+        a = self._make_assistant(["get_repository_file_tree_v2"])
+        result = a._validate_disabled_context_tools()
+        assert result is not None
+        assert "get_repository_file_tree_v2" in result
+
+    def test_validate_fields_propagates_disabled_tools_error(self):
+        assistant = Assistant(
+            name="a",
+            description="d",
+            system_prompt="s",
+            disabled_context_tools=["get_repository_file_tree_v2"],
+        )
+        error = assistant.validate_fields()
+        assert "get_repository_file_tree_v2" in error
+
+
 class TestDeleteAssistantPrunesMsTeams:
     """delete_assistant must prune the deleted assistant from any ms_teams
     settings row's assistant_ids list, since that JSONB list has no FK/cascade."""
@@ -1164,3 +1198,42 @@ class TestDeleteAssistantPrunesMsTeams:
             Assistant.delete_assistant("assistant-1")
 
         mock_session_cls.return_value.__enter__.return_value.delete.assert_called_once_with(assistant)
+
+
+def test_disabled_context_tools_defaults_to_empty_list():
+    assistant = Assistant(name="a", description="d", system_prompt="s")
+    assert assistant.disabled_context_tools == []
+
+
+def test_disabled_context_tools_round_trips_through_model_dump():
+    assistant = Assistant(
+        name="a",
+        description="d",
+        system_prompt="s",
+        disabled_context_tools=["search_kb"],
+    )
+    rehydrated = Assistant(**assistant.model_dump())
+    assert rehydrated.disabled_context_tools == ["search_kb"]
+
+
+def test_map_assistant_request_applies_disabled_context_tools_when_set():
+    assistant = Assistant(name="a", description="d", system_prompt="s", disabled_context_tools=["search_kb"])
+    request = AssistantRequest(
+        name="a",
+        system_prompt="s",
+        llm_model_type="gpt-4",
+        disabled_context_tools=["get_repository_file_tree"],
+    )
+
+    assistant._map_assistant_request(request)
+
+    assert assistant.disabled_context_tools == ["get_repository_file_tree"]
+
+
+def test_map_assistant_request_keeps_disabled_context_tools_when_omitted():
+    assistant = Assistant(name="a", description="d", system_prompt="s", disabled_context_tools=["search_kb"])
+    request = AssistantRequest(name="a", system_prompt="s", llm_model_type="gpt-4")
+
+    assistant._map_assistant_request(request)
+
+    assert assistant.disabled_context_tools == ["search_kb"]

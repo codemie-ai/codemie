@@ -21,6 +21,7 @@ from codemie_tools.base.file_object import FileObject
 from codemie_tools.base.models import Tool, ToolKit, ToolSet
 from langchain_core.tools import BaseTool, ToolException
 
+from codemie.agents.tools.code.tools_vars import CODE_SEARCH_TOOL_V2, REPO_TREE_TOOL_V2
 from codemie.core.constants import CodeIndexType, ToolType
 from codemie.core.exceptions import ModelNotWhitelistedException, NotFoundException
 from codemie.core.models import AssistantChatRequest, CodeFields, IdeChatRequest, ToolConfig
@@ -51,6 +52,7 @@ class TestToolkitService:
         assistant.llm_model_type = "gpt-4"
         assistant.enable_image_generation = False
         assistant.created_by = None
+        assistant.disabled_context_tools = []
         return assistant
 
     @pytest.fixture
@@ -732,6 +734,25 @@ class TestToolkitService:
         assert len(tools) == 0
         mock_kb_toolkit.get_tools.assert_not_called()
 
+    @patch("codemie.service.tools.toolkit_service.KBToolkit")
+    def test_add_kb_tools_skips_search_kb_when_deselected(self, mock_kb_toolkit, mock_assistant):
+        """Test _add_kb_tools skips search_kb when it's deselected on the assistant."""
+        # Setup
+        mock_kb_index = Mock(spec=KnowledgeBaseIndexInfo)
+
+        context = Context(context_type=ContextType.KNOWLEDGE_BASE, name="test-kb")
+        mock_assistant.project = "test-project"
+        mock_assistant.disabled_context_tools = ["search_kb"]
+
+        # Mock _find_index to return KB index (resolves normally)
+        with patch.object(ToolkitService, '_find_index', return_value=mock_kb_index):
+            tools = []
+            ToolkitService._add_kb_tools(tools, context, mock_assistant, "gpt-4")
+
+        # Assertions
+        assert len(tools) == 0
+        mock_kb_toolkit.get_tools.assert_not_called()
+
     @patch("codemie.service.tools.toolkit_service.ProviderToolkitsFactory")
     def test_add_provider_context_tools(self, mock_provider_factory, mock_assistant, mock_user):
         """Test _add_provider_context_tools adds provider tools."""
@@ -848,6 +869,210 @@ class TestToolkitService:
         # Assertions
         assert len(tools) == 2  # repo_tree and code_search tools added by default
 
+    @patch("codemie.service.tools.toolkit_service.CodeToolkit")
+    def test_add_code_tools_skips_repo_tree_when_deselected(self, mock_code_toolkit, mock_assistant, mock_request):
+        """Test _add_code_tools skips the standard get_repository_file_tree when deselected and no V2
+        variant is selected (exclude_extra_context_tools=True keeps the standard call gated)."""
+        # Setup
+        mock_tool = Mock(spec=BaseTool)
+        mock_code_toolkit.search_code_tool.return_value = mock_tool
+        mock_code_toolkit.get_repo_tree_tool.return_value = mock_tool
+
+        context = Context(context_type=ContextType.CODE, name="test-repo")
+        mock_assistant.disabled_context_tools = ["get_repository_file_tree"]
+        mock_assistant.toolkits = []
+
+        mock_code_fields = CodeFields(app_name="test-project", repo_name="test-repo", index_type=CodeIndexType.CODE)
+        with patch.object(ToolkitService, '_get_code_fields', return_value=mock_code_fields):
+            tools = []
+            ToolkitService._add_code_tools(
+                tools, context, mock_assistant, mock_request, is_react=True, exclude_extra_context_tools=True
+            )
+
+        # Assertions: the standard repo tree tool is not appended
+        mock_code_toolkit.get_repo_tree_tool.assert_not_called()
+        mock_code_toolkit.search_code_tool.assert_not_called()
+        assert len(tools) == 0
+
+    @patch("codemie.service.tools.toolkit_service.CodeToolkit")
+    def test_add_code_tools_v2_repo_tree_unaffected_by_standard_deselection(
+        self, mock_code_toolkit, mock_assistant, mock_request
+    ):
+        """AC9 / spec D1: deselecting the standard repo tree tool name must not suppress the
+        independently-selected V2 (with filtering) variant — it still wins."""
+        # Setup
+        mock_tool = Mock(spec=BaseTool)
+        mock_code_toolkit.search_code_tool.return_value = mock_tool
+        mock_code_toolkit.get_repo_tree_tool.return_value = mock_tool
+
+        context = Context(context_type=ContextType.CODE, name="test-repo")
+        mock_assistant.disabled_context_tools = ["get_repository_file_tree"]
+        # toolkits select the V2 (filtering) repo tree variant
+        mock_toolkit_details = Mock(spec=ToolKitDetails)
+        mock_v2_tool = Mock(spec=Tool)
+        mock_v2_tool.name = REPO_TREE_TOOL_V2.name
+        mock_toolkit_details.tools = [mock_v2_tool]
+        mock_assistant.toolkits = [mock_toolkit_details]
+
+        mock_code_fields = CodeFields(app_name="test-project", repo_name="test-repo", index_type=CodeIndexType.CODE)
+        with patch.object(ToolkitService, '_get_code_fields', return_value=mock_code_fields):
+            tools = []
+            ToolkitService._add_code_tools(tools, context, mock_assistant, mock_request, is_react=True)
+
+        # Assertions: the V2 repo tree tool is appended with_filtering=True despite the deselection
+        mock_code_toolkit.get_repo_tree_tool.assert_called_once_with(
+            code_fields=mock_code_fields,
+            is_react=True,
+            user_input=mock_request.text,
+            with_filtering=True,
+            standard_tree_deselected=True,
+        )
+        mock_code_toolkit.search_code_tool.assert_called_once()
+        assert len(tools) == 2
+
+    @patch("codemie.service.tools.toolkit_service.CodeToolkit")
+    def test_add_code_tools_skips_search_code_when_deselected(self, mock_code_toolkit, mock_assistant, mock_request):
+        """Test _add_code_tools skips the standard search_code_repo when deselected and no V2
+        variant is selected (exclude_extra_context_tools=True keeps the standard call gated)."""
+        # Setup
+        mock_tool = Mock(spec=BaseTool)
+        mock_code_toolkit.search_code_tool.return_value = mock_tool
+        mock_code_toolkit.get_repo_tree_tool.return_value = mock_tool
+
+        context = Context(context_type=ContextType.CODE, name="test-repo")
+        mock_assistant.disabled_context_tools = ["search_code_repo"]
+        mock_assistant.toolkits = []
+
+        mock_code_fields = CodeFields(app_name="test-project", repo_name="test-repo", index_type=CodeIndexType.CODE)
+        with patch.object(ToolkitService, '_get_code_fields', return_value=mock_code_fields):
+            tools = []
+            ToolkitService._add_code_tools(
+                tools, context, mock_assistant, mock_request, is_react=True, exclude_extra_context_tools=True
+            )
+
+        # Assertions: the standard search tool is not appended; the other default tool is also gated off
+        mock_code_toolkit.search_code_tool.assert_not_called()
+        mock_code_toolkit.get_repo_tree_tool.assert_not_called()
+        assert len(tools) == 0
+
+    @patch("codemie.service.tools.toolkit_service.CodeToolkit")
+    def test_add_code_tools_v2_search_code_unaffected_by_standard_deselection(
+        self, mock_code_toolkit, mock_assistant, mock_request
+    ):
+        """AC9 / spec D1: deselecting the standard search_code_repo tool name must not suppress the
+        independently-selected V2 (with filtering) variant — it still wins."""
+        # Setup
+        mock_tool = Mock(spec=BaseTool)
+        mock_code_toolkit.search_code_tool.return_value = mock_tool
+        mock_code_toolkit.get_repo_tree_tool.return_value = mock_tool
+
+        context = Context(context_type=ContextType.CODE, name="test-repo")
+        mock_assistant.disabled_context_tools = ["search_code_repo"]
+        # toolkits select the V2 (filtering) code search variant
+        mock_toolkit_details = Mock(spec=ToolKitDetails)
+        mock_v2_tool = Mock(spec=Tool)
+        mock_v2_tool.name = CODE_SEARCH_TOOL_V2.name
+        mock_toolkit_details.tools = [mock_v2_tool]
+        mock_assistant.toolkits = [mock_toolkit_details]
+
+        mock_code_fields = CodeFields(app_name="test-project", repo_name="test-repo", index_type=CodeIndexType.CODE)
+        with patch.object(ToolkitService, '_get_code_fields', return_value=mock_code_fields):
+            tools = []
+            ToolkitService._add_code_tools(tools, context, mock_assistant, mock_request, is_react=True)
+
+        # Assertions: the V2 search tool is appended with_filtering=True despite the deselection
+        mock_code_toolkit.search_code_tool.assert_called_once_with(
+            code_fields=mock_code_fields,
+            top_k=mock_request.top_k,
+            is_react=True,
+            user_input=mock_request.text,
+            with_filtering=True,
+            standard_tree_deselected=False,
+        )
+        mock_code_toolkit.get_repo_tree_tool.assert_called_once()
+        assert len(tools) == 2
+
+    @patch("codemie.service.tools.toolkit_service.CodeToolkit")
+    def test_add_code_tools_search_drops_tree_reference_when_repo_tree_deselected(
+        self, mock_code_toolkit, mock_assistant, mock_request
+    ):
+        """With Get Repo Tree deselected and no V2 tree selected, the remaining search tool must not refer to the tree."""
+        mock_code_toolkit.search_code_tool.return_value = Mock(spec=BaseTool)
+        mock_assistant.disabled_context_tools = ["get_repository_file_tree"]
+        mock_assistant.toolkits = []
+
+        context = Context(context_type=ContextType.CODE, name="test-repo")
+        mock_code_fields = CodeFields(app_name="test-project", repo_name="test-repo", index_type=CodeIndexType.CODE)
+        with patch.object(ToolkitService, "_get_code_fields", return_value=mock_code_fields):
+            ToolkitService._add_code_tools([], context, mock_assistant, mock_request, is_react=True)
+
+        mock_code_toolkit.get_repo_tree_tool.assert_not_called()
+        mock_code_toolkit.search_code_tool.assert_called_once_with(
+            code_fields=mock_code_fields,
+            top_k=mock_request.top_k,
+            is_react=True,
+            user_input=mock_request.text,
+            with_filtering=False,
+            standard_tree_deselected=True,
+        )
+
+    @patch("codemie.service.tools.toolkit_service.CodeToolkit")
+    def test_add_code_tools_passes_standard_tree_deselection_to_selected_v2_tree(
+        self, mock_code_toolkit, mock_assistant, mock_request
+    ):
+        """A selected V2 tree stays, but its first-tool instruction follows the standard tree deselection."""
+        mock_code_toolkit.get_repo_tree_tool.return_value = Mock(spec=BaseTool)
+        mock_code_toolkit.search_code_tool.return_value = Mock(spec=BaseTool)
+        mock_assistant.disabled_context_tools = ["get_repository_file_tree"]
+        mock_v2_tree = Mock(spec=Tool)
+        mock_v2_tree.name = REPO_TREE_TOOL_V2.name
+        mock_assistant.toolkits = [Mock(spec=ToolKitDetails, tools=[mock_v2_tree])]
+
+        context = Context(context_type=ContextType.CODE, name="test-repo")
+        mock_code_fields = CodeFields(app_name="test-project", repo_name="test-repo", index_type=CodeIndexType.CODE)
+        with patch.object(ToolkitService, "_get_code_fields", return_value=mock_code_fields):
+            ToolkitService._add_code_tools([], context, mock_assistant, mock_request, is_react=True)
+
+        mock_code_toolkit.get_repo_tree_tool.assert_called_once_with(
+            code_fields=mock_code_fields,
+            is_react=True,
+            user_input=mock_request.text,
+            with_filtering=True,
+            standard_tree_deselected=True,
+        )
+        mock_code_toolkit.search_code_tool.assert_called_once_with(
+            code_fields=mock_code_fields,
+            top_k=mock_request.top_k,
+            is_react=True,
+            user_input=mock_request.text,
+            with_filtering=False,
+            standard_tree_deselected=True,
+        )
+
+    @patch("codemie.service.tools.toolkit_service.CodeToolkit")
+    def test_add_code_tools_keeps_defaults_when_nothing_deselected(
+        self, mock_code_toolkit, mock_assistant, mock_request
+    ):
+        """Test _add_code_tools behavior is unchanged when disabled_context_tools is empty (no regression)."""
+        # Setup
+        mock_tool = Mock(spec=BaseTool)
+        mock_code_toolkit.search_code_tool.return_value = mock_tool
+        mock_code_toolkit.get_repo_tree_tool.return_value = mock_tool
+
+        context = Context(context_type=ContextType.CODE, name="test-repo")
+        mock_assistant.toolkits = []
+        mock_assistant.disabled_context_tools = []
+
+        mock_code_fields = CodeFields(app_name="test-project", repo_name="test-repo", index_type=CodeIndexType.CODE)
+        with patch.object(ToolkitService, '_get_code_fields', return_value=mock_code_fields):
+            tools = []
+            ToolkitService._add_code_tools(tools, context, mock_assistant, mock_request, is_react=True)
+
+        # Assertions
+        mock_code_toolkit.get_repo_tree_tool.assert_called_once()
+        mock_code_toolkit.search_code_tool.assert_called_once()
+        assert len(tools) == 2  # repo_tree and code_search tools added by default
+
     @patch("codemie.service.tools.toolkit_service.ToolkitSettingService")
     def test_add_git_related_tools(self, mock_settings_service, mock_assistant, mock_user):
         """Test _add_git_related_tools adds Git tools."""
@@ -959,6 +1184,64 @@ class TestToolkitService:
 
         mock_add_provider_context_tools.assert_called_once()
         assert tools == [mock_provider_tool]
+
+    @patch("codemie.service.tools.toolkit_service.CodeToolkit")
+    def test_workflow_referenced_assistant_keeps_deselected_tools(self, mock_code_toolkit, mock_user, mock_request):
+        """A workflow step that references an existing, persisted assistant loads that Assistant record
+        directly (Assistant.get_by_id) and runs it through the same ToolkitService.add_context_tools path
+        used at chat time. Task 2 (field inheritance) and Task 4 (runtime gating) should already make the
+        loaded assistant's disabled_context_tools take effect here with no extra wiring."""
+        # A real, persisted-shape Assistant (not a Mock) with a CODE context and the repo-tree tool
+        # deselected. toolkits selects the V2 (filtering) repo tree variant to prove the V2 variant
+        # stays unaffected by deselecting the standard tool name (AC9 / spec D1).
+        saved_assistant = Assistant(
+            id="wf-ref-asst",
+            name="Workflow Referenced Assistant",
+            description="test description",
+            system_prompt="test system prompt",
+            project="test-project",
+            toolkits=[ToolKitDetails(toolkit="Code", tools=[ToolDetails(name=REPO_TREE_TOOL_V2.name)])],
+            context=[Context(context_type=ContextType.CODE, name="test-repo")],
+            disabled_context_tools=["get_repository_file_tree"],
+            llm_model_type="gpt-4",
+            created_date="2022-01-02T00:00:00.000Z",
+            update_date="2022-01-02T00:00:00.000Z",
+        )
+
+        mock_search_tool = Mock(spec=BaseTool)
+        mock_repo_tree_tool = Mock(spec=BaseTool)
+        mock_code_toolkit.search_code_tool.return_value = mock_search_tool
+        mock_code_toolkit.get_repo_tree_tool.return_value = mock_repo_tree_tool
+
+        mock_code_fields = CodeFields(app_name="test-project", repo_name="test-repo", index_type=CodeIndexType.CODE)
+
+        with patch.object(Assistant, "get_by_id", return_value=saved_assistant) as mock_get_by_id:
+            loaded_assistant = Assistant.get_by_id("wf-ref-asst")
+
+        mock_get_by_id.assert_called_once_with("wf-ref-asst")
+
+        with patch("codemie.service.tools.toolkit_service.config.RETRIEVAL_BACKEND", "elasticsearch"):
+            with patch.object(ToolkitService, "_get_code_fields", return_value=mock_code_fields):
+                tools = ToolkitService.add_context_tools(
+                    assistant=loaded_assistant,
+                    request=mock_request,
+                    llm_model="gpt-4",
+                    user=mock_user,
+                    request_uuid="test-uuid",
+                )
+
+        # The V2 repo-tree tool (independently selected via toolkits) is present, with_filtering=True,
+        # despite the standard tool name being deselected; the (non-deselected) search tool is too.
+        mock_code_toolkit.get_repo_tree_tool.assert_called_once_with(
+            code_fields=mock_code_fields,
+            is_react=True,
+            user_input=mock_request.text,
+            with_filtering=True,
+            standard_tree_deselected=True,
+        )
+        mock_code_toolkit.search_code_tool.assert_called_once()
+        assert mock_repo_tree_tool in tools
+        assert mock_search_tool in tools
 
     @patch.object(CodeIndexInfo, 'filter_by_project_and_repo')
     def test_find_code_index(self, mock_filter):

@@ -22,6 +22,8 @@ from codemie.agents.tools.base import BaseToolkit
 from codemie.rest_api.models.index import IndexInfo
 
 
+# NOTE: search_kb is listed under "Codebase Tools" in the catalog. KB_TOOLS and the UI KB
+# constants stay because saved assistants may still carry the old "Knowledge Base" group name.
 class KBToolkitUI(ToolKit):
     toolkit: ToolSet = ToolSet.KB_TOOLS
     tools: List[Tool] = [

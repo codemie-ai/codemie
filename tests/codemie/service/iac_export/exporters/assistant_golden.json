@@ -64,6 +64,7 @@
       "Sub Helper"
     ],
     "enabled_builtin_subagents": [],
+    "disabled_context_tools": [],
     "skill_ids": [
       "Skill A",
       "Skill B"

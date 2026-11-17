@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15114-show-deselect-default-datasource-tools",
+  "head": "3203cead1cbb241525cdcb97ffc3cff6287c288a",
+  "runner": "poetry",
+  "started_at": "2026-11-02T10:46:57.922005+00:00",
+  "completed_at": "2026-11-02T10:46:57.922005+00:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 26000,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 106000,
+      "command": "PYTEST_ADDOPTS=--skip-enterprise make test",
+      "exit_code": 2,
+      "notes": "Ran with --skip-enterprise at the user's direction (codemie_enterprise not installed). 4 failed, 24225 passed, 1 collection error. Alembic single-head tests now pass. Failures: 3 in test_marketplace_management_smoke.py (admin login to live server: Server disconnected) and test_llm_assessment_service.py::test_model_options_respect_what_the_model_declares (ModelNotAllowedException); 4 failures reproduced on isolated rerun. Collection error tests/enterprise/mcp_auth/test_discovery_cimd_disabled.py (ImportError from codemie_enterprise.mcp_auth). None touch files changed on this branch."
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1000,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN to run locally. Pre-push hook runs it; CI is not configured to."
+    }
+  ],
+  "failures": {
+    "unit": "  /Users/vladimir_sesum1/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:229: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_alias_genuinely_absent_from_project_raises_422\n  /Users/vladimir_sesum1/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:241: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_empty_list_raises_422\n  /Users/vladimir_sesum1/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:249: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferNonTransferableInList::test_copy_blocked_alias_in_list_raises_422\n  /Users/vladimir_sesum1/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:282: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.COPY, _ALL_TYPES, [\"gitlab-hook\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferBothFlagsFalse::test_both_flags_false_raises_422\n  /Users/vladimir_sesum1/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:308: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.MOVE, set(), None)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateProjects::test_rejects_same_source_and_target\n  /Users/vladimir_sesum1/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:347: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_projects(\"same\", \"same\")\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /Users/vladimir_sesum1/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /Users/vladimir_sesum1/codemie-dev/codemie/src/codemie/service/settings/settings_transfer_service.py:426: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\ntests/codemie/rest_api/routers/test_workflow.py::test_create_workflow_restricted_mode_accepts_catalog_ref_server_declared_only_in_yaml\n  /Users/vladimir_sesum1/codemie-dev/codemie/.venv/lib/python3.12/site-packages/pydantic/type_adapter.py:677: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `list[GuardrailAssignmentItem]` - serialized value may not be as expected [field_name='guardrail_assignments', input_value=<MagicMock name='get_enti...nts()' id='14439132160'>, input_type=MagicMock])\n    return self.serializer.to_json(\n\ntests/codemie/rest_api/routers/test_workflow.py::test_create_workflow_open_mode_accepts_handwritten_server_declared_only_in_yaml\n  /Users/vladimir_sesum1/codemie-dev/codemie/.venv/lib/python3.12/site-packages/pydantic/type_adapter.py:677: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `list[GuardrailAssignmentItem]` - serialized value may not be as expected [field_name='guardrail_assignments', input_value=<MagicMock name='get_enti...nts()' id='14387507232'>, input_type=MagicMock])\n    return self.serializer.to_json(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/rest_api/routers/test_marketplace_management_smoke.py::test_overview_is_served_on_the_entities_path\nFAILED tests/codemie/rest_api/routers/test_marketplace_management_smoke.py::test_audit_run_takes_the_claim_with_202_and_refuses_a_second_with_409\nFAILED tests/codemie/rest_api/routers/test_marketplace_management_smoke.py::test_unauthenticated_request_is_rejected\nFAILED tests/codemie/service/marketplace_management/test_llm_assessment_service.py::test_model_options_respect_what_the_model_declares\nERROR tests/enterprise/mcp_auth/test_discovery_cimd_disabled.py\n= 4 failed, 24225 passed, 1688 skipped, 431 warnings, 1 error in 102.96s (0:01:42) =\nmake: *** [test] Error 1\n"
+  }
+}

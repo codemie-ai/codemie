@@ -1933,6 +1933,13 @@
             "title": "Description",
             "type": "string"
           },
+          "disabled_context_tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Context Tools",
+            "type": "array"
+          },
           "display_name": {
             "anyOf": [
               {
@@ -3949,6 +3956,13 @@
               }
             ],
             "title": "Description"
+          },
+          "disabled_context_tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Context Tools",
+            "type": "array"
           },
           "effort": {
             "anyOf": [
@@ -21908,6 +21922,13 @@
             "title": "Description",
             "type": "string"
           },
+          "disabled_context_tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Context Tools",
+            "type": "array"
+          },
           "display_name": {
             "anyOf": [
               {
@@ -35116,6 +35137,13 @@
             ],
             "title": "Datasource Ids"
           },
+          "disabled_context_tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Context Tools",
+            "type": "array"
+          },
           "effort": {
             "anyOf": [
               {
@@ -35256,6 +35284,13 @@
               }
             ],
             "title": "Datasource Ids"
+          },
+          "disabled_context_tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Context Tools",
+            "type": "array"
           },
           "effort": {
             "anyOf": [

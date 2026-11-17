@@ -190,6 +190,48 @@ class TestPromptGeneratorChain(unittest.TestCase):
 
         self.assertEqual(result, expected)
 
+    def test_transform_toolkits_excludes_default_context_tools(self):
+        """Default context tools are never offered, even when they have a user_description"""
+        input_toolkits = [
+            {
+                "toolkit": "code",
+                "tools": [
+                    {"name": "search_code_repo", "label": "Search", "user_description": "Search code"},
+                    {"name": "get_repository_file_tree", "label": "Tree", "user_description": "Show tree"},
+                    {"name": "tool1", "label": "Tool 1", "user_description": "Description 1"},
+                ],
+            },
+            {
+                "toolkit": "kb",
+                "tools": [
+                    {"name": "search_kb", "label": "Search KB", "user_description": "Search KB"},
+                ],
+            },
+            {
+                "toolkit": "code_v2",
+                "tools": [
+                    {"name": "search_code_repo_v2", "label": "Search v2", "user_description": "Search v2"},
+                ],
+            },
+        ]
+
+        result = PromptGeneratorChain._transform_toolkits(input_toolkits)
+
+        # Default tools are filtered out; the toolkit with no remaining tools is dropped;
+        # the _v2 variant is not a default tool and stays
+        expected = [
+            {
+                "toolkit": "code",
+                "tools": [{"name": "tool1", "label": "Tool 1", "description": "Description 1"}],
+            },
+            {
+                "toolkit": "code_v2",
+                "tools": [{"name": "search_code_repo_v2", "label": "Search v2", "description": "Search v2"}],
+            },
+        ]
+
+        self.assertEqual(result, expected)
+
     @patch('codemie.service.assistant_generator_service.ToolsInfoService')
     def test_add_toolkits_include_false(self, mock_tools_service):
         """Test add_toolkits when include_tools is False"""

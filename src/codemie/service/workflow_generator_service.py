@@ -35,6 +35,7 @@ from codemie.service.monitoring.metrics_constants import (
     WORKFLOW_GENERATOR_TOTAL_METRIC,
     MetricsAttributes,
 )
+from codemie.service.default_tool_names import DEFAULT_CONTEXT_TOOL_NAMES
 from codemie.service.request_summary_manager import request_summary_manager
 from codemie.service.spend.origin_context import spend_origin
 from codemie.service.spend.traffic_class import TrafficOrigin
@@ -65,7 +66,10 @@ class WorkflowGeneratorService:
         with spend_origin(TrafficOrigin.WORKFLOW_GENERATOR):
             try:
                 available_tools = ToolsInfoService.get_tools_info(
-                    user=user, exclude_toolkits=["Plugin"], offered_only=True
+                    user=user,
+                    exclude_toolkits=["Plugin"],
+                    exclude_tools=DEFAULT_CONTEXT_TOOL_NAMES,
+                    offered_only=True,
                 )
 
                 initial_state: WorkflowGeneratorState = {
@@ -180,7 +184,10 @@ class WorkflowGeneratorService:
         with spend_origin(TrafficOrigin.WORKFLOW_GENERATOR):
             try:
                 available_tools = ToolsInfoService.get_tools_info(
-                    user=user, exclude_toolkits=["Plugin"], offered_only=True
+                    user=user,
+                    exclude_toolkits=["Plugin"],
+                    exclude_tools=DEFAULT_CONTEXT_TOOL_NAMES,
+                    offered_only=True,
                 )
 
                 initial_state: WorkflowGeneratorState = {

@@ -345,7 +345,7 @@ def test_get_context_tools_raises_when_retrieval_unavailable_for_kb_context():
 
     with patch(
         "codemie.service.tools.tool_execution_service.ToolsService.find_toolkit_for_tool",
-        return_value={"toolkit": "Knowledge Base"},
+        return_value={"toolkit": "Codebase Tools"},
     ):
         with patch(
             "codemie.service.tools.tool_execution_service.ElasticSearchClient.is_configured",
@@ -389,7 +389,7 @@ def test_get_context_tools_unaffected_when_retrieval_available():
 
     with patch(
         "codemie.service.tools.tool_execution_service.ToolsService.find_toolkit_for_tool",
-        return_value={"toolkit": "Knowledge Base"},
+        return_value={"toolkit": "Codebase Tools"},
     ):
         with patch(
             "codemie.service.tools.tool_execution_service.ElasticSearchClient.is_configured",
@@ -400,3 +400,44 @@ def test_get_context_tools_unaffected_when_retrieval_available():
 
     mock_get_kb_tools.assert_called_once()
     assert result == "kb_tool"
+
+
+def test_invoke_search_kb_on_code_datasource_raises_tool_not_found():
+    """search_kb is listed under Codebase Tools but is not valid on a code datasource (AC6)."""
+    mock_assistant = Mock(spec=Assistant)
+    mock_assistant.context = [Context(context_type=ContextType.CODE, name="test-repo")]
+    mock_request = Mock(spec=ToolInvokeRequest)
+    mock_user = Mock(spec=User)
+
+    with patch(
+        "codemie.service.tools.tool_execution_service.ToolsService.find_toolkit_for_tool",
+        return_value={"toolkit": "Codebase Tools"},
+    ):
+        with patch(
+            "codemie.service.tools.tool_execution_service.ElasticSearchClient.is_configured",
+            return_value=True,
+        ):
+            with patch.object(ToolExecutionService, "_get_code_tools") as mock_get_code_tools:
+                with pytest.raises(ValueError) as excinfo:
+                    ToolExecutionService._get_context_tools(mock_assistant, mock_request, "search_kb", mock_user)
+
+    assert type(excinfo.value) is ValueError
+    assert "search_kb" in str(excinfo.value)
+    assert "Invalid tool" not in str(excinfo.value)
+    mock_get_code_tools.assert_not_called()
+
+
+def test_invoke_search_kb_without_context_unchanged():
+    """With no context attached, _get_context_tools keeps returning None for search_kb."""
+    mock_assistant = Mock(spec=Assistant)
+    mock_assistant.context = []
+    mock_request = Mock(spec=ToolInvokeRequest)
+    mock_user = Mock(spec=User)
+
+    with patch(
+        "codemie.service.tools.tool_execution_service.ToolsService.find_toolkit_for_tool",
+        return_value={"toolkit": "Codebase Tools"},
+    ):
+        result = ToolExecutionService._get_context_tools(mock_assistant, mock_request, "search_kb", mock_user)
+
+    assert result is None

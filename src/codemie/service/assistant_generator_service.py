@@ -23,6 +23,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables.config import RunnableConfig
 from pydantic import BaseModel, Field
 
+from codemie.service.default_tool_names import DEFAULT_CONTEXT_TOOL_NAMES
 from codemie.configs.logger import current_username, logger, logging_user_id
 from codemie.core.dependecies import get_llm_by_credentials, get_project_for_metric
 from codemie.core.exceptions import ExtendedHTTPException
@@ -892,7 +893,8 @@ class PromptGeneratorChain:
         result = []
 
         for toolkit in toolkits:
-            # Filter tools that have descriptions
+            # Filter tools that have descriptions. Default context tools are never offered:
+            # they are driven by attached datasources and disabled_context_tools, not by the generator.
             tools_with_description = [
                 {
                     "name": tool.get("name", ""),
@@ -900,7 +902,7 @@ class PromptGeneratorChain:
                     "description": tool.get("user_description", ""),
                 }
                 for tool in toolkit.get("tools", [])
-                if tool.get("user_description") is not None
+                if tool.get("user_description") is not None and tool.get("name") not in DEFAULT_CONTEXT_TOOL_NAMES
             ]
 
             # Only include toolkits that have tools with descriptions

@@ -1,0 +1,55 @@
+{
+  "decision": "approve",
+  "rationale": "Both prior blocking findings are resolved and verified against current source: CR-001's _add_code_tools now gates only the standard call on deselection while the V2-filtered call runs unconditionally (matching AC9/spec D1), with tests updated accordingly; CR-002's migration now backfills '[]' into both tables for pre-existing NULL rows, and every propagation site adds an 'or []' guard as defense in depth. No new findings were discovered; new-scope discovery is out of this targeted verifier's remit.",
+  "confidence": "high",
+  "risk_flags": ["breaking-change", "security"],
+  "business_review": [
+    { "kind": "story-ac", "item": "Tool listing shows Get Repo Tree and Search Code under Codebase Tools, Search KB under Knowledge Base tools", "status": "pass", "notes": "CodeToolkitUI.tools and tools_info_service.py now expose these in UI listing for both show_for_ui values" },
+    { "kind": "story-ac", "item": "Deselecting Get Repo Tree removes it (standard and V2) for all code datasources when chatting", "status": "pass", "notes": "Fixed: now suppresses only the standard path per AC9" },
+    { "kind": "story-ac", "item": "Deselecting Search Code or Search KB removes only that tool type, others unaffected", "status": "pass", "notes": "Each gate is independent; covered by dedicated tests" },
+    { "kind": "story-ac", "item": "Assistant with no recorded deselection behaves exactly as today", "status": "pass", "notes": "Pydantic default_factory=list covers new assistants; migration backfill plus 'or []' guards cover legacy rows" },
+    { "kind": "story-ac", "item": "Once Get Repo Tree deselected, no remaining tool description instructs the model to call it first", "status": "pass", "notes": "CODE_SEARCH_TOOL description updated; covered by test" },
+    { "kind": "story-ac", "item": "Deselected tool stays deselected through version save, restore, export/import, workflow-step reference", "status": "pass", "notes": "Threaded through version/compare/migration services and model_dump; tests cover the workflow path" },
+    { "kind": "story-ac", "item": "Changing only the deselected set counts as a configuration change captured in a new version", "status": "pass", "notes": "assistant_version_compare_service.py adds the field to the diff candidate; tests cover both directions" },
+    { "kind": "story-ac", "item": "Direct tool invoke rejects a deselected default tool across all of the assistant's datasources", "status": "pass", "notes": "Gate checked for list/tuple/set values; legacy-row None case now backfilled away" },
+    { "kind": "story-ac", "item": "Selecting both the standard and V2 'with filtering' variant is accepted and V2 still wins, unaffected by this change", "status": "pass", "notes": "Fixed: V2 call is now unconditional on the deselection check" },
+    { "kind": "story-ac", "item": "Save request naming a value outside the three deselectable tool names is rejected with a clear message", "status": "pass", "notes": "Validated against VALID_DESELECTABLE_DEFAULT_TOOLS allowlist; tests cover it" },
+    { "kind": "spec", "item": "One Alembic migration adds the column to assistants and assistant-configuration tables, non-breaking for existing rows", "status": "pass", "notes": "Schema addition is nullable and non-breaking at DDL level; backfill now closes the runtime None gap" },
+    { "kind": "spec", "item": "Tool assembly check is independent of, and additional to, the existing toolkits/exclude_extra_context_tools gating", "status": "pass", "notes": "Fixed: deselection now only gates the standard path, V2 path is independent" }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "pass", "notes": "All 9 commit subjects in range use the documented EPMCDME-####: Description format" },
+    { "kind": "code-quality", "status": "pass", "notes": "Small additions consistent with surrounding file conventions; no new files needing license headers; single linear migration head" },
+    { "kind": "security", "status": "pass", "notes": "Server-side allowlist validation on save/update; direct-invoke path reuses existing error constant; no secrets/credentials handling changes" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/tools/toolkit_service.py",
+      "line": 1604,
+      "title": "V2 tool variant wrongly suppressed by deselection",
+      "problem": "_add_code_tools ANDs the deselection check into the same condition that gates the V2 'with filtering' variant.",
+      "impact": "Violates spec D1/AC9: the V2 variant must stay unaffected by deselecting the standard tool name.",
+      "recommendation": "Split the condition: gate only the standard call on the deselection check; keep the V2-filtered call unconditional."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/external/alembic/versions/64825fe31931_add_deselected_default_tools.py",
+      "line": 24,
+      "title": "Missing backfill crashes/bypasses deselection for legacy assistants",
+      "problem": "The migration added the column as nullable with no backfill, so pre-existing rows load as None.",
+      "impact": "Unguarded 'in'/'not in' checks at chat time would raise, and the direct-invoke gate would silently no-op for legacy rows.",
+      "recommendation": "Backfill existing rows to '[]' in the migration; guard every consumer with 'or []' as defense in depth."
+    }
+  ],
+  "finding_status": [
+    { "id": "CR-001", "status": "resolved", "notes": "_add_code_tools now splits standard vs V2 gating; V2 call unconditional on deselection, verified at toolkit_service.py:1604-1646. Tests updated to assert V2 unaffected." },
+    { "id": "CR-002", "status": "resolved", "notes": "Migration backfills '[]' for both tables (lines 27-33); every propagation site in assistant_version_service.py, assistant_version_migration_service.py and toolkit_service.py adds 'or []' guards as defense in depth." }
+  ]
+}

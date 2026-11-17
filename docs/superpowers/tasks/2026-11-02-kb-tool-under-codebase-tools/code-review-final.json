@@ -1,0 +1,237 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Check round approved; CR-001/002 resolved, CR-003 wont-fix"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Fix CR-001 and CR-002; CR-003 left (history rewrite)"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Check round approved; CR-001/002 resolved, CR-003 wont-fix"
+    }
+  ],
+  "reviewed_head": "095fd3027930f5de7d5eec69f2687303b23c8905",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "CR-001 and CR-002 verified fixed in source; CR-003 closed by a recorded user wont-fix decision (published history), not by a code change. No new findings discovered; 2 deferred items from the final round are not re-checked.",
+  "confidence": "medium",
+  "check_confidence": "medium",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 3,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/assistant/test_assistant_version_service.py",
+      "title": "No test for create_initial_version carrying deselected tools",
+      "problem": "assistant_version_service.py:70 copies deselected_default_tools=request.deselected_default_tools or [] into version 1, but no test asserts it; the carry-through test file covers create_new_version, rollback, migration and compare only.",
+      "impact": "If the line regresses, a new assistant's version 1 has an empty list and rollback or config reads silently re-enable search_kb / repo-tree / code-search. Reachability of the regression is unconfirmed.",
+      "recommendation": "Add a create_initial_version test building AssistantRequest(deselected_default_tools=['search_kb']) and asserting the AssistantConfiguration is constructed with that value.",
+      "status": "resolved",
+      "check_notes": "test_create_initial_version_carries_deselected_default_tools added; asserts AssistantConfiguration kwarg equals ['search_kb']; source line 70 present",
+      "fix": {
+        "change": "added create_initial_version test asserting deselected_default_tools carried into version 1",
+        "test": "tests/codemie/service/assistant/test_assistant_version_service.py::TestCreateInitialVersion::test_create_initial_version_carries_deselected_default_tools"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/tools/tools_info_service.py",
+      "line": 118,
+      "title": "New signatures use typing.Optional/List/Dict",
+      "problem": "code-quality.md requires X | None and parameterized builtin generics in new code; _merge_code_toolkit (tools_info_service.py:118) and _validate_deselected_default_tools (assistant.py:1090) add Optional[...] / List / Dict annotations.",
+      "impact": "Documented blocking code-quality standard is not met in newly added signatures.",
+      "recommendation": "Change to str | None and list[dict] | None in the newly added signatures.",
+      "status": "resolved",
+      "check_notes": "_merge_code_toolkit and _validate_deselected_default_tools now use list[dict] | None and str | None",
+      "fix": {
+        "change": "_merge_code_toolkit and _validate_deselected_default_tools now use list[dict] | None / str | None",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "evidence",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subject lacks EPMCDME ticket prefix",
+      "problem": "Commit subject 'deselect-default-datasource-tools: add planning artifacts' breaks the EPMCDME-####: Description format required by git-workflow.md.",
+      "impact": "Breaks ticket traceability; commit-format is a blocking standard.",
+      "recommendation": "Reword to 'EPMCDME-15114: Add planning artifacts for deselect-default-datasource-tools', or ensure the squash commit uses the ticket prefix.",
+      "status": "resolved",
+      "check_notes": "closed by user wont-fix decision (hitl, 2026-11-02): earlier published commit not rewritten; no code change; commit-format row remains fail",
+      "disposition": {
+        "rationale": "Already-committed earlier history (planning artifacts commit from the base 15114 work); fixing the subject would require rewriting published history, so it is left as is.",
+        "source": "hitl"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/agents/tools/code/code_toolkit.py",
+      "line": 44,
+      "title": "UI Codebase group gains repo-tree and search-code tools",
+      "problem": "CodeToolkitUI now lists REPO_TREE_TOOL and CODE_SEARCH_TOOL, so AC3 'existing tools unchanged' is only partly true for the UI listing.",
+      "preexisting": "Introduced by earlier EPMCDME-15114 commit 204f3a480 (default tools in UI listing), not the follow-up."
+    },
+    {
+      "id": "DF-002",
+      "severity": "major",
+      "file": "src/codemie/service/tools/tool_execution_service.py",
+      "line": 344,
+      "title": "Invoke resolves against first context only",
+      "problem": "Code tool on a KB-first assistant resolves to the KB tool, and mixed contexts depend on iteration order.",
+      "preexisting": "KB branch keyed on first context type predates this follow-up."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "B1: no separate Knowledge Base group; search_kb merged once into Codebase Tools",
+      "status": "pass",
+      "notes": "tools_info_service merges extra_tools for ui true/false"
+    },
+    {
+      "kind": "spec",
+      "item": "B2: ES not configured -> no search_kb",
+      "status": "pass",
+      "notes": "merge inside is_configured guard"
+    },
+    {
+      "kind": "spec",
+      "item": "B3: assembly unchanged; search_kb gated by deselected_default_tools",
+      "status": "pass",
+      "notes": "toolkit_service _add_kb_tools"
+    },
+    {
+      "kind": "spec",
+      "item": "B4a: invoke search_kb on KB assistant unchanged",
+      "status": "pass",
+      "notes": "KB branch keyed on context type"
+    },
+    {
+      "kind": "spec",
+      "item": "B4b: invoke on code datasource raises generic tool-not-found",
+      "status": "pass",
+      "notes": "explicit TOOL_NOT_FOUND_ERROR; pinned by test"
+    },
+    {
+      "kind": "spec",
+      "item": "B4c: unreachable KB_TOOLS branch removed, enum kept",
+      "status": "pass",
+      "notes": "branch deleted"
+    },
+    {
+      "kind": "spec",
+      "item": "B5: KBToolkit keeps search_kb metadata, no group emitted",
+      "status": "pass",
+      "notes": "comment only in kb_toolkit.py"
+    },
+    {
+      "kind": "spec",
+      "item": "AC1: no KB group; search_kb once in Codebase Tools",
+      "status": "pass",
+      "notes": "covered by tools_info_service tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: ES unconfigured -> search_kb absent",
+      "status": "pass",
+      "notes": "assertion added"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: existing Codebase tools unchanged and unduplicated",
+      "status": "partial",
+      "notes": "UI group gains repo-tree/search-code via earlier commit 204f3a480; deferred as intentional earlier work"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: find_toolkit_for_tool(search_kb) returns Codebase Tools",
+      "status": "pass",
+      "notes": "test present"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: KB-assistant invoke returns KB tool",
+      "status": "pass",
+      "notes": "tests updated"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: code-datasource invoke raises generic ValueError",
+      "status": "pass",
+      "notes": "new test pins it"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: KB-group tests/fixtures updated",
+      "status": "pass",
+      "notes": "fixtures moved to Codebase Tools"
+    },
+    {
+      "kind": "spec",
+      "item": "AC8: default-tool deselection keeps working; suite green",
+      "status": "pending-stage-7",
+      "notes": "needs Stage 7 test run"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals: no UI/SDK change, no stored-assistant rewrite",
+      "status": "pass",
+      "notes": "none touched"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "fail",
+      "notes": "git-workflow.md requires EPMCDME-####: Description; 1 of 21 subjects (deselect-default-datasource-tools: add planning artifacts) has no ticket prefix"
+    },
+    {
+      "kind": "code-quality",
+      "status": "fail",
+      "notes": "code-quality.md prefers X | None and parameterized generics over typing.Optional/List/Dict in new code; new Optional/List/Dict annotations in assistant.py and tools_info_service.py"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no credential logging, unauthenticated endpoints or lossy input parsing seen in changed source paths; deselected_default_tools validated before save and gated on invoke"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "All four lenses and standards ran; 3 blocking findings (2 blocking standards failures, 1 test gap on create_initial_version). 2 deferred: UI Codebase group gains repo-tree/search-code tools (earlier commit 204f3a480), and first-context-only resolution in invoke (pre-existing). ~20 lens claims dismissed as noise or unconfirmed.",
+    "confidence": "medium",
+    "risk_flags": []
+  }
+}

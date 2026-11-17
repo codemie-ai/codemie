@@ -118,6 +118,7 @@ class AssistantVersionCompareService:
             if request.agent_card and hasattr(request.agent_card, 'model_dump')
             else request.agent_card,
             'custom_metadata': request.custom_metadata,
+            'disabled_context_tools': request.disabled_context_tools,
         }
 
         new_dict = dict(current_dict)

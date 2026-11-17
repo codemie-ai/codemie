@@ -1,0 +1,51 @@
+{
+  "decision": "request-changes",
+  "rationale": "The blind lens failed to produce a parseable file after two waits, so this round has no context-free human-judgment pass and confidence is capped at low. Two critical defects block: CR-001 the standard/V2 deselection check wrongly suppresses the independently-selected V2 tool variant (acceptance AC9 fail, spec-independence fail); CR-002 the migration adds deselected_default_tools with no backfill, so every pre-existing assistant loads it as None, crashing chat-time tool assembly and silently bypassing the direct-invoke deselection gate. 1 deferred (KB toolkit visibility tied to pre-existing ES-configured gating, out of this change's scope) and 1 dismissed as noise (unnormalized duplicate entries in deselected_default_tools, cosmetic, no documented standard makes it blocking). Standards audit is clean with no coverage gap.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change", "security"],
+  "business_review": [
+    { "kind": "story-ac", "item": "Tool listing shows Get Repo Tree and Search Code under Codebase Tools, Search KB under Knowledge Base tools", "status": "pass", "notes": "CodeToolkitUI.tools and tools_info_service.py now expose these in UI listing for both show_for_ui values" },
+    { "kind": "story-ac", "item": "Deselecting Get Repo Tree removes it (standard and V2) for all code datasources when chatting", "status": "partial", "notes": "Suppresses the standard path correctly but also wrongly suppresses the independently-selected V2 variant; see CR-001" },
+    { "kind": "story-ac", "item": "Deselecting Search Code or Search KB removes only that tool type, others unaffected", "status": "pass", "notes": "Each gate is independent; covered by dedicated tests" },
+    { "kind": "story-ac", "item": "Assistant with no recorded deselection behaves exactly as today", "status": "pass", "notes": "Pydantic default_factory=list covers newly-constructed assistants; does not cover ORM-loaded legacy rows, see CR-002" },
+    { "kind": "story-ac", "item": "Once Get Repo Tree deselected, no remaining tool description instructs the model to call it first", "status": "pass", "notes": "CODE_SEARCH_TOOL description updated; covered by test" },
+    { "kind": "story-ac", "item": "Deselected tool stays deselected through version save, restore, export/import, workflow-step reference", "status": "pass", "notes": "Threaded through version/compare/migration services and model_dump; tests cover the workflow path" },
+    { "kind": "story-ac", "item": "Changing only the deselected set counts as a configuration change captured in a new version", "status": "pass", "notes": "assistant_version_compare_service.py adds the field to the diff candidate; tests cover both directions" },
+    { "kind": "story-ac", "item": "Direct tool invoke rejects a deselected default tool across all of the assistant's datasources", "status": "pass", "notes": "Gate checked for list/tuple/set values; see CR-002 for the None case on legacy rows" },
+    { "kind": "story-ac", "item": "Selecting both the standard and V2 'with filtering' variant is accepted and V2 still wins, unaffected by this change", "status": "fail", "notes": "Deselecting the standard name also suppresses the V2 variant; a shipped test encodes this as expected. See CR-001" },
+    { "kind": "story-ac", "item": "Save request naming a value outside the three deselectable tool names is rejected with a clear message", "status": "pass", "notes": "Validated against VALID_DESELECTABLE_DEFAULT_TOOLS allowlist; tests cover it" },
+    { "kind": "spec", "item": "One Alembic migration adds the column to assistants and assistant-configuration tables, non-breaking for existing rows", "status": "pass", "notes": "Schema addition itself is nullable and non-breaking at the DDL level; see CR-002 for the runtime None-handling gap this leaves" },
+    { "kind": "spec", "item": "Tool assembly check is independent of, and additional to, the existing toolkits/exclude_extra_context_tools gating", "status": "fail", "notes": "The deselection check is ANDed into the same condition gating the V2-filtered path, not purely additive. Same root cause as CR-001" }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "pass", "notes": "All 9 commit subjects in range use the documented EPMCDME-####: Description format" },
+    { "kind": "code-quality", "status": "pass", "notes": "Small additions consistent with surrounding file conventions; no new files needing license headers; single linear migration head" },
+    { "kind": "security", "status": "pass", "notes": "Server-side allowlist validation on save/update; direct-invoke path reuses existing error constant; no secrets/credentials handling changes" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/tools/toolkit_service.py",
+      "line": 1604,
+      "title": "V2 tool variant wrongly suppressed by deselection",
+      "problem": "_add_code_tools ANDs `REPO_TREE_TOOL.name not in assistant.deselected_default_tools` (and the equivalent for CODE_SEARCH_TOOL) into the same condition that gates the V2 'with filtering' variant, so deselecting the standard tool name also suppresses the V2 variant even when it was independently selected via toolkits.",
+      "impact": "Violates spec D1/AC9: selecting a V2 variant alongside deselecting its standard name must leave the V2 variant unaffected ('V2 still wins'). The shipped test test_add_code_tools_skips_repo_tree_when_deselected encodes the wrong behavior as expected, so CI will not catch a regression here.",
+      "recommendation": "Split the condition: gate only the standard (with_filtering=False) call on '... not in deselected_default_tools'; keep the V2-filtered call (repo_tree_with_filtering/code_search_with_filtering True) unconditional on deselection, per AC9. Update test_add_code_tools_skips_repo_tree_when_deselected accordingly."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/external/alembic/versions/64825fe31931_add_deselected_default_tools.py",
+      "line": 24,
+      "title": "Missing backfill crashes/bypasses deselection for legacy assistants",
+      "problem": "The migration adds deselected_default_tools as nullable JSON with no server_default and no data backfill on either table. Every assistant/assistant_configuration row created before this migration loads with the attribute as None, because SQLModel's default_factory=list only applies to new Python-constructed instances, not to values loaded from an existing NULL column.",
+      "impact": "toolkit_service.py's _add_kb_tools/_add_code_tools (lines 1484, 1605, 1616) do 'X.name in assistant.deselected_default_tools' with no None-guard, so the next chat turn for any pre-existing assistant with a CODE or KNOWLEDGE_BASE context raises TypeError and breaks tool assembly entirely. Conversely, tool_execution_service.py's direct-invoke gate (lines 319-326) explicitly treats a non-list value as 'nothing deselected' and silently skips enforcement, making the deselection security gate a no-op for the same legacy assistants. assistant_version_service.py:127 and assistant_version_migration_service.py (lines 80, 116, 145) also propagate this None into AssistantConfiguration(deselected_default_tools=...), a list[str]-typed (non-Optional) field, likely failing validation and breaking version creation/rollback/migration.",
+      "recommendation": "Backfill existing rows in the migration (e.g. op.execute(\"UPDATE assistants SET deselected_default_tools = '[]' WHERE deselected_default_tools IS NULL\") and the same for assistant_configurations, or add server_default='[]' then drop it) so no row can load as None; as defense in depth also guard every consumer with (assistant.deselected_default_tools or [])."
+    }
+  ]
+}

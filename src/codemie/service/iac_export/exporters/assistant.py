@@ -130,6 +130,7 @@ class AssistantSpec(BaseModel):
     mcp_servers: list[McpServerSpec] = Field(default_factory=list)
     assistant_ids: list[str] = Field(default_factory=list)  # assistant names
     enabled_builtin_subagents: list[str] = Field(default_factory=list)
+    disabled_context_tools: list[str] = Field(default_factory=list)
     skill_ids: list[str] = Field(default_factory=list)  # skill names
     hedging_config: dict[str, Any] | None = None
     interactive_enabled: bool = False
@@ -259,6 +260,7 @@ def _scalar_fields(a: Assistant) -> dict[str, Any]:
         "top_p": a.top_p,
         "tools_tokens_size_limit": a.tools_tokens_size_limit,
         "enabled_builtin_subagents": [s.value for s in a.enabled_builtin_subagents or []],
+        "disabled_context_tools": list(a.disabled_context_tools or []),
         "hedging_config": a.hedging_config.model_dump(mode="json", exclude_none=True) if a.hedging_config else None,
         "interactive_enabled": bool(a.interactive_enabled),
         "enable_image_generation": a.enable_image_generation,

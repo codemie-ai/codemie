@@ -32,6 +32,7 @@ from codemie.core.exceptions import TaskException
 from codemie.workflows.exceptions import IteratorInputNotFoundError
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem
+from codemie.service.default_tool_names import DEFAULT_CONTEXT_TOOL_NAMES
 
 
 class WorkflowMode(str, Enum):
@@ -65,6 +66,15 @@ class WorkflowAssistant(BaseModel):
     exclude_extra_context_tools: bool = False
     mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
     skill_ids: Optional[list[str]] = Field(default_factory=list)
+    disabled_context_tools: list[str] = Field(default_factory=list)
+
+    @field_validator('disabled_context_tools')
+    @classmethod
+    def validate_disabled_context_tools(cls, value: list[str]) -> list[str]:
+        invalid = {name for name in value or [] if name not in DEFAULT_CONTEXT_TOOL_NAMES}
+        if invalid:
+            raise ValueError(f"Unknown deselected default tools detected: {', '.join(sorted(invalid))}")
+        return value or []
 
     @model_validator(mode='after')
     def validate_mcp_servers(cls, values: WorkflowAssistant) -> WorkflowAssistant:

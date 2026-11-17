@@ -65,6 +65,7 @@ from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.subagents.builtin_subagents import BuiltinSubagent
 
 from codemie.rest_api.models.assistant_generator import RefineGeneratorResponse
+from codemie.service.default_tool_names import DEFAULT_CONTEXT_TOOL_NAMES
 
 PROMPT_DATE_FORMAT = '%a, %d %b %Y %H:%M:%S'
 LANGCHAIN_VARS_REGEXP = r'{.*?}'
@@ -338,6 +339,7 @@ class AssistantRequest(BaseModel):
     enable_image_generation: Optional[bool] = False
     image_generation_model: Optional[str] = None
     toolkits: list[ToolKitDetails] = Field(default_factory=list)
+    disabled_context_tools: list[str] = Field(default_factory=list)
     conversation_starters: list[str] = Field(default_factory=list)
     shared: bool = True
     is_react: bool = True
@@ -681,6 +683,10 @@ class AssistantBase(CommonBaseModel, Owned):
     enable_image_generation: Optional[bool] = False
     image_generation_model: Optional[str] = None
     toolkits: list[ToolKitDetails] = SQLField(default_factory=list, sa_column=Column(PydanticListType(ToolKitDetails)))
+    disabled_context_tools: list[str] = SQLField(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default="[]"),
+    )
     conversation_starters: list[str] = SQLField(default_factory=list, sa_column=Column(JSONB))
     shared: bool = SQLField(default=True, index=True)
     # IMPORTANT: is_react is deprecated and will be removed in future versions. DO NOT USE IT.
@@ -1023,25 +1029,17 @@ class AssistantBase(CommonBaseModel, Owned):
             self.system_prompt = request.system_prompt
 
     def validate_fields(self) -> str:
-        slug_error = self._check_slug_uniqueness()
-        if slug_error:
-            return slug_error
-
-        categories_error = self._check_categories()
-        if categories_error:
-            return categories_error
-
-        assistant_ids_error = self._validate_assistant_ids()
-        if assistant_ids_error:
-            return assistant_ids_error
-
-        prompt_variables_error = self._validate_prompt_variables()
-        if prompt_variables_error:
-            return prompt_variables_error
-
-        mcp_names_error = self._validate_mcp_server_names()
-        if mcp_names_error:
-            return mcp_names_error
+        for check in (
+            self._check_slug_uniqueness,
+            self._check_categories,
+            self._validate_assistant_ids,
+            self._validate_prompt_variables,
+            self._validate_mcp_server_names,
+            self._validate_disabled_context_tools,
+        ):
+            error = check()
+            if error:
+                return error
 
         return ""
 
@@ -1091,6 +1089,12 @@ class AssistantBase(CommonBaseModel, Owned):
         duplicates = {n for n in names if names.count(n) > 1}
         if duplicates:
             return f"Duplicate MCP server names detected: {', '.join(sorted(duplicates))}"
+        return None
+
+    def _validate_disabled_context_tools(self) -> str | None:
+        invalid = {n for n in (self.disabled_context_tools or []) if n not in DEFAULT_CONTEXT_TOOL_NAMES}
+        if invalid:
+            return f"Unknown deselected default tools detected: {', '.join(sorted(invalid))}"
         return None
 
     def _validate_assistant_ids(self) -> Optional[str]:
@@ -1505,6 +1509,10 @@ class AssistantConfiguration(BaseModelWithSQLSupport, table=True):
     # Complex configuration (JSONB)
     context: list[Context] = SQLField(default_factory=list, sa_column=Column(PydanticListType(Context)))
     toolkits: list[ToolKitDetails] = SQLField(default_factory=list, sa_column=Column(PydanticListType(ToolKitDetails)))
+    disabled_context_tools: list[str] = SQLField(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default="[]"),
+    )
     mcp_servers: list[MCPServerDetails] = SQLField(
         default_factory=list, sa_column=Column(PydanticListType(MCPServerDetails))
     )

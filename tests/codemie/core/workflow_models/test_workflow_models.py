@@ -319,6 +319,18 @@ class TestWorkflowAssistant:
 
         assert assistant.skill_ids == []
 
+    def test_disabled_context_tools_defaults_to_empty_list(self):
+        assert WorkflowAssistant(id="asst1").disabled_context_tools == []
+
+    def test_disabled_context_tools_round_trip(self):
+        assistant = WorkflowAssistant(id="asst1", disabled_context_tools=["search_kb", "search_code_repo"])
+
+        assert assistant.model_dump()["disabled_context_tools"] == ["search_kb", "search_code_repo"]
+
+    def test_disabled_context_tools_rejects_unknown_name(self):
+        with pytest.raises(ValidationError, match="Unknown deselected default tools detected: bogus"):
+            WorkflowAssistant(id="asst1", disabled_context_tools=["search_kb", "bogus"])
+
 
 class TestWorkflowTool:
     """Tests for WorkflowTool model and its configuration fields."""

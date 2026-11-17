@@ -26,12 +26,15 @@ from langchain_core.tools import BaseTool, ToolException
 from codemie.agents.tools import CodeToolkit, KBToolkit
 from codemie.agents.tools.code.tools_vars import (
     CODE_SEARCH_BY_PATHS_TOOL,
+    CODE_SEARCH_TOOL,
     CODE_SEARCH_TOOL_V2,
     READ_FILES_TOOL,
     READ_FILES_WITH_SUMMARY_TOOL,
+    REPO_TREE_TOOL,
     REPO_TREE_TOOL_V2,
 )
 from codemie.agents.tools.ide.ide_toolkit import IdeToolkit
+from codemie.agents.tools.kb.search_kb import SEARCH_KB_TOOL
 from codemie.agents.tools.platform import PlatformToolkit
 from codemie_tools.research.tools_vars import (
     GOOGLE_SEARCH_RESULTS_TOOL,
@@ -1526,6 +1529,9 @@ class ToolkitService:
         if kb_index is None:
             return
 
+        if SEARCH_KB_TOOL.name in (assistant.disabled_context_tools or []):
+            return
+
         tools.extend(KBToolkit.get_tools(kb_index=kb_index, llm_model=llm_model))
 
     @classmethod
@@ -1643,25 +1649,41 @@ class ToolkitService:
                 )
             )
 
-        if repo_tree_with_filtering or not exclude_extra_context_tools:
-            tools.append(
-                CodeToolkit.get_repo_tree_tool(
-                    code_fields=code_fields,
-                    is_react=is_react,
-                    user_input=request.text,
-                    with_filtering=repo_tree_with_filtering,
-                )
-            )
-        if code_search_with_filtering or not exclude_extra_context_tools:
-            tools.append(
-                CodeToolkit.search_code_tool(
-                    code_fields=code_fields,
-                    top_k=request.top_k,
-                    is_react=is_react,
-                    user_input=request.text,
-                    with_filtering=code_search_with_filtering,
-                )
-            )
+        disabled_context_tools = assistant.disabled_context_tools or []
+        standard_tree_deselected = REPO_TREE_TOOL.name in disabled_context_tools
+
+        # The V2 ("with filtering") variant is independently selected via toolkits and must stay
+        # unaffected by deselecting the standard tool name (AC9 / spec decision D1). Deselection
+        # only gates the standard (non-filtered) call.
+        def add_default_code_tool(build, tool_name: str, filtered_variant_selected: bool) -> None:
+            if filtered_variant_selected:
+                tools.append(build(True))
+            elif not exclude_extra_context_tools and tool_name not in disabled_context_tools:
+                tools.append(build(False))
+
+        add_default_code_tool(
+            lambda filtering: CodeToolkit.get_repo_tree_tool(
+                code_fields=code_fields,
+                is_react=is_react,
+                user_input=request.text,
+                with_filtering=filtering,
+                standard_tree_deselected=standard_tree_deselected,
+            ),
+            REPO_TREE_TOOL.name,
+            repo_tree_with_filtering,
+        )
+        add_default_code_tool(
+            lambda filtering: CodeToolkit.search_code_tool(
+                code_fields=code_fields,
+                top_k=request.top_k,
+                is_react=is_react,
+                user_input=request.text,
+                with_filtering=filtering,
+                standard_tree_deselected=standard_tree_deselected,
+            ),
+            CODE_SEARCH_TOOL.name,
+            code_search_with_filtering,
+        )
 
     @classmethod
     def _add_git_related_tools(
