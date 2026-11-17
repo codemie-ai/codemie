@@ -371,7 +371,7 @@ def _resolve_chat_model_details(
     return llm_model, llm_model_details
 
 
-def get_llm_by_credentials(
+def get_llm_by_credentials(  # noqa: PLR0913 - effort joins a signature that was already over the limit
     llm_model: str | None = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
@@ -379,6 +379,7 @@ def get_llm_by_credentials(
     request_id: Optional[str] = None,
     project: Optional[Application] = None,
     fallback_to_default: bool = False,
+    effort: str | None = None,
 ):
     # Enforce project-level model restrictions before any provider calls
     llm_model = enforce_allowed_model(llm_model, project)
@@ -402,13 +403,14 @@ def get_llm_by_credentials(
         top_p=top_p,
         streaming=streaming,
         request_id=request_id,
+        effort=effort,
     )
 
     if litellm_llm:
         llm = litellm_llm
         is_using_litellm = True
     else:
-        llm = get_llm_by_credentials_raw(llm_model_details.base_name, temperature, top_p, streaming)
+        llm = get_llm_by_credentials_raw(llm_model_details.base_name, temperature, top_p, streaming, effort=effort)
         is_using_litellm = False
 
     if _should_wrap_llm_client(llm_model_details, llm):
@@ -479,11 +481,26 @@ def format_headers_for_openai_api(default_headers: dict) -> None:
             default_headers[key] = json.dumps(default_headers[key])
 
 
+def _reasoning_effort_kwargs(effort: str | None, llm_model_details: LLMModel) -> dict[str, str]:
+    """Every effort model takes a clamped reasoning_effort; Claude and Gemini are capped for DIAL's adapters."""
+    from codemie.configs.llm_effort import openai_reasoning_effort_kwargs
+
+    return openai_reasoning_effort_kwargs(
+        effort,
+        llm_model_details.features.effort,
+        cap_at_dial_adapter_levels=bool(
+            llm_service.is_claude_models(llm_model_details.base_name)
+            or llm_service.is_gemini_models(llm_model_details.base_name)
+        ),
+    )
+
+
 def get_llm_by_credentials_raw(
     llm_model: str | None = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
+    effort: str | None = None,
 ):
     """Get LLM instance based on current context credentials"""
     # Resolved lazily rather than as a default argument: default_llm_model reads the model catalog,
@@ -507,6 +524,7 @@ def get_llm_by_credentials_raw(
                 temperature=temperature,
                 top_p=top_p,
                 streaming=streaming,
+                effort=effort,
             )
             if llm:
                 return llm
@@ -532,6 +550,8 @@ def get_llm_by_credentials_raw(
         'max_tokens': llm_model_details.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS_4K,
     }
 
+    base_args.update(_reasoning_effort_kwargs(effort, llm_model_details))
+
     # Add custom headers if any exist
     if merged_headers:
         format_headers_for_openai_api(merged_headers)
@@ -545,11 +565,14 @@ def _temperature_allowed(temperature: Optional[float], llm_model_details: LLMMod
     return temperature is not None and llm_model_details.features.temperature is not False
 
 
+# Gemini effort maps to a thinking_budget on ChatVertexAI. The Vertex-hosted Claude branch is unchanged:
+# no such model exists in the catalog, so effort is never forwarded to ChatAnthropicVertex.
 def get_vertex_llm(
     llm_model_details: LLMModel,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
+    effort: str | None = None,
 ):
     # Merge static config headers with dynamic headers
     merged_headers = _build_codemie_tagging_headers()
@@ -579,7 +602,9 @@ def get_vertex_llm(
     patch_langchain_google_vertexai_schema()
     if llm_service.is_gemini_models(llm_model_details.base_name):
         from langchain_google_vertexai import ChatVertexAI
+        from codemie.configs.llm_effort import gemini_thinking_kwargs
 
+        base_args.update(gemini_thinking_kwargs(effort, llm_model_details.features.effort))
         return ChatVertexAI(**base_args)
     elif llm_service.is_claude_models(llm_model_details.base_name):
         from langchain_google_vertexai.model_garden import ChatAnthropicVertex
@@ -593,13 +618,17 @@ def get_bedrock_llm(
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
+    effort: str | None = None,
 ):
+    from codemie.configs.llm_effort import bedrock_request_fields_with_effort
     from codemie.core.prompt_caching_bedrock import PromptCachingChatBedrockConverse
 
     # Merge static config headers with dynamic headers
     merged_headers = {}
     if llm_model_details.configuration and llm_model_details.configuration.client_headers:
         merged_headers.update(llm_model_details.configuration.client_headers)
+
+    merged_headers = bedrock_request_fields_with_effort(merged_headers, effort, llm_model_details.features.effort)
 
     disabled_streaming = not streaming or not llm_model_details.features.streaming
     kwargs: dict[str, Any] = {
@@ -621,8 +650,10 @@ def get_anthropic_llm(
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
+    effort: str | None = None,
 ):
     from langchain_anthropic import ChatAnthropic
+    from codemie.configs.llm_effort import anthropic_effort_kwargs
 
     # Merge static config headers with dynamic headers
     merged_headers = _build_codemie_tagging_headers()
@@ -640,6 +671,7 @@ def get_anthropic_llm(
     }
     if _temperature_allowed(temperature, llm_model_details):
         kwargs['temperature'] = temperature
+    kwargs.update(anthropic_effort_kwargs(effort, llm_model_details.features.effort))
     return ChatAnthropic(**kwargs)
 
 

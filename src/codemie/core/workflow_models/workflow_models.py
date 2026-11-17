@@ -27,6 +27,7 @@ from pydantic import field_validator, model_validator
 
 from codemie_tools.base.errors import InvalidCredentialsError, TruncatedOutputError
 
+from codemie.configs.llm_effort import EffortLevel
 from codemie.core.exceptions import TaskException
 from codemie.workflows.exceptions import IteratorInputNotFoundError
 from codemie.rest_api.models.assistant import MCPServerDetails
@@ -56,6 +57,7 @@ class WorkflowAssistant(BaseModel):
     name: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
+    effort: EffortLevel | None = None
     system_prompt: Optional[str] = None
     limit_tool_output_tokens: Optional[int] = Field(10000)
     tools: list[WorkflowAssistantTool] = Field(default_factory=list)

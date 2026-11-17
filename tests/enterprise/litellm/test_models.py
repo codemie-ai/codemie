@@ -284,6 +284,132 @@ class TestMapLiteLLMToLLMModel:
         assert result.features.max_tokens is False
         assert result.features.top_p is False
 
+    def test_maps_effort_from_supports_output_config_and_ceiling_flags(self):
+        """supports_output_config gates effort support; supports_max_reasoning_effort widens
+        the ceiling to include 'max'."""
+        litellm_model = {
+            "model_name": "bedrock/claude-sonnet-5",
+            "model_info": {
+                "supports_output_config": True,
+                "supports_max_reasoning_effort": True,
+            },
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.features.effort == ["low", "medium", "high", "max"]
+
+    def test_effort_is_none_when_supports_output_config_absent(self):
+        """A model lacking supports_output_config entirely (not merely False) gets no
+        features.effort declaration."""
+        litellm_model = {
+            "model_name": "bedrock/claude-4-5-haiku",
+            "model_info": {},
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.features.effort is None
+
+    def test_claude_effort_from_max_flag_when_output_config_dropped(self):
+        """litellm.get_model_info() drops supports_output_config; a Claude model still qualifies
+        through supports_max_reasoning_effort / supports_xhigh_reasoning_effort."""
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        sonnet_4_6 = {
+            "model_name": "claude-sonnet-4-6",
+            "litellm_params": {"model": "bedrock/us.anthropic.claude-sonnet-4-6"},
+            "model_info": {"supports_reasoning": True, "supports_max_reasoning_effort": True},
+        }
+        sonnet_4_5 = {
+            "model_name": "claude-4-5-sonnet",
+            "litellm_params": {"model": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+            "model_info": {"supports_reasoning": True},
+        }
+
+        assert map_litellm_to_llm_model(sonnet_4_6).features.effort == ["low", "medium", "high", "max"]
+        assert map_litellm_to_llm_model(sonnet_4_5).features.effort is None
+
+    @staticmethod
+    def _effort_of(model_name: str, provider: str, deployment: str | None = None, **flags):
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        entry = {"model_name": model_name, "model_info": {"litellm_provider": provider, **flags}}
+        if deployment is not None:
+            entry["litellm_params"] = {"model": deployment}
+        return map_litellm_to_llm_model(entry).features.effort
+
+    def test_effort_reasoning_only_openai(self):
+        """A reasoning model without output_config (GPT-5.x, o-series) declares low..high."""
+        assert self._effort_of("gpt-5", "azure", supports_reasoning=True) == ["low", "medium", "high"]
+        assert self._effort_of("gpt-5.2", "azure", supports_reasoning=True, supports_xhigh_reasoning_effort=True) == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        ]
+
+    def test_effort_reasoning_only_deepseek(self):
+        assert self._effort_of(
+            "deepseek-reasoner", "deepseek", "deepseek/deepseek-reasoner", supports_reasoning=True
+        ) == ["low", "medium", "high"]
+
+    def test_effort_claude_reasoning_without_output_config_is_none(self):
+        """Claude 4.5 reports supports_reasoning but rejects output_config.effort."""
+        assert (
+            self._effort_of(
+                "claude-sonnet-4-5", "bedrock", "bedrock/anthropic.claude-sonnet-4-5", supports_reasoning=True
+            )
+            is None
+        )
+
+    def test_effort_claude_with_output_config_unchanged(self):
+        assert self._effort_of(
+            "claude-opus-4-6",
+            "bedrock",
+            "bedrock/anthropic.claude-opus-4-6",
+            supports_reasoning=True,
+            supports_output_config=True,
+            supports_max_reasoning_effort=True,
+        ) == ["low", "medium", "high", "max"]
+
+    def test_effort_gemini_capped_at_high(self):
+        """Gemini is detected by deployment id and never exceeds high, whatever the flags say."""
+        assert self._effort_of(
+            "pro-model",
+            "vertex_ai",
+            "vertex_ai/gemini-3-pro-preview",
+            supports_reasoning=True,
+            supports_xhigh_reasoning_effort=True,
+            supports_max_reasoning_effort=True,
+        ) == ["low", "medium", "high"]
+
+    def test_effort_no_flags_is_none(self):
+        assert self._effort_of("gpt-4.1", "azure", "azure/gpt-4.1") is None
+
+    def test_temperature_false_when_supports_sampling_params_false(self):
+        """'temperature' being in supported_openai_params is not enough — a model whose
+        supports_sampling_params is explicitly False must still resolve features.temperature
+        to False, since the underlying request path unconditionally rejects temperature
+        for such models."""
+        litellm_model = {
+            "model_name": "bedrock/claude-opus-4-7",
+            "model_info": {
+                "supported_openai_params": ["temperature"],
+                "supports_sampling_params": False,
+            },
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.features.temperature is False
+
     def test_maps_cost_information(self):
         """Test maps cost information when available."""
         litellm_model = {

@@ -45,6 +45,7 @@ llm_models:
     features:
       max_tokens: false
       temperature: false
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.00000125
       output: 0.000010
@@ -60,6 +61,7 @@ llm_models:
     features:
       max_tokens: false
       temperature: false
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.00000025
       output: 0.000002
@@ -75,6 +77,7 @@ llm_models:
     features:
       max_tokens: false
       temperature: false
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.00000005
       output: 0.0000004
@@ -95,6 +98,7 @@ llm_models:
       parallel_tool_calls: false
       system_prompt: false
       max_tokens: false
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.0000011
       output: 0.0000044
@@ -115,6 +119,7 @@ llm_models:
       parallel_tool_calls: false
       system_prompt: false
       max_tokens: false
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.000015
       output: 0.00006
@@ -135,7 +140,7 @@ llm_models:
       parallel_tool_calls: false
       system_prompt: false
       max_tokens: false
-      reasoning: true
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.000002
       output: 0.000008
@@ -156,7 +161,7 @@ llm_models:
       parallel_tool_calls: false
       system_prompt: false
       max_tokens: false
-      reasoning: true
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.0000011
       output: 0.0000044

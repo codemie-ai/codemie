@@ -138,6 +138,7 @@ class LLMParams:
 
     temperature: float | None
     top_p: float | None
+    effort: str | None = None
 
 
 class RouterChatModel(BaseChatModel):
@@ -307,7 +308,11 @@ def build_chat_model_for(router: Router, *, model_name: str, request_id: str, ll
     candidates = router.candidate_models()
     if not candidates:
         return get_llm_by_credentials(
-            llm_model=model_name, request_id=request_id, temperature=llm_params.temperature, top_p=llm_params.top_p
+            llm_model=model_name,
+            request_id=request_id,
+            temperature=llm_params.temperature,
+            top_p=llm_params.top_p,
+            effort=llm_params.effort,
         )
 
     # Each candidate is built in its own copy of the LLM context and keeps the payer its build recorded; until a
@@ -317,7 +322,11 @@ def build_chat_model_for(router: Router, *, model_name: str, request_id: str, ll
     for m in candidates:
         llms[m], payers[m] = build_with_payer(
             lambda m=m: get_llm_by_credentials(
-                llm_model=m, request_id=request_id, temperature=llm_params.temperature, top_p=llm_params.top_p
+                llm_model=m,
+                request_id=request_id,
+                temperature=llm_params.temperature,
+                top_p=llm_params.top_p,
+                effort=llm_params.effort,
             )
         )
     restore_built_payer(payers[candidates[0]])

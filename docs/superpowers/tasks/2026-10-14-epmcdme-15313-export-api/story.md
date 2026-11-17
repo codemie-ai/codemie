@@ -122,11 +122,11 @@ the envelope. Consequences for this story:
     `smart_tool_selection_enabled`, `file_attachment_enabled`, `interactive_enabled`, `hedging_config`,
     `custom_metadata`, `guardrail_assignments`, `bedrock`, `agentcore`, `agent_card`, toolkit/tool
     `auto_credentials_lookup`, per-tool credential maps, prompt-variable `is_sensitive`, MCP
-    `mcp_config_id`, MCP config `audience` and `allow_issuer_prefix_match`.
+    `mcp_config_id`, MCP config `audience` and `allow_issuer_prefix_match`, `effort`.
   - **Workflow:** `start_hint`, `supervisor_prompt`, `meta_config`, `project`, engine switches in the
     yaml, `tool_access`, `keep_history`/`override_task`, assistant `skill_ids`/`datasource_ids`, MCP
     `mcp_config_id`, MCP `settings` snapshots and `mcp_connect_auth_token` (only the integration alias
-    survives), `categories`. A workflow the envelope cannot represent fails naming the cause: a state
+    survives), `categories`, assistant `effort`. A workflow the envelope cannot represent fails naming the cause: a state
     that runs a sub-workflow, an enabled MCP server that is only a catalog link, an assistant without a
     prompt, name or catalog assistant.
   - **Datasource:** `guardrail_assignments`, the SharePoint transient access token, `new_project_name`,

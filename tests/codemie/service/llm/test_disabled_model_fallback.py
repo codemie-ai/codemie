@@ -127,6 +127,7 @@ def test_assistant_execution_passes_resolved_model_to_llm(fallback_context, is_g
     agent._resolved_llm_model = None
     agent.temperature = None
     agent.top_p = None
+    agent.effort = None
     agent.request_uuid = "request-id"
     with patch("codemie.agents.assistant_agent.get_llm_by_credentials") as factory:
         agent._initialize_llm()

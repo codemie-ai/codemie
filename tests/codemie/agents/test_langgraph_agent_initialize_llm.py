@@ -35,6 +35,7 @@ def _make_agent(
     request_uuid: str = "req-123",
     temperature: float | None = 0.7,
     top_p: float | None = 0.9,
+    effort: str | None = None,
 ) -> LangGraphAgent:
     """Bypass LangGraphAgent.__init__ and set only the attributes _initialize_llm needs."""
     agent: LangGraphAgent = object.__new__(LangGraphAgent)
@@ -42,6 +43,7 @@ def _make_agent(
     agent.request_uuid = request_uuid
     agent.temperature = temperature
     agent.top_p = top_p
+    agent.effort = effort
     return agent
 
 
@@ -97,6 +99,21 @@ class TestInitializeLLMUsesRouter:
         (_, kwargs) = mock_build.call_args
         assert kwargs["llm_params"].temperature == 0.0
         assert kwargs["llm_params"].top_p is None
+
+    def test_llm_params_effort_forwarded(self) -> None:
+        """effort from agent config reaches LLMParams unchanged."""
+        fake_llm = MagicMock(spec=BaseChatModel)
+        mock_router = MagicMock()
+        agent = _make_agent(effort="high")
+
+        with (
+            patch("codemie.service.llm_service.router_factory.create_router", return_value=mock_router),
+            patch("codemie.core.router_chat_model.build_chat_model_for", return_value=fake_llm) as mock_build,
+        ):
+            agent._initialize_llm()
+
+        (_, kwargs) = mock_build.call_args
+        assert kwargs["llm_params"].effort == "high"
 
     def test_null_router_build_chat_model_for_still_called(self) -> None:
         """Even when create_router returns NULL_ROUTER, build_chat_model_for is called on it —

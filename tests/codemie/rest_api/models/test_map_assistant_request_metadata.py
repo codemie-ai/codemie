@@ -16,6 +16,9 @@
 
 from datetime import datetime, UTC
 
+import pytest
+from pydantic import ValidationError
+
 from codemie.rest_api.models.assistant import AssistantBase, AssistantRequest
 
 
@@ -186,6 +189,29 @@ class TestMetadataFieldMapping:
         assert assistant.description == "New description"  # Updated (in fields_set)
         assert assistant.custom_metadata == {'key': 'old_value'}  # Unchanged (not in fields_set)
         assert assistant.temperature == 0.7  # Unchanged (not in fields_set)
+
+
+class TestEffortFieldMapping:
+    """Tests for the effort field on AssistantRequest/AssistantBase (mirrors temperature)."""
+
+    def test_effort_round_trips_through_request_mapping(self):
+        """Setting effort='high' on the request reaches assistant.effort after mapping."""
+        assistant = AssistantBase(name="Test", description="Test", system_prompt="Test", project="demo")
+        request = AssistantRequest(
+            name="Test", description="Test", system_prompt="Test", llm_model_type="gpt-4", effort="high"
+        )
+
+        assistant._map_assistant_request(request)
+
+        assert assistant.effort == "high"
+
+    def test_invalid_effort_rejected_by_literal_at_construction(self):
+        """An out-of-set effort value is rejected by the Literal type, no custom validator
+        needed."""
+        with pytest.raises(ValidationError):
+            AssistantRequest(
+                name="Test", description="Test", system_prompt="Test", llm_model_type="gpt-4", effort="invalid"
+            )
 
 
 class TestSignatureChange:

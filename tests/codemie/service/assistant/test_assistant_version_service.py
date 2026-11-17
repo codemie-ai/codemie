@@ -55,6 +55,7 @@ def mock_assistant():
     assistant.image_generation_model = None
     assistant.temperature = 0.7
     assistant.top_p = 0.9
+    assistant.effort = "low"
     assistant.context = []
     assistant.toolkits = []
     assistant.mcp_servers = []
@@ -101,6 +102,7 @@ def mock_assistant_request():
         image_generation_model="gpt-image-1",
         temperature=0.8,
         top_p=0.95,
+        effort="high",
         context=[],
         toolkits=[],
         mcp_servers=[],
@@ -123,6 +125,7 @@ def mock_config():
     config.image_generation_model = "gpt-image-1"
     config.temperature = 0.7
     config.top_p = 0.9
+    config.effort = "medium"
     config.context = []
     config.toolkits = []
     config.mcp_servers = []
@@ -163,6 +166,7 @@ class TestCreateInitialVersion:
         assert call_kwargs['system_prompt'] == mock_assistant_request.system_prompt
         assert call_kwargs['enable_image_generation'] is True
         assert call_kwargs['image_generation_model'] == "gpt-image-1"
+        assert call_kwargs['effort'] == "high"
         assert call_kwargs['change_notes'] == "Initial version"
         mock_config_instance.save.assert_called_once()
 
@@ -254,6 +258,7 @@ class TestCreateNewVersion:
         call_kwargs = mock_config_class.call_args[1]
         assert call_kwargs['version_number'] == 3  # latest_version + 1
         assert call_kwargs['change_notes'] == "Test changes"
+        assert call_kwargs['effort'] == "high"
         mock_config_instance.save.assert_called_once()
         mock_assistant.update.assert_called_once()
         assert mock_assistant.version_count == 3
@@ -714,6 +719,7 @@ class TestRollbackToVersion:
         target_config.llm_model_type = "gpt-3.5-turbo"
         target_config.temperature = 0.5
         target_config.top_p = 0.8
+        target_config.effort = "max"
         target_config.context = [Context(name="old-repo", context_type=ContextType.CODE)]
         target_config.toolkits = []
         target_config.mcp_servers = []
@@ -743,6 +749,7 @@ class TestRollbackToVersion:
         assert call_kwargs['enable_image_generation'] == target_config.enable_image_generation
         assert call_kwargs['temperature'] == 0.5
         assert call_kwargs['top_p'] == 0.8
+        assert call_kwargs['effort'] == "max"
         assert len(call_kwargs['context']) == 1
         assert call_kwargs['assistant_ids'] == ["old-sub"]
 
@@ -767,6 +774,7 @@ class TestApplyVersionToAssistant:
         assert result.llm_model_type == mock_config.llm_model_type
         assert result.temperature == mock_config.temperature
         assert result.top_p == mock_config.top_p
+        assert result.effort == mock_config.effort
         assert result.context == mock_config.context
         assert result.toolkits == mock_config.toolkits
         assert result.mcp_servers == mock_config.mcp_servers

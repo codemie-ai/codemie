@@ -1205,6 +1205,26 @@ class TestAskVirtualAssistantSingleUserInvariant:
         assert passed_assistant.project == "caller-project"  # project scoping stays on the original caller
         assert passed_user is mock_user  # budget resolution uses the resolved user
 
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.assistant.execution.asyncio.to_thread")
+    async def test_virtual_assistant_forwards_effort(self, mock_to_thread, mock_user):
+        from codemie.rest_api.routers.assistant.execution import ask_virtual_assistant
+        from codemie.rest_api.models.assistant import VirtualAssistantChatRequest
+
+        mock_to_thread.return_value = {"response": "ok"}
+
+        async def _noop():
+            return None
+
+        raw_request = MagicMock()
+        raw_request.state.wait_for_disconnect = MagicMock(return_value=_noop())
+        request = VirtualAssistantChatRequest(effort="high")
+
+        await ask_virtual_assistant(raw_request, MagicMock(), request, mock_user)
+
+        passed_assistant = mock_to_thread.call_args.args[1]
+        assert passed_assistant.effort == "high"
+
 
 class TestAskVirtualAssistantMcpGovernance:
     """Regression guard: the virtual (non-persisting) assistant endpoint still runs

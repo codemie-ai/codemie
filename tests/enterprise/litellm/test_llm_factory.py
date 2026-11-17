@@ -344,6 +344,72 @@ class TestCreateLiteLLMChatModel:
                                             )
 
 
+class TestLiteLLMEffortParameter:
+    """Test effort threading, clamping, and silent-drop through create_litellm_chat_model()."""
+
+    def _build_model_details(self, effort_feature):
+        mock_model_details = MagicMock()
+        mock_model_details.base_name = "gpt-4"
+        mock_model_details.configuration = None
+        mock_model_details.features.streaming = True
+        mock_model_details.features.temperature = True
+        mock_model_details.features.parallel_tool_calls = True
+        mock_model_details.features.max_tokens = True
+        mock_model_details.features.top_p = True
+        mock_model_details.features.effort = effort_feature
+        mock_model_details.api_version = None
+        return mock_model_details
+
+    def _create_with_effort(self, mock_model_details, effort, mock_model_cls):
+        from codemie.configs.config import config
+        from codemie.enterprise.litellm.llm_factory import create_litellm_chat_model
+
+        with patch.object(config, "LITE_LLM_URL", "http://test:4000"):
+            with patch.object(config, "LITE_LLM_APP_KEY", "test-key"):
+                with patch.object(config, "OPENAI_API_VERSION", "2025-04-01-preview"):
+                    with patch.object(config, "OPENAI_API_TYPE", "azure"):
+                        with patch.object(config, "AZURE_OPENAI_MAX_RETRIES", 3):
+                            with patch("codemie.enterprise.litellm.llm_factory.LiteLLMChatOpenAI", mock_model_cls):
+                                with patch("codemie.enterprise.litellm.dependencies.check_user_budget"):
+                                    create_litellm_chat_model(
+                                        llm_model_details=mock_model_details,
+                                        litellm_context=None,
+                                        username="test@example.com",
+                                        effort=effort,
+                                    )
+
+    def test_over_ceiling_effort_clamps_down(self):
+        """A requested effort above the model's declared ceiling clamps to the nearest
+        declared level, not raised, not passed through raw."""
+        mock_model_details = self._build_model_details(["low", "medium", "high", "max"])
+        mock_model_cls = MagicMock()
+
+        self._create_with_effort(mock_model_details, "xhigh", mock_model_cls)
+
+        call_kwargs = mock_model_cls.call_args.kwargs
+        assert call_kwargs["reasoning_effort"] == "high"
+
+    def test_effort_within_ceiling_passes_through(self):
+        mock_model_details = self._build_model_details(["low", "medium", "high", "max"])
+        mock_model_cls = MagicMock()
+
+        self._create_with_effort(mock_model_details, "max", mock_model_cls)
+
+        call_kwargs = mock_model_cls.call_args.kwargs
+        assert call_kwargs["reasoning_effort"] == "max"
+
+    def test_unsupported_effort_dropped_silently(self):
+        """A model with no declared effort levels drops any requested effort — no key at
+        all in the final kwargs, no error raised."""
+        mock_model_details = self._build_model_details(None)
+        mock_model_cls = MagicMock()
+
+        self._create_with_effort(mock_model_details, "high", mock_model_cls)
+
+        call_kwargs = mock_model_cls.call_args.kwargs
+        assert "reasoning_effort" not in call_kwargs
+
+
 class TestGetLiteLLMChatModel:
     """Test get_litellm_chat_model() wrapper function."""
 

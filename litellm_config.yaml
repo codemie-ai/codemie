@@ -62,6 +62,8 @@ model_list:
       id: gpt-5-2-2025-12-11-swedencentral-0
       base_model: azure/gpt-5.2-2025-12-11
       label: "GPT-5.2 2025-12-11"
+      # LiteLLM's azure/gpt-5.2 entry lacks the xhigh flag that gpt-5.2 has.
+      supports_xhigh_reasoning_effort: true
 
   - model_name: gpt-5.4-2026-03-05
     litellm_params:
@@ -163,6 +165,8 @@ model_list:
       id: grok-4.6-us-east-1
       base_model: us.xai.grok-4.6
       label: "Grok 4.6"
+      # xAI documents xhigh for grok-4.6; LiteLLM's map does not flag it.
+      supports_xhigh_reasoning_effort: true
 
   - model_name: gpt-5.1-codex-2025-11-13
     litellm_params:
@@ -183,6 +187,8 @@ model_list:
       id: kimi-k2.6-swedencentral
       base_model: azure_ai/kimi-k2.6
       label: "Kimi K2.6"
+      # Kimi K2.x only toggles thinking; reasoning_effort is not accepted.
+      supports_reasoning: false
 
   - model_name: kimi-k2.7-code
     litellm_params:
@@ -193,6 +199,8 @@ model_list:
       id: kimi-k2.7-code-swedencentral
       base_model: azure_ai/kimi-k2.6
       label: "Kimi K2.7 Code"
+      # Kimi K2.x only toggles thinking; reasoning_effort is not accepted.
+      supports_reasoning: false
 
   # Google Vertex AI Models
   - model_name: gemini-3.1-flash-image
@@ -259,6 +267,8 @@ model_list:
       id: gemini-nano-banana-2.1-global
       base_model: vertex_ai/gemini-nano-banana-2.1
       label: "Gemini Nano Banana 2.1"
+      # Image model, not offered on web; its thinking levels (minimal, medium, high) do not fit low-high.
+      supports_reasoning: false
       forbidden_for_web: true
       supports_image_generation: true
 
@@ -342,6 +352,12 @@ model_list:
       id: claude-sonnet-5-us-east-2
       base_model: us.anthropic.claude-sonnet-5
       label: "Bedrock Claude Sonnet 5"
+      # supports_output_config and supports_sampling_params are dropped by litellm.get_model_info();
+      # declared here so the proxy's merge keeps them.
+      supports_output_config: true
+      supports_xhigh_reasoning_effort: true
+      supports_max_reasoning_effort: true
+      supports_sampling_params: false
 
   - model_name: claude-sonnet-5-5
     litellm_params:
@@ -352,6 +368,10 @@ model_list:
       id: claude-sonnet-5-5-eu-central-1
       base_model: global.anthropic.claude-sonnet-5-5
       label: "Bedrock Claude Sonnet 5.5"
+      # LiteLLM 1.99.2 has no entry for this model; declare effort support so it is offered.
+      supports_output_config: true
+      supports_xhigh_reasoning_effort: true
+      supports_max_reasoning_effort: true
 
   - model_name: claude-opus-4-5-20251101
     litellm_params:
@@ -362,6 +382,8 @@ model_list:
       id: claude-opus-4-5-20251101-eu-central-1
       base_model: us.anthropic.claude-opus-4-5-20251101-v1:0
       label: "Bedrock Claude Opus 4.5"
+      # supports_output_config is dropped by litellm.get_model_info(); declare it so effort is offered.
+      supports_output_config: true
 
   - model_name: claude-opus-4-6-20260205
     litellm_params:
@@ -382,6 +404,12 @@ model_list:
       id: claude-opus-4-7-eu-central-1
       base_model: eu.anthropic.claude-opus-4-7
       label: "Bedrock Claude Opus 4.7"
+      # supports_output_config and supports_sampling_params are dropped by litellm.get_model_info();
+      # declared here so the proxy's merge keeps them.
+      supports_output_config: true
+      supports_xhigh_reasoning_effort: true
+      supports_max_reasoning_effort: true
+      supports_sampling_params: false
 
   - model_name: claude-opus-4-8
     litellm_params:
@@ -412,6 +440,10 @@ model_list:
       id: claude-opus-5-5-eu-central-1
       base_model: eu.anthropic.claude-opus-5-5
       label: "Bedrock Claude Opus 5.5"
+      # LiteLLM 1.99.2 has no entry for this model; declare effort support so it is offered.
+      supports_output_config: true
+      supports_xhigh_reasoning_effort: true
+      supports_max_reasoning_effort: true
 
   - model_name: claude-haiku-5-5
     litellm_params:
@@ -422,6 +454,10 @@ model_list:
       id: claude-haiku-5-5-eu-central-1
       base_model: eu.anthropic.claude-haiku-5-5
       label: "Bedrock Claude Haiku 5.5"
+      # LiteLLM 1.99.2 has no entry for this model; declare effort support so it is offered.
+      supports_output_config: true
+      supports_xhigh_reasoning_effort: true
+      supports_max_reasoning_effort: true
 
   # Bedrock Qwen3 Coder 30B A3B
   - model_name: qwen.qwen3-coder-30b-a3b-v1
@@ -433,6 +469,8 @@ model_list:
       id: qwen-qwen3-coder-30b-a3b-v1-us-west-2
       base_model: qwen.qwen3-coder-30b-a3b-v1:0
       label: "Bedrock Qwen3 Coder 30B A3B"
+      # Qwen3 Coder is an Instruct model without thinking mode.
+      supports_reasoning: false
       forbidden_for_web: true
 
   - model_name: qwen.qwen3-coder-30b-a3b-v1
@@ -444,6 +482,8 @@ model_list:
       id: qwen-qwen3-coder-30b-a3b-v1-eu-central-1
       base_model: qwen.qwen3-coder-30b-a3b-v1:0
       label: "Bedrock Qwen3 Coder 30B A3B"
+      # Qwen3 Coder is an Instruct model without thinking mode.
+      supports_reasoning: false
       forbidden_for_web: true
 
   # Bedrock Qwen3 Coder 480B A35B
@@ -456,6 +496,8 @@ model_list:
       id: qwen-qwen3-coder-480b-a35b-v1-us-west-2
       base_model: qwen.qwen3-coder-480b-a35b-v1:0
       label: "Bedrock Qwen3 Coder 480B A35B"
+      # Qwen3 Coder is an Instruct model without thinking mode.
+      supports_reasoning: false
       forbidden_for_web: true
 
   - model_name: qwen.qwen3-coder-480b-a35b-v1
@@ -467,6 +509,8 @@ model_list:
       id: qwen-qwen3-coder-480b-a35b-v1-eu-west-2
       base_model: qwen.qwen3-coder-480b-a35b-v1:0
       label: "Bedrock Qwen3 Coder 480B A35B"
+      # Qwen3 Coder is an Instruct model without thinking mode.
+      supports_reasoning: false
       forbidden_for_web: true
 
   # Bedrock MoonshotAI Kimi K2.5
@@ -500,6 +544,9 @@ model_list:
       id: moonshotai-kimi-k3-global-us-east-1
       base_model: bedrock/global.moonshotai.kimi-k3
       label: "Bedrock MoonshotAI Kimi K3"
+      # Moonshot documents reasoning_effort low, high and max for K3.
+      supports_reasoning: true
+      supports_max_reasoning_effort: true
 
   - model_name: deepseek-v4-pro
     litellm_params:
@@ -510,6 +557,10 @@ model_list:
       id: deepseek-v4-pro-2026-04-23-eastus2
       base_model: azure_ai/deepseek-v4-pro
       label: "DeepSeek V4 Pro"
+      # DeepSeek accepts xhigh and max (both run as max) for V4 Pro.
+      supports_reasoning: true
+      supports_xhigh_reasoning_effort: true
+      supports_max_reasoning_effort: true
 
   # Embedding Models
   - model_name: codemie-text-embedding-ada-002

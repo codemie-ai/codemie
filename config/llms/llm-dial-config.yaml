@@ -45,6 +45,7 @@ llm_models:
       max_tokens: false
       temperature: false
       top_p: false
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.00000125
       output: 0.000010
@@ -61,6 +62,7 @@ llm_models:
       max_tokens: false
       temperature: false
       top_p: false
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.00000025
       output: 0.000002
@@ -77,6 +79,7 @@ llm_models:
       max_tokens: false
       temperature: false
       top_p: false
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.00000005
       output: 0.0000004
@@ -97,6 +100,7 @@ llm_models:
       parallel_tool_calls: false
       system_prompt: false
       max_tokens: false
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.0000011
       output: 0.0000044
@@ -117,7 +121,7 @@ llm_models:
       parallel_tool_calls: false
       system_prompt: false
       max_tokens: false
-      reasoning: true
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.000015
       output: 0.00006
@@ -138,7 +142,7 @@ llm_models:
       parallel_tool_calls: false
       system_prompt: false
       max_tokens: false
-      reasoning: true
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.000002
       output: 0.000008
@@ -159,7 +163,7 @@ llm_models:
       parallel_tool_calls: false
       system_prompt: false
       max_tokens: false
-      reasoning: true
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.0000011
       output: 0.0000044
@@ -199,6 +203,8 @@ llm_models:
     default_for_categories: [code]
     provider: "aws_bedrock"
     max_output_tokens: 64000
+    features:
+      effort: ["low", "medium", "high", "max"]
     switchyard:
       - base_name: "sy-signal-claude"
         label: "SY Signal Sonnet/Haiku"
@@ -224,6 +230,8 @@ llm_models:
     enabled: true
     provider: "aws_bedrock"
     max_output_tokens: 64000
+    features:
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.0000055
       output: 0.0000275
@@ -237,6 +245,8 @@ llm_models:
     enabled: true
     provider: "aws_bedrock"
     max_output_tokens: 128000
+    features:
+      effort: ["low", "medium", "high", "max"]
     switchyard:
       - base_name: "sy-signal-claude-opus"
         label: "SY Signal Opus/Sonnet"
@@ -262,6 +272,8 @@ llm_models:
     enabled: true
     provider: "google_vertexai"
     max_output_tokens: 65535
+    features:
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.0000005
       output: 0.000003
@@ -274,6 +286,8 @@ llm_models:
     enabled: true
     provider: "google_vertexai"
     max_output_tokens: 65536
+    features:
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.000002
       output: 0.000012

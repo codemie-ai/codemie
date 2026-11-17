@@ -68,6 +68,7 @@ def mock_config_v1():
             'image_generation_model': None,
             'temperature': 0.7,
             'top_p': 0.9,
+            'effort': None,
             'context': [],
             'toolkits': [],
             'mcp_servers': [],
@@ -312,6 +313,20 @@ class TestPrepareForComparison:
             system_prompt=mock_config_v1.system_prompt,
             llm_model_type=mock_config_v1.llm_model_type,
             **{field: None},
+        )
+
+        assert AssistantVersionCompareService.has_configuration_changes("assistant-123", request) is True
+
+    @patch('codemie.service.assistant.assistant_version_compare_service.AssistantConfiguration')
+    def test_has_configuration_changes_detects_effort_only_change(self, mock_config_class, mock_config_v1):
+        """A request that only changes effort must be detected as a change."""
+        mock_config_class.get_current_version.return_value = mock_config_v1
+
+        request = AssistantRequest(
+            name="Assistant",
+            system_prompt=mock_config_v1.system_prompt,
+            llm_model_type=mock_config_v1.llm_model_type,
+            effort="high",  # changed from None
         )
 
         assert AssistantVersionCompareService.has_configuration_changes("assistant-123", request) is True

@@ -98,9 +98,37 @@ def test_initialize_llm(mock_get_llm_by_credentials, agent_factory, test_params)
         top_p=test_params["top_p"],
         request_id=test_params["request_uuid"],
         fallback_to_default=True,
+        effort=None,
     )
 
     # Assert that the method returns the expected LLM instance
+    assert result == mock_llm
+
+
+@patch("codemie.agents.assistant_agent.get_llm_by_credentials")
+def test_initialize_llm_with_effort(mock_get_llm_by_credentials, agent_factory, test_params):
+    """Constructing AIToolsAgent with effort="high" must reach get_llm_by_credentials."""
+    mock_llm = MagicMock()
+    mock_get_llm_by_credentials.return_value = mock_llm
+
+    agent = agent_factory(
+        llm_model=test_params["llm_model"],
+        temperature=test_params["temperature"],
+        top_p=test_params["top_p"],
+        effort="high",
+    )
+
+    result = agent._initialize_llm()
+
+    mock_get_llm_by_credentials.assert_called_once_with(
+        llm_model=test_params["llm_model"],
+        temperature=test_params["temperature"],
+        top_p=test_params["top_p"],
+        request_id=test_params["request_uuid"],
+        fallback_to_default=True,
+        effort="high",
+    )
+
     assert result == mock_llm
 
 
@@ -123,6 +151,7 @@ def test_initialize_llm_without_temperature(mock_get_llm_by_credentials, agent_f
         top_p=test_params["top_p"],
         request_id=test_params["request_uuid"],
         fallback_to_default=True,
+        effort=None,
     )
 
     # Assert that the method returns the expected LLM instance
@@ -148,6 +177,7 @@ def test_initialize_llm_without_top_p(mock_get_llm_by_credentials, agent_factory
         top_p=None,
         request_id=test_params["request_uuid"],
         fallback_to_default=True,
+        effort=None,
     )
 
     # Assert that the method returns the expected LLM instance
@@ -179,6 +209,7 @@ def test_initialize_llm_with_different_models(mock_get_llm_by_credentials, agent
             top_p=test_params["top_p"],
             request_id=test_params["request_uuid"],
             fallback_to_default=True,
+            effort=None,
         )
 
         # Assert that the method returns the expected LLM instance

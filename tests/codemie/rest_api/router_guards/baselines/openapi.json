@@ -1946,6 +1946,16 @@
             "readOnly": true,
             "title": "Display Name"
           },
+          "effort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffortLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "enable_image_generation": {
             "anyOf": [
               {
@@ -3939,6 +3949,16 @@
               }
             ],
             "title": "Description"
+          },
+          "effort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffortLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "enable_image_generation": {
             "anyOf": [
@@ -10047,6 +10067,18 @@
         "title": "DynamicConfigUpdateRequest",
         "type": "object"
       },
+      "EffortLevel": {
+        "description": "Reasoning effort a request asks for, in ascending order.",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "title": "EffortLevel",
+        "type": "string"
+      },
       "ElasticsearchStatsResponse": {
         "description": "Response model for Elasticsearch index statistics.",
         "properties": {
@@ -15128,6 +15160,20 @@
       },
       "LLMFeatures": {
         "properties": {
+          "effort": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/EffortLevel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effort"
+          },
           "max_tokens": {
             "anyOf": [
               {
@@ -20941,6 +20987,16 @@
             "title": "Description",
             "type": "string"
           },
+          "effort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffortLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "icon_url": {
             "anyOf": [
               {
@@ -21853,6 +21909,16 @@
             "description": "Transient display_name field - not stored in database, populated at fetch time",
             "readOnly": true,
             "title": "Display Name"
+          },
+          "effort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffortLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "enable_image_generation": {
             "anyOf": [
@@ -34334,6 +34400,17 @@
             "description": "Disable prompt caching for this request.",
             "title": "Disable Cache"
           },
+          "effort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffortLevel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reasoning effort level. Uses model default if omitted or unsupported."
+          },
           "enabled_builtin_subagents": {
             "description": "Builtin subagents to enable for this virtual assistant. They will be created as LangGraph supervisor subagents at runtime.",
             "items": {
@@ -35028,6 +35105,16 @@
             ],
             "title": "Datasource Ids"
           },
+          "effort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffortLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "exclude_extra_context_tools": {
             "default": false,
             "title": "Exclude Extra Context Tools",
@@ -35158,6 +35245,16 @@
               }
             ],
             "title": "Datasource Ids"
+          },
+          "effort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffortLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "exclude_extra_context_tools": {
             "default": false,

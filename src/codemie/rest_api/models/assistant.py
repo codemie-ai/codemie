@@ -58,6 +58,7 @@ from codemie.rest_api.models.standard import PostResponse
 from codemie.core.models import BaseResponse
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.models import MCPServerConfig, _ALLOWED_MCP_COMMANDS, _ALLOWED_MCP_PATHS
+from codemie.configs.llm_effort import EffortLevel
 from codemie.configs.logger import logger
 from codemie.service.guardrail.guardrail_service import GuardrailService
 
@@ -345,6 +346,7 @@ class AssistantRequest(BaseModel):
     slug: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
+    effort: EffortLevel | None = None
     tools_tokens_size_limit: Optional[int] = Field(
         default=None, gt=0, description="Max token size limit for tool outputs for this assistant"
     )
@@ -652,6 +654,7 @@ class NestedAssistantResponse(BaseModel):
     assistant_ids: list[str] = Field(default_factory=list)
     temperature: Optional[float] = None
     top_p: Optional[float] = None
+    effort: EffortLevel | None = None
 
 
 def get_current_time():
@@ -741,6 +744,7 @@ class AssistantBase(CommonBaseModel, Owned):
     slug: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
+    effort: EffortLevel | None = SQLField(default=None, sa_type=String)
     tools_tokens_size_limit: Optional[int] = None
     smart_tool_selection_enabled: Optional[bool] = False
     file_attachment_enabled: Optional[bool] = SQLField(default=None)
@@ -1495,6 +1499,7 @@ class AssistantConfiguration(BaseModelWithSQLSupport, table=True):
     image_generation_model: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
+    effort: EffortLevel | None = SQLField(default=None, sa_type=String)
     tools_tokens_size_limit: Optional[int] = None
 
     # Complex configuration (JSONB)
@@ -1704,6 +1709,10 @@ class VirtualAssistantChatRequest(FileNamesCountValidatorMixin, BaseModel):
         ge=0.0,
         le=1.0,
         description='Top-p nucleus sampling parameter.',
+    )
+    effort: EffortLevel | None = Field(
+        default=None,
+        description='Reasoning effort level. Uses model default if omitted or unsupported.',
     )
     tools_tokens_size_limit: Optional[int] = Field(
         default=None,

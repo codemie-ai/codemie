@@ -382,6 +382,72 @@ def test_dial_config_generates_expected_router_names() -> None:
     assert generated == _DIAL_EXPECTED_ROUTER_NAMES
 
 
+@pytest.mark.skipif(not _DIAL_CONFIG.exists(), reason="DIAL config not present")
+def test_dial_config_declares_claude_effort_levels_like_aws() -> None:
+    cfg = LLMConfig(yaml_file=_DIAL_CONFIG)
+    by_name = {m.base_name: m for m in cfg.llm_models}
+
+    assert by_name["claude-sonnet-4-6"].features.effort == ["low", "medium", "high", "max"]
+    assert by_name["claude-opus-4-5-20251101"].features.effort == ["low", "medium", "high"]
+    assert by_name["claude-opus-4-6-20260205"].features.effort == ["low", "medium", "high", "max"]
+    assert by_name["claude-4-5-haiku"].features.effort is None
+    assert by_name["claude-4-5-sonnet"].features.effort is None
+
+
+_REASONING_LEVELS = ["low", "medium", "high"]
+_OPENAI_REASONING_MODELS = [
+    "gpt-5-2025-08-07",
+    "gpt-5-mini-2025-08-07",
+    "gpt-5-nano-2025-08-07",
+    "o1",
+    "o3-mini",
+    "o3-2025-04-16",
+    "o4-mini-2025-04-16",
+]
+
+
+def _models_by_name(config_name: str) -> dict:
+    path = _CONFIGS_DIR / config_name
+    if not path.exists():
+        pytest.skip(f"{config_name} not present")
+    return {m.base_name: m for m in LLMConfig(yaml_file=path).llm_models}
+
+
+@pytest.mark.parametrize("config_name", ["llm-azure-config.yaml", "llm-dial-config.yaml"])
+@pytest.mark.parametrize("base_name", _OPENAI_REASONING_MODELS)
+def test_openai_reasoning_models_declare_effort(config_name, base_name) -> None:
+    assert _models_by_name(config_name)[base_name].features.effort == _REASONING_LEVELS
+
+
+@pytest.mark.parametrize("base_name", ["gemini-3-flash", "gemini-3.1-pro"])
+def test_gcp_gemini_reasoning_models_declare_effort(base_name) -> None:
+    assert _models_by_name("llm-gcp-config.yaml")[base_name].features.effort == _REASONING_LEVELS
+
+
+@pytest.mark.parametrize(
+    ("config_name", "base_name"),
+    [
+        ("llm-azure-config.yaml", "gpt-4.1"),
+        ("llm-azure-config.yaml", "gpt-4.1-mini"),
+        ("llm-dial-config.yaml", "gpt-4.1"),
+        ("llm-dial-config.yaml", "gpt-4.1-mini"),
+        ("llm-gcp-config.yaml", "gemini-3.1-flash-image"),
+        ("llm-dial-config.yaml", "gemini-3.1-flash-image"),
+    ],
+)
+def test_non_reasoning_models_declare_no_effort(config_name, base_name) -> None:
+    assert _models_by_name(config_name)[base_name].features.effort is None
+
+
+def test_dial_gemini_models_declare_effort_like_gcp() -> None:
+    """DIAL-catalog Gemini runs on Vertex (thinking_budget) unless a project brings DIAL credentials,
+    in which case it gets reasoning_effort capped at high."""
+    dial = _models_by_name("llm-dial-config.yaml")
+    assert dial["gemini-3-flash"].features.effort == _REASONING_LEVELS
+    assert dial["gemini-3.1-pro"].features.effort == _REASONING_LEVELS
+    assert dial["gemini-3.1-flash-image"].features.effort is None
+
+
 def test_llm_model_litellm_router_defaults_to_none():
     from codemie.configs.llm_config import LLMModel
 
@@ -408,6 +474,32 @@ def test_litellm_router_counterfactual_model_parses():
     router = LiteLLMRouterConfig(counterfactual_model="claude-opus-5")
 
     assert router.counterfactual_model == "claude-opus-5"
+
+
+def test_llm_features_effort_defaults_to_none():
+    from codemie.configs.llm_config import LLMFeatures
+
+    assert LLMFeatures().effort is None
+
+
+def test_clamp_effort_level_skips_gap_without_jumping_up():
+    """A requested level between two declared levels clamps down to the nearest declared
+    level at or below it, never up to a higher declared level."""
+    from codemie.configs.llm_effort import clamp_effort_level
+
+    assert clamp_effort_level("xhigh", ["low", "medium", "high", "max"]) == "high"
+
+
+def test_clamp_effort_level_exact_match():
+    from codemie.configs.llm_effort import clamp_effort_level
+
+    assert clamp_effort_level("high", ["low", "medium", "high", "xhigh", "max"]) == "high"
+
+
+def test_clamp_effort_level_none_allowed_returns_none():
+    from codemie.configs.llm_effort import clamp_effort_level
+
+    assert clamp_effort_level("low", None) is None
 
 
 def test_litellm_router_config_parses_strategy_tiers_classifier_model():

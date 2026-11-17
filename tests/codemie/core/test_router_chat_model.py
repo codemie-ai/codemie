@@ -344,7 +344,10 @@ class TestBuildChatModelFor:
         from codemie.core.router_chat_model import LLMParams
 
         result = build_chat_model_for(
-            NULL_ROUTER, model_name="gpt-4.1", request_id="req-1", llm_params=LLMParams(temperature=0.2, top_p=None)
+            NULL_ROUTER,
+            model_name="gpt-4.1",
+            request_id="req-1",
+            llm_params=LLMParams(temperature=0.2, top_p=None, effort="high"),
         )
 
         assert result is sentinel
@@ -353,7 +356,9 @@ class TestBuildChatModelFor:
             "request_id": "req-1",
             "temperature": 0.2,
             "top_p": None,
+            "effort": "high",
         }
+        assert called_with["effort"] == "high"
 
     def test_wraps_multiple_candidates_in_router_chat_model(self, monkeypatch):
         router = MagicMock()

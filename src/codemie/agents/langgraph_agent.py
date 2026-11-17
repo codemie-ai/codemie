@@ -168,7 +168,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             self._max_consecutive_tool_errors_cache = max(1, value)
         return self._max_consecutive_tool_errors_cache
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0915 - effort joins a signature that was already over the limit
         self,
         agent_name: str,
         description: str,
@@ -181,6 +181,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         output_schema: Optional[dict | BaseModel] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
+        effort: str | None = None,
         is_react: bool = False,
         callbacks=None,
         supervisor_callbacks: Optional[list[BaseCallbackHandler]] = None,
@@ -224,6 +225,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self.llm_model = llm_model
         self.temperature = temperature
         self.top_p = top_p
+        self.effort = effort
         self.request_uuid = request_uuid
         self.conversation_id = request.conversation_id
         self.handle_tool_error = handle_tool_error
@@ -720,7 +722,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             router,
             model_name=self.llm_model,
             request_id=self.request_uuid,
-            llm_params=LLMParams(temperature=self.temperature, top_p=self.top_p),
+            llm_params=LLMParams(temperature=self.temperature, top_p=self.top_p, effort=self.effort),
         )
 
     ###### Called by external entities ######

@@ -7,6 +7,8 @@ llm_models:
     enabled: true
     provider: "google_vertexai"
     max_output_tokens: 65535
+    features:
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.0000005
       output: 0.000003
@@ -20,6 +22,8 @@ llm_models:
     default_for_categories: [global]
     provider: "google_vertexai"
     max_output_tokens: 65536
+    features:
+      effort: ["low", "medium", "high"]
     cost:
       input: 0.000002
       output: 0.000012

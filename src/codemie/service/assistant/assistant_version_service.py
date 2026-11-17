@@ -66,6 +66,7 @@ class AssistantVersionService:
             image_generation_model=request.image_generation_model,
             temperature=request.temperature,
             top_p=request.top_p,
+            effort=request.effort,
             tools_tokens_size_limit=request.tools_tokens_size_limit,
             context=request.context,
             toolkits=request.toolkits,
@@ -125,6 +126,7 @@ class AssistantVersionService:
             image_generation_model=versioned('image_generation_model'),
             temperature=versioned('temperature'),
             top_p=versioned('top_p'),
+            effort=versioned('effort'),
             tools_tokens_size_limit=versioned('tools_tokens_size_limit'),
             context=versioned('context'),
             toolkits=versioned('toolkits'),
@@ -297,6 +299,7 @@ class AssistantVersionService:
             image_generation_model=target_config.image_generation_model,
             temperature=target_config.temperature,
             top_p=target_config.top_p,
+            effort=target_config.effort,
             tools_tokens_size_limit=target_config.tools_tokens_size_limit,
             context=target_config.context,
             toolkits=target_config.toolkits,
@@ -385,6 +388,7 @@ class AssistantVersionService:
         assistant.image_generation_model = config.image_generation_model
         assistant.temperature = config.temperature
         assistant.top_p = config.top_p
+        assistant.effort = config.effort
         assistant.tools_tokens_size_limit = config.tools_tokens_size_limit
         assistant.context = config.context
         assistant.toolkits = config.toolkits

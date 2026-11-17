@@ -88,6 +88,51 @@ def _parse_cost(model_info: dict[str, Any]) -> CostConfig | None:
     )
 
 
+def _supports_temperature(model_info: dict[str, Any], supported_params: list[str]) -> bool:
+    # supports_sampling_params=False means temperature is rejected even when listed as supported.
+    return "temperature" in supported_params and model_info.get("supports_sampling_params") is not False
+
+
+def _is_gemini_family(model_name: str, litellm_params: dict[str, Any], model_info: dict[str, Any]) -> bool:
+    """Detect Gemini by alias or deployment id: aliases such as "pro-model" hide the model behind them."""
+    model_ids = [
+        model_name,
+        litellm_params.get("model"),
+        litellm_params.get("base_model"),
+        model_info.get("base_model"),
+    ]
+    return any("gemini" in model_id.lower() for model_id in model_ids if isinstance(model_id, str))
+
+
+def _effort_levels(model_info: dict[str, Any], *, claude_family: bool, gemini: bool) -> list[str] | None:
+    """Effort ceiling for a LiteLLM model, or None when it accepts no effort.
+
+    Claude needs output_config (Claude 4.5 reports supports_reasoning yet rejects effort); other
+    reasoning models take reasoning_effort. Gemini maps effort to a thinking budget capped at high.
+    litellm.get_model_info() drops supports_output_config, so a Claude model also qualifies through
+    its xhigh/max flags, the same signals LiteLLM itself uses to accept output_config.effort.
+    """
+    from codemie.configs.llm_effort import EffortLevel
+
+    supports_output_config = bool(
+        model_info.get("supports_output_config")
+        or model_info.get("supports_xhigh_reasoning_effort")
+        or model_info.get("supports_max_reasoning_effort")
+    )
+    if not supports_output_config and not model_info.get("supports_reasoning"):
+        return None
+    if claude_family and not supports_output_config:
+        return None
+    levels = [EffortLevel.LOW, EffortLevel.MEDIUM, EffortLevel.HIGH]
+    if gemini:
+        return levels
+    if model_info.get("supports_xhigh_reasoning_effort"):
+        levels.append(EffortLevel.XHIGH)
+    if model_info.get("supports_max_reasoning_effort"):
+        levels.append(EffortLevel.MAX)
+    return levels
+
+
 def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
     """
     Map LiteLLM model info dict to core LLMModel dataclass.
@@ -148,9 +193,14 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         tools=model_info.get("supports_function_calling", False),
         system_prompt=model_info.get("supports_system_messages", True),
         parallel_tool_calls="parallel_tool_calls" in supported_params,
-        temperature="temperature" in supported_params,
+        temperature=_supports_temperature(model_info, supported_params),
         max_tokens="max_tokens" in supported_params or "max_completion_tokens" in supported_params,
         top_p=top_p_enabled,
+        effort=_effort_levels(
+            model_info,
+            claude_family=claude_family,
+            gemini=_is_gemini_family(model_name, litellm_params, model_info),
+        ),
     )
 
     cost = _parse_cost(model_info)

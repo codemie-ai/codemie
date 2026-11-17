@@ -39,6 +39,7 @@ def mock_assistant_no_history():
     assistant.llm_model_type = "gpt-4"
     assistant.temperature = 0.7
     assistant.top_p = 0.9
+    assistant.effort = "high"
     assistant.context = []
     assistant.toolkits = []
     assistant.mcp_servers = []
@@ -75,6 +76,7 @@ def mock_assistant_with_history():
     assistant.llm_model_type = "gpt-4"
     assistant.temperature = 0.7
     assistant.top_p = 0.9
+    assistant.effort = "high"
     assistant.context = []
     assistant.toolkits = []
     assistant.mcp_servers = []
@@ -210,6 +212,7 @@ class TestCreateSingleVersionFromCurrent:
         assert call_kwargs['llm_model_type'] == mock_assistant_no_history.llm_model_type
         assert call_kwargs['temperature'] == mock_assistant_no_history.temperature
         assert call_kwargs['top_p'] == mock_assistant_no_history.top_p
+        assert call_kwargs['effort'] == "high"
         assert call_kwargs['context'] == mock_assistant_no_history.context
         assert call_kwargs['toolkits'] == mock_assistant_no_history.toolkits
         assert call_kwargs['mcp_servers'] == mock_assistant_no_history.mcp_servers

@@ -734,6 +734,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             "llm_model": llm_model,
             "output_schema": request.output_schema,
             "temperature": assistant.temperature,
+            "effort": assistant.effort,
             "top_p": assistant.top_p,
             "thread_generator": thread_generator,
             "stream_steps": request.stream,
@@ -852,6 +853,9 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
 
         if workflow_assistant.temperature is not None:
             assistant.temperature = workflow_assistant.temperature
+
+        if workflow_assistant.effort is not None:
+            assistant.effort = workflow_assistant.effort
 
         if not assistant.llm_model_type:
             assistant.llm_model_type = llm_service.default_llm_model
@@ -1054,6 +1058,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             "llm_model": llm_model,
             "output_schema": output_schema,
             "temperature": assistant.temperature,
+            "effort": assistant.effort,
             "thread_generator": thread_generator,
             "stream_steps": False,
             "callbacks": tool_callbacks or [],

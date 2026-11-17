@@ -290,7 +290,7 @@ class LiteLLMChatOpenAI(AzureChatOpenAI):
         return gen_chunk
 
 
-def create_litellm_chat_model(
+def create_litellm_chat_model(  # noqa: PLR0913 - effort joins a signature that was already over the limit
     llm_model_details: "LLMModel",
     litellm_context: Optional["LiteLLMContext"],
     username: Optional[str],
@@ -299,6 +299,7 @@ def create_litellm_chat_model(
     top_p: Optional[float] = None,
     streaming: bool = True,
     request_id: Optional[str] = None,
+    effort: str | None = None,
 ) -> AzureChatOpenAI:
     """
     Create LiteLLM chat model instance (enterprise business logic).
@@ -344,6 +345,7 @@ def create_litellm_chat_model(
         temperature=temperature,
         top_p=top_p,
         streaming=streaming,
+        effort=effort,
     )
 
     resolved_category = _configure_direct_runtime_overrides(
@@ -407,13 +409,14 @@ def _resolve_max_output_tokens(llm_model_details: "LLMModel") -> Optional[int]:
     return value if is_positive_token_limit(value) else None
 
 
-def _build_chat_model_base_args(
+def _build_chat_model_base_args(  # noqa: PLR0913 - effort joins a signature that was already over the limit
     *,
     llm_model_details: "LLMModel",
     creds: Optional["LiteLLMCredentials"],
     temperature: Optional[float],
     top_p: Optional[float],
     streaming: bool,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     from codemie.configs import config
 
@@ -428,6 +431,7 @@ def _build_chat_model_base_args(
         'max_retries': config.AZURE_OPENAI_MAX_RETRIES,
         'top_p': top_p,
         'include_response_headers': config.LLM_PROXY_TRACK_USAGE,
+        'reasoning_effort': effort,
     }
 
     if temperature is not None:
@@ -1272,6 +1276,15 @@ def _filter_litellm_params(
     if llm_model_details.features.top_p is False:
         filtered['top_p'] = None
 
+    # Clamp the requested effort level down to the model's own declared ceiling — never pass
+    # a too-high value through raw (Anthropic's own validation raises unconditionally for
+    # that, with no drop_params escape hatch) and never raise when the model has no effort
+    # support at all.
+    from codemie.configs.llm_effort import openai_reasoning_effort_kwargs
+
+    requested_effort = filtered.pop('reasoning_effort', None)
+    filtered.update(openai_reasoning_effort_kwargs(requested_effort, llm_model_details.features.effort))
+
     return filtered
 
 
@@ -1293,7 +1306,7 @@ def _log_output_limit(llm_model_details: "LLMModel", filtered_args: dict[str, An
     )
 
 
-def get_litellm_chat_model(
+def get_litellm_chat_model(  # noqa: PLR0913 - effort joins a signature that was already over the limit
     llm_model_details: "LLMModel",
     litellm_context: Optional["LiteLLMContext"],
     username: Optional[str],
@@ -1302,6 +1315,7 @@ def get_litellm_chat_model(
     top_p: Optional[float] = None,
     streaming: bool = True,
     request_id: Optional[str] = None,
+    effort: str | None = None,
 ) -> Optional["AzureChatOpenAI"]:
     """
     Get LiteLLM chat model if enterprise is enabled AND proxy mode is lite_llm.
@@ -1348,6 +1362,7 @@ def get_litellm_chat_model(
             top_p=top_p,
             streaming=streaming,
             request_id=request_id,
+            effort=effort,
         )
     except Exception:
         logger.exception("Failed to create LiteLLM chat model while LiteLLM proxy is enabled")

@@ -108,6 +108,7 @@ async def ask_virtual_assistant(
         llm_model_type=llm_model_type,
         temperature=request.temperature,
         top_p=request.top_p,
+        effort=request.effort,
         tools_tokens_size_limit=request.tools_tokens_size_limit,
         toolkits=request.toolkits,
         context=request.context,

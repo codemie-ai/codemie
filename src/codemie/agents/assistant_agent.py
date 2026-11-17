@@ -163,7 +163,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
             default=config.AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED,
         )
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - effort joins a signature that was already over the limit
         self,
         agent_name: str,
         description: str,
@@ -176,6 +176,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
         output_schema: Optional[dict | BaseModel] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
+        effort: str | None = None,
         is_react: bool = False,
         callbacks=None,
         verbose: bool = config.verbose,
@@ -198,6 +199,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
         self.llm_model = llm_model
         self.temperature = temperature
         self.top_p = top_p
+        self.effort = effort
         self.request_uuid = request_uuid
         self.conversation_id = request.conversation_id
         self.handle_tool_error = handle_tool_error
@@ -346,6 +348,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
             top_p=self.top_p,
             request_id=self.request_uuid,
             fallback_to_default=True,
+            effort=self.effort,
         )
 
     def _create_fallback_agent(self, llm):

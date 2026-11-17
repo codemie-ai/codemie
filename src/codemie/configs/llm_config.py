@@ -21,6 +21,7 @@ from pydantic_settings import BaseSettings, YamlConfigSettingsSource
 
 from codemie.configs import logger
 from codemie.configs.config import config
+from codemie.configs.llm_effort import EffortLevel
 
 
 class CostConfig(BaseModel):
@@ -52,6 +53,10 @@ class LLMFeatures(BaseModel):
     system_prompt: Optional[bool] = True
     max_tokens: Optional[bool] = True
     top_p: Optional[bool] = True
+    # Per-model allowed effort levels, ceiling-aware (not a plain boolean): None means no
+    # effort support at all; otherwise the list of levels this specific model accepts, used
+    # by clamp_effort_level() to clamp a requested level down to the model's own ceiling.
+    effort: list[EffortLevel] | None = None
 
 
 class ModelCategory(str, Enum):

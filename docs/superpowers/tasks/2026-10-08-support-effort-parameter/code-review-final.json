@@ -1,0 +1,123 @@
+{
+  "decision": "request-changes",
+  "rationale": "All lenses and standards ran; 8 blocking findings: missing Alembic migration for new effort columns, effort not carried through the virtual-assistant router and the versioning/compare/migration services, dial catalog still carrying reasoning: true (spec AC9), plus 1 open decision on dial effort declarations (confidence low) and a code-quality annotation violation. 14 lens claims dismissed as unreachable, speculative or below the floor (ChatAnthropic effort field verified present); 0 deferred. Brief and fix-pack sidecars written.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {"kind": "spec", "item": "AC1: effort accepts exactly low|medium|high|xhigh|max on every DTO carrying temperature and on WorkflowAssistant", "status": "pass", "notes": "Literal field added on all DTOs and WorkflowAssistant; invalid value rejected at construction (tested)"},
+    {"kind": "spec", "item": "AC2: LLMFeatures().effort is None; clamp_effort_level clamps down only", "status": "pass", "notes": "Default None and clamp helper tested"},
+    {"kind": "spec", "item": "AC3: enterprise path sends clamped reasoning_effort; unset gets no key", "status": "pass", "notes": "llm_factory base args plus _filter_litellm_params; TestLiteLLMEffortParameter"},
+    {"kind": "spec", "item": "AC4: direct Anthropic ChatAnthropic receives clamped effort, never xhigh", "status": "pass", "notes": "extra_kwargs in get_anthropic_llm; TestAnthropicEffort"},
+    {"kind": "spec", "item": "AC5: Bedrock additional_model_request_fields carries clamped output_config.effort", "status": "pass", "notes": "get_bedrock_llm merge; TestBedrockEffort"},
+    {"kind": "spec", "item": "AC6: claude-4-5-haiku and claude-4-5-sonnet never gain effort", "status": "pass", "notes": "No declaration in AWS or dial catalogs; exclusion test present"},
+    {"kind": "spec", "item": "AC7: dynamic detection derives features.effort from supports_output_config plus xhigh/max flags", "status": "pass", "notes": "map_litellm_to_llm_model; tests incl. missing flag"},
+    {"kind": "spec", "item": "AC8: features.temperature False when supports_sampling_params is False", "status": "pass", "notes": "models.py expression; litellm_config.yaml flags; tested"},
+    {"kind": "spec", "item": "AC9: azure o3/o4-mini reasoning:true replaced by effort; no reasoning key remains in config/llms", "status": "fail", "notes": "Azure converted; llm-dial-config.yaml still has reasoning: true at lines 120, 141, 162"},
+    {"kind": "spec", "item": "AC10: effort reaches both agent classes through LLMParams and get_llm_by_credentials", "status": "pass", "notes": "AIToolsAgent, LangGraphAgent, build_chat_model_for, get_llm_by_credentials; tests added"},
+    {"kind": "spec", "item": "AC11: build_agent passes assistant.effort; workflow override semantics", "status": "partial", "notes": "Service wiring and tests ok; persisted effort columns have no Alembic migration"},
+    {"kind": "spec", "item": "AC12: no-effort requests and unsupported models produce unchanged request kwargs", "status": "pass", "notes": "reasoning_effort popped when clamp is None; Anthropic/Bedrock add nothing"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 7 subjects in the review range match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "partial", "notes": "Types And Imports rule prefers X | None and parameterized generics; new effort code uses Optional[str], Optional[list] and a bare list parameter (llm_config.py:63, enterprise/litellm/models.py:98)."},
+    {"kind": "security", "status": "pass", "notes": "no credential logging, hardcoded keys or unvalidated input; effort constrained by Literal and clamped against the model's declared ceiling"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "config/llms/llm-dial-config.yaml",
+      "line": 120,
+      "title": "Dial catalog still declares reasoning: true",
+      "problem": "Spec AC9 requires that no `reasoning` key remains in config/llms. Only llm-azure-config.yaml was converted; llm-dial-config.yaml still carries `reasoning: true` for o1, o3-2025-04-16 and o4-mini-2025-04-16 (lines 120, 141, 162).",
+      "impact": "Required spec criterion unmet; the key is no longer a field on LLMFeatures, so it is dead configuration that contradicts the migration to effort.",
+      "recommendation": "Remove `reasoning: true` at lines 120, 141, 162 (replace with effort levels where the model supports them) so no `reasoning` key remains under config/llms."
+    },
+    {
+      "id": "CR-002",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "config/llms/llm-dial-config.yaml",
+      "line": 194,
+      "title": "Dial catalog omits effort for Claude entries",
+      "problem": "claude-sonnet-4-6, claude-opus-4-5-20251101 and claude-opus-4-6-20260205 declare features.effort in llm-aws-config.yaml (lines 37-38, 68-69, 83-84) but the same base_names in llm-dial-config.yaml (lines 194, 220, 233) declare none.",
+      "impact": "Those dial catalog entries silently yield no effort support. May be intentional if the dial path cannot forward effort, but the spec does not say so.",
+      "recommendation": "Decide whether the dial entries should declare the same effort levels (sonnet-4-6 and opus-4-6 [low,medium,high,max], opus-4-5 [low,medium,high]) or document that the dial path cannot forward effort."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/configs/llm_config.py",
+      "line": 63,
+      "title": "New effort annotations violate Types And Imports guide",
+      "problem": "code-quality.md Types And Imports prefers `X | None` and parameterized generics. clamp_effort_level declares `requested: Optional[str]` and `allowed: Optional[list]` (bare list); the same Optional pattern is added in enterprise/litellm/models.py:98 and in new effort parameters across llm_factory.py, dependecies.py, assistant_agent.py and langgraph_agent.py. Ruff config does not select UP rules, so no gate catches it.",
+      "impact": "Documented blocking code-quality standard violated by new code.",
+      "recommendation": "Annotate as `str | None` and `list[str] | None` (`list[Literal[...]] | None` for the field), and use `X | None` for the new effort parameters."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/assistant.py",
+      "line": 671,
+      "title": "No Alembic migration for new effort columns",
+      "problem": "AssistantBase.effort (assistants table, line 671) and AssistantConfiguration.effort (assistant_configurations table, line 1275) are new persisted String columns. Grep of src/external/alembic finds no migration mentioning effort (188 existing migrations; every earlier assistant column got one).",
+      "impact": "On an Alembic-upgraded database, assistant SELECT/INSERT/UPDATE reference a nonexistent column, so assistant reads and writes fail at runtime. No test exercises the schema.",
+      "recommendation": "Add an Alembic migration under src/external/alembic/versions with op.add_column('assistants', sa.Column('effort', sa.String(), nullable=True)) and the same for 'assistant_configurations', with a downgrade."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/assistant.py",
+      "line": 1033,
+      "title": "Virtual assistant request effort is dropped",
+      "problem": "VirtualAssistantChatRequest.effort is added, but the virtual-assistant inference route builds Assistant.model_construct(...) copying temperature and top_p (around lines 1040-1041) and not effort. Grep confirms no effort reference in this router.",
+      "impact": "The new request field is accepted and validated but silently ignored; virtual-assistant callers always run with default effort.",
+      "recommendation": "Add effort=request.effort to the Assistant.model_construct call beside temperature/top_p and cover it with a router test."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/assistant_version_compare_service.py",
+      "line": 68,
+      "title": "Version compare ignores effort",
+      "problem": "The change-detection candidate dict lists temperature and top_p but not effort; grep finds no effort in this service.",
+      "impact": "A partial update changing only effort is treated as no change, so no new version is created for it.",
+      "recommendation": "Add 'effort': request.effort to the candidate dict and test that an effort-only change reports has_changes."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/assistant_version_migration_service.py",
+      "line": 77,
+      "title": "Initial-version migration drops effort",
+      "problem": "Assistant-to-AssistantConfiguration migration copies top_p (around lines 77, 112, 140) but not effort; grep finds no effort in this service.",
+      "impact": "Migrated initial version configs lose the assistant's effort; later restore yields None.",
+      "recommendation": "Copy effort=assistant.effort wherever AssistantConfiguration is built from Assistant, beside top_p."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/assistant_version_service.py",
+      "line": 63,
+      "title": "Versioning create/rollback/apply drop effort",
+      "problem": "create_initial_version, create_new_version, rollback_to_version and update_assistant_config_fields (lines 63, 121, 286, 332) copy temperature and top_p but not effort; grep finds no effort in this service.",
+      "impact": "Version snapshots always store effort as NULL; rollback does not restore effort, so version history and live assistant disagree.",
+      "recommendation": "Add effort=request.effort / versioned('effort') / effort=target_config.effort / assistant.effort = config.effort at those sites, with create and rollback tests."
+    }
+  ]
+}

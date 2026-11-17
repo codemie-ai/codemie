@@ -669,6 +669,7 @@ ASSISTANT_NOT_EXPORTED = {
     "smart_tool_selection_enabled",
     "custom_metadata",
     "hide_tool_outputs",
+    "effort",
 }
 
 
