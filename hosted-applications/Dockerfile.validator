@@ -15,7 +15,7 @@
 # Hosted applications private validator. Build from the repository root with the same commit as the API image:
 #   docker build -f hosted-applications/Dockerfile.validator -t <registry>/codemie-hosted-validator:<commit> .
 # Official Python 3.12 / Alpine 3.24; pin the multi-architecture index after image and sandbox qualification.
-FROM python@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
+FROM python@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app/src \
     VALIDATOR_BIND_HOST=127.0.0.1 VALIDATOR_PORT=8091 VALIDATOR_WORKSPACE=/work
 COPY hosted-applications/requirements-validator.txt /tmp/requirements-validator.txt
