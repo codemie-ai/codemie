@@ -87,7 +87,6 @@ from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrc
 from codemie.service.conversation.history_projection_service import (
     NATIVE_TOOLS_MODE,
     PLAIN_CHAT_MODE,
-    SKILL_TOOL_NAME,
     TEXT_LEDGER_MODE,
     TOOL_REPLAY_TYPE,
     ConversationHistoryProjectionService,
@@ -282,7 +281,7 @@ class AssistantRequestHandler(ToolCallResumeMixin, ABC):
                 conversation=conversation,
                 mode=self._resolve_history_projection_mode(request),
                 current_assistant_id=getattr(self.assistant, "id", None),
-                available_tool_names=self._get_available_replay_tool_names(),
+                available_tool_names=ConversationHistoryProjectionService.get_available_tool_names(self.assistant),
             )
 
             logger.debug(
@@ -374,53 +373,6 @@ class AssistantRequestHandler(ToolCallResumeMixin, ABC):
 
         logger.info("Replacing request history because it only contains plain chat entries.")
         return True
-
-    @staticmethod
-    def _collect_toolkit_tool_names(toolkits: list | None) -> set[str]:
-        tool_names: set[str] = set()
-        for toolkit in toolkits or []:
-            for tool in getattr(toolkit, "tools", []) or []:
-                tool_name = getattr(tool, "name", None)
-                if tool_name:
-                    tool_names.add(tool_name)
-        return tool_names
-
-    @staticmethod
-    def _collect_mcp_server_tool_names(mcp_servers: list | None) -> tuple[set[str], bool]:
-        tool_names: set[str] = set()
-        unknown_availability = False
-
-        for mcp_server in mcp_servers or []:
-            if getattr(mcp_server, "enabled", True) is False:
-                continue
-
-            server_tools = getattr(mcp_server, "tools", None)
-            if not server_tools:
-                unknown_availability = True
-                continue
-
-            tool_names.update(tool_name for tool_name in server_tools if tool_name)
-
-        return tool_names, unknown_availability
-
-    def _has_skill_tool(self) -> bool:
-        skill_ids = getattr(self.assistant, "skill_ids", None)
-        return isinstance(skill_ids, (list, tuple, set)) and bool(skill_ids)
-
-    def _get_available_replay_tool_names(self) -> set[str] | None:
-        tool_names = self._collect_toolkit_tool_names(getattr(self.assistant, "toolkits", []))
-        mcp_tool_names, unknown_availability = self._collect_mcp_server_tool_names(
-            getattr(self.assistant, "mcp_servers", [])
-        )
-        tool_names.update(mcp_tool_names)
-
-        if self._has_skill_tool():
-            tool_names.add(SKILL_TOOL_NAME)
-
-        if unknown_availability:
-            return None
-
-        return tool_names
 
     def _build_agent(self, **kwargs: Any) -> Any:
         """Build the agent and record the model it runs on for the saved turn and LLM context."""

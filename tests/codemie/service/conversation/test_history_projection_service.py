@@ -13,11 +13,13 @@
 # limitations under the License.
 
 import re
+from unittest.mock import Mock
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from codemie.chains.base import Thought, ThoughtAuthorType
 from codemie.core.constants import MAX_TOOL_NAME_LENGTH, ChatRole
+from codemie.rest_api.models.assistant import Context, ContextType
 from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
 from codemie.service.conversation.history_projection_service import (
     NATIVE_TOOLS_MODE,
@@ -37,6 +39,7 @@ def _build_conversation_with_tool_turn(
     status: str = TOOL_STATUS_COMPLETED,
     thought_error: bool = False,
     assistant_id: str = "assistant-a",
+    tool_name: str = "search_tool",
 ) -> Conversation:
     thought = Thought(
         id="tool-call-1",
@@ -47,7 +50,7 @@ def _build_conversation_with_tool_turn(
         error=thought_error,
         metadata={
             "replay_type": TOOL_REPLAY_TYPE,
-            "tool_name": "search_tool",
+            "tool_name": tool_name,
             "tool_args": {"query": "release notes"},
             "tool_args_text": '{"query": "release notes"}',
             "status": status,
@@ -174,6 +177,29 @@ def test_build_for_request_keeps_native_tool_replay_for_same_assistant_with_avai
     assert messages[1].tool_calls[0]["name"] == "search_tool"
     assert messages[2].content == "release notes tool output"
     assert messages[3].content == "Here are the release notes highlights."
+
+
+def test_build_for_request_keeps_native_tool_replay_for_datasource_runtime_tool_name():
+    conversation = _build_conversation_with_tool_turn(
+        assistant_message="Here are the release notes highlights.",
+        tool_output="release notes tool output",
+        assistant_id="assistant-a",
+        tool_name="search_kb_release-notes",
+    )
+
+    messages = ConversationHistoryProjectionService.build_for_request(
+        conversation=conversation,
+        mode=NATIVE_TOOLS_MODE,
+        max_full_tool_turns=1,
+        max_summarized_tool_turns=0,
+        current_assistant_id="assistant-a",
+        available_tool_names={"search_kb_release-notes"},
+    )
+
+    assert [type(message) for message in messages] == [HumanMessage, AIMessage, ToolMessage, AIMessage]
+    assert messages[1].tool_calls[0]["name"] == "search_kb_release-notes"
+    assert messages[2].content == "release notes tool output"
+    assert all("Previous tool activity:" not in str(message.content) for message in messages)
 
 
 def test_build_for_request_downgrades_same_assistant_tool_replay_when_tool_is_unavailable():
@@ -575,6 +601,51 @@ def test_normalize_tool_name_combined_scenarios():
     result = normalize(valid_chars)
     assert result == valid_chars.lower()
     assert TOOL_NAME_REGEX.match(result)
+
+
+def _build_assistant(tool_names: list[str], **attributes) -> Mock:
+    tools = []
+    for tool_name in tool_names:
+        tool = Mock()
+        tool.name = tool_name
+        tools.append(tool)
+    assistant = Mock(toolkits=[Mock(tools=tools)], mcp_servers=[], skill_ids=[], context=[])
+    for name, value in attributes.items():
+        setattr(assistant, name, value)
+    return assistant
+
+
+def test_get_available_tool_names_includes_datasource_runtime_tool_names():
+    assistant = _build_assistant(
+        ["kb_search"],
+        context=[
+            Context(context_type=ContextType.KNOWLEDGE_BASE, name="Release Notes"),
+            Context(context_type=ContextType.PROVIDER, name="My-Provider"),
+            Context(context_type=ContextType.CODE, name="backend"),
+        ],
+    )
+
+    assert ConversationHistoryProjectionService.get_available_tool_names(assistant) == {
+        "kb_search",
+        "search_kb_release_notes",
+        "my-provider_kb_search",
+        "kb_search_backend",
+        "search_code_repo_backend",
+        "get_repository_file_tree_backend",
+    }
+
+
+def test_get_available_tool_names_ignores_missing_context():
+    assistant = _build_assistant(["search_tool"])
+    del assistant.context
+
+    assert ConversationHistoryProjectionService.get_available_tool_names(assistant) == {"search_tool"}
+
+
+def test_get_available_tool_names_returns_none_when_mcp_tools_are_unknown():
+    assistant = _build_assistant(["search_tool"], mcp_servers=[Mock(enabled=True, tools=[])])
+
+    assert ConversationHistoryProjectionService.get_available_tool_names(assistant) is None
 
 
 def test_build_for_request_normalizes_overlong_stored_tool_name():

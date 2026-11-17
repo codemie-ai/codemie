@@ -1,0 +1,19 @@
+{
+  "reviewed_head": "1fb0123fec9c6130992319b428404eb4efbb6fd4",
+  "decision": "approve",
+  "rationale": "Runtime names of KB, provider and code datasource tools built by _collect_context_tool_names match their runtime binders (SearchKBTool, ProviderToolFactory, CodeToolkit via adapt_tool_name / sanitize_datasource_name); the projection logic is unchanged, the reviewer's request to move the logic into ConversationHistoryProjectionService is done, and the main-merge conflict kept main's new handler methods.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "Native replay of the current assistant's datasource tool calls in NATIVE_TOOLS_MODE", "status": "pass", "notes": "available_tool_names includes search_kb_<ds>, <ds>_<tool>, <tool>_<repo>"},
+    {"kind": "story-ac", "item": "Text ledger kept for other assistants' and unavailable tools", "status": "pass", "notes": "projection service logic unchanged"},
+    {"kind": "review-comment", "item": "Move the logic into ConversationHistoryProjectionService", "status": "pass", "notes": "338b7b8eb"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "2 subjects match EPMCDME-####: Description"},
+    {"kind": "code-quality", "status": "pass", "notes": "3 files, small typed static helpers, no import cycle"},
+    {"kind": "security", "status": "pass", "notes": "no credential logging; only widens a name set used for replay formatting"}
+  ],
+  "findings": [],
+  "deferred": []
+}

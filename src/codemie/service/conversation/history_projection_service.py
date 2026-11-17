@@ -22,10 +22,14 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
+from codemie.agents.tools.code.tools_vars import CODE_SEARCH_TOOL, REPO_TREE_TOOL
+from codemie.agents.tools.kb.search_kb import SEARCH_KB_TOOL
+from codemie.agents.utils import adapt_tool_name, sanitize_datasource_name
 from codemie.chains.base import ThoughtAuthorType
 from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.core.constants import MAX_TOOL_NAME_LENGTH, ChatRole
+from codemie.rest_api.models.assistant import ContextType
 from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
 from codemie.service.constants import (
     SKILL_TOOL_NAME,
@@ -127,6 +131,87 @@ class ConversationHistoryProjectionService:
 
         cls._log_projected_history(conversation.conversation_id, mode, filtered_messages)
         return filtered_messages
+
+    @classmethod
+    def get_available_tool_names(cls, assistant: Any) -> set[str] | None:
+        """Names of the tools the assistant can call in this request, as stored in tool thoughts.
+
+        Returns None when availability cannot be determined (an enabled MCP server without a tool list).
+        """
+        tool_names = cls._collect_toolkit_tool_names(getattr(assistant, "toolkits", []))
+        tool_names.update(cls._collect_context_tool_names(getattr(assistant, "context", None), tool_names))
+        mcp_tool_names, unknown_availability = cls._collect_mcp_server_tool_names(getattr(assistant, "mcp_servers", []))
+        tool_names.update(mcp_tool_names)
+
+        if cls._has_skill_tool(assistant):
+            tool_names.add(SKILL_TOOL_NAME)
+
+        if unknown_availability:
+            return None
+
+        return tool_names
+
+    @staticmethod
+    def _collect_toolkit_tool_names(toolkits: list | None) -> set[str]:
+        tool_names: set[str] = set()
+        for toolkit in toolkits or []:
+            for tool in getattr(toolkit, "tools", []) or []:
+                tool_name = getattr(tool, "name", None)
+                if tool_name:
+                    tool_names.add(tool_name)
+        return tool_names
+
+    @staticmethod
+    def _collect_mcp_server_tool_names(mcp_servers: list | None) -> tuple[set[str], bool]:
+        tool_names: set[str] = set()
+        unknown_availability = False
+
+        for mcp_server in mcp_servers or []:
+            if getattr(mcp_server, "enabled", True) is False:
+                continue
+
+            server_tools = getattr(mcp_server, "tools", None)
+            if not server_tools:
+                unknown_availability = True
+                continue
+
+            tool_names.update(tool_name for tool_name in server_tools if tool_name)
+
+        return tool_names, unknown_availability
+
+    @staticmethod
+    def _collect_context_tool_names(contexts: list | None, toolkit_tool_names: set[str]) -> set[str]:
+        """Runtime names of datasource-bound tools, which differ from the configured toolkit tool names.
+
+        KB names are exact; provider and code names are a superset built from the configured tool names.
+        """
+        if not isinstance(contexts, list | tuple):
+            return set()
+
+        tool_names: set[str] = set()
+        for context in contexts:
+            datasource_name = getattr(context, "name", None)
+            if not datasource_name:
+                continue
+
+            context_type = getattr(context, "context_type", None)
+            if context_type == ContextType.KNOWLEDGE_BASE:
+                tool_names.add(adapt_tool_name(f"{SEARCH_KB_TOOL.name}_{{}}", datasource_name))
+            elif context_type == ContextType.PROVIDER:
+                prefix = sanitize_datasource_name(datasource_name)
+                tool_names.update(f"{prefix}_{tool_name}" for tool_name in toolkit_tool_names)
+            elif context_type == ContextType.CODE:
+                # Repo tree and code search are bound to a code datasource even when not configured explicitly
+                code_tool_names = toolkit_tool_names | {CODE_SEARCH_TOOL.name, REPO_TREE_TOOL.name}
+                tool_names.update(
+                    adapt_tool_name(f"{tool_name}_{{}}", datasource_name) for tool_name in code_tool_names
+                )
+        return tool_names
+
+    @staticmethod
+    def _has_skill_tool(assistant: Any) -> bool:
+        skill_ids = getattr(assistant, "skill_ids", None)
+        return isinstance(skill_ids, list | tuple | set) and bool(skill_ids)
 
     @classmethod
     def _build_plain_chat_history(cls, conversation: Conversation) -> list[BaseMessage]:
