@@ -339,6 +339,7 @@ _PART_COLUMNS = (
     ("ratio", "float8"),
     ("session_id", "text"),
     ("session_title", "text"),
+    ("entrypoint", "text"),
     ("prompt", "text"),
     ("project_name", "text"),
     ("repository", "text"),
@@ -620,6 +621,23 @@ _TS = "ts BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
 
 
 _SEARCH_COLUMNS = ("first_prompt", "session_title", "repository", "branch")
+
+# Claude Desktop's own auto-title is not an explicit rename, so search must not find a session only by that
+# hidden title, or a result would show a session the list itself never displays under that name (EPMCDME-17317,
+# AC4). Mirrors cli_analytics_handler._DESKTOP_ENTRYPOINTS; kept local here since the search condition is built
+# in SQL, not in the handler that owns the display-side constant — test_the_sql_desktop_entrypoint_list_matches_
+# the_handler_constant (test_reader.py) keeps the two lists equal (CR-001). The literals are already lowercase,
+# so trimming and lower-casing `s.entrypoint` (CR-002) matches them case-insensitively without changing them.
+_DESKTOP_ENTRYPOINTS_SQL = "('claude-desktop', 'claude-desktop-3p', 'local-agent', 'remote_cowork')"
+
+
+def _search_arm(column: str) -> str:
+    arm = f"s.{column} ILIKE $search::text ESCAPE '\\'"
+    return (
+        f"({arm} AND lower(btrim(s.entrypoint, {_BLANKS})) NOT IN {_DESKTOP_ENTRYPOINTS_SQL})"
+        if column == "session_title"
+        else arm
+    )
 
 
 def _escape_like(term: str) -> str:
@@ -1228,7 +1246,7 @@ class PostgresCliAnalyticsReader:
             if not lean:
                 columns += ["last_event_at", "activity_started_at", "ended_at"]
             if searchable or not lean:
-                columns += ["first_prompt", "session_title"]
+                columns += ["first_prompt", "session_title", "entrypoint"]
             columns += ["owner_email", "subscription_type", "project_origin", "route_note"]
             if with_developer:
                 columns.append("developer")
@@ -1280,7 +1298,8 @@ class PostgresCliAnalyticsReader:
             raise ValueError("the developers filter needs with_developer=True")
         searched = """
                        coalesce(d.first_prompt, '') AS first_prompt,
-                       coalesce(d.session_title, '') AS session_title,"""
+                       coalesce(d.session_title, '') AS session_title,
+                       coalesce(d.entrypoint, '') AS entrypoint,"""
         activity = """
                        d.last_event_at,
                        d.activity_started_at,
@@ -2279,12 +2298,13 @@ class PostgresCliAnalyticsReader:
         ),
         worst AS (
             SELECT p.session_id, coalesce(d.session_title, '') AS session_title,
+                   coalesce(d.entrypoint, '') AS entrypoint,
                    coalesce(d.first_prompt, '') AS first_prompt, p.repository, p.branch, p.ratio
             FROM pick p LEFT JOIN session_dims d ON d.session_id = p.session_id
         )
         SELECT {_part(
-            "worst", ratio="ratio", session_id="session_id", session_title="session_title", prompt="first_prompt",
-            repository="repository", branch="branch")} FROM worst
+            "worst", ratio="ratio", session_id="session_id", session_title="session_title",
+            entrypoint="entrypoint", prompt="first_prompt", repository="repository", branch="branch")} FROM worst
         UNION ALL
         SELECT {_part(
             "depth", key="depth", n="count(*)", subscription_types="array_agg(DISTINCT sub)",
@@ -2346,6 +2366,7 @@ class PostgresCliAnalyticsReader:
                max(nullif(btrim(s.route_note), ''))         AS route_note,
                max(s.first_prompt)                          AS prompt,
                max(s.session_title)                         AS session_title,
+               max(s.entrypoint)                             AS entrypoint,
                max(a.session_start)                         AS started_at,
                max(a.session_end)                           AS last_event_at,
                max(a.duration_ms)                           AS duration_ms,
@@ -2420,9 +2441,7 @@ class PostgresCliAnalyticsReader:
         the searchable columns and the unattributed filter. Binds `$search` in `params`."""
         conditions = ["true"]
         if search:
-            conditions.append(
-                "(" + " OR ".join(f"s.{c} ILIKE $search::text ESCAPE '\\'" for c in _SEARCH_COLUMNS) + ")"
-            )
+            conditions.append("(" + " OR ".join(_search_arm(c) for c in _SEARCH_COLUMNS) + ")")
             params["search"] = "%" + _escape_like(search.strip().lower()) + "%"
         if is_unattributed:
             conditions.append("s.repository = ''")
@@ -3001,6 +3020,7 @@ class PostgresCliAnalyticsReader:
                nullif(d.project_name, '')                                             AS project_name,
                nullif(d.first_prompt, '')                                             AS prompt,
                nullif(d.session_title, '')                                            AS session_title,
+               nullif(d.entrypoint, '')                                               AS entrypoint,
                coalesce(r.session_start, {_EPOCH})                                    AS started_at,  -- or 1970-01-01
                coalesce({_ms("r.session_end")} - {_ms("r.session_start")}, 0)         AS duration_ms,
                -- the OTel service name of the earliest resource that has one; else the session `platform` (the hook

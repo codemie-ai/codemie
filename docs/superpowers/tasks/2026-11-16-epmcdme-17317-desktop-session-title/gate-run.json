@@ -1,0 +1,117 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17317_desktop-session-title",
+  "head": "ebb3f5890a006c8d809a2a0cb17ad3937a402b17",
+  "runner": "poetry",
+  "started_at": "2026-11-16T20:10:00Z",
+  "completed_at": "2026-11-16T20:24:23Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6316,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 22678,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3929,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 217,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "Self-skip: 'docker: command not found' (Docker unavailable on this machine). Guide's explicit Skip-if for this gate. Also stands in for the local pre-commit 'codemie-gitleaks' hook (scripts/git-hooks/validate_secrets.sh), which hard-blocks for the same reason (no Docker/Podman/Apple-Containers engine). Enable by starting Docker/Podman and re-running."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 790825,
+      "command": "make test",
+      "exit_code": 2
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Not requested by the caller; guide Skip-if applies (coverage only runs when explicitly requested)."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 1193,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip, exit 0 but no scan ran: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable locally by setting SONAR_TOKEN (and optionally SONAR_HOST_URL=https://sonar.core.kuberocketci.io, per .sonarlint/connectedMode.json) in .env.local or the shell env. Only CI can settle this check for this run."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Umbrella target (ruff + license + gitleaks + test) already covered by the individually-run lint/license/gitleaks/test gates above; not re-run to avoid duplicating the same failures/skips under a different id."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Guide Skip-if: not opening an MR in this run (local iteration). Also needs infrastructure not available here: docker compose stack, superadmin fixtures, and ~/.codemie/test-harness.json (absent on this machine). Separate caller decision per feature-verification policy."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1642,
+      "command": "python scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "Enforced unconditionally (not opt-in) by the pre-push hook (scripts/git-hooks/pre_push.sh) ahead of the opt-in pytest+sonar suite; not listed as a gate in quality-gates.md, so added from the hook."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 869,
+      "command": "bash scripts/git-hooks/commit_msg.sh (replayed its EPMCDME-<n>: prefix regex against each commit subject in origin/main..HEAD)",
+      "exit_code": 0,
+      "notes": "Enforced by the commit-msg hook (codemie-commit-msg); all 5 commits unique to this branch already carry the required 'EPMCDME-17317:' prefix. Not listed as a gate in quality-gates.md, so added from the hook."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "command": "wait-ci-init (GitLab job in .gitlab-ci.yml, extends .wait-ci-init-template, waits on external status contexts ci-pipeline and compliance-report)",
+      "notes": "Guide/repo mismatch: quality-gates.md states 'No pipeline in this repository runs these gates' and points at `ls .gitlab-ci.yml .github/workflows`, but .gitlab-ci.yml exists and defines a merge-to-main guard pipeline (pre-ci-guard stage) — the repository is the source of truth, not the guide's claim. It does not itself execute lint/build/test; it blocks merge into main pending externally-reported GitLab status contexts (ci-pipeline, compliance-report) that only exist in a live MR/CI run. No local command can satisfy it; unreachable in this environment."
+    }
+  ],
+  "failures": {
+    "test": "ERROR tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_expected_version_reaches_the_queue_service[None-None-force-publish-force_publish-body2]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_negative_expected_version_is_rejected[approve-body0]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_negative_expected_version_is_rejected[reject-body1]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_detail_does_not_leak_prompts_or_credentials\nERROR tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_detail_masks_sensitive_prompt_variables\nERROR tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_detail_response_model_declares_the_projection\nERROR tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_5xx_body_has_no_traceback\nERROR tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_audit_run_is_rate_limited\nERROR tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_assess_is_rate_limited\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMServiceInitialization::test_litellm_service_initialized_when_enabled\nERROR tests/codemie/service/spend/test_budget_period.py::TestTheStartIsClampedToWhenTheBudgetBegan::test_a_naive_value_is_read_as_utc\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMServiceInitialization::test_litellm_service_not_initialized_when_disabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMModelsInitialization::test_initialize_models_called_when_enabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMModelsInitialization::test_initialize_models_not_called_when_disabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMBudgetInitialization::test_budget_setup_when_enabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMBudgetInitialization::test_budget_setup_skipped_when_disabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLifespanShutdown::test_litellm_service_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLifespanShutdown::test_llm_proxy_client_closed\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLifespanShutdown::test_observability_provider_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::TestCliAnalyticsRuntimeLifecycle::test_runtime_is_started_on_boot_and_stopped_on_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::TestGlobalServiceRegistry::test_litellm_service_registered_globally\nERROR tests/codemie/rest_api/test_startup_integration.py::TestMCPAuthStartupValidation::test_initialize_mcp_auth_runs_during_startup\nERROR tests/codemie/rest_api/test_startup_integration.py::TestMCPAuthStartupValidation::test_initialize_mcp_auth_failure_aborts_startup\nERROR tests/codemie/rest_api/test_startup_integration.py::TestMCPAuthStartupValidation::test_shutdown_mcp_auth_runs_during_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::test_lifespan_computes_model_provider_readiness_and_stores_it_on_app_state\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\n= 286 failed, 32548 passed, 538 skipped, 5 xfailed, 371 warnings, 232 errors in 782.65s (0:13:02) =\nmake: *** [Makefile:31: test] Error 1\n\nRoot cause of nearly all errors/failures: ModuleNotFoundError: No module named 'fcntl' (a Unix-only stdlib module) hit during test collection on this Windows machine, e.g. tests/codemie/core/hosted_applications/test_content_cache.py and test_content_gateway.py. This matches known pre-existing Windows local-test-env noise (unrelated to this branch's content). None of the 286 failures/232 errors in the full log reference the files this branch changed (src/codemie/repository/cli_analytics/postgres/reader.py, src/codemie/service/analytics/handlers/cli_analytics_handler.py, tests/codemie/repository/cli_analytics/postgres/test_reader.py, tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py) — those test files do not appear anywhere in the failure/error output, so this run does not show them failing. The gate is still recorded FAIL per its real exit code; it has not been verified clean on this platform."
+  }
+}

@@ -52,6 +52,7 @@ from codemie.service.analytics.handlers.cli_analytics_handler import (
     _count_dispatch_subtypes,
     _group_repositories_into_projects,
     _iso,
+    _served_prompt,
 )
 
 
@@ -2452,6 +2453,139 @@ async def test_efficiency_worst_session_prompt_is_truncated_after_cleaning():
 
     worst = data["kpis"]["worst_session_prompt"]
     assert len(worst) == _PROMPT_PREVIEW_LEN and worst.startswith(_CLEAN)
+
+
+# ── EPMCDME-17317: Desktop's own auto-title must not be served as the prompt ─
+
+
+@pytest.mark.parametrize("entrypoint", ["claude-desktop", "claude-desktop-3p", "local-agent", "remote_cowork"])
+def test_a_desktop_entrypoint_ignores_the_title(entrypoint):
+    assert _served_prompt("Auto Name", "first prompt", "repo", "branch", entrypoint) == "first prompt"
+
+
+@pytest.mark.parametrize("entrypoint", ["cli", "codemie-cli", None, "", "   "])
+def test_a_non_desktop_or_blank_entrypoint_keeps_the_title(entrypoint):
+    assert _served_prompt("My Name", "first prompt", "repo", "branch", entrypoint) == "My Name"
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    [
+        "Claude-Desktop",
+        "CLAUDE-DESKTOP-3P",
+        " local-agent ",
+        "Local-Agent\n",
+        "\tclaude-desktop\t",
+        "LOCAL-AGENT",
+        " Remote_Cowork ",
+        "REMOTE_COWORK\n",
+    ],
+)
+def test_a_desktop_entrypoint_with_stray_case_or_whitespace_still_ignores_the_title(entrypoint):
+    """CR-002: a client sending different casing or stray whitespace than the four canonical literals must
+    not bypass the exclusion."""
+    assert _served_prompt("Auto Name", "first prompt", "repo", "branch", entrypoint) == "first prompt"
+
+
+@pytest.mark.asyncio
+async def test_a_code_tab_session_falls_back_to_its_first_prompt():
+    (row,) = await _served_sessions(
+        {
+            "prompt": "Hey Desktop claude hey...",
+            "session_title": "Hello world text and PDF",
+            "entrypoint": "claude-desktop",
+        }
+    )
+    assert row["prompt"] == "Hey Desktop claude hey..."
+
+
+@pytest.mark.asyncio
+async def test_a_cowork_session_falls_back_to_its_first_prompt():
+    (row,) = await _served_sessions(
+        {
+            "prompt": "hey cowork, run a few skill and subagents...",
+            "session_title": "Helloworld.txt to PDF",
+            "entrypoint": "local-agent",
+        }
+    )
+    assert row["prompt"] == "hey cowork, run a few skill and subagents..."
+
+
+@pytest.mark.asyncio
+async def test_a_cloud_cowork_session_falls_back_to_its_first_prompt():
+    """remote_cowork (cloud-hosted Cowork, distinct from the local-VM local-agent) confirmed live off a
+    running Desktop build after disconnecting it from a gateway proxy."""
+    (row,) = await _served_sessions(
+        {
+            "prompt": "hey",
+            "session_title": "New conversation",
+            "entrypoint": "remote_cowork",
+        }
+    )
+    assert row["prompt"] == "hey"
+
+
+@pytest.mark.asyncio
+async def test_a_codemie_claude_session_keeps_its_explicit_title():
+    (row,) = await _served_sessions(
+        {"prompt": "first words", "session_title": "Release plan", "entrypoint": "codemie-claude"}
+    )
+    assert row["prompt"] == "Release plan"
+
+
+@pytest.mark.asyncio
+async def test_session_detail_ignores_a_desktop_titled_session():
+    handler = make_detail_handler(
+        {
+            "session_id": "s1",
+            "prompt": "first words",
+            "session_title": "Hello world text and PDF",
+            "entrypoint": "claude-desktop",
+        }
+    )
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
+    assert detail["prompt"] == "first words"
+
+
+@pytest.mark.asyncio
+async def test_session_detail_ignores_a_cowork_titled_session():
+    """CR-004: Cowork's own entrypoint (local-agent), not just the Code tab's, must be excluded here too."""
+    handler = make_detail_handler(
+        {
+            "session_id": "s1",
+            "prompt": "hey cowork, run a few skill and subagents...",
+            "session_title": "Helloworld.txt to PDF",
+            "entrypoint": "local-agent",
+        }
+    )
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
+    assert detail["prompt"] == "hey cowork, run a few skill and subagents..."
+
+
+@pytest.mark.asyncio
+async def test_efficiency_worst_session_prompt_ignores_a_desktop_titled_session():
+    row = {**BASE_COST_ROW, "cache_read_tokens": 1000, "api_call_count": 10}
+    row |= {"prompt": "first words", "session_title": "Hello world text and PDF", "entrypoint": "claude-desktop"}
+
+    data, _ = await _efficiency_handler(row).get_efficiency(make_filter())
+
+    assert data["kpis"]["worst_session_prompt"] == "first words"
+
+
+@pytest.mark.asyncio
+async def test_efficiency_worst_session_prompt_ignores_a_cowork_titled_session():
+    """CR-004: get_efficiency reads entrypoint through its own independent query path (get_efficiency_facts'
+    worst CTE), so Cowork's exclusion here is not proven by the Sessions-list or Session Detail tests."""
+    row = {**BASE_COST_ROW, "cache_read_tokens": 1000, "api_call_count": 10}
+    row |= {
+        "prompt": "hey cowork, run a few skill and subagents...",
+        "session_title": "Helloworld.txt to PDF",
+        "entrypoint": "local-agent",
+    }
+
+    data, _ = await _efficiency_handler(row).get_efficiency(make_filter())
+
+    assert data["kpis"]["worst_session_prompt"] == "hey cowork, run a few skill and subagents..."
 
 
 # ── EPMCDME-16713: unknown lines are null, real zeros stay 0 ─────────────────

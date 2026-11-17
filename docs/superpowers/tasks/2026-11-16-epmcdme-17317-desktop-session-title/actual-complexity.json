@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-11-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 7,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "Diffstat shows 7 files changed (all modified, 0 new): reader.py (SQL building), cli_analytics_handler.py (prompt serving/eligibility), two test files, a test-support fixture file, and two .ai-run guide docs — maps to L under the actual-mode file-count mapping (7-10 files)." },
+    { "dimension": "component_scope", "reason": "Two coordinated components across two layers: PostgresCliAnalyticsReader (DB-Persistence, _DESKTOP_ENTRYPOINTS_SQL + _search_arm) and LocalAnalyticsHandler (Service, _DESKTOP_ENTRYPOINTS + _title_is_eligible + _served_prompt). The pattern is explicitly mirrored between the two (code comments cross-reference each other), consistent with M's '2-3 components across 2 layers, pattern is clear'." },
+    { "dimension": "technical_risk", "reason": "The business rule (Desktop entrypoint list) is duplicated as an independent SQL literal list and a Python frozenset that must stay in sync; the final commit ('Normalize Desktop entrypoint comparisons and lock SQL/handler literals together') shows this divergence was caught and fixed during implementation, and a dedicated test (test_the_sql_desktop_entrypoint_list_matches_the_handler_constant) now guards it. No security or performance exposure, but the cross-layer-literal-sync risk keeps this at M rather than S." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -198,13 +198,37 @@ def _s(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-def _served_prompt(title: object, first_prompt: object, repository: object, branch: object) -> str:
-    """The session's name when it has one, else its first prompt without paste markup.
+# Claude Desktop (the Code tab, local Cowork and cloud-hosted Cowork) auto-generates a chat name and sends
+# it as `session_title`: an explicit rename everywhere else, but not here. `entrypoint` is a controlled
+# identifier set by client code, never user-authored free text (EPMCDME-17317), but is still compared
+# trimmed with BLANK_CHARS and lower-cased: a client sending stray whitespace or different casing than
+# these literals must not bypass the exclusion (CR-002). `claude-desktop-3p` and `remote_cowork` were
+# confirmed live, directly off a running Desktop build, not merely inferred — the Code tab's own
+# `CLAUDE_CODE_ENTRYPOINT` and a cloud-hosted Cowork session's own entrypoint, respectively.
+_DESKTOP_ENTRYPOINTS = frozenset({"claude-desktop", "claude-desktop-3p", "local-agent", "remote_cowork"})
+
+
+def _title_is_eligible(entrypoint: object) -> bool:
+    """Whether a session's `session_title` may be served/searched at all: false only when `entrypoint` is a
+    known Desktop value once trimmed and lowercased. A blank or missing `entrypoint` is never a member, so
+    it is always eligible, unchanged from before this rule existed (AC6) — the exclusion only narrows what
+    it has positive evidence for, never widens onto it."""
+    return _s(entrypoint).strip(BLANK_CHARS).lower() not in _DESKTOP_ENTRYPOINTS
+
+
+def _served_prompt(
+    title: object, first_prompt: object, repository: object, branch: object, entrypoint: object = None
+) -> str:
+    """The session's name when it has one and is eligible, else its first prompt without paste markup.
 
     Rows stored before the rollup stripped the markup are cleaned here too. A first prompt that cleans to
-    nothing (an old-CLI prompt cut inside the open tag) is served as the repository, else the branch.
+    nothing (an old-CLI prompt cut inside the open tag) is served as the repository, else the branch. A
+    Desktop-hosted session's title is its own auto-name, not an explicit rename, so it is skipped entirely.
     """
-    return _s(title).strip(BLANK_CHARS) or strip_pasted_content(_s(first_prompt)) or _s(repository) or _s(branch)
+    effective_title = title if _title_is_eligible(entrypoint) else None
+    return (
+        _s(effective_title).strip(BLANK_CHARS) or strip_pasted_content(_s(first_prompt)) or _s(repository) or _s(branch)
+    )
 
 
 def _iso(value: Any) -> str:
@@ -1440,7 +1464,11 @@ class LocalAnalyticsHandler:
             "repository": _s(row.get("repository")) or None,
             "branch": _s(row.get("branch")) or None,
             "prompt": _served_prompt(
-                row.get("session_title"), row.get("prompt"), row.get("repository"), row.get("branch")
+                row.get("session_title"),
+                row.get("prompt"),
+                row.get("repository"),
+                row.get("branch"),
+                row.get("entrypoint"),
             ),
             "start_time": _iso(started_at),
             "duration_ms": duration_ms,
@@ -1678,7 +1706,11 @@ class LocalAnalyticsHandler:
             "repository": _s(meta.get("repository")) or None,
             "branch": _s(meta.get("branch")) or None,
             "prompt": _served_prompt(
-                meta.get("session_title"), meta.get("prompt"), meta.get("repository"), meta.get("branch")
+                meta.get("session_title"),
+                meta.get("prompt"),
+                meta.get("repository"),
+                meta.get("branch"),
+                meta.get("entrypoint"),
             ),
             "start_time": _iso(started_at),
             "duration_ms": duration_ms,
@@ -1899,7 +1931,11 @@ class LocalAnalyticsHandler:
         if worst:
             worst_prompt = (
                 _served_prompt(
-                    worst.get("session_title"), worst.get("prompt"), worst.get("repository"), worst.get("branch")
+                    worst.get("session_title"),
+                    worst.get("prompt"),
+                    worst.get("repository"),
+                    worst.get("branch"),
+                    worst.get("entrypoint"),
                 )
                 or None
             )

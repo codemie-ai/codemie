@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Make _served_prompt in cli_analytics_handler.py ignore session_title for Desktop-hosted entrypoints, threading entrypoint through 3 handler call sites and 3 reader.py queries.",
+  "generated": "2026-11-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 16,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "requirements_clarity", "reason": "Several design decisions are explicitly open per technical-analysis.md: the three Desktop entrypoint literals (claude-desktop, claude-desktop-3p, local-agent) are unverified against any committed source and come only from a prior out-of-band investigation of live data; there is no existing enum/constant to centralize them in, so where to place the new literals is an unmade decision; and the empty/blank-entrypoint case for _served_prompt is explicitly flagged as undecided in the TESTS-expected section." },
+    { "dimension": "component_scope", "reason": "Confined to exactly two files/components: cli_analytics_handler.py (_served_prompt plus its 3 callers — _session_row, get_session_detail, get_efficiency — plus named_first_prompt) and reader.py (3 queries, 2 of them coupled: _sessions_cte and get_session_cost_facts). Only 2 layers touched (Service, DB-Persistence/Repository), and the pure-function/coalesce-idiom pattern is already established in both files." },
+    { "dimension": "affected_layers", "reason": "Service layer (handler) and DB-Persistence layer (postgres reader) are both touched via an established interface (reader rows feeding handler pure functions); no schema migration, no REST/OpenAPI response model change, no new feature flag." }
+  ],
+  "red_flags_applied": [
+    "Requirements Clarity bumped from M to L: unverified Desktop entrypoint literal values, no existing constant/enum to centralize them in, and an undecided empty-entrypoint case are all open design decisions per technical-analysis.md's Risk Indicators section."
+  ],
+  "split_recommendation": null
+}

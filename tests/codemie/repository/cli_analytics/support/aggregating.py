@@ -254,6 +254,7 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
                     "prompt": row.get("prompt"),
                     "repository": row.get("repository"),
                     "branch": row.get("branch"),
+                    "entrypoint": row.get("entrypoint"),
                 }
             buckets[depth_bucket(turns.get(sid, 0))].append(sid)
         selected_files = {sid: r for sid, r in files.items() if sid in set(selected)}

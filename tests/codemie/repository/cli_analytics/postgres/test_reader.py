@@ -38,6 +38,7 @@ from codemie.repository.cli_analytics.postgres.inline_skill_attribution import p
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.reader import (
     _C,
+    _DESKTOP_ENTRYPOINTS_SQL,
     _RAW_RETENTION_DAYS,
     _is_listed,
     _ms,
@@ -758,6 +759,62 @@ async def test_session_detail_meta_reads_the_session_title_next_to_the_first_pro
     sql = " ".join(recorder.statements[0].split())
     assert "nullif(d.session_title, '') AS session_title" in sql
     assert "nullif(d.first_prompt, '') AS prompt" in sql
+
+
+# ── EPMCDME-17317: Desktop-entrypoint sessions must not show their auto-title ─
+
+
+@pytest.mark.asyncio
+async def test_the_selected_sessions_carry_the_entrypoint():
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_cost_facts(_flt())  # type: ignore[arg-type]
+
+    sql = " ".join(recorder.statements[0].split())
+    assert "coalesce(d.entrypoint, '') AS entrypoint" in sql
+    assert "max(s.entrypoint) AS entrypoint" in sql
+
+
+@pytest.mark.asyncio
+async def test_session_detail_meta_reads_the_entrypoint_next_to_the_first_prompt():
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_meta("s1", scope=DETAIL_SCOPE)  # type: ignore[arg-type]
+
+    sql = " ".join(recorder.statements[0].split())
+    assert "nullif(d.entrypoint, '') AS entrypoint" in sql
+
+
+@pytest.mark.asyncio
+async def test_the_efficiency_worst_session_carries_the_entrypoint():
+    sql, _ = await _sql_of("get_efficiency_facts")
+
+    assert "coalesce(d.entrypoint, '') AS entrypoint" in sql
+    assert "entrypoint::text AS entrypoint" in sql
+
+
+@pytest.mark.asyncio
+async def test_the_session_title_search_excludes_desktop_entrypoint_sessions():
+    sql, _ = await _page_query(sort_by="start_time", page=0, per_page=5, search="x")
+
+    n = re.search(r"s\.first_prompt ILIKE \$(\d+)", sql).group(1)
+    expected = (
+        f"(s.first_prompt ILIKE ${n}::text ESCAPE '\\' OR "
+        f"(s.session_title ILIKE ${n}::text ESCAPE '\\' AND "
+        "lower(btrim(s.entrypoint, E' \\t\\r\\n\\u00a0')) NOT IN "
+        "('claude-desktop', 'claude-desktop-3p', 'local-agent', 'remote_cowork')) OR "
+        f"s.repository ILIKE ${n}::text ESCAPE '\\' OR s.branch ILIKE ${n}::text ESCAPE '\\')"
+    )
+    assert expected in sql
+
+
+def test_the_sql_desktop_entrypoint_list_matches_the_handler_constant():
+    """CR-001: the SQL literal and `cli_analytics_handler._DESKTOP_ENTRYPOINTS` must name the same values,
+    or the served-prompt exclusion and the search exclusion could silently disagree on a new entrypoint."""
+    from codemie.service.analytics.handlers.cli_analytics_handler import _DESKTOP_ENTRYPOINTS
+
+    literals = set(re.findall(r"'([^']*)'", _DESKTOP_ENTRYPOINTS_SQL))
+    assert literals == _DESKTOP_ENTRYPOINTS
 
 
 @pytest.mark.asyncio

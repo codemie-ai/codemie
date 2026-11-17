@@ -129,7 +129,7 @@ Any event may carry them; all are optional.
 | `developer_name`, `codemie_project_name`, `cwd` | string | typed columns of `hook_events` |
 | `identity_source` | string | the rank of the sender's identity in `session_dims` |
 | `story_id`, `story_source` | string | `session_dims.story_id`, `story_source` |
-| `session_title` | string | `session_dims.session_title`: the latest non-empty value, trimmed of spaces, tabs, carriage returns, line feeds and no-break spaces (U+00A0) and cut to 200 characters. It is a column of `session_dims` and never goes to `session_dims.attrs`. A value of only blanks is no value and does not replace an earlier name |
+| `session_title` | string | `session_dims.session_title`: the latest non-empty value, trimmed of spaces, tabs, carriage returns, line feeds and no-break spaces (U+00A0) and cut to 200 characters. It is a column of `session_dims` and never goes to `session_dims.attrs`. A value of only blanks is no value and does not replace an earlier name. For a Desktop-hosted session (`entrypoint` one of `claude-desktop`, `claude-desktop-3p`, `local-agent`, `remote_cowork`), `session_title` is still stored but is not used to build the served `prompt` — Desktop auto-names every chat, which is not the same as an explicit rename (EPMCDME-17317) |
 | `agent_id`, `agent_type` | string, `""` outside a subagent | typed columns |
 
 The examples show `schema_version` and `event_id` and leave the other common fields out.

@@ -1,0 +1,184 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Both CR-001 and CR-002 verified resolved by the check round; comparison-side normalization for CR-002 accepted as equivalent to the original storage-side suggestion."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User requested changes for CR-001 (dedupe the two hand-synced Desktop-entrypoint literal lists) and CR-002 (align entrypoint storage trim/lowercase with sibling columns)."
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Both CR-001 and CR-002 verified resolved by the check round; comparison-side normalization for CR-002 accepted as equivalent to the original storage-side suggestion."
+    }
+  ],
+  "reviewed_head": "ebb3f5890a006c8d809a2a0cb17ad3937a402b17",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "Both prior blocking findings verified resolved against current source and tests: CR-001's two entrypoint lists are now locked together by test_the_sql_desktop_entrypoint_list_matches_the_handler_constant (test_reader.py:811); CR-002's whitespace/casing bypass is closed by comparison-side normalization (strip+lower in _title_is_eligible, btrim+lower in _search_arm) rather than the literally-recommended storage-side fix, covered by a dedicated parametrized test (test_cli_analytics_handler.py:2475). No findings deferred or dismissed this round.",
+  "confidence": "high",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 2,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 629,
+      "title": "Desktop entrypoint allow-lists can silently diverge",
+      "problem": "If a Desktop entrypoint value is added to _DESKTOP_ENTRYPOINTS (cli_analytics_handler.py:204) without updating the separately hardcoded _DESKTOP_ENTRYPOINTS_SQL (reader.py:629), the two lists diverge with no test catching it.",
+      "impact": "The served-prompt exclusion and the search exclusion would silently disagree for the new entrypoint value: a session hidden from title search could still show its auto-title in the list, or vice versa.",
+      "recommendation": "Derive _DESKTOP_ENTRYPOINTS_SQL from cli_analytics_handler._DESKTOP_ENTRYPOINTS (or add a test asserting the two sets stay equal).",
+      "status": "resolved",
+      "check_notes": "_DESKTOP_ENTRYPOINTS_SQL and cli_analytics_handler._DESKTOP_ENTRYPOINTS now locked by test_the_sql_desktop_entrypoint_list_matches_the_handler_constant (test_reader.py:811), asserting the parsed SQL literals equal the handler frozenset.",
+      "fix": {
+        "change": "Added a test asserting reader._DESKTOP_ENTRYPOINTS_SQL's literals equal handler._DESKTOP_ENTRYPOINTS (no new shared module, per the plan's non-goal).",
+        "test": "tests/codemie/repository/cli_analytics/postgres/test_reader.py::test_the_sql_desktop_entrypoint_list_matches_the_handler_constant"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/rollups.py",
+      "line": 1463,
+      "title": "Entrypoint whitespace/casing bypasses Desktop exclusion",
+      "problem": "entrypoint is stored via a bare coalesce (rollups.py:1463) with no btrim/lower normalization, unlike platform and session_title in the same VALUES list, and is compared by exact membership (_title_is_eligible) and exact SQL NOT IN (_search_arm).",
+      "impact": "A client sending entrypoint with stray whitespace or different casing than the three canonical literals bypasses the exclusion entirely: the Desktop auto-title is served and made searchable as if it were a real title, reproducing the exact bug this change fixes.",
+      "recommendation": "Normalize entrypoint (trim + lowercase) at the point it is stored or compared, matching the three canonical literals case-insensitively in both _title_is_eligible and the SQL NOT IN arm.",
+      "status": "resolved",
+      "check_notes": "Comparison-side fix, not storage-side: _title_is_eligible now does strip(BLANK_CHARS).lower() (handler.py:214); _search_arm does lower(btrim(s.entrypoint, _BLANKS)) (reader.py:637). Verified by test_a_desktop_entrypoint_with_stray_case_or_whitespace_still_ignores_the_title, parametrized over mixed case, leading/trailing spaces, tab, newline.",
+      "fix": {
+        "change": "Compare entrypoint trimmed and lower-cased in both _title_is_eligible (cli_analytics_handler.py) and the SQL NOT IN arm (_search_arm, reader.py, via lower(btrim(s.entrypoint, _BLANKS))).",
+        "test": "tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py::test_a_desktop_entrypoint_with_stray_case_or_whitespace_still_ignores_the_title and tests/codemie/repository/cli_analytics/postgres/test_reader.py::test_the_session_title_search_excludes_desktop_entrypoint_sessions (updated expected SQL)"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC1: Code tab Desktop session serves first prompt, not auto-title",
+      "status": "pass",
+      "notes": "_served_prompt skips title when entrypoint in _DESKTOP_ENTRYPOINTS; covered by 2 tests."
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: Cowork Desktop session (local-agent) serves first prompt, not auto-title",
+      "status": "pass",
+      "notes": "Same mechanism; test asserts prompt == first prompt for entrypoint=local-agent."
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: Same exclusion applies in get_session_detail and get_efficiency's worst_session_prompt",
+      "status": "pass",
+      "notes": "Both call sites pass entrypoint into _served_prompt; both tests pass."
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: search-by-title fallback excludes Desktop-entrypoint sessions",
+      "status": "pass",
+      "notes": "Implemented in reader.py SQL via _search_arm (old Python named_first_prompt no longer exists); test passes."
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: native --name/--rename and codemie-claude sessions keep explicit title",
+      "status": "pass",
+      "notes": "Tests for cli/codemie-cli and codemie-claude entrypoints both pass."
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: blank or missing entrypoint keeps today's behavior",
+      "status": "pass",
+      "notes": "_title_is_eligible treats None/''/whitespace as eligible; parametrized test covers it."
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: session_title stays stored and is not newly exposed; no REST/OpenAPI contract change",
+      "status": "pass",
+      "notes": "Diff only threads entrypoint as an extra arg; no new response-dict key added."
+    },
+    {
+      "kind": "spec",
+      "item": "AC8: cli-analytics-events.md and cli-analytics-storage.md gain the Desktop-exception sentence",
+      "status": "pass",
+      "notes": "Both guide files edited with the exception and the search-exclusion note."
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: entrypoint compared by raw equality, not BLANK_CHARS-trimmed like session_title",
+      "status": "pass",
+      "notes": "No .strip(BLANK_CHARS) applied to entrypoint anywhere in the diff."
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no change to the codemie-code CLI repo",
+      "status": "pass",
+      "notes": "Diff touches only this backend repo's handler, reader, tests and guides."
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no new REST/OpenAPI field or response-model change",
+      "status": "pass",
+      "notes": "No router/response-model file in the diff."
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no schema migration (entrypoint already a session_dims column)",
+      "status": "pass",
+      "notes": "No migration file; reader.py only adds SELECT-list projections of the existing column."
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no new enum/shared-vocabulary module for entrypoint values",
+      "status": "pass",
+      "notes": "_DESKTOP_ENTRYPOINTS_SQL duplicates the literals locally rather than importing a shared module."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 4 subjects in range match the documented 'EPMCDME-####: Description' format from .ai-run/guides/standards/git-workflow.md"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "Type hints match sibling params, stays within the 120-char Ruff line length (pyproject.toml:221), and extends an existing core function/module per the Module Cohesion rule in code-quality.md."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "No security guide/ArtifactRef exists, so no standard to adjudicate; reviewed reader.py's SQL anyway — entrypoint literals are hardcoded, search term stays parameter-bound, no injection found."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Edge-case lens found two real gaps in the new Desktop-exclusion logic, both verified live against current source: entrypoint is stored via a bare coalesce (rollups.py:1463) with no trim/lowercase, so whitespace/casing drift from the three canonical literals silently bypasses the whole exclusion in _title_is_eligible and the SQL search arm (CR-002, major); and _DESKTOP_ENTRYPOINTS (handler.py) / _DESKTOP_ENTRYPOINTS_SQL (reader.py) are two hand-synced literal lists with no test enforcing they stay equal (CR-001, major). Acceptance (all 8 ACs, the raw-equality decision, and all 4 non-goals) and standards (commit-format, code-quality pass; security na with no project guide but manually checked, no injection issue) both passed clean with no coverage gap, so confidence is high despite the request-changes outcome. Zero findings deferred or dismissed.",
+    "confidence": "high",
+    "risk_flags": []
+  }
+}
