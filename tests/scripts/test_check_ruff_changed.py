@@ -68,14 +68,16 @@ def test_a_new_issue_in_a_changed_file_fails_with_file_line_and_rule(repo, capsy
     assert _check(repo) == 1
     out = capsys.readouterr().out
     assert "src/clean.py:6:12: S307" in out
-    assert "1 new" in out
+    assert out.startswith("strict ruff: 1 new issue in this MR's changed Python files")
 
 
 def test_an_issue_the_file_had_at_the_merge_base_does_not_fail_even_when_it_moves(repo, capsys):
     _write(repo, "src/old.py", '"""Docstring added above, the old issue moves down."""\n\n' + OLD_ISSUE)
     _git(repo, "commit", "-qam", "touch old")
     assert _check(repo) == 0
-    assert "1 issue(s) now, 1 at the merge base, 0 new" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert out.startswith("strict ruff: no new issue")
+    assert "1 issue(s) these files already had at the merge base are not counted" in out
 
 
 def test_a_second_copy_of_an_existing_issue_counts_as_new(repo, capsys):
@@ -105,12 +107,12 @@ def test_tests_non_python_files_and_per_file_ignores_are_skipped(repo, capsys):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "skipped")
     assert _check(repo) == 0
-    assert "on 1 changed Python file(s)" in capsys.readouterr().out  # legacy/run.py; tests/ is not even counted
+    assert "1 changed Python file(s) checked" in capsys.readouterr().out  # legacy/run.py; tests/ is not even counted
 
 
 def test_no_changed_python_file_passes(repo, capsys):
     assert _check(repo) == 0
-    assert "on 0 changed Python file(s)" in capsys.readouterr().out
+    assert "no changed Python file" in capsys.readouterr().out
 
 
 def test_an_unknown_base_is_a_usage_error(repo):
@@ -141,3 +143,25 @@ def test_new_issues_matches_by_rule_and_message_not_line():
     head = [issue("a.py", "S1", 10), issue("a.py", "S1", 20), issue("new.py", "S2", 3), issue("a.py", "S3", 1)]
     found = chk.new_issues(base, head, {"old.py": "new.py"})
     assert [(i["_path"], i["code"], i["location"]["row"]) for i in found] == [("a.py", "S3", 1), ("a.py", "S1", 20)]
+
+
+def test_a_fixable_issue_shows_the_rule_link_and_the_fix_command(repo, capsys):
+    """codemie !4867 (2026-11-16): the author could not tell what the check wanted. Each new issue names its rule's page
+    and, when ruff can fix it, the exact command."""
+    _write(repo, "src/clean.py", CLEAN + "\n\ndef has(d: dict, k: str) -> bool:\n    return k in d.keys()\n")
+    _git(repo, "commit", "-qam", "keys()")
+    assert _check(repo) == 1
+    out = capsys.readouterr().out
+    assert "src/clean.py:6:12: SIM118" in out
+    assert "https://docs.astral.sh/ruff/rules/" in out
+    assert "ruff check --select SIM118 --fix src/clean.py" in out
+    assert "How to fix:" in out and "# noqa: <rule>" in out
+
+
+def test_the_failure_says_why_old_issues_do_not_count(repo, capsys):
+    _write(repo, "src/old.py", OLD_ISSUE + "\n\ndef run(cmd):\n    return eval(cmd)\n")
+    _git(repo, "commit", "-qam", "eval next to an old issue")
+    assert _check(repo) == 1
+    out = capsys.readouterr().out
+    assert "1 issue(s) these files already had at the merge base are not counted" in out
+    assert "a line this MR edits" in out

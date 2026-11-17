@@ -164,6 +164,46 @@ def describe(issue: Issue) -> str:
     return f"{issue['_path']}:{loc.get('row')}:{loc.get('column')}: {issue.get('code')} {issue.get('message')}"
 
 
+def hints(issue: Issue) -> list[str]:
+    """How to fix one issue: the rule's page and, when ruff can fix it, the exact command."""
+    lines = []
+    if issue.get("url"):
+        lines.append(f"rule: {issue['url']}")
+    if issue.get("fix"):
+        lines.append(f"auto-fix: poetry run ruff check --select {issue.get('code')} --fix {issue['_path']}")
+    return lines
+
+
+def report(found: list[Issue], files: int, head_count: int, merge_base: str) -> list[str]:
+    """What the check prints: the verdict first, one block per new issue with how to fix it, then why only new issues
+    count (codemie !4867, 2026-11-16: "129 issue(s) now, 129 at the merge base, 1 new" read as 129 problems)."""
+    old = head_count - len(found)
+    scope = (
+        f"{files} changed Python file(s) checked against the merge base {merge_base[:12]}; "
+        f"{old} issue(s) these files already had at the merge base are not counted"
+    )
+    if not files:
+        return ["strict ruff: no changed Python file, nothing to check"]
+    if not found:
+        return [f"strict ruff: no new issue ({scope})"]
+    noun = "issue" if len(found) == 1 else "issues"
+    lines = [
+        f"strict ruff: {len(found)} new {noun} in this MR's changed Python files ({STRICT_SELECT}); "
+        "fix before merging:"
+    ]
+    for issue in found:
+        lines.append(f"  {describe(issue)}")
+        lines.extend(f"      {h}" for h in hints(issue))
+    lines += [
+        "How to fix: change the code each issue points to (or run its auto-fix command), then push. If a rule does not "
+        "fit the case, add `# noqa: <rule>  # <reason>` at the end of that line.",
+        f"Why only these: the strict rules apply to what this MR adds or changes; {scope}. An issue on a line this MR "
+        "edits counts as new when ruff reports it differently there (e.g. a name added to an import that already "
+        "broke the rule).",
+    ]
+    return lines
+
+
 def strict_new_issues(root: Path, ruff: str, merge_base: str) -> tuple[list[Issue], int, int, int]:
     """(new issues, changed files, head issue count, base issue count)."""
     pairs = changed_python_files(root, merge_base)
@@ -211,17 +251,8 @@ def main(argv: list[str] | None = None) -> int:
     except (RuntimeError, OSError, json.JSONDecodeError) as exc:
         sys.stderr.write(f"cannot run the check: {exc}\n")
         return 2
-    out(
-        f"strict ruff ({STRICT_SELECT}) on {files} changed Python file(s) vs {merge_base[:12]}: "
-        f"{head_count} issue(s) now, {base_count} at the merge base, {len(found)} new"
-    )
-    for issue in found:
-        out(f"  {describe(issue)}")
-    if found:
-        out(
-            "Fix the new issues above, or add `# noqa: <rule>` with a reason where a rule does not fit. "
-            "Issues the files already had at the merge base are not counted."
-        )
+    for line in report(found, files, head_count, merge_base):
+        out(line)
     return 1 if found else 0
 
 
