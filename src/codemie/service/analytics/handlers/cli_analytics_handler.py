@@ -200,9 +200,9 @@ def _s(value: Any) -> str:
 
 # Claude Desktop (the Code tab, local Cowork and cloud-hosted Cowork) auto-generates a chat name and sends
 # it as `session_title`: an explicit rename everywhere else, but not here. `entrypoint` is a controlled
-# identifier set by client code, never user-authored free text (EPMCDME-17317), but is still compared
+# identifier set by client code, never user-authored free text, but is still compared
 # trimmed with BLANK_CHARS and lower-cased: a client sending stray whitespace or different casing than
-# these literals must not bypass the exclusion (CR-002). `claude-desktop-3p` and `remote_cowork` were
+# these literals must not bypass the exclusion. `claude-desktop-3p` and `remote_cowork` were
 # confirmed live, directly off a running Desktop build, not merely inferred — the Code tab's own
 # `CLAUDE_CODE_ENTRYPOINT` and a cloud-hosted Cowork session's own entrypoint, respectively.
 _DESKTOP_ENTRYPOINTS = frozenset({"claude-desktop", "claude-desktop-3p", "local-agent", "remote_cowork"})
@@ -211,14 +211,12 @@ _DESKTOP_ENTRYPOINTS = frozenset({"claude-desktop", "claude-desktop-3p", "local-
 def _title_is_eligible(entrypoint: object) -> bool:
     """Whether a session's `session_title` may be served/searched at all: false only when `entrypoint` is a
     known Desktop value once trimmed and lowercased. A blank or missing `entrypoint` is never a member, so
-    it is always eligible, unchanged from before this rule existed (AC6) — the exclusion only narrows what
+    it is always eligible, unchanged from before this rule existed — the exclusion only narrows what
     it has positive evidence for, never widens onto it."""
     return _s(entrypoint).strip(BLANK_CHARS).lower() not in _DESKTOP_ENTRYPOINTS
 
 
-def _served_prompt(
-    title: object, first_prompt: object, repository: object, branch: object, entrypoint: object = None
-) -> str:
+def _served_prompt(title: object, first_prompt: object, repository: object, branch: object, entrypoint: object) -> str:
     """The session's name when it has one and is eligible, else its first prompt without paste markup.
 
     Rows stored before the rollup stripped the markup are cleaned here too. A first prompt that cleans to
@@ -792,8 +790,7 @@ def _dispatch_label_and_kind(
         return label, "agent"
     skill = _s(row.get("skill_name"))
     if skill:
-        if row.get("is_slash_command"):
-            return f"command · {skill}", "command"
+        # A skill is a skill however it was started; the reader flags slash-started rows only to order them.
         return f"skill · {skill}", "skill"
     return None
 

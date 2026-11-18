@@ -624,11 +624,11 @@ _TS = "ts BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
 _SEARCH_COLUMNS = ("first_prompt", "session_title", "repository", "branch")
 
 # Claude Desktop's own auto-title is not an explicit rename, so search must not find a session only by that
-# hidden title, or a result would show a session the list itself never displays under that name (EPMCDME-17317,
-# AC4). Mirrors cli_analytics_handler._DESKTOP_ENTRYPOINTS; kept local here since the search condition is built
+# hidden title, or a result would show a session the list itself never displays under that name.
+# Mirrors cli_analytics_handler._DESKTOP_ENTRYPOINTS; kept local here since the search condition is built
 # in SQL, not in the handler that owns the display-side constant — test_the_sql_desktop_entrypoint_list_matches_
-# the_handler_constant (test_reader.py) keeps the two lists equal (CR-001). The literals are already lowercase,
-# so trimming and lower-casing `s.entrypoint` (CR-002) matches them case-insensitively without changing them.
+# the_handler_constant (test_reader.py) keeps the two lists equal. The literals are already lowercase,
+# so trimming and lower-casing `s.entrypoint` matches them case-insensitively without changing them.
 _DESKTOP_ENTRYPOINTS_SQL = "('claude-desktop', 'claude-desktop-3p', 'local-agent', 'remote_cowork')"
 
 
@@ -648,6 +648,18 @@ def _escape_like(term: str) -> str:
 
 def _no_summary(column: str) -> str:
     return f"NOT EXISTS (SELECT 1 FROM session_dims sd WHERE sd.session_id = {column} AND sd.summary_ts IS NOT NULL)"
+
+
+def _not_a_skill_of_session(session_column: str, name_column: str) -> str:
+    """A command name the same session also ran as a skill (kind 2) is that skill's invocation, not a slash command.
+    It reads the CTE `skill_rows` (the skill and agent rows of `sel`, scanned once for the whole statement), so it is
+    scoped like every fact read and probes no partition: a probe of the partitioned table per command row visited every
+    partition each time. No bound on the hour is safe: a session that started before the window and was resumed in it
+    has its skill row before the window's start."""
+    return (
+        "NOT EXISTS (SELECT 1 FROM skill_rows sk "
+        f"WHERE sk.kind = 2 AND sk.session_id = {session_column} AND sk.name = {name_column})"
+    )
 
 
 def _row_email(alias: str) -> str:
@@ -1379,22 +1391,30 @@ class PostgresCliAnalyticsReader:
             "invocation": f"""SELECT u.name AS key,
                    CASE u.kind WHEN 2 THEN 'skill' WHEN 3 THEN 'agent' ELSE 'command' END AS kind, {classes}
             FROM (
-                SELECT kind, name, session_id FROM invocations_hourly WHERE kind IN (2, 3)
+                SELECT kind, name, session_id FROM skill_rows
                 UNION ALL
                 SELECT kind, name, session_id FROM invocations_hourly
                 WHERE kind = 4 AND {_no_summary("invocations_hourly.session_id")}
                   AND name <> ALL($builtin_commands::text[])
+                  AND {_not_a_skill_of_session("invocations_hourly.session_id", "invocations_hourly.name")}
                 UNION ALL
                 SELECT 4, e.cmd #>> '{{}}', session_dims.session_id
                 FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd)
                 WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string'
                   AND e.cmd #>> '{{}}' <> '' AND (e.cmd #>> '{{}}') <> ALL($builtin_commands::text[])
+                  AND {_not_a_skill_of_session("session_dims.session_id", "(e.cmd #>> '{}')")}
             ) u JOIN sel s ON s.session_id = u.session_id GROUP BY 1, 2""",
         }
         params = window_params(f)
         if by == "invocation":
             params["builtin_commands"] = list(BUILTIN_COMMAND_NAMES)
-        return await self._q(f"WITH {self._sel_cte(f)} {sources[by]}", params)
+        skill_rows = (
+            """, skill_rows AS MATERIALIZED (SELECT kind, name, session_id FROM invocations_hourly
+                WHERE kind IN (2, 3) AND session_id IN (SELECT session_id FROM sel))"""
+            if by == "invocation"
+            else ""
+        )
+        return await self._q(f"WITH {self._sel_cte(f)}{skill_rows} {sources[by]}", params)
 
     async def get_cost_kpis(self, f: LocalAnalyticsFilter) -> Rows:
         """Every session of `sel` counts toward `total_sessions`, priced or not: the same
@@ -1896,28 +1916,32 @@ class PostgresCliAnalyticsReader:
     async def get_invocations(self, f: LocalAnalyticsFilter) -> Rows:
         """Skills and subagent types from the hourly rollup; slash commands from one source per session:
         the summary's `commands` (every non-empty string element counts 1) or, for a session without a
-        summary, its OTel user prompts from the rollup. The window is the one of `sel`, as everywhere."""
+        summary, its OTel user prompts from the rollup. A command name the same session also ran as a skill (kind 2)
+        is counted once, under Skills. The window is the one of `sel`, as everywhere."""
         params = window_params(f)
         params["builtin_commands"] = list(BUILTIN_COMMAND_NAMES)
         return await self._q(
             f"""
-        WITH {self._sel_cte(f)}
+        WITH {self._sel_cte(f)},
+        skill_rows AS MATERIALIZED (SELECT kind, name, session_id, calls AS c FROM invocations_hourly
+            WHERE kind IN (2, 3) AND session_id IN (SELECT session_id FROM sel))
         SELECT CASE kind WHEN 2 THEN 'skill' WHEN 3 THEN 'agent' ELSE 'command' END AS kind,
                name,
                sum(c)::bigint AS count
         FROM (
-            SELECT kind, name, calls AS c FROM invocations_hourly
-            WHERE kind IN (2, 3){self._scope(f)}
+            SELECT kind, name, c FROM skill_rows
             UNION ALL
             SELECT kind, name, calls AS c FROM invocations_hourly
             WHERE
               kind = 4
               AND {_no_summary("invocations_hourly.session_id")}
-              AND name <> ALL($builtin_commands::text[]){self._scope(f)}
+              AND name <> ALL($builtin_commands::text[])
+              AND {_not_a_skill_of_session("invocations_hourly.session_id", "invocations_hourly.name")}{self._scope(f)}
             UNION ALL
             SELECT 4, e.cmd #>> '{{}}', 1 FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd)
             WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string'
-              AND e.cmd #>> '{{}}' <> '' AND (e.cmd #>> '{{}}') <> ALL($builtin_commands::text[]){self._scope(f)}
+              AND e.cmd #>> '{{}}' <> '' AND (e.cmd #>> '{{}}') <> ALL($builtin_commands::text[])
+              AND {_not_a_skill_of_session("session_dims.session_id", "(e.cmd #>> '{}')")}{self._scope(f)}
         ) u
         GROUP BY 1, 2""",
             params,
@@ -3253,7 +3277,7 @@ class PostgresCliAnalyticsReader:
         (its agent.tool.end names the fork's agentId) or the slash command's dispatch (the fork shares its
         prompt_id, and its skill name unless it ran in the foreground without one); that row takes the fork's
         run (its SubagentStart to its SubagentStop) and cost by the fork's agentId, and the fork adds no row
-        of its own. A fork with no initiator row is its own `command` row. An inline slash command (no fork)
+        of its own. A fork with no initiator row is its own skill row. An inline slash-started skill (no fork)
         takes the requests of its own prompt that usage_requests attributes to its skill, from the dispatch to
         the next start of the same skill; its run ends at the last of them. Another skill's "real" duration
         runs to the end of its interaction.
@@ -3621,7 +3645,7 @@ class PostgresCliAnalyticsReader:
         -- Skill span names it by agentId and no slash-command dispatch paired with it (an older CLI, or a
         -- Skill call seen only as hook events). Its run time and cost come by its typed agent_id, as an
         -- agent's do. real_duration_ms mirrors subagent_duration_ms: the handler reads real_duration_ms
-        -- for this row's "command" kind.
+        -- for this skill row.
         SELECT '', h.skill_name, 1, h.ts, 0,
                CASE WHEN st.ended_at >= h.ts
                     THEN (extract(epoch FROM st.ended_at - h.ts) * 1000)::bigint END,
@@ -3665,7 +3689,7 @@ class PostgresCliAnalyticsReader:
         LEFT JOIN agent_usage au ON au.agent_id = df.agent_id
         ) dispatches
         WHERE {gate}
-        ORDER BY dispatch_start, is_slash_command, subagent_type {_C}, skill_name {_C}""",
+        ORDER BY dispatch_start, is_slash_command, subagent_type {_C}, skill_name {_C}""",  # noqa: S608 - only constants and SQL builders are interpolated; the values are bound
             {"sid": session_id, **gate_params},
         )
         for row in rows:

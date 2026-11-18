@@ -50,6 +50,7 @@ from codemie.repository.cli_analytics.scope import ViewerScope
 from codemie.service.analytics.handlers.cli_analytics_handler import (
     LocalAnalyticsHandler,
     _count_dispatch_subtypes,
+    _dispatch_label_and_kind,
     _group_repositories_into_projects,
     _iso,
     _served_prompt,
@@ -1585,41 +1586,73 @@ def test_skill_dispatch_ignores_subagent_duration_ms():
 
 
 def test_forked_skill_command_dispatch_uses_real_duration_ms():
-    """A forked skill (skill-tagged agent.subagent.start) is a "command"-kind row whose real_duration_ms
+    """A forked skill (skill-tagged agent.subagent.start) started by slash is a skill row whose real_duration_ms
     mirrors subagent_duration_ms at the SQL layer; the handler reads
     real_duration_ms for this kind unchanged, so duration_ms must reflect the forked skill's own run
-    time, not render as the free, instant row a main-thread slash command legitimately is."""
+    time, not render as the free, instant row a main-thread slash-started skill legitimately is."""
     rows = [
         _dispatch_row(skill_name="code-review", duration_ms=0, real_duration_ms=180_000)
         | {"is_slash_command": True, "subagent_duration_ms": 180_000}
     ]
     result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 3.5)
-    command = next(d for d in result if d["kind"] == "command")
-    assert command["duration_ms"] == 180_000
+    skill = next(d for d in result if d["kind"] == "skill")
+    assert skill["duration_ms"] == 180_000
 
 
 def test_main_thread_slash_command_dispatch_stays_instant():
-    """A main-thread slash command (no fork, no agentId) has real_duration_ms 0 and no
+    """A main-thread slash-started skill (no fork, no agentId) has real_duration_ms 0 and no
     subagent_duration_ms at the SQL layer: it must still render as the free, instant row it is."""
     rows = [
         _dispatch_row(skill_name="code-review", duration_ms=0, real_duration_ms=0)
         | {"is_slash_command": True, "subagent_duration_ms": None}
     ]
     result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 0.0)
-    command = next(d for d in result if d["kind"] == "command")
-    assert command["duration_ms"] == 0
+    skill = next(d for d in result if d["kind"] == "skill")
+    assert skill["duration_ms"] == 0
 
 
 @pytest.mark.parametrize("real_duration_ms", [0, 4000])
 def test_a_slash_command_at_the_session_end_keeps_its_duration(real_duration_ms):
-    """A command dispatched at the session's last event cannot be clamped: it keeps its known duration, 0 included."""
+    """A slash-started skill dispatched at the session's last event cannot be clamped: it keeps its known duration, 0 included."""
     rows = [
         _dispatch_row(skill_name="code-review", duration_ms=0, real_duration_ms=real_duration_ms, offset_s=300)
         | {"is_slash_command": True}
     ]
     result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 0.0)
-    command = next(d for d in result if d["kind"] == "command")
-    assert command["duration_ms"] == real_duration_ms
+    skill = next(d for d in result if d["kind"] == "skill")
+    assert skill["duration_ms"] == real_duration_ms
+
+
+def test_a_slash_started_skill_row_is_a_skill_dispatch():
+    """EPMCDME-17201: a skill started by a slash command is a skill, not a "command" row."""
+    row = {"skill_name": "code-review", "is_slash_command": 1}
+    assert _dispatch_label_and_kind(row, {}, {}) == ("skill · code-review", "skill")
+
+
+@pytest.mark.parametrize("is_slash_command", [0, 1])
+def test_a_skill_tool_row_and_a_slash_started_row_get_the_same_kind(is_slash_command):
+    row = {"skill_name": "sdlc-standard", "is_slash_command": is_slash_command}
+    assert _dispatch_label_and_kind(row, {}, {}) == ("skill · sdlc-standard", "skill")
+
+
+def test_an_agent_row_stays_an_agent_even_when_it_carries_the_slash_flag():
+    row = {"subagent_type": "Explore", "skill_name": "x", "is_slash_command": 1}
+    assert _dispatch_label_and_kind(row, {"Explore": 1}, {}) == ("agent · Explore", "agent")
+
+
+def test_a_row_with_neither_skill_nor_agent_is_not_a_dispatch():
+    row = {"skill_name": "", "subagent_type": "", "is_slash_command": 1}
+    assert _dispatch_label_and_kind(row, {}, {}) is None
+
+
+def test_slash_started_and_skill_tool_skills_are_both_skill_bars():
+    rows = [
+        _dispatch_row(skill_name="forkme") | {"is_slash_command": True},
+        _dispatch_row(skill_name="viatool", offset_s=20) | {"is_slash_command": False},
+    ]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 1.0)
+    kinds = sorted((d["label"], d["kind"]) for d in result if d["kind"] != "session")
+    assert kinds == [("skill · forkme", "skill"), ("skill · viatool", "skill")]
 
 
 def test_a_skill_in_a_zero_length_session_keeps_its_duration():

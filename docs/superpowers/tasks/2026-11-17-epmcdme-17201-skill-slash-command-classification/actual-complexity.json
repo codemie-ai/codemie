@@ -1,0 +1,71 @@
+{
+  "task": "Read-side fix so slash-started skills are classified as skills in CLI Analytics Session Detail and are no longer double-listed as slash commands in Tools & Models",
+  "generated": "2026-11-17T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M",
+      "affected": "CLI analytics Postgres reader (get_invocations, get_class_lists), CLI analytics Session Detail handler",
+      "layers": "Repository, Service"
+    },
+    "requirements_clarity": {
+      "score": 1,
+      "label": "XS",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 2,
+      "label": "S",
+      "risk_factors": "Per-session NOT EXISTS predicate added to two kind-4 SQL branches; read-only classification change in analytics queries; PostgreSQL version behaviour",
+      "mitigation": "Read-side only with no migration, rollup, backfill or OpenAPI change, so trivially reversible; live-DB tests run on PostgreSQL 14 and 17; AC2 regression test added after code review"
+    },
+    "file_change_estimate": {
+      "score": 4,
+      "label": "L",
+      "modified_files": 7,
+      "modified_file_list": [
+        ".ai-run/guides/integration/cli-analytics-events.md",
+        ".ai-run/guides/integration/cli-analytics-storage.md",
+        "src/codemie/repository/cli_analytics/postgres/reader.py",
+        "src/codemie/service/analytics/handlers/cli_analytics_handler.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_live_route_pricing.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_reader.py",
+        "tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": [".ai-run", "src", "tests"]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": ["Repository", "Service"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 7,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "file_change_estimate",
+      "reason": "7 files by the diffstat mapping (L), but only 2 are production files (reader.py +20/-5, cli_analytics_handler.py +1/-2); the other 5 are three test files (+199/-17) and two guide docs (+3/-1), so the raw file count overstates effort"
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Two components in two layers: the reader SQL predicate on both kind-4 branches (get_invocations, get_class_lists) and the Session Detail handler classification; the pattern was already established by the preceding commits"
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

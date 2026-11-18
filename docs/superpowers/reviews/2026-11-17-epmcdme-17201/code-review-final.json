@@ -1,0 +1,25 @@
+{
+  "decision": "approve",
+  "rationale": "Blind and edge-case lenses ran; no blocking defects survived triage, and the acceptance lens was skipped because no spec/story was supplied (no-spec mode, so confidence is low by design). 14 observations were dismissed (documented design choices, speculative, or tests/perf nits; the `sel` scope and the `_scope` AND-prefix were verified in source). 2 deferred: (1) a summary-based session whose skill exists only in session_dims.skills with no kind-2 rollup row still counts as a slash command, which the new storage guide documents as a limitation; (2) kind-2 vs kind-4 name matching is exact, and whether plugin-prefixed or case-differing names can diverge between agent.skill.dispatch skill_name and command_name could not be confirmed from the diff.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 3 commits use the EPMCDME-17201: Description format."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "ruff check passes on all 5 changed Python files; the new SQL helper is interpolated from constants only."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No user input reaches the interpolated SQL fragments; the predicate is scoped to sel and the data stays within the viewer scope."
+    }
+  ],
+  "findings": []
+}

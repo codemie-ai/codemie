@@ -1,0 +1,24 @@
+{
+  "decision": "approve",
+  "rationale": "All three lenses ran (blind, edge-case, acceptance against the author's plan for EPMCDME-17201, which carries the ticket's resolved requirements; the Jira page itself was not fetched). No blocking defect survived triage: the handler fix and the per-session NOT EXISTS predicate match the plan, both kind-4 branches of get_invocations and get_class_lists carry it, and the live test pins counts, tools output and class-list agreement. 14 lens items were dismissed after checking them against the code (sel scope exists via _scope; compact is not in BUILTIN_COMMAND_NAMES; invocations_hourly has an index on session_id; summary-only skills and count-surplus collisions are recorded accepted limitations; name-normalisation and dead 'command' branch/description are speculative or below the floor and the plan keeps the free-string kind to leave openapi.json unchanged); none deferred.",
+  "confidence": "high",
+  "risk_flags": ["public-api"],
+  "business_review": [
+    {"kind": "spec", "item": "_dispatch_label_and_kind returns skill kind for any row with skill_name and no subagent_type, whatever is_slash_command is", "status": "pass", "notes": "is_slash_command branch removed in cli_analytics_handler.py; agent rows and rows with neither field unchanged; five new unit tests."},
+    {"kind": "spec", "item": "Existing tests pinning kind 'command' updated to 'skill'; cost and duration numbers unchanged", "status": "pass", "notes": "Three handler duration tests and the live pricing test now select kind skill; cost values and sum == session cost unchanged."},
+    {"kind": "spec", "item": "Review Focus 5: Skill-tool skill and slash-started skill both become skill dispatch rows and skill_count matches the number of bars", "status": "pass", "notes": "test_live_session_skill_count_matches_the_skill_bars_however_each_skill_was_started asserts skill_count == len(bars) == 2; handler unit test covers the same two kinds."},
+    {"kind": "spec", "item": "_not_a_skill_of_session predicate ANDed onto both kind-4 branches of get_invocations and get_class_lists('invocation'); kind-2/3 branch and row shape unchanged", "status": "pass", "notes": "Helper text matches the plan including the sel scope; scope suffix stays last in get_invocations; SQL-shape pins assert the kind IN (2, 3) branch lacks the predicate."},
+    {"kind": "spec", "item": "Review Focus 1-4: per-session exclusion, summary path, command without a kind-2 row stays visible, class lists agree with counts", "status": "pass", "notes": "test_live_a_slash_started_skill_is_listed_under_skills_only seeds otel, summary, typed_only and no_hook sessions and asserts counts, get_tools output and classes == set(counts)."},
+    {"kind": "spec", "item": "Skill counts stay the kind-2 value; a command row is only removed, never added to a skill", "status": "pass", "notes": "Kind-2/3 branch is untouched; live test expects inlineme 1 and forkme 2 under skills_invoked."},
+    {"kind": "spec", "item": "No migration, no rollups.py change, no backfill; LocalAnalyticsDispatchRow.kind description and openapi.json untouched; dispatch cost/duration columns and ORDER BY tie-break untouched", "status": "pass", "notes": "None of those files or columns appear in the diff; only two comment lines in the dispatch query changed."},
+    {"kind": "spec", "item": "Code comments are one-line reasons with no ticket IDs", "status": "pass", "notes": "New source comments carry no ticket ID; the ticket appears only in test docstrings, which the plan allows."},
+    {"kind": "spec", "item": "Refresh stale 'command row' wording in guides and comments", "status": "pass", "notes": "cli-analytics-events.md, cli-analytics-storage.md and two reader dispatch comments updated. The plan also listed rollups.py, session_derived.py, vocabulary.py:96 and reader.py:333-334; checked and left unchanged because they describe the hook event, the classifier inputs and the data sources, not a slash-started skill as a command row. The plan text was not amended to record this."},
+    {"kind": "spec", "item": "Frontend hand-off note for the removed Session Detail 'command' kind", "status": "pass", "notes": "Recorded in plan.md ('Out of this repo'); it still has to be copied into the MR description."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All six commits on the branch use 'EPMCDME-17201: <Capitalised description>'."},
+    {"kind": "code-quality", "status": "pass", "notes": "New helper is typed and sits beside _no_summary; the SQL fragment is built from constants. Not blocking: the new live test was appended to test_live_route_pricing.py, which is about route pricing."},
+    {"kind": "security", "status": "pass", "notes": "The new SQL fragment takes only fixed column names, no request input reaches it, and it keeps the sel session scope."}
+  ],
+  "findings": []
+}

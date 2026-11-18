@@ -2072,8 +2072,8 @@ async def test_bound_window_values_are_the_ms_truncated_filter_bounds():
 _SCOPED = "AND session_id IN (SELECT session_id FROM sel)"
 
 
-async def _invocation_branches(**filters: object) -> list[str]:
-    """The UNION ALL branches of `get_invocations`, named parameters kept, whitespace collapsed."""
+async def _invocation_statement(**filters: object) -> str:
+    """The statement of `get_invocations`, named parameters kept, whitespace collapsed."""
     captured: list[str] = []
 
     async def capture(sql: str, params: dict[str, object]) -> list[dict[str, object]]:
@@ -2084,6 +2084,12 @@ async def _invocation_branches(**filters: object) -> list[str]:
     reader._q = capture  # type: ignore[method-assign]
     await reader.get_invocations(_flt(**filters))
     (sql,) = captured
+    return " ".join(sql.split())
+
+
+async def _invocation_branches(**filters: object) -> list[str]:
+    """The UNION ALL branches of `get_invocations`, named parameters kept, whitespace collapsed."""
+    sql = await _invocation_statement(**filters)
     start = sql.index("FROM (", sql.index("AS count")) + len("FROM (")
     body = sql[start : sql.rindex(") u")]
     return [" ".join(branch.split()) for branch in body.split("UNION ALL")]
@@ -2093,20 +2099,53 @@ def _no_summary(column: str) -> str:
     return f"NOT EXISTS (SELECT 1 FROM session_dims sd WHERE sd.session_id = {column} AND sd.summary_ts IS NOT NULL)"
 
 
+def _not_a_skill(session_column: str, name_column: str) -> str:
+    """A command name that is a skill (kind 2) of the same session is that skill's, not a slash command."""
+    return (
+        "NOT EXISTS (SELECT 1 FROM skill_rows sk "
+        f"WHERE sk.kind = 2 AND sk.session_id = {session_column} AND sk.name = {name_column})"
+    )
+
+
+# The skill and agent rows of the selected sessions, read once and shared by the Skills branch and both exclusions.
+_SKILL_ROWS_CTE = (
+    "skill_rows AS MATERIALIZED (SELECT kind, name, session_id, calls AS c FROM invocations_hourly "
+    "WHERE kind IN (2, 3) AND session_id IN (SELECT session_id FROM sel))"
+)
+
+
+_ROLLUP_NOT_A_SKILL = _not_a_skill("invocations_hourly.session_id", "invocations_hourly.name")
+_SUMMARY_NOT_A_SKILL = _not_a_skill("session_dims.session_id", "(e.cmd #>> '{}')")
+
+
 @pytest.mark.parametrize("filters", _ALL_FILTERS, ids=["unfiltered", "deny_all", "projects"])
 @pytest.mark.asyncio
 async def test_invocations_have_three_branches_each_scoped_to_sel(filters: dict[str, object]) -> None:
     branches = await _invocation_branches(**filters)
 
     assert len(branches) == 3
-    assert all(branch.endswith(_SCOPED) for branch in branches)
+    # The Skills branch reads the scoped `skill_rows`; the two command branches carry the scope themselves.
+    assert branches[0] == "SELECT kind, name, c FROM skill_rows"
+    assert all(branch.endswith(_SCOPED) for branch in branches[1:])
 
 
 @pytest.mark.asyncio
 async def test_skill_and_agent_invocations_come_from_the_hourly_rollup_alone() -> None:
     branches = await _invocation_branches()
 
-    assert f"SELECT kind, name, calls AS c FROM invocations_hourly WHERE kind IN (2, 3) {_SCOPED}" in branches
+    assert "SELECT kind, name, c FROM skill_rows" in branches
+    assert _SKILL_ROWS_CTE in await _invocation_statement()
+
+
+@pytest.mark.asyncio
+async def test_the_skill_rows_are_read_from_the_hourly_rollup_once_for_every_branch_that_needs_them() -> None:
+    # One scan of the skill and agent rows serves the Skills branch and both exclusions: a probe of the partitioned
+    # table per command row visited every partition each time and cost up to four times the query before it.
+    sql = await _invocation_statement()
+
+    assert sql.count("FROM invocations_hourly WHERE kind IN (2, 3)") == 1
+    assert sql.count("FROM skill_rows") == 3
+    assert "FROM invocations_hourly sk" not in sql
 
 
 @pytest.mark.asyncio
@@ -2119,7 +2158,8 @@ async def test_otel_slash_commands_count_only_for_sessions_without_a_summary() -
 
     assert (
         "SELECT kind, name, calls AS c FROM invocations_hourly WHERE kind = 4 "
-        f"AND {_no_summary('invocations_hourly.session_id')} AND name <> ALL($builtin_commands::text[]) {_SCOPED}"
+        f"AND {_no_summary('invocations_hourly.session_id')} AND name <> ALL($builtin_commands::text[]) "
+        f"AND {_ROLLUP_NOT_A_SKILL} {_SCOPED}"
     ) in branches
 
     # Verify that compact is not excluded by the branch predicate
@@ -2136,7 +2176,7 @@ async def test_summary_sessions_count_every_string_command_once_by_the_shared_wi
     assert summary == [
         "SELECT 4, e.cmd #>> '{}', 1 FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd) "
         "WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string' AND e.cmd #>> '{}' <> '' AND (e.cmd #>> '{}') <> ALL($builtin_commands::text[]) "
-        f"{_SCOPED}"
+        f"AND {_SUMMARY_NOT_A_SKILL} {_SCOPED}"
     ]
     # The window is the one of `sel`: the branch has no time predicate of its own.
     assert "started_at" not in summary[0] and "BETWEEN" not in summary[0]
@@ -2155,6 +2195,39 @@ async def test_an_empty_summary_command_counts_nothing_and_names_are_taken_as_st
     assert "AND jsonb_typeof(e.cmd) = 'string' AND e.cmd #>> '{}' <> '' " in summary
     assert summary.startswith("SELECT 4, e.cmd #>> '{}', 1 FROM session_dims, ")
     assert "ltrim" not in summary
+
+
+@pytest.mark.asyncio
+async def test_a_command_that_is_a_skill_of_its_own_session_is_not_counted_as_a_command() -> None:
+    """The skill keeps its kind 2 count under Skills; only the two command branches drop the name."""
+    branches = await _invocation_branches()
+
+    skill_agent, *commands = branches
+    assert skill_agent == "SELECT kind, name, c FROM skill_rows" and "sk.kind = 2" not in skill_agent
+    assert [_ROLLUP_NOT_A_SKILL in commands[0], _SUMMARY_NOT_A_SKILL in commands[1]] == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_class_lists_by_invocation_drop_the_same_session_skill_names_from_both_command_branches() -> None:
+    # The per-row class lists must agree with the counts: no `command` list row for a name get_invocations dropped.
+    captured: list[str] = []
+
+    async def capture(sql: str, params: dict[str, object]) -> list[dict[str, object]]:
+        captured.append(" ".join(sql.split()))
+        return []
+
+    reader = PostgresCliAnalyticsReader(_SqlRecorder())  # type: ignore[arg-type]
+    reader._q = capture  # type: ignore[method-assign]
+    await reader.get_class_lists(_flt(), "invocation")
+
+    (sql,) = captured
+    assert sql.count(_ROLLUP_NOT_A_SKILL) == 1
+    assert sql.count(_SUMMARY_NOT_A_SKILL) == 1
+    assert (
+        "skill_rows AS MATERIALIZED (SELECT kind, name, session_id FROM invocations_hourly "
+        "WHERE kind IN (2, 3) AND session_id IN (SELECT session_id FROM sel))"
+    ) in sql
+    assert "FROM skill_rows UNION ALL" in sql
 
 
 def test_window_params_omit_projects_when_project_unattributed():

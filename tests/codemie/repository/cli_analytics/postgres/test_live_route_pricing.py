@@ -837,14 +837,120 @@ async def test_live_dispatches_on_a_routed_session_are_priced_by_the_route_their
         ("inlineme", [route]),
     ]
     assert sorted((d["label"], d["cost_usd"]) for d in detail["dispatches"]) == [
-        ("command · forkme", pytest.approx(0.0066, abs=1e-12)),  # 2 000 input at 3.3e-06
-        ("command · groupme", pytest.approx(0.0132, abs=1e-12)),  # 4 000 input at 3.3e-06
-        ("command · inlineme", pytest.approx(0.0033, abs=1e-12)),  # 1 000 input at 3.3e-06
         ("session", pytest.approx(0.0231, abs=1e-12)),
+        ("skill · forkme", pytest.approx(0.0066, abs=1e-12)),  # 2 000 input at 3.3e-06
+        ("skill · groupme", pytest.approx(0.0132, abs=1e-12)),  # 4 000 input at 3.3e-06
+        ("skill · inlineme", pytest.approx(0.0033, abs=1e-12)),  # 1 000 input at 3.3e-06
     ]
     assert detail["cost_usd"] == pytest.approx(0.0231, abs=1e-12)
-    commands = [d["cost_usd"] for d in detail["dispatches"] if d["kind"] == "command"]
-    assert sum(commands) == pytest.approx(detail["cost_usd"], abs=1e-12)
+    skills = [d["cost_usd"] for d in detail["dispatches"] if d["kind"] == "skill"]
+    assert sum(skills) == pytest.approx(detail["cost_usd"], abs=1e-12)
+
+
+_SKILL, _COMMAND = 2, 4
+
+
+@pytest.mark.asyncio
+async def test_live_a_slash_started_skill_is_listed_under_skills_only() -> None:
+    """EPMCDME-17201: a name a session ran as a skill (kind 2) is not also one of its slash commands (kind 4 of the
+    rollup, or the summary's `commands`). The exclusion is per session, so a plain command typed in another session
+    under the same name stays, and a command without a skill row in its own session is not lost."""
+    tag = uuid.uuid4().hex[:8]
+    ids = {name: f"test-skill-or-command-{name}-{tag}" for name in ("otel", "summary", "typed_only", "no_hook")}
+    hour = _START.replace(minute=0, second=0, microsecond=0)
+    rollup = [  # (session, kind, name, calls)
+        ("otel", _SKILL, "inlineme", 1),
+        ("otel", _COMMAND, "inlineme", 1),
+        ("otel", _COMMAND, "compact", 2),
+        ("summary", _SKILL, "forkme", 2),
+        ("typed_only", _COMMAND, "inlineme", 1),
+    ]
+    summaries = {"summary": ["forkme", "compact"], "no_hook": ["orphan"]}
+    engine = await _engine()
+    try:
+        async with engine.acquire() as conn:
+            for name, sid in ids.items():
+                commands = summaries.get(name)
+                await conn.execute(
+                    "INSERT INTO session_dims (session_id, started_at, last_event_at, summary_ts, commands, "
+                    "has_activity, last_activity_day) VALUES ($1, $2, $2, $3, $4::jsonb, true, $5)",
+                    sid,
+                    _START,
+                    _START if commands is not None else None,
+                    json.dumps(commands) if commands is not None else None,
+                    _START.date(),  # the window admits a session on its stored last_activity_day
+                )
+            for name, kind, skill_or_command, calls in rollup:
+                await conn.execute(
+                    "INSERT INTO invocations_hourly (hour, session_id, kind, name, calls, success) "
+                    "VALUES ($1, $2, $3, $4, $5, 0)",
+                    hour,
+                    ids[name],
+                    kind,
+                    skill_or_command,
+                    calls,
+                )
+        window = LocalAnalyticsFilter(
+            scope=EXCLUDE_SCOPE, start_dt=_START - timedelta(days=1), end_dt=_START + timedelta(days=1)
+        ).restricted_to(list(ids.values()))
+        reader = PostgresCliAnalyticsReader(engine)
+        counts = {(r["kind"], r["name"]): r["count"] for r in await reader.get_invocations(window)}
+        classes = {(r["kind"], r["key"]) for r in await reader.get_class_lists(window, "invocation")}
+        tools = await LocalAnalyticsHandler(reader).get_tools(window)
+    finally:
+        await _cleanup(engine, list(ids.values()))
+        await engine.close()
+
+    assert counts == {
+        ("skill", "inlineme"): 1,
+        ("skill", "forkme"): 2,
+        ("command", "inlineme"): 1,  # the session that only typed it
+        ("command", "compact"): 3,  # not a skill anywhere: OTel 2 + summary 1
+        ("command", "orphan"): 1,  # no skill row in its own session
+    }
+    assert [(r["name"], r["count"]) for r in tools["skills_invoked"]] == [("forkme", 2), ("inlineme", 1)]
+    assert sorted((r["name"], r["count"]) for r in tools["slash_commands"]) == [
+        ("compact", 3),
+        ("inlineme", 1),
+        ("orphan", 1),
+    ]
+    assert classes == set(counts)
+
+
+_SKILL_TOOL_SPAN_SQL = """
+    INSERT INTO spans
+        (ts, duration_ns, trace_id, span_id, parent_span_id, span_kind, span_name,
+         session_id, tool_name, tool_use_id, skill_name, status_code, resource_id)
+    VALUES ($1, 1000000, $2, $3, $4, 1, 'skill_tool', $5, 'Skill', '', $6, 0, 0)
+"""
+
+
+@pytest.mark.asyncio
+async def test_live_session_skill_count_matches_the_skill_bars_however_each_skill_was_started() -> None:
+    """EPMCDME-17201: one skill started by a slash command and one by the Skill tool are both skill bars, and the
+    Session Detail skill count is the number of those bars; neither shows up as a command."""
+    session_id = f"test-skill-count-vs-bars-{uuid.uuid4().hex[:8]}"
+    at = lambda minute, second=0: _TODAY + timedelta(minutes=minute, seconds=second)  # noqa: E731
+    interaction = _id(f"int-{session_id}")
+    engine = await _engine()
+    try:
+        async with engine.acquire() as conn:
+            await conn.execute(_SESSION_START, _TODAY, session_id)
+            await conn.execute(_INTERACTION_SPAN_SQL, _TODAY, b"t" * 16, interaction, session_id)
+            await conn.execute(
+                _SKILL_TOOL_SPAN_SQL, at(8), b"t" * 16, _id(f"tool-{session_id}"), interaction, session_id, "viatool"
+            )
+        await _ingest(engine, [_dispatch(session_id, at(5), "prompt-slash", "slashme")])
+        await _refresh(engine, _TODAY.date())
+
+        detail = await _detail(engine, session_id, [], {})
+    finally:
+        await _cleanup(engine, [session_id])
+        await engine.close()
+
+    bars = [(d["label"], d["kind"]) for d in detail["dispatches"] if d["kind"] != "session"]
+    assert sorted(bars) == [("skill · slashme", "skill"), ("skill · viatool", "skill")]
+    assert detail["skill_count"] == len(bars) == 2
 
 
 _OPUS_55 = "claude-opus-5-5"

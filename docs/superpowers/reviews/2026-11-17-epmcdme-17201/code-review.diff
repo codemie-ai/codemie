@@ -1,0 +1,421 @@
+diff --git a/.ai-run/guides/integration/cli-analytics-events.md b/.ai-run/guides/integration/cli-analytics-events.md
+index 171de8a351..bdb82e5079 100644
+--- a/.ai-run/guides/integration/cli-analytics-events.md
++++ b/.ai-run/guides/integration/cli-analytics-events.md
+@@ -427,7 +427,7 @@ A skill started by a slash command of the user. For a forked skill this event is
+ | `command_name` | string, no slash | `attrs` |
+ | `command_source` | string | `attrs` |
+ 
+-- One invocation of a skill counts once, by its initiator: this event when a slash command starts the skill, the Skill tool call (its `TOOL` span, or `agent.tool.start` with `skill_name`) when the model starts it. A Claude Code Skill or `Agent` call counts only with evidence it ran, since a denied call gets only `agent.tool.denied`: its `TOOL` span (`span_name` starting with `claude_code.`) needs a `TOOL_EXECUTION` span or an `agent.tool.end` / `agent.tool.error` of that tool with its `tool_use_id`, from 1 hour before the call to 1 day after it, and a Skill call's `agent.tool.start` needs that end or error; a denied call is neither a skill nor an agent and has no timeline row. A call without a `tool_use_id`, and another client's span or `agent.tool.start`, count as they are; this event and the skill-tagged `agent.subagent.start` are not gated. A forked skill also sends the `agent.subagent.start` of its fork, joined to the initiator by an exact key: the fork's id the Skill call's `agent.tool.end` names, or the `prompt_id` of this event. A fork a Skill call names is never this event's fork; this event has a fork only when it is the only Claude Code `agent.skill.dispatch` of its session and `prompt_id` (the CLI sends one per prompt; with two or more, none of them has a fork and their forks count on their own); its fork is the earliest first start of an `agent_id` at or after it with its `prompt_id` and skill name, else, when none has the name, the earliest with its `prompt_id` and no skill name (a foreground fork) that no `Agent` call's `agentId` names (an ordinary subagent of the same turn), a start with an empty or absent `agent_id` never; one event, one fork; an event whose `skill_name` is over 256 bytes is not counted and has no fork, so its fork counts on its own. A joined fork is not counted again and is never an agent, with or without `skill_name`; a fork with no counted initiator counts on its own: with `skill_name` as a skill, without it as an agent on a fallback pair only; on a day with spans such a fork without `skill_name` is not counted, since agents there come from `Agent` `TOOL` spans. A fork continued by SendMessage sends another `agent.subagent.start` with the same `agent_id` (under the new turn's `prompt_id`): only the first start of an `agent_id` is counted, and only a first start can be this event's fork. On the session timeline the invocation is one row, the initiator's (the Skill call's `TOOL` span or this event), with the fork's run and cost; the cost is that of the API requests under the span its LLM requests name by `agent_id`, or, when no LLM request names the fork (Claude Code stamps `agent_id` only on a subagent a tool call started, so a fork this event runs in the foreground has none), of the API requests the rollups' pairing matched with its own `agent.usage.request` rows (same `agent_id`), never both; a Skill call without a `TOOL` span has no row, so its fork is its own `command` row when it carries `skill_name` and has no row when it does not. The joins by `agentId` and `prompt_id` read Claude Code events only; an event without `platform` counts as Claude Code, the hook rows the server stores from OTel logs included. A `skill_name` on a Claude Code `agent.subagent.start` marks a skill fork: such a start is a skill, never an agent; another client's tagged start counts as an agent, as its initiator is never paired. A fork named by a Skill call that is not itself counted (no `TOOL` span, no `skill_name` on its `agent.tool.start`) and without its own `skill_name` counts as an agent. The Skill call's `agent.tool.end` names the fork by its `fork_agent_id`, which the CLI reads out of the result before it cuts `tool_response` to 300 characters, else by the complete `agentId` in `tool_response` (it survives for skill names up to about 203 characters for a background fork, 221 for a foreground one); its typed `agent_id` is never the key, since on a call made inside a subagent it is the caller's id.
++- One invocation of a skill counts once, by its initiator: this event when a slash command starts the skill, the Skill tool call (its `TOOL` span, or `agent.tool.start` with `skill_name`) when the model starts it. A Claude Code Skill or `Agent` call counts only with evidence it ran, since a denied call gets only `agent.tool.denied`: its `TOOL` span (`span_name` starting with `claude_code.`) needs a `TOOL_EXECUTION` span or an `agent.tool.end` / `agent.tool.error` of that tool with its `tool_use_id`, from 1 hour before the call to 1 day after it, and a Skill call's `agent.tool.start` needs that end or error; a denied call is neither a skill nor an agent and has no timeline row. A call without a `tool_use_id`, and another client's span or `agent.tool.start`, count as they are; this event and the skill-tagged `agent.subagent.start` are not gated. A forked skill also sends the `agent.subagent.start` of its fork, joined to the initiator by an exact key: the fork's id the Skill call's `agent.tool.end` names, or the `prompt_id` of this event. A fork a Skill call names is never this event's fork; this event has a fork only when it is the only Claude Code `agent.skill.dispatch` of its session and `prompt_id` (the CLI sends one per prompt; with two or more, none of them has a fork and their forks count on their own); its fork is the earliest first start of an `agent_id` at or after it with its `prompt_id` and skill name, else, when none has the name, the earliest with its `prompt_id` and no skill name (a foreground fork) that no `Agent` call's `agentId` names (an ordinary subagent of the same turn), a start with an empty or absent `agent_id` never; one event, one fork; an event whose `skill_name` is over 256 bytes is not counted and has no fork, so its fork counts on its own. A joined fork is not counted again and is never an agent, with or without `skill_name`; a fork with no counted initiator counts on its own: with `skill_name` as a skill, without it as an agent on a fallback pair only; on a day with spans such a fork without `skill_name` is not counted, since agents there come from `Agent` `TOOL` spans. A fork continued by SendMessage sends another `agent.subagent.start` with the same `agent_id` (under the new turn's `prompt_id`): only the first start of an `agent_id` is counted, and only a first start can be this event's fork. On the session timeline the invocation is one row, the initiator's (the Skill call's `TOOL` span or this event), with the fork's run and cost; the cost is that of the API requests under the span its LLM requests name by `agent_id`, or, when no LLM request names the fork (Claude Code stamps `agent_id` only on a subagent a tool call started, so a fork this event runs in the foreground has none), of the API requests the rollups' pairing matched with its own `agent.usage.request` rows (same `agent_id`), never both; a Skill call without a `TOOL` span has no row, so its fork is its own `skill` row when it carries `skill_name` and has no row when it does not. The timeline kind of a skill never depends on how it was started: a skill started by a slash command and one started by the Skill tool are both `skill` rows. The joins by `agentId` and `prompt_id` read Claude Code events only; an event without `platform` counts as Claude Code, the hook rows the server stores from OTel logs included. A `skill_name` on a Claude Code `agent.subagent.start` marks a skill fork: such a start is a skill, never an agent; another client's tagged start counts as an agent, as its initiator is never paired. A fork named by a Skill call that is not itself counted (no `TOOL` span, no `skill_name` on its `agent.tool.start`) and without its own `skill_name` counts as an agent. The Skill call's `agent.tool.end` names the fork by its `fork_agent_id`, which the CLI reads out of the result before it cuts `tool_response` to 300 characters, else by the complete `agentId` in `tool_response` (it survives for skill names up to about 203 characters for a background fork, 221 for a foreground one); its typed `agent_id` is never the key, since on a call made inside a subagent it is the caller's id.
+ - The arguments of the command are prompt text and are not sent.
+ 
+ ## `agent.tool.end`
+diff --git a/.ai-run/guides/integration/cli-analytics-storage.md b/.ai-run/guides/integration/cli-analytics-storage.md
+index 8e6b6750a0..fa19f048e5 100644
+--- a/.ai-run/guides/integration/cli-analytics-storage.md
++++ b/.ai-run/guides/integration/cli-analytics-storage.md
+@@ -199,6 +199,8 @@ The served `prompt` is the session's name when `session_dims.session_title` is n
+ 
+ The window is the shared one (see Window Semantics): a session whose `started_at` is in the window adds all its commands, whichever source they come from.
+ 
++A command name the same session also ran as a skill (a kind-2 row of `invocations_hourly`: an `agent.skill.dispatch` or a Skill call) is not one of that session's slash commands. Both kind-4 branches skip it, so a skill started by a slash command is counted once, under `skills_invoked`, with its kind-2 count. The exclusion is per session: the same name typed as a plain command in another session still counts there, and a command with no kind-2 row in its own session stays a command. `get_class_lists` by invocation applies the same rule, so the per-row lists agree with the counts.
++
+ ### Known limitations
+ 
+ | Case | Effect |
+diff --git a/src/codemie/repository/cli_analytics/postgres/reader.py b/src/codemie/repository/cli_analytics/postgres/reader.py
+index ade66b7c5e..979e0b1792 100644
+--- a/src/codemie/repository/cli_analytics/postgres/reader.py
++++ b/src/codemie/repository/cli_analytics/postgres/reader.py
+@@ -346,6 +346,16 @@ def _no_summary(column: str) -> str:
+     return f"NOT EXISTS (SELECT 1 FROM session_dims sd WHERE sd.session_id = {column} AND sd.summary_ts IS NOT NULL)"
+ 
+ 
++def _not_a_skill_of_session(session_column: str, name_column: str) -> str:
++    """A command name the same session also ran as a skill (kind 2) is that skill's invocation, not a slash command.
++    Scoped to `sel` like every fact read, so the scope audit holds without reasoning about the correlation."""
++    return (
++        "NOT EXISTS (SELECT 1 FROM invocations_hourly sk "
++        f"WHERE sk.kind = 2 AND sk.session_id = {session_column} AND sk.name = {name_column} "
++        "AND sk.session_id IN (SELECT session_id FROM sel))"
++    )
++
++
+ def _row_email(alias: str) -> str:
+     """The smallest non-empty `user_email` of the `alias` rows, byte order; an aggregate, or a window with OVER."""
+     return f"min(nullif({alias}.user_email, '') {_C})"
+@@ -792,11 +802,13 @@ class PostgresCliAnalyticsReader:
+                 SELECT kind, name, session_id FROM invocations_hourly
+                 WHERE kind = 4 AND {_no_summary("invocations_hourly.session_id")}
+                   AND name <> ALL($builtin_commands::text[])
++                  AND {_not_a_skill_of_session("invocations_hourly.session_id", "invocations_hourly.name")}
+                 UNION ALL
+                 SELECT 4, e.cmd #>> '{{}}', session_dims.session_id
+                 FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd)
+                 WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string'
+                   AND e.cmd #>> '{{}}' <> '' AND (e.cmd #>> '{{}}') <> ALL($builtin_commands::text[])
++                  AND {_not_a_skill_of_session("session_dims.session_id", "(e.cmd #>> '{}')")}
+             ) u JOIN sel s ON s.session_id = u.session_id GROUP BY 1, 2""",
+         }
+         params = window_params(f)
+@@ -1122,7 +1134,8 @@ class PostgresCliAnalyticsReader:
+     async def get_invocations(self, f: LocalAnalyticsFilter) -> Rows:
+         """Skills and subagent types from the hourly rollup; slash commands from one source per session:
+         the summary's `commands` (every non-empty string element counts 1) or, for a session without a
+-        summary, its OTel user prompts from the rollup. The window is the one of `sel`, as everywhere."""
++        summary, its OTel user prompts from the rollup. A command name the same session also ran as a skill (kind 2)
++        is counted once, under Skills. The window is the one of `sel`, as everywhere."""
+         params = window_params(f)
+         params["builtin_commands"] = list(BUILTIN_COMMAND_NAMES)
+         return await self._q(
+@@ -1139,11 +1152,13 @@ class PostgresCliAnalyticsReader:
+             WHERE
+               kind = 4
+               AND {_no_summary("invocations_hourly.session_id")}
+-              AND name <> ALL($builtin_commands::text[]){self._scope(f)}
++              AND name <> ALL($builtin_commands::text[])
++              AND {_not_a_skill_of_session("invocations_hourly.session_id", "invocations_hourly.name")}{self._scope(f)}
+             UNION ALL
+             SELECT 4, e.cmd #>> '{{}}', 1 FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd)
+             WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string'
+-              AND e.cmd #>> '{{}}' <> '' AND (e.cmd #>> '{{}}') <> ALL($builtin_commands::text[]){self._scope(f)}
++              AND e.cmd #>> '{{}}' <> '' AND (e.cmd #>> '{{}}') <> ALL($builtin_commands::text[])
++              AND {_not_a_skill_of_session("session_dims.session_id", "(e.cmd #>> '{}')")}{self._scope(f)}
+         ) u
+         GROUP BY 1, 2""",
+             params,
+@@ -1830,7 +1845,7 @@ class PostgresCliAnalyticsReader:
+         (its agent.tool.end names the fork's agentId) or the slash command's dispatch (the fork shares its
+         prompt_id, and its skill name unless it ran in the foreground without one); that row takes the fork's
+         run (its SubagentStart to its SubagentStop) and cost by the fork's agentId, and the fork adds no row
+-        of its own. A fork with no initiator row is its own `command` row. An inline slash command (no fork)
++        of its own. A fork with no initiator row is its own skill row. An inline slash-started skill (no fork)
+         takes the requests of its own prompt that usage_requests attributes to its skill, from the dispatch to
+         the next start of the same skill; its run ends at the last of them. Another skill's "real" duration
+         runs to the end of its interaction.
+@@ -2096,7 +2111,7 @@ class PostgresCliAnalyticsReader:
+         -- Skill span names it by agentId and no slash-command dispatch paired with it (an older CLI, or a
+         -- Skill call seen only as hook events). Its run time and cost come by its typed agent_id, as an
+         -- agent's do. real_duration_ms mirrors subagent_duration_ms: the handler reads real_duration_ms
+-        -- for this row's "command" kind.
++        -- for this skill row.
+         SELECT '', h.skill_name, 1, h.ts, 0,
+                CASE WHEN st.ended_at >= h.ts
+                     THEN (extract(epoch FROM st.ended_at - h.ts) * 1000)::bigint END,
+diff --git a/src/codemie/service/analytics/handlers/cli_analytics_handler.py b/src/codemie/service/analytics/handlers/cli_analytics_handler.py
+index 454969574f..e152987205 100644
+--- a/src/codemie/service/analytics/handlers/cli_analytics_handler.py
++++ b/src/codemie/service/analytics/handlers/cli_analytics_handler.py
+@@ -462,8 +462,7 @@ def _dispatch_label_and_kind(
+         return label, "agent"
+     skill = _s(row.get("skill_name"))
+     if skill:
+-        if row.get("is_slash_command"):
+-            return f"command · {skill}", "command"
++        # A skill is a skill however it was started; the reader flags slash-started rows only to order them.
+         return f"skill · {skill}", "skill"
+     return None
+ 
+diff --git a/tests/codemie/repository/cli_analytics/postgres/test_live_route_pricing.py b/tests/codemie/repository/cli_analytics/postgres/test_live_route_pricing.py
+index 1cb0d548f3..b769702f3b 100644
+--- a/tests/codemie/repository/cli_analytics/postgres/test_live_route_pricing.py
++++ b/tests/codemie/repository/cli_analytics/postgres/test_live_route_pricing.py
+@@ -835,11 +835,116 @@ async def test_live_dispatches_on_a_routed_session_are_priced_by_the_route_their
+         ("inlineme", [route]),
+     ]
+     assert sorted((d["label"], d["cost_usd"]) for d in detail["dispatches"]) == [
+-        ("command · forkme", pytest.approx(0.0066, abs=1e-12)),  # 2 000 input at 3.3e-06
+-        ("command · groupme", pytest.approx(0.0132, abs=1e-12)),  # 4 000 input at 3.3e-06
+-        ("command · inlineme", pytest.approx(0.0033, abs=1e-12)),  # 1 000 input at 3.3e-06
+         ("session", pytest.approx(0.0231, abs=1e-12)),
++        ("skill · forkme", pytest.approx(0.0066, abs=1e-12)),  # 2 000 input at 3.3e-06
++        ("skill · groupme", pytest.approx(0.0132, abs=1e-12)),  # 4 000 input at 3.3e-06
++        ("skill · inlineme", pytest.approx(0.0033, abs=1e-12)),  # 1 000 input at 3.3e-06
+     ]
+     assert detail["cost_usd"] == pytest.approx(0.0231, abs=1e-12)
+-    commands = [d["cost_usd"] for d in detail["dispatches"] if d["kind"] == "command"]
+-    assert sum(commands) == pytest.approx(detail["cost_usd"], abs=1e-12)
++    skills = [d["cost_usd"] for d in detail["dispatches"] if d["kind"] == "skill"]
++    assert sum(skills) == pytest.approx(detail["cost_usd"], abs=1e-12)
++
++
++_SKILL, _COMMAND = 2, 4
++
++
++@pytest.mark.asyncio
++async def test_live_a_slash_started_skill_is_listed_under_skills_only() -> None:
++    """EPMCDME-17201: a name a session ran as a skill (kind 2) is not also one of its slash commands (kind 4 of the
++    rollup, or the summary's `commands`). The exclusion is per session, so a plain command typed in another session
++    under the same name stays, and a command without a skill row in its own session is not lost."""
++    tag = uuid.uuid4().hex[:8]
++    ids = {name: f"test-skill-or-command-{name}-{tag}" for name in ("otel", "summary", "typed_only", "no_hook")}
++    hour = _START.replace(minute=0, second=0, microsecond=0)
++    rollup = [  # (session, kind, name, calls)
++        ("otel", _SKILL, "inlineme", 1),
++        ("otel", _COMMAND, "inlineme", 1),
++        ("otel", _COMMAND, "compact", 2),
++        ("summary", _SKILL, "forkme", 2),
++        ("typed_only", _COMMAND, "inlineme", 1),
++    ]
++    summaries = {"summary": ["forkme", "compact"], "no_hook": ["orphan"]}
++    engine = await _engine()
++    try:
++        async with engine.acquire() as conn:
++            for name, sid in ids.items():
++                commands = summaries.get(name)
++                await conn.execute(
++                    "INSERT INTO session_dims (session_id, started_at, last_event_at, summary_ts, commands, "
++                    "has_activity) VALUES ($1, $2, $2, $3, $4::jsonb, true)",
++                    sid,
++                    _START,
++                    _START if commands is not None else None,
++                    json.dumps(commands) if commands is not None else None,
++                )
++            for name, kind, skill_or_command, calls in rollup:
++                await conn.execute(
++                    "INSERT INTO invocations_hourly (hour, session_id, kind, name, calls, success) "
++                    "VALUES ($1, $2, $3, $4, $5, 0)",
++                    hour,
++                    ids[name],
++                    kind,
++                    skill_or_command,
++                    calls,
++                )
++        window = LocalAnalyticsFilter(
++            scope=EXCLUDE_SCOPE, start_dt=_START - timedelta(days=1), end_dt=_START + timedelta(days=1)
++        ).restricted_to(list(ids.values()))
++        reader = PostgresCliAnalyticsReader(engine)
++        counts = {(r["kind"], r["name"]): r["count"] for r in await reader.get_invocations(window)}
++        classes = {(r["kind"], r["key"]) for r in await reader.get_class_lists(window, "invocation")}
++        tools = await LocalAnalyticsHandler(reader).get_tools(window)
++    finally:
++        await _cleanup(engine, list(ids.values()))
++        await engine.close()
++
++    assert counts == {
++        ("skill", "inlineme"): 1,
++        ("skill", "forkme"): 2,
++        ("command", "inlineme"): 1,  # the session that only typed it
++        ("command", "compact"): 3,  # not a skill anywhere: OTel 2 + summary 1
++        ("command", "orphan"): 1,  # no skill row in its own session
++    }
++    assert [(r["name"], r["count"]) for r in tools["skills_invoked"]] == [("forkme", 2), ("inlineme", 1)]
++    assert sorted((r["name"], r["count"]) for r in tools["slash_commands"]) == [
++        ("compact", 3),
++        ("inlineme", 1),
++        ("orphan", 1),
++    ]
++    assert classes == set(counts)
++
++
++_SKILL_TOOL_SPAN_SQL = """
++    INSERT INTO spans
++        (ts, duration_ns, trace_id, span_id, parent_span_id, span_kind, span_name,
++         session_id, tool_name, tool_use_id, skill_name, status_code, resource_id)
++    VALUES ($1, 1000000, $2, $3, $4, 1, 'skill_tool', $5, 'Skill', '', $6, 0, 0)
++"""
++
++
++@pytest.mark.asyncio
++async def test_live_session_skill_count_matches_the_skill_bars_however_each_skill_was_started() -> None:
++    """EPMCDME-17201: one skill started by a slash command and one by the Skill tool are both skill bars, and the
++    Session Detail skill count is the number of those bars; neither shows up as a command."""
++    session_id = f"test-skill-count-vs-bars-{uuid.uuid4().hex[:8]}"
++    at = lambda minute, second=0: _TODAY + timedelta(minutes=minute, seconds=second)  # noqa: E731
++    interaction = _id(f"int-{session_id}")
++    engine = await _engine()
++    try:
++        async with engine.acquire() as conn:
++            await conn.execute(_SESSION_START, _TODAY, session_id)
++            await conn.execute(_INTERACTION_SPAN_SQL, _TODAY, b"t" * 16, interaction, session_id)
++            await conn.execute(
++                _SKILL_TOOL_SPAN_SQL, at(8), b"t" * 16, _id(f"tool-{session_id}"), interaction, session_id, "viatool"
++            )
++        await _ingest(engine, [_dispatch(session_id, at(5), "prompt-slash", "slashme")])
++        await _refresh(engine, _TODAY.date())
++
++        detail = await _detail(engine, session_id, [], {})
++    finally:
++        await _cleanup(engine, [session_id])
++        await engine.close()
++
++    bars = [(d["label"], d["kind"]) for d in detail["dispatches"] if d["kind"] != "session"]
++    assert sorted(bars) == [("skill · slashme", "skill"), ("skill · viatool", "skill")]
++    assert detail["skill_count"] == len(bars) == 2
+diff --git a/tests/codemie/repository/cli_analytics/postgres/test_reader.py b/tests/codemie/repository/cli_analytics/postgres/test_reader.py
+index 28e25cbebf..4f636c8e71 100644
+--- a/tests/codemie/repository/cli_analytics/postgres/test_reader.py
++++ b/tests/codemie/repository/cli_analytics/postgres/test_reader.py
+@@ -1413,6 +1413,19 @@ def _no_summary(column: str) -> str:
+     return f"NOT EXISTS (SELECT 1 FROM session_dims sd WHERE sd.session_id = {column} AND sd.summary_ts IS NOT NULL)"
+ 
+ 
++def _not_a_skill(session_column: str, name_column: str) -> str:
++    """A command name that is a skill (kind 2) of the same session is that skill's, not a slash command."""
++    return (
++        "NOT EXISTS (SELECT 1 FROM invocations_hourly sk "
++        f"WHERE sk.kind = 2 AND sk.session_id = {session_column} AND sk.name = {name_column} "
++        "AND sk.session_id IN (SELECT session_id FROM sel))"
++    )
++
++
++_ROLLUP_NOT_A_SKILL = _not_a_skill("invocations_hourly.session_id", "invocations_hourly.name")
++_SUMMARY_NOT_A_SKILL = _not_a_skill("session_dims.session_id", "(e.cmd #>> '{}')")
++
++
+ @pytest.mark.parametrize("filters", _ALL_FILTERS, ids=["unfiltered", "deny_all", "projects"])
+ @pytest.mark.asyncio
+ async def test_invocations_have_three_branches_each_scoped_to_sel(filters: dict[str, object]) -> None:
+@@ -1439,7 +1452,8 @@ async def test_otel_slash_commands_count_only_for_sessions_without_a_summary() -
+ 
+     assert (
+         "SELECT kind, name, calls AS c FROM invocations_hourly WHERE kind = 4 "
+-        f"AND {_no_summary('invocations_hourly.session_id')} AND name <> ALL($builtin_commands::text[]) {_SCOPED}"
++        f"AND {_no_summary('invocations_hourly.session_id')} AND name <> ALL($builtin_commands::text[]) "
++        f"AND {_ROLLUP_NOT_A_SKILL} {_SCOPED}"
+     ) in branches
+ 
+     # Verify that compact is not excluded by the branch predicate
+@@ -1456,7 +1470,7 @@ async def test_summary_sessions_count_every_string_command_once_by_the_shared_wi
+     assert summary == [
+         "SELECT 4, e.cmd #>> '{}', 1 FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd) "
+         "WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string' AND e.cmd #>> '{}' <> '' AND (e.cmd #>> '{}') <> ALL($builtin_commands::text[]) "
+-        f"{_SCOPED}"
++        f"AND {_SUMMARY_NOT_A_SKILL} {_SCOPED}"
+     ]
+     # The window is the one of `sel`: the branch has no time predicate of its own.
+     assert "started_at" not in summary[0] and "BETWEEN" not in summary[0]
+@@ -1477,6 +1491,36 @@ async def test_an_empty_summary_command_counts_nothing_and_names_are_taken_as_st
+     assert "ltrim" not in summary
+ 
+ 
++@pytest.mark.asyncio
++async def test_a_command_that_is_a_skill_of_its_own_session_is_not_counted_as_a_command() -> None:
++    """The skill keeps its kind 2 count under Skills; only the two command branches drop the name."""
++    branches = await _invocation_branches()
++
++    skill_agent = [b for b in branches if "kind IN (2, 3)" in b]
++    commands = [b for b in branches if "kind IN (2, 3)" not in b]
++    assert len(skill_agent) == 1 and "sk.kind = 2" not in skill_agent[0]
++    assert [_ROLLUP_NOT_A_SKILL in commands[0], _SUMMARY_NOT_A_SKILL in commands[1]] == [True, True]
++
++
++@pytest.mark.asyncio
++async def test_class_lists_by_invocation_drop_the_same_session_skill_names_from_both_command_branches() -> None:
++    # The per-row class lists must agree with the counts: no `command` list row for a name get_invocations dropped.
++    captured: list[str] = []
++
++    async def capture(sql: str, params: dict[str, object]) -> list[dict[str, object]]:
++        captured.append(" ".join(sql.split()))
++        return []
++
++    reader = PostgresCliAnalyticsReader(_SqlRecorder())  # type: ignore[arg-type]
++    reader._q = capture  # type: ignore[method-assign]
++    await reader.get_class_lists(_flt(), "invocation")
++
++    (sql,) = captured
++    assert sql.count(_ROLLUP_NOT_A_SKILL) == 1
++    assert sql.count(_SUMMARY_NOT_A_SKILL) == 1
++    assert "WHERE kind IN (2, 3) UNION ALL" in sql
++
++
+ def test_window_params_omit_projects_when_project_unattributed():
+     params = window_params(_flt(projects=["p"], project_unattributed=True))
+ 
+diff --git a/tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py b/tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py
+index 42bdc091b2..6a6286f1ef 100644
+--- a/tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py
++++ b/tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py
+@@ -27,6 +27,7 @@ from codemie.repository.cli_analytics.scope import ViewerScope
+ from codemie.service.analytics.handlers.cli_analytics_handler import (
+     LocalAnalyticsHandler,
+     _count_dispatch_subtypes,
++    _dispatch_label_and_kind,
+     _iso,
+ )
+ 
+@@ -1355,41 +1356,73 @@ def test_skill_dispatch_ignores_subagent_duration_ms():
+ 
+ 
+ def test_forked_skill_command_dispatch_uses_real_duration_ms():
+-    """A forked skill (skill-tagged agent.subagent.start) is a "command"-kind row whose real_duration_ms
++    """A forked skill (skill-tagged agent.subagent.start) started by slash is a skill row whose real_duration_ms
+     mirrors subagent_duration_ms at the SQL layer; the handler reads
+     real_duration_ms for this kind unchanged, so duration_ms must reflect the forked skill's own run
+-    time, not render as the free, instant row a main-thread slash command legitimately is."""
++    time, not render as the free, instant row a main-thread slash-started skill legitimately is."""
+     rows = [
+         _dispatch_row(skill_name="code-review", duration_ms=0, real_duration_ms=180_000)
+         | {"is_slash_command": True, "subagent_duration_ms": 180_000}
+     ]
+     result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 3.5)
+-    command = next(d for d in result if d["kind"] == "command")
+-    assert command["duration_ms"] == 180_000
++    skill = next(d for d in result if d["kind"] == "skill")
++    assert skill["duration_ms"] == 180_000
+ 
+ 
+ def test_main_thread_slash_command_dispatch_stays_instant():
+-    """A main-thread slash command (no fork, no agentId) has real_duration_ms 0 and no
++    """A main-thread slash-started skill (no fork, no agentId) has real_duration_ms 0 and no
+     subagent_duration_ms at the SQL layer: it must still render as the free, instant row it is."""
+     rows = [
+         _dispatch_row(skill_name="code-review", duration_ms=0, real_duration_ms=0)
+         | {"is_slash_command": True, "subagent_duration_ms": None}
+     ]
+     result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 0.0)
+-    command = next(d for d in result if d["kind"] == "command")
+-    assert command["duration_ms"] == 0
++    skill = next(d for d in result if d["kind"] == "skill")
++    assert skill["duration_ms"] == 0
+ 
+ 
+ @pytest.mark.parametrize("real_duration_ms", [0, 4000])
+ def test_a_slash_command_at_the_session_end_keeps_its_duration(real_duration_ms):
+-    """A command dispatched at the session's last event cannot be clamped: it keeps its known duration, 0 included."""
++    """A slash-started skill dispatched at the session's last event cannot be clamped: it keeps its known duration, 0 included."""
+     rows = [
+         _dispatch_row(skill_name="code-review", duration_ms=0, real_duration_ms=real_duration_ms, offset_s=300)
+         | {"is_slash_command": True}
+     ]
+     result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 0.0)
+-    command = next(d for d in result if d["kind"] == "command")
+-    assert command["duration_ms"] == real_duration_ms
++    skill = next(d for d in result if d["kind"] == "skill")
++    assert skill["duration_ms"] == real_duration_ms
++
++
++def test_a_slash_started_skill_row_is_a_skill_dispatch():
++    """EPMCDME-17201: a skill started by a slash command is a skill, not a "command" row."""
++    row = {"skill_name": "code-review", "is_slash_command": 1}
++    assert _dispatch_label_and_kind(row, {}, {}) == ("skill · code-review", "skill")
++
++
++@pytest.mark.parametrize("is_slash_command", [0, 1])
++def test_a_skill_tool_row_and_a_slash_started_row_get_the_same_kind(is_slash_command):
++    row = {"skill_name": "sdlc-standard", "is_slash_command": is_slash_command}
++    assert _dispatch_label_and_kind(row, {}, {}) == ("skill · sdlc-standard", "skill")
++
++
++def test_an_agent_row_stays_an_agent_even_when_it_carries_the_slash_flag():
++    row = {"subagent_type": "Explore", "skill_name": "x", "is_slash_command": 1}
++    assert _dispatch_label_and_kind(row, {"Explore": 1}, {}) == ("agent · Explore", "agent")
++
++
++def test_a_row_with_neither_skill_nor_agent_is_not_a_dispatch():
++    row = {"skill_name": "", "subagent_type": "", "is_slash_command": 1}
++    assert _dispatch_label_and_kind(row, {}, {}) is None
++
++
++def test_slash_started_and_skill_tool_skills_are_both_skill_bars():
++    rows = [
++        _dispatch_row(skill_name="forkme") | {"is_slash_command": True},
++        _dispatch_row(skill_name="viatool", offset_s=20) | {"is_slash_command": False},
++    ]
++    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 1.0)
++    kinds = sorted((d["label"], d["kind"]) for d in result if d["kind"] != "session")
++    assert kinds == [("skill · forkme", "skill"), ("skill · viatool", "skill")]
+ 
+ 
+ def test_a_skill_in_a_zero_length_session_keeps_its_duration():

@@ -205,6 +205,8 @@ The served `prompt` is the session's name when `session_dims.session_title` is n
 
 The window is the shared one (see Window Semantics): a session whose `started_at` is in the window adds all its commands, whichever source they come from.
 
+A command name the same session also ran as a skill (a kind-2 row of `invocations_hourly`: an `agent.skill.dispatch` or a Skill call) is not one of that session's slash commands. Both kind-4 branches skip it, so a skill started by a slash command is counted once, under `skills_invoked`, with its kind-2 count. The exclusion is per session: the same name typed as a plain command in another session still counts there, and a command with no kind-2 row in its own session stays a command. `get_class_lists` by invocation applies the same rule, so the per-row lists agree with the counts. Both statements read the skill and agent rows of `sel` once, into the CTE `skill_rows`, and the Skills branch and both exclusions read that CTE. Probing `invocations_hourly` for each command row instead visited every partition each time and made these two queries up to four times slower on a database of 2 million sessions and five years of history. No bound on `hour` is safe for the exclusion: a session that started before the window and was resumed in it has its skill row before the window's start.
+
 ### Known limitations
 
 | Case | Effect |
@@ -214,6 +216,7 @@ The window is the shared one (see Window Semantics): a session whose `started_at
 | A client version changes between batches and there is no summary | `client_versions` accumulates both incrementally and after a backfill over existing rows; a rebuild from an empty schema keeps only the latest |
 | Hooks counted a tool call, then an `INTERACTION` span with no tool spans arrives | `tool_calls` keeps the hook value incrementally (a NULL never overwrites); a full rebuild gives NULL |
 | A session known from hooks only | `get_session_detail_tools` shows no tools: it reads raw spans only |
+| A session with a summary lists a skill in its `commands`, but no skill dispatch or Skill call of that name reached `invocations_hourly` (kind 2): an older client without `agent.skill.dispatch`, or events that did not arrive | The name stays one of the session's slash commands and is not counted under `skills_invoked`: the skills list reads the rollup only, so `session_dims.skills` does not move it. Accepted: such a session has no evidence of a skill run besides its summary |
 | A summary, an identity or a story event dated in the future by a wrong client clock | It is the latest by its own time: later, correctly dated events of that session do not replace its values until real time passes that date. The recalculation never compares client times with the current time |
 
 ### Reading the session tables

@@ -1,0 +1,39 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran (blind, edge-case, acceptance against the ticket story and plan); the change implements AC1, AC3, AC4 and AC5 with no migration or contract edits, but the ticket's own regression test for AC2 (Session Detail skill_count equals the number of skill bars) is missing and plan Review Focus 5 claimed it was pinned, so one major patch finding remains. 15 lens items were dismissed after checking them against the code: exact-name matching (the ticket's duplicates are byte-identical names), window and scope worries (the kind-2 branch is session-scoped too, and the SQL ran on PG 14 and 17), class-list agreement (asserted by the live test), 'stale' comments that actually describe data sources, and test-brittleness remarks; none deferred. Accepted limitations, not blocking: the exclusion is existence-based per session and name, so a name with more kind-4 rows than kind-2 rows in one session loses the surplus from both lists (edge cases such as an old CLI without the dispatch event plus a model Skill call of the same name), and the correlated predicate's cost was not measured on production-sized data.",
+  "confidence": "high",
+  "risk_flags": ["public-api"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: A skill started with a slash command is shown with kind skill in Session Detail", "status": "pass", "notes": "_dispatch_label_and_kind drops the is_slash_command branch; pinned by test_a_slash_started_skill_row_is_a_skill_dispatch and the is_slash_command 0/1 parametrized test; the three duration tests and the live pricing test select the row by kind skill."},
+    {"kind": "story-ac", "item": "AC2: Session Detail Skills count and timeline skill bars agree for the same session", "status": "partial", "notes": "Slash-started and Skill-tool skills both become skill bars (test_slash_started_and_skill_tool_skills_are_both_skill_bars), but no test compares detail skill_count with the number of skill bars; agreement is implied, not asserted."},
+    {"kind": "story-ac", "item": "AC3: Tools & Models lists a slash-started skill under Skills only (decision: Skills only)", "status": "pass", "notes": "_not_a_skill_of_session on both kind-4 branches of get_invocations and get_class_lists; live test test_live_a_slash_started_skill_is_listed_under_skills_only covers the OTel and summary paths, handler get_tools, and class lists equal to counts; passed on PG 17 and 14."},
+    {"kind": "story-ac", "item": "AC4: Plain slash commands that are not skills stay classified as commands", "status": "pass", "notes": "Live test keeps compact (3), orphan (no kind-2 row in its session) and inlineme typed in a session without a skill row under slash_commands; a plain command never produces a dispatch row, so the handler test asserts None for a row with neither skill nor agent."},
+    {"kind": "story-ac", "item": "AC5: Cost, token and duration attribution of slash-started skills unchanged", "status": "pass", "notes": "No dispatch SQL cost/duration column or ORDER BY changed (comments only); the three handler duration assertions are unchanged apart from the kind selector; live pricing test cost values and sum == session cost unchanged and passing on PG 17 and 14."},
+    {"kind": "story-ac", "item": "Regression test: backend integration, session with a slash-started skill and a Skill-tool skill, both appear as skills and skill_count matches", "status": "partial", "notes": "Only a handler-level _build_dispatches unit test with synthetic rows exists; nothing asserts skill_count against the skill bars through the reader or get_session_detail."},
+    {"kind": "story-ac", "item": "Regression tests: _dispatch_label_and_kind unit, and /tools no-duplicate integration", "status": "pass", "notes": "Five direct unit tests of _dispatch_label_and_kind and handler get_tools asserted in the live test."},
+    {"kind": "story-ac", "item": "Regression test: UI timeline renders a skill bar", "status": "na", "notes": "UI lives outside this repository; hand-off note recorded in plan.md for the MR description."},
+    {"kind": "spec", "item": "No migration, no rollups.py change, no backfill; OpenAPI baseline and kind description untouched", "status": "pass", "notes": "Diff touches no migration, rollups.py, models/cli_analytics.py or openapi.json."},
+    {"kind": "spec", "item": "Dispatch SQL cost/token/duration columns and ORDER BY tie-break untouched", "status": "pass", "notes": "Only comment lines in the dispatch query changed."},
+    {"kind": "spec", "item": "Skill counts stay the kind-2 value; a command row is only removed, never added to a skill", "status": "pass", "notes": "Predicate only on kind-4 branches; test asserts the kind IN (2, 3) branch is unchanged."},
+    {"kind": "spec", "item": "Refresh stale comments and guides", "status": "pass", "notes": "Events and storage guides and the two reader comments updated. Acceptance lens flagged vocabulary.py:96, rollups.py:1978/2038, session_derived.py:32-36 and reader.py:333; checked and left unchanged because they describe the hook event and the sources of kind 4 and summary commands, which are still accurate."},
+    {"kind": "spec", "item": "Per-session exclusion, summary path, no-hook case, class-list/count agreement (Review Focus 1-4)", "status": "pass", "notes": "Seeded in the live test (typed_only, summary, no_hook sessions) with classes == set(counts)."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "Both commits follow EPMCDME-####: Description (EPMCDME-17201: Classify slash-started skills as skills in Session Detail; EPMCDME-17201: Drop slash-started skills from slash commands in Tools and Models)."},
+    {"kind": "code-quality", "status": "partial", "notes": "Ruff check and format are clean on the changed files; new helper is typed and sits beside _no_summary. The Module Cohesion guide prefers a new module over appending a new concern to a 900-line file: the new live test and its constants were appended to test_live_route_pricing.py although it is not about route pricing. The guide does not mark this blocking, so it is recorded, not raised as a finding."},
+    {"kind": "security", "status": "pass", "notes": "The new SQL fragment is built from constant strings and fixed column names only; no request input reaches it, and it keeps the sel session scope."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/repository/cli_analytics/postgres/test_live_route_pricing.py",
+      "line": 778,
+      "title": "No test asserts skill_count equals skill bars",
+      "problem": "The ticket asks for a backend test where a session with a slash-started skill and a Skill-tool skill shows both as skills and a skill_count that matches (AC2). The only added test builds two skill bars from synthetic rows in _build_dispatches and never reads skill_count. The existing live dispatch test seeds three slash-started skills but does not compare detail skill_count with the number of skill dispatches either, and plan Review Focus 5 claims the agreement is pinned.",
+      "impact": "The original symptom (Skills = 1 while the timeline had no skill bar) is two independent code paths, the SQL skill_count and the handler's dispatch kinds. Without a test tying them together the mismatch can come back, for example if a dispatch row type is added, with every current test still green.",
+      "recommendation": "Assert detail[\"skill_count\"] equals the number of dispatches of kind skill in the live session-detail test that already seeds inline, foreground-fork and grouped slash-started skills, and add one Skill-tool-started skill to that session if the existing helpers allow it. Put a new test in its own live test module if that is cleaner than extending test_live_route_pricing.py (standards note above)."
+    }
+  ]
+}
