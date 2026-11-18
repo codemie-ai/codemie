@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Tighten the CLI Analytics period-membership admission predicate in postgres/reader.py so lifecycle/housekeeping records and zero-value metric points no longer admit a session into a period window it had no real activity in.",
+  "generated": "2026-11-11T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 17,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "The predicate (_SESSION_ADMITTED_IN_WINDOW/_active_in_window/_has_any_activity/_raw_activity_in_window) is a core shared utility read by the single 'sel' CTE that ~30 reader methods across all six dashboard endpoints (Overview, Sessions, Users, Repositories, Cost, Activity) depend on; the fix must be applied consistently across all 5 arms of _admitted_arms and may also touch rollups.py (lines_daily zero-value semantics) and session_activity.py (derived has_activity/resumed cache) — bumped per 'touches core shared utilities' red flag." },
+    { "dimension": "requirements_clarity", "reason": "AC4 itself and the four required regression tests are well specified, but several design decisions remain open: whether to close the EPMCDME-16993 reopen gap (_has_any_activity arm) within this fix's scope, the exact narrowing definition for the four raw sources (usage_requests, log_events, spans, metric_points), whether session_activity.py's derived facts need to track the narrower rule, and the '/exit synthetic user_prompt' mechanism is explicitly unverified against this repository." },
+    { "dimension": "technical_risk", "reason": "No exact precedent exists for narrowing these specific raw-activity clauses (though the vocabulary — EventKind.API_REQUEST, SpanKind.TOOL/TOOL_EXECUTION/INTERACTION — already exists); this exact code path has a documented, measured history of catastrophic scan-cost regressions at ~1.9M-session scale, carries zero semantic (row-admits-or-excludes) test coverage today (only SQL-string-shape assertions), and narrowing _has_any_activity risks regressing a documented sub-day started_at-precision guarantee." },
+    { "dimension": "file_change_estimate", "reason": "Primary edit in reader.py; likely companion edits to test_reader.py (new semantic tests), optionally rollups.py and session_activity.py/test_session_activity.py, plus a doc update to cli-analytics-storage.md's Window Semantics section per established convention — roughly 5-7 modified files, 0-2 new (live-Postgres fixture/test), across the repository and tests directories." },
+    { "dimension": "dependencies", "reason": "No new packages or version changes; purely an internal SQL-predicate and test-infrastructure change." },
+    { "dimension": "affected_layers", "reason": "Confined to the repository/adapter (DB-Persistence) layer; the CliAnalyticsReader port contract, routers, and services are explicitly unchanged." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared utility (_sessions_cte/sel) consumed by ~30 methods across all six dashboard endpoints"
+  ],
+  "split_recommendation": null
+}

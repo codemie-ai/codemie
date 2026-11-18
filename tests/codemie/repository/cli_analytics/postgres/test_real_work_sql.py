@@ -66,8 +66,9 @@ def test_each_table_keeps_only_its_real_work_rows():
         f"(ev.event_kind = {int(EventKind.USER_PROMPT)} AND btrim(coalesce(ev.command_name, '')) = '')" in span_filter
     )
     assert "NOT EXISTS" not in span_filter
-    # Only lines of code: an active_time point is sent while a reopen is typed into.
-    assert f("metric_points", "m") == f" AND m.metric_name = ANY({_array(LINES_METRICS)})"
+    # Only lines of code (an active_time point is sent while a reopen is typed into), and only a nonzero delta: a
+    # zero-value point only says "lines are known", not that a line changed (EPMCDME-16496 AC4).
+    assert f("metric_points", "m") == f" AND m.metric_name = ANY({_array(LINES_METRICS)}) AND m.value <> 0"
 
 
 def test_a_table_without_a_definition_is_refused_not_left_unfiltered():

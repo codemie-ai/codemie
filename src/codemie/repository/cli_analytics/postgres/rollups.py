@@ -91,6 +91,7 @@ from codemie.repository.cli_analytics.vocabulary import (
     BUILTIN_COMMAND_NAMES,
     CLAUDE_CODE_AUTO_PROMPT_PREFIXES,
     DIMENSION_HOOK_TYPES,
+    START_HOOK_TYPES,
     EDIT_TOOLS,
     LINES_METRICS,
     PASTED_CONTENT_TAG_SQL,
@@ -189,7 +190,26 @@ _LOG, _DIMS, _SPANS, _METRICS, _USAGE, _SESSION = (
 )
 _TOOL, _EXEC, _INTERACTION = int(SpanKind.TOOL), int(SpanKind.TOOL_EXECUTION), int(SpanKind.INTERACTION)
 _DIM_TYPES = _text_array(DIMENSION_HOOK_TYPES)
+_START_TYPES = _text_array(START_HOOK_TYPES)
 _ACTIVITY_TYPES = _text_array(ACTIVITY_HOOK_TYPES)
+
+# The stored start of a session after a dimensions recompute (`EXCLUDED.started_at` is its first start-type hook, NULL
+# when it has none). A recompute sees only the raw rows still kept, so the earlier stored start normally stays
+# (LEAST). The exception: a start stored from a lone session end (older rows, or a refresh that ran before the first
+# prompt arrived: GitHub Copilot Chat's expired pre-warmed session, ended minutes before the chat's first prompt)
+# is not a start, so the first start-type hook replaces it. Only when the stored instant is that of an end hook of the
+# session and of no start-type hook of it, so a stored start whose raw rows are purged is never moved.
+_STORED_START_IS_A_LONE_END = (
+    "(EXISTS (SELECT 1 FROM hook_events e WHERE e.session_id = sd.session_id AND e.ts = sd.started_at "  # noqa: S608
+    "AND e.event_type = 'agent.session.end') "
+    "AND NOT EXISTS (SELECT 1 FROM hook_events e WHERE e.session_id = sd.session_id AND e.ts = sd.started_at "
+    f"AND e.event_type = ANY({_START_TYPES})))"
+)
+_MERGED_START = (
+    "CASE WHEN EXCLUDED.started_at IS NULL THEN sd.started_at "
+    f"WHEN sd.started_at < EXCLUDED.started_at AND {_STORED_START_IS_A_LONE_END} THEN EXCLUDED.started_at "
+    "ELSE LEAST(sd.started_at, EXCLUDED.started_at) END"
+)
 
 
 # The characters trimmed from both ends of a prompt, a session title, the session platform and the harness name
@@ -1130,8 +1150,11 @@ _RAW_RANGE_SOURCES = (
     ("s", "spans"),
     ("m", "metric_points"),
 )
+# A session end is not the start of a session (see `_MERGED_START`): the start side leaves it out of the hooks.
+_RAW_RANGE_START_FILTER = {"hook_events": " AND h.event_type <> 'agent.session.end'"}
 _RAW_RANGE = _UNION_ALL.join(
-    f"SELECT (SELECT min({a}.ts) FROM {t} {a} WHERE {a}.session_id = k.session_id) AS lo, "
+    f"SELECT (SELECT min({a}.ts) FROM {t} {a} WHERE {a}.session_id = k.session_id"  # noqa: S608 - code constants
+    f"{_RAW_RANGE_START_FILTER.get(t, '')}) AS lo, "
     f"(SELECT max({a}.ts) FROM {t} {a} WHERE {a}.session_id = k.session_id{real_work_filter(t, a)}) AS hi"
     for a, t in _RAW_RANGE_SOURCES
 )
@@ -2097,7 +2120,8 @@ RECOMPUTE: list[str] = [
     WHERE l.event_kind = {int(EventKind.SKILL_ACTIVATED)} AND l.skill_name <> ''
     ON CONFLICT (session_id, skill_name) DO UPDATE SET updated_at = EXCLUDED.updated_at""",
     # Dimensions come from the 13 dimension hook types, identity (JWT email, developer
-    # name) from every hook event. The start is the first dimension hook; the end (last_event_at) is the last
+    # name) from every hook event. The start is the first dimension hook other than a session end (a lone end of a
+    # session that never ran does not start it, see `_MERGED_START`); the end (last_event_at) is the last
     # real-work hook only, so a lifecycle hook a reopen stamps (session start/end, notification) does not move it.
     # A recompute sees only the raw rows still kept, so it merges into the stored row: when it
     # starts later than the stored start, the earliest rows are gone and the stored earliest
@@ -2105,7 +2129,7 @@ RECOMPUTE: list[str] = [
     f"""INSERT INTO session_dims AS sd (session_id, started_at, last_event_at, repository, branch, repo_remote,
                                        project_name, developer_name, first_prompt, jwt_email, dev_name_max, updated_at)
     SELECT h.session_id,
-           min(h.ts) FILTER (WHERE h.event_type = ANY({_DIM_TYPES})),
+           min(h.ts) FILTER (WHERE h.event_type = ANY({_START_TYPES})),
            max(h.ts) FILTER (WHERE h.event_type = ANY({_ACTIVITY_TYPES})),
            {_earliest("cwd")}, {_earliest("git_branch")}, {_earliest("repo_remote")},
            {_earliest("codemie_project_name")}, {_earliest("developer_name")},
@@ -2120,7 +2144,7 @@ RECOMPUTE: list[str] = [
     -- A bound session (owner_email set, EPMCDME-16440) keeps its stored project and owner: the binding is
     -- stored state the ingest wrote, which no replayed or older raw row changes; its columns are not written here.
     ON CONFLICT (session_id) DO UPDATE SET
-        started_at = LEAST(sd.started_at, EXCLUDED.started_at),
+        started_at = {_MERGED_START},
         last_event_at = GREATEST(sd.last_event_at, EXCLUDED.last_event_at),
         {", ".join(f"{c} = {_bound_kept(c, _earliest_merged(c))}" for c in _EARLIEST_COLUMNS)},
         jwt_email = {_bound_kept("jwt_email", 'GREATEST(sd.jwt_email COLLATE "C", EXCLUDED.jwt_email COLLATE "C")')},

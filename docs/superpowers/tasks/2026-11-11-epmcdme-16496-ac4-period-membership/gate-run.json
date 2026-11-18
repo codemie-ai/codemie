@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16496-ac4-period-membership",
+  "head": "8c82e6b4aff5d0caee97488ecdd827d084452c48",
+  "runner": "poetry",
+  "started_at": "2026-11-12T10:39:00Z",
+  "completed_at": "2026-11-12T10:46:40Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets-ci",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 18000,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets-precommit",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 1000,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '0 commits scanned.' / 'scanned ~0 bytes (0) in 129ms' / 'no leaks found'. Nothing was staged at run time (only the untracked docs/ run-dir). To exercise this gate for real, 'git add' the intended changes before re-running, or let it run naturally at commit time via the codemie-gitleaks pre-commit hook."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 209000,
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/",
+      "exit_code": 1,
+      "notes": "8 failed, 31813 passed, 403 skipped, 5 xfailed (203.81s). Ran 'make install' first per the guide's stale-venv trap (the venv was out of sync with poetry.lock, which had caused ~1600 unrelated failures in a prior run); after that, only 8 failures remain. None of the 3 files this diff touches under tests/codemie/repository/cli_analytics/postgres/ appear in the failures. All 8 trace to the same missing codemie_enterprise extra (ModuleNotFoundError: 'codemie_enterprise.litellm' in test_attribution.py; component/feature counts off-by-N in test_customer_config.py; missing LLM-proxy routes (/chat/completions, /completions, /embeddings) in the openapi baseline diff; a model-lookup failure in test_llm_assessment_service.py) — the same root cause the guide's --ignore=tests/enterprise/ scoping only partially covers, since these particular tests live outside tests/enterprise/ but still depend on the extra being installed. Reported as a literal FAIL per gate contract despite the environment-gap root cause."
+    },
+    {
+      "id": "static-analysis",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 500,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' No SONAR_TOKEN in environment and no .env.local present. To run for real locally, create .env.local with a valid SONAR_TOKEN (and SONAR_HOST_URL if not default) before re-running 'make sonar-local'. This check is still owed to CI."
+    },
+    {
+      "id": "full-verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Not executed. Guide's own Skip-if for this gate ('environment prerequisites are missing') is literally met: 'verify' chains ruff+license+gitleaks+test with no scoping hook, so its 'test' sub-step would re-hit the exact same missing-codemie_enterprise gap already captured in full by the 'unit' gate above (ruff/license/gitleaks already passed individually via their own dedicated gates in this run). Re-running the ~3.5-minute suite unscoped would add no new information."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "uvx codemie-test-harness --sanity-api",
+      "exit_code": null,
+      "notes": "Needs infrastructure not reachable here: only the 'postgres' compose service is up (docker compose ps), the 'codemie' app profile is not running, ~/.codemie/test-harness.json only carries DEFAULT_TIMEOUT (no superadmin fixtures/API base configured), and the tool itself started pulling Playwright (a browser grid dependency) on first invocation. Also note the guide's own Skip-if ('You are not opening a merge request') may independently apply depending on caller intent."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "Covers both the pre-push hook's always-on step 0 and the GitLab CI 'check-alembic-heads' job (.gitlab-ci.yml) — same command, same result. 211 version file(s) OK under src/external/alembic/versions, 6 under src/external/alembic_cli_analytics/versions."
+    },
+    {
+      "id": "wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "<external GitLab template .wait-ci-init-template; EXPECTED_CONTEXTS: ci-pipeline, compliance-report>",
+      "exit_code": null,
+      "notes": "Found in .gitlab-ci.yml, gated on the MR target branch being main. It waits on external GitLab commit-status contexts (ci-pipeline, compliance-report) populated by infrastructure outside this checkout (an external template project, epm-cdme/codemie-gitlab-templates) and is not an invocable local command. Only CI can settle this one."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/codemie/configs/test_customer_config.py::TestCustomerConfig::test_get_enabled_components\nFAILED tests/codemie/configs/test_customer_config.py::TestRuntimeFeatures::test_disabled_runtime_features_excluded_like_yaml\nFAILED tests/codemie/configs/test_customer_config.py::TestRuntimeFeatures::test_runtime_features_enterprise_installed\nFAILED tests/codemie/configs/test_customer_config.py::TestRuntimeFeatures::test_runtime_features_enterprise_not_installed\nFAILED tests/codemie/configs/test_customer_config.py::TestRuntimeFeatures::test_runtime_features_override_yaml\nFAILED tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline\nFAILED tests/codemie/service/marketplace_management/test_llm_assessment_service.py::test_model_options_respect_what_the_model_declares\nFAILED tests/codemie/service/spend/test_attribution.py::TestTheEnumsAndComposersHaveNotDrifted::test_the_mirrored_project_composer_matches_its_source\n= 8 failed, 31813 passed, 403 skipped, 5 xfailed, 519 warnings in 203.81s (0:03:23) =\n\nKey root-cause excerpt (test_attribution.py):\nE       ModuleNotFoundError: No module named 'codemie_enterprise.litellm'; 'codemie_enterprise' is not a package\ntests/codemie/service/spend/test_attribution.py:85: ModuleNotFoundError\n\nKey root-cause excerpt (test_openapi_snapshot.py):\nAssertionError: Live output differs from baseline tests/codemie/rest_api/router_guards/baselines/openapi.json\n--- baseline: openapi.json\n+++ live\n-    \"/chat/completions\": { ... (LLM Proxy route, enterprise-gated) }\n-    \"/completions\": { ... }\n-    \"/embeddings\": { ... }\n\nKey root-cause excerpt (test_customer_config.py, one of five identical-shape assertions):\nE           AssertionError: 14 != 13\ntests/codemie/configs/test_customer_config.py:152: AssertionError\n\nNone of this diff's own test files (test_reader.py, test_session_activity.py, test_live_session_period_membership.py under tests/codemie/repository/cli_analytics/postgres/, or test_cli_analytics_class_lists.py) appear anywhere in the FAILED list."
+  }
+}

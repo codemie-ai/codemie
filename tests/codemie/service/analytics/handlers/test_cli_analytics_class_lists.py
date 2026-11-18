@@ -282,7 +282,7 @@ async def test_class_list_queries_read_sel_with_the_viewer_scope_and_sum_nothing
     sql = _flat(r.sql[0])
     assert "sel AS" in sql and "array_agg(DISTINCT" in sql
     assert not re.search(r"\bsum\(", sql.split(") x", 1)[-1])
-    assert sql.count("WHERE d.started_at IS NOT NULL") == 5  # the one window/scope source: its five admission arms
+    assert sql.count("WHERE d.started_at IS NOT NULL") == 6  # the one window/scope source: its six admission arms
 
 
 @pytest.mark.asyncio

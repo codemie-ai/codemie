@@ -421,27 +421,33 @@ _LAST_WHOLE_DAY_UTC = "(($end_dt::timestamptz AT TIME ZONE 'UTC') + interval '1 
 
 
 _ACTIVITY_TABLES = ("turns_daily", "tool_facts_daily", "cost_daily", "session_usage", "lines_daily")
+# Ends a fenced probe: keeps PostgreSQL on a per-row index probe instead of hashing the whole window.
+_INDEX_PROBE_FENCE = " OFFSET 0"
+_LINES_DAILY_NONZERO = "ax.lines_added <> 0 OR ax.lines_removed <> 0"
 
 
 def _activity_exists(alias: str, days: tuple[str, str | None] | None = None, fenced: bool = False) -> str:
     """A prompt, a tool call, a cost/usage row or a line-count row for the session named by
     `alias`.session_id, on a day from `days[0]` to `days[1]` when given (`days[1]` None: with no last day), at any
-    time otherwise.
+    time otherwise. A `lines_daily` row only counts when it actually changed a line count, so a day with only a
+    zeroed metric row does not masquerade as activity.
     `fenced` ends each probe with `OFFSET 0`: PostgreSQL then keeps it a per-row index probe, where otherwise it may
     turn it into a hash of every row of the window (right for a million sessions, ruinous for a few thousand)."""
     bound = ""
     if days:
         bound = f" AND ax.day >= {days[0]}" + (f" AND ax.day <= {days[1]}" if days[1] else "")
-    fence = " OFFSET 0" if fenced else ""
+    fence = _INDEX_PROBE_FENCE if fenced else ""
     clauses = (
-        f"EXISTS (SELECT 1 FROM {t} ax WHERE ax.session_id = {alias}.session_id{bound}{fence})"
+        f"EXISTS (SELECT 1 FROM {t} ax WHERE ax.session_id = {alias}.session_id{bound}"  # noqa: S608 - code constants
+        f"{f' AND ({_LINES_DAILY_NONZERO})' if t == 'lines_daily' else ''}{fence})"
         for t in _ACTIVITY_TABLES
     )
     return "(" + " OR ".join(clauses) + ")"
 
 
 # The raw records the activity tables are built from: prompts, tool and subagent calls, skill dispatches,
-# API requests and line counts, as `real_work_sql` defines them (the end of a session stops at the same records).
+# API requests and line counts, as `real_work_sql` defines them (the end of a session stops at the same records,
+# so a zero-value lines point counts for neither).
 # Lifecycle hooks (session start, env, end, git snapshot, summary), Claude Code's own startup records and a built-in
 # command such as `/exit` are not among them, so a resume with nothing typed leaves no such record.
 _ACTIVITY_HOOKS = _text_array(ACTIVITY_HOOK_TYPES)
@@ -451,11 +457,10 @@ _RAW_ACTIVITY_SOURCES = tuple(
 )
 
 
-def _raw_activity_in_window(alias: str, fenced: bool = False, open_ended: bool = False) -> str:
-    """A raw activity record of the session named by `alias`.session_id, stamped inside the window (`open_ended`: at
-    or after its start, however late)."""
-    fence = " OFFSET 0" if fenced else ""
-    until = "" if open_ended else " AND r.ts <= $end_dt::timestamptz"
+def _raw_activity_in_window(alias: str, fenced: bool = False) -> str:
+    """A raw activity record of the session named by `alias`.session_id, stamped inside the window."""
+    fence = _INDEX_PROBE_FENCE if fenced else ""
+    until = " AND r.ts <= $end_dt::timestamptz"
     clauses = (
         f"EXISTS (SELECT 1 FROM {table} r WHERE r.session_id = {alias}.session_id "
         f"AND r.ts >= $start_dt::timestamptz{until}{kind}{fence})"
@@ -464,51 +469,69 @@ def _raw_activity_in_window(alias: str, fenced: bool = False, open_ended: bool =
     return "(" + " OR ".join(clauses) + ")"
 
 
-def _active_in_window(alias: str, fenced: bool = False, raw_first: bool = False) -> str:
+# The raw records are kept for the raw retention only (read once, like every other setting).
+_RAW_RETENTION_DAYS = int(config.CLI_ANALYTICS_RAW_RETENTION_DAYS)
+
+
+def _raw_retention_expired() -> str:
+    """True when the window started before the raw retention: the raw rows a partial-day check would look for may
+    already be purged, and a session whose day row confirms activity then must not vanish for that -- the day rows
+    decide alone. Shared by `_no_raw_check_needed` (the `_STARTED_IN_WINDOW` gate) and `_active_in_window`'s
+    `resumed_bypass` (the started-in-the-window-but-resumed cohort: arm 6 and arm 2's live-resumed branch), so
+    neither rescue arm regresses for a window this old. Not used by `_active_in_window`'s other callers (a session
+    that started outside the window): for that cohort a purged raw record on a partial day must still exclude, as
+    on main, rather than trade that false negative for a false positive admitting an unrelated old session."""
+    return f"$start_dt::timestamptz < now() - interval '{_RAW_RETENTION_DAYS} days'"
+
+
+def _active_in_window(alias: str, fenced: bool = False, raw_first: bool = False, resumed_bypass: bool = False) -> str:
     """Activity rescue arm: an old session resumed with no new activity in the window stays excluded from
     `sel`, an old session with fresh activity in the window is included. A day row on a UTC day wholly
     inside the window is enough. A day the window covers only in part also needs a raw activity record
     stamped inside the window, so a sub-day window does not admit a session active on the same day at
-    another time. Raw records are kept for the raw retention only, which is why whole days keep the
-    day-row rule."""
+    another time. `resumed_bypass` (only for the started-in-the-window-but-resumed cohort: arm 6 and arm 2's
+    live-resumed branch) lets the day row decide alone once the window predates the raw retention
+    (`_raw_retention_expired`), since that cohort's pre-fix check had no raw dependency at all; a session that
+    started outside the window keeps the plain raw requirement regardless of the window's age."""
     whole_days = _activity_exists(alias, (_FIRST_WHOLE_DAY_UTC, _LAST_WHOLE_DAY_UTC), fenced)
     window_days = _activity_exists(alias, (_START_DAY_UTC, _END_DAY_UTC), fenced)
     raw = _raw_activity_in_window(alias, fenced)
+    if resumed_bypass:
+        raw = f"({_raw_retention_expired()} OR {raw})"
     if raw_first:
         # The same rule with the selective half first, for sessions whose rows all sit on one partial day.
         return f"(({raw} AND {window_days}) OR {whole_days})"
     return f"({whole_days} OR ({window_days} AND {raw}))"
 
 
-# The raw records are kept for the raw retention only (read once, like every other setting).
-_RAW_RETENTION_DAYS = int(config.CLI_ANALYTICS_RAW_RETENTION_DAYS)
-
-
 def _no_raw_check_needed() -> str:
-    """A raw record is asked for only by a window of a day or less that starts in the middle of a UTC day: every instant
-    of the first day of a window that starts at midnight is inside it, and a longer window (Last 7 days, a month) keeps
+    """A raw record is asked for only by a window of a day or less that does not cover its UTC day(s) whole: every
+    instant of the first day of a window that starts at midnight and ends at the end of a day is inside it (a window
+    that starts at midnight but ends mid-day, such as Today, is asked), and a longer window (Last 7 days, a month) keeps
     the day-granular rule. The second of slack is for bounds that are a few milliseconds off a whole day. A window that
-    starts before the raw retention asks for none either: the raw rows it would look for may be purged, and a session
-    listed then must not vanish for that (the day rows decide, as they do for a longer window)."""
+    starts before the raw retention asks for none either (`_raw_retention_expired`): the raw rows it would look for may
+    be purged, and a session listed then must not vanish for that (the day rows decide, as they do for a longer
+    window)."""
     return (
-        f"($start_dt::timestamptz = {_START_DAY_BEGIN} "
+        f"(($start_dt::timestamptz = {_START_DAY_BEGIN} "
+        f"AND $end_dt::timestamptz >= {_AFTER_END_DAY} - interval '1 second') "
         "OR $end_dt::timestamptz - $start_dt::timestamptz > interval '1 day 1 second' "
-        f"OR $start_dt::timestamptz < now() - interval '{_RAW_RETENTION_DAYS} days')"
+        f"OR {_raw_retention_expired()})"
     )
 
 
 def _real_work_from_window_start(alias: str, fenced: bool = False) -> str:
-    """The session named by `alias`.session_id has real work at or after the window's start, when the stored facts
-    say that its last activity day is the window's first day: a day row says only the day, so a window of a day or
-    less that does not start at midnight (Last hour, Last 6 hours, Last 24 hours) needs a raw record at or after the
-    start to confirm it."""
-    return f"({_no_raw_check_needed()} OR {_raw_activity_in_window(alias, fenced, open_ended=True)})"
+    """The session named by `alias`.session_id has real work inside the window, when the stored facts say that its
+    activity day is a day the window covers only in part: a day row says only the day, so a window of a day or less
+    that does not cover its days whole (Last hour, Last 6 hours, Last 24 hours, Today, a custom time range) needs a
+    raw record stamped between its start and its end to confirm it. Work after the window's end does not count."""
+    return f"({_no_raw_check_needed()} OR {_raw_activity_in_window(alias, fenced)})"
 
 
 def _activity_from_window_start(alias: str) -> str:
     """Whether the session named by `alias`.session_id has a prompt, tool call, cost/usage or line-count row on or
-    after the window's first UTC day and, when the only such rows are on that first day of a window of a day or less,
-    a raw record of real work at or after the window's start. Gates the `_STARTED_IN_WINDOW` admission.
+    after the window's first UTC day and, for a window of a day or less that does not cover its days whole, a raw
+    record of real work stamped inside the window (not after its end). Gates the `_STARTED_IN_WINDOW` admission.
 
     A session that only ever got `session.start`/`session.env` hooks (a VS Code restart reopening a panel, a Copilot
     session closed without a prompt) must not be listed at all. Neither must a session whose every activity lies
@@ -516,13 +539,37 @@ def _activity_from_window_start(alias: str) -> str:
     same day. A session that started in the window and has real activity from the window's first day on keeps the
     exact `_STARTED_IN_WINDOW` admission, so sub-day window-boundary precision for recently started, genuinely active
     sessions is unaffected (a day row says only the day, not the time)."""
-    after_first_day = _activity_exists(alias, (f"({_START_DAY_UTC} + 1)", None))
-    on_first_day = _activity_exists(alias, (_START_DAY_UTC, _START_DAY_UTC))
-    return f"({after_first_day} OR ({_real_work_from_window_start(alias)} AND {on_first_day}))"
+    from_first_day = _activity_exists(alias, (_START_DAY_UTC, None))
+    return f"({from_first_day} AND {_real_work_from_window_start(alias)})"
 
 
+def _live_resumed(alias: str, fenced: bool = False) -> str:
+    """The live form of `session_activity.DERIVE_SQL`'s `resumed` fact, for a session whose facts are not derived
+    yet: a day row of the session named by `alias`.session_id on a UTC day other than the session's own start day
+    (a continued session, or rows that predate the start). Value-blind over the same five tables, exactly like the
+    stored fact it stands in for: it answers "did this session continue past its start day, however", which does
+    not need the `lines_daily` value check `_activity_exists` applies.
+    The day is compared with the session's OWN start day (`{alias}.started_at`), never with the window's
+    (`_START_DAY_UTC`). `fenced` keeps each probe a per-row index probe, as in `_activity_exists`."""
+    fence = _INDEX_PROBE_FENCE if fenced else ""
+    start_day = f"({alias}.started_at AT TIME ZONE 'UTC')::date"
+    clauses = (
+        f"EXISTS (SELECT 1 FROM {t} ax WHERE ax.session_id = {alias}.session_id AND ax.day <> {start_day}{fence})"  # noqa: S608, E501
+        for t in _ACTIVITY_TABLES
+    )
+    return "(" + " OR ".join(clauses) + ")"
+
+
+# The rule in one predicate. Nothing executes it (`_admitted_arms` is what runs; this is the statement of the rule
+# its arms implement, quoted by `_sessions_cte`'s docstring): a session that started in the window is admitted when
+# it has real activity from the window's first day on and did not merely continue past its start day; a session that
+# did continue (`resumed`), and any session that started outside the window, is admitted only by activity inside the
+# window. `resumed` is a stored fact and is NULL until a session's facts are derived, so the live form stands in for
+# it then -- a bare `AND NOT d.resumed` would make this whole disjunct NULL for that cohort, which is not what the
+# arms do.
 _SESSION_ADMITTED_IN_WINDOW = (
-    f"(({_STARTED_IN_WINDOW} AND {_activity_from_window_start('d')}) OR {_active_in_window('d')})"
+    f"((({_STARTED_IN_WINDOW}) AND {_activity_from_window_start('d')} "
+    f"AND NOT coalesce(d.resumed, {_live_resumed('d')})) OR {_active_in_window('d')})"
 )
 
 
@@ -531,20 +578,28 @@ def _started_in_window(alias: str) -> str:
 
 
 def _admitted_arms(alias: str, columns: str, scope: str | None = None) -> tuple[str, ...]:
-    """`_SESSION_ADMITTED_IN_WINDOW` as five SELECTs of `session_dims {alias}`, each served by its own index (a
+    """`_SESSION_ADMITTED_IN_WINDOW` as six SELECTs of `session_dims {alias}`, each served by its own index (a
     single OR of them would not be). A session is in exactly one arm. The stored facts of `session_activity`
     (`has_activity`, `last_activity_day`, `resumed`) stand for the rollup-table probes; a session whose facts are
     not derived yet (NULL) is asked of the tables, as the rule itself does, so the result is the rule's at every
     point of the roll-out.
 
-    - started: started in the window and `has_activity`, the last activity day not before the window's first day and,
-      when it is that day, real work at or after the window's start (`_real_work_from_window_start`).
-    - started, underived: started in the window, `has_activity` NULL: `_activity_from_window_start`, as the rule says.
+    - started, not resumed: started in the window, `has_activity`, not `resumed` (all its rows sit on its start day),
+      the last activity day not before the window's first day and, for a window of a day or less that does not cover
+      its days whole, real work stamped inside the window (`_real_work_from_window_start`). Stored facts only;
+      `has_activity` is value-aware at the source (`session_activity.DERIVE_SQL`), so a session whose only rows are
+      zeroed `lines_daily` rows falls out here.
+    - started, underived: started in the window, `has_activity` NULL: asked of the tables, as the rule says, the
+      `resumed` half with `_live_resumed` standing in for the fact that is NULL exactly here: a session that
+      continued past its start day needs `_active_in_window`, one that did not needs `_activity_from_window_start`.
     - outside, underived: started outside the window, `has_activity` NULL: `_active_in_window`, as the rule says.
     - outside, resumed: started outside the window, `resumed`, last activity day not before the window's first day.
     - outside, one day: started outside the window, not `resumed` (all rows on its start day), and that day is the
       window's first (started before it) or last (started after it): the raw records decide first.
-    Both derived arms run `_active_in_window` with per-row probes (`fenced`) on the candidates only.
+    - started, resumed: started in the window but continued past its start day, so starting in the window is no
+      longer enough on its own: `_active_in_window` decides, as for a session started outside.
+    The arms that read a `resumed` session, derived or not, run `_active_in_window` with per-row probes (`fenced`) on
+    their candidates only. The first arm stays first: `_sel_ctes`'s `split` walks it as `sel_main`.
     `columns` is the select list, `scope` an extra condition on `alias` (the viewer scope of the ids-only form)."""
     a = alias
     base = f"FROM session_dims {a} WHERE {a}.started_at IS NOT NULL" + (f" AND {scope}" if scope else "")
@@ -555,15 +610,22 @@ def _admitted_arms(alias: str, columns: str, scope: str | None = None) -> tuple[
         f"(({a}.started_at >= {_START_DAY_BEGIN} AND {a}.started_at < $start_dt::timestamptz)"
         f" OR ({a}.started_at > $end_dt::timestamptz AND {a}.started_at < {_AFTER_END_DAY}))"
     )
+    underived_started = (
+        f"(({_live_resumed(a, True)} AND {_active_in_window(a, True, resumed_bypass=True)})"
+        f" OR (NOT {_live_resumed(a, True)} AND {_activity_from_window_start(a)}))"
+    )
     return (
-        f"SELECT {columns} {base} AND {started} AND {a}.has_activity AND {a}.last_activity_day >= {_START_DAY_UTC}"
-        f" AND ({a}.last_activity_day > {_START_DAY_UTC} OR {_real_work_from_window_start(a, True)})",
-        f"SELECT {columns} {base} AND {started} AND {a}.has_activity IS NULL AND {_activity_from_window_start(a)}",
+        f"SELECT {columns} {base} AND {started} AND {a}.has_activity AND NOT {a}.resumed"
+        f" AND {a}.last_activity_day >= {_START_DAY_UTC}"
+        f" AND {_real_work_from_window_start(a, True)}",
+        f"SELECT {columns} {base} AND {started} AND {a}.has_activity IS NULL AND {underived_started}",
         f"SELECT {columns} {base} AND NOT ({started}) AND {a}.has_activity IS NULL AND {_active_in_window(a)}",
         f"SELECT {columns} {base} AND {outside} AND {a}.resumed AND {a}.last_activity_day >= {_START_DAY_UTC}"
         f" AND {_active_in_window(a, True)}",
         f"SELECT {columns} {base} AND {outside} AND NOT {a}.resumed AND {on_edge_day}"
         f" AND {_active_in_window(a, True, True)}",
+        f"SELECT {columns} {base} AND {started} AND {a}.has_activity AND {a}.resumed"
+        f" AND {_active_in_window(a, True, resumed_bypass=True)}",
     )
 
 

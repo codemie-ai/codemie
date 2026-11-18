@@ -57,18 +57,24 @@ logger = logging.getLogger(__name__)
 ACTIVITY_TABLES = ("turns_daily", "tool_facts_daily", "cost_daily", "session_usage", "lines_daily")
 
 _DAYS = " UNION ALL ".join(
-    f"SELECT session_id, day FROM {t} WHERE session_id = ANY($1::text[])" for t in ACTIVITY_TABLES
+    f"SELECT session_id, day, "
+    f"{'(lines_added <> 0 OR lines_removed <> 0)' if t == 'lines_daily' else 'true'} AS real "
+    f"FROM {t} WHERE session_id = ANY($1::text[])"
+    for t in ACTIVITY_TABLES
 )
 
 # One statement for a list of sessions: the activity of each from the tables, written when it differs from the stored
 # value. A session with no row is written false (derived, no activity), not left NULL. A session with no start day
 # counts every row as resumed (the safe side: it is a candidate for the window arm, which then checks exactly).
+# last_day is value-aware for lines_daily (a zero-value row is not "real" activity, EPMCDME-16496 AC4); resumed stays
+# value-blind over every row, real or not — it answers a different question ("did this session continue past its
+# start day, however"), which does not need the value check.
 DERIVE_SQL = f"""
 WITH ids AS (SELECT DISTINCT unnest($1::text[]) AS session_id),
 days AS ({_DAYS}),
 facts AS (
     SELECT i.session_id,
-           max(d.day) AS last_day,
+           max(d.day) FILTER (WHERE d.real) AS last_day,
            coalesce(bool_or(d.day IS DISTINCT FROM (sd.started_at AT TIME ZONE 'UTC')::date)
                     FILTER (WHERE d.day IS NOT NULL), false) AS resumed
     FROM ids i

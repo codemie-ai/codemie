@@ -35,7 +35,7 @@ from codemie.repository.cli_analytics.postgres import migrations
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 
 _LOCAL_PG_URL = os.environ.get("TEST_LOCAL_PG_URL", "postgresql://postgres:password@localhost:5432/postgres")
-_HEAD = "a1c1a0000018"
+_HEAD = "a1c1a0000019"  # run_migrations reaches the true head, now one revision past this file's own
 _PREVIOUS = "a1c1a0000017"
 _COPILOT_CHILD = "mig-copilot-child"
 _COPILOT_DESKTOP_CHILD = "mig-copilot-desktop-child"

@@ -96,7 +96,7 @@ def test_alembic_upgrades_one_revision_at_a_time_ending_at_the_head_on_that_conn
 
     targets = [call.args[1] for call in upgrade.call_args_list]
     assert len(targets) > 3 and len(set(targets)) == len(targets)
-    assert targets[0] == "a1c1a0000001" and targets[-1] == "a1c1a0000018"  # the first and the head
+    assert targets[0] == "a1c1a0000001" and targets[-1] == "a1c1a0000019"  # the first and the head
     assert targets.index("a1c1a0000010") < targets.index("a1c1a0000011")  # main's publication contract first
     cfg = upgrade.call_args.args[0]
     assert cfg.attributes == {"connection": connection, "schema": "codemie_analytics"}
@@ -230,6 +230,7 @@ def test_schema_extension_avoids_forbidden_constructs(forbidden: str) -> None:
 INITIAL_SCHEMA = _load_revision("a1c1a0000001_cli_analytics_initial_schema.py")
 SESSION_TITLE = _load_revision("a1c1a0000009_cli_analytics_session_title.py")
 SUBAGENT_LISTING = _load_revision("a1c1a0000018_cli_analytics_subagent_listing.py")
+RESET_ZERO_LINES = _load_revision("a1c1a0000019_cli_analytics_reset_zero_lines_activity.py")
 
 
 def test_subagent_listing_revision_adds_the_partial_index_and_the_flag() -> None:
@@ -386,6 +387,62 @@ def test_the_subagent_index_build_gives_up_when_partitions_keep_appearing() -> N
         connection.log.count("ALTER INDEX hook_events_subagent_start ATTACH PARTITION hook_events_p1_subagent_start")
         == 3
     )
+
+
+def test_reset_zero_lines_revision_follows_the_subagent_listing_with_no_ddl() -> None:
+    assert (RESET_ZERO_LINES.revision, RESET_ZERO_LINES.down_revision) == ("a1c1a0000019", "a1c1a0000018")
+    assert RESET_ZERO_LINES.UPGRADE == [RESET_ZERO_LINES.RESET]
+    assert not any(kw in _normalized(RESET_ZERO_LINES.RESET) for kw in ("CREATE TABLE", "CREATE INDEX", "ALTER TABLE"))
+
+
+def test_the_reset_selects_only_sessions_whose_sole_activity_row_is_zero_value_lines() -> None:
+    reset = _normalized(RESET_ZERO_LINES.RESET)
+
+    assert reset.startswith("UPDATE session_dims sd SET has_activity = NULL, last_activity_day = NULL")
+    assert "resumed" not in reset  # value-blind by design; the old rule never made it wrong
+    assert "t.has_activity" in reset  # the guard that makes a retry skip rows already reset
+    assert "EXISTS (SELECT 1 FROM lines_daily l WHERE l.session_id = t.session_id)" in reset
+    assert (
+        "NOT EXISTS ( SELECT 1 FROM lines_daily l WHERE l.session_id = t.session_id "
+        "AND (l.lines_added <> 0 OR l.lines_removed <> 0) )" in reset
+    )
+    for table in ("turns_daily td", "tool_facts_daily tf", "cost_daily c", "session_usage u"):
+        alias = table.split()[1]
+        assert f"NOT EXISTS (SELECT 1 FROM {table} WHERE {alias}.session_id = t.session_id)" in reset
+    assert reset.endswith("LIMIT :batch)")
+
+
+def test_the_reset_runs_in_committed_batches_under_the_runners_lock_wait_until_one_is_short() -> None:
+    full = RESET_ZERO_LINES.RESET_BATCH
+    connection = _RecordingConnection(flagged=[full, full, 7])
+    # `_RecordingConnection.execute` only special-cases SUBAGENT_LISTING's own statements; any other statement
+    # (this revision's RESET) falls through to its default MagicMock result, whose `.rowcount` is itself a
+    # MagicMock unless told otherwise, so the batch sizes are set directly instead.
+    reset_sql = _normalized(RESET_ZERO_LINES.RESET)
+    counts = iter(connection._flagged)
+
+    def execute(statement, *args):
+        sql = _normalized(str(statement))
+        connection.log.append(sql)
+        result = MagicMock()
+        if sql == reset_sql:
+            result.rowcount = next(counts)
+        return result
+
+    connection.execute = execute
+    fake_op = MagicMock()
+    fake_op.get_bind.return_value = connection
+    fake_op.execute.side_effect = connection.execute
+    with patch.object(RESET_ZERO_LINES, "op", fake_op):
+        RESET_ZERO_LINES.upgrade()
+
+    batch = [f"SET LOCAL lock_timeout = '{migrations.LOCK_TIMEOUT}'", reset_sql, "COMMIT"]
+    assert connection.log == batch * 3  # a batch that resets fewer than RESET_BATCH rows is the last
+
+
+def test_the_reset_downgrade_is_a_documented_no_op() -> None:
+    assert RESET_ZERO_LINES.downgrade() is None
+    assert RESET_ZERO_LINES.downgrade.__doc__  # explains why: which rows were reset is not recoverable
 
 
 _INSERT_TARGET = re.compile(r"INSERT INTO (\w+)(?: AS \w+)? \(([^)]*)\)")
@@ -569,7 +626,7 @@ def test_the_activity_facts_are_one_revision_after_the_publication_contract_with
         module = _load_revision(path.name)
         revisions[module.revision] = module.down_revision
     heads = set(revisions) - {down for down in revisions.values() if down}
-    assert heads == {"a1c1a0000018"}  # the sub-agent listing revision follows the overview rollup
+    assert heads == {"a1c1a0000019"}  # the zero-lines reset revision follows the sub-agent listing
 
 
 def test_the_activity_columns_are_nullable_without_default_under_a_bounded_lock_wait() -> None:
@@ -694,7 +751,7 @@ def test_the_sort_keys_are_one_revision_after_the_activity_facts_with_one_head()
         module = _load_revision(path.name)
         revisions[module.revision] = module.down_revision
     heads = set(revisions) - {down for down in revisions.values() if down}
-    assert heads == {"a1c1a0000018"}
+    assert heads == {"a1c1a0000019"}
 
 
 def test_the_column_step_adds_nullable_columns_without_default_and_a_disabled_control_row() -> None:

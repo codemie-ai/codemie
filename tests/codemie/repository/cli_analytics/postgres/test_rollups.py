@@ -44,6 +44,7 @@ from codemie.repository.cli_analytics.vocabulary import (
     ACTIVITY_HOOK_TYPES,
     BUILTIN_COMMAND_NAMES,
     DIMENSION_HOOK_TYPES,
+    START_HOOK_TYPES,
     LINES_METRICS,
     PASTED_CONTENT_TAG_SQL,
     SENTINEL_PREFIX_RAW,
@@ -1769,12 +1770,17 @@ def _dims_statement() -> str:
     return next(s for s in RECOMPUTE if "INSERT INTO session_dims AS sd" in s and "last_event_at" in s)
 
 
-def test_a_session_starts_at_its_first_dimension_hook_but_ends_at_its_last_real_activity_hook():
-    # A lifecycle hook stamped by a reopen (session start/end, notification) must not move the end of the session.
+def test_a_session_starts_at_its_first_start_hook_but_ends_at_its_last_real_activity_hook():
+    # A lifecycle hook stamped by a reopen (session start/end, notification) must not move the end of the session,
+    # and a session end must not start it: a lone end of a session that never ran (Copilot Chat's expired pre-warmed
+    # session) is not the start of the chat that reuses the id minutes later.
     sql = _dims_statement()
     dims = rollups._text_array(DIMENSION_HOOK_TYPES)
+    start = rollups._text_array(START_HOOK_TYPES)
     activity = rollups._text_array(ACTIVITY_HOOK_TYPES)
-    assert f"min(h.ts) FILTER (WHERE h.event_type = ANY({dims}))" in sql
+    assert "agent.session.end" not in START_HOOK_TYPES and len(START_HOOK_TYPES) == len(DIMENSION_HOOK_TYPES) - 1
+    assert f"min(h.ts) FILTER (WHERE h.event_type = ANY({start}))" in sql
+    assert f"min(h.ts) FILTER (WHERE h.event_type = ANY({dims}))" not in sql
     assert f"max(h.ts) FILTER (WHERE h.event_type = ANY({activity}))" in sql
     assert f"max(h.ts) FILTER (WHERE h.event_type = ANY({dims}))" not in sql
     assert "last_event_at = GREATEST(sd.last_event_at, EXCLUDED.last_event_at)" in sql
@@ -1791,7 +1797,11 @@ def test_the_fallback_range_starts_at_any_record_and_ends_at_real_activity_only(
         ("s", "spans"),
         ("m", "metric_points"),
     ):
-        assert f"(SELECT min({alias}.ts) FROM {table} {alias} WHERE {alias}.session_id = k.session_id) AS lo" in raw
+        # a session end is not a start: the hook source leaves it out of its start side
+        end = " AND h.event_type <> 'agent.session.end'" if table == "hook_events" else ""
+        assert (
+            f"(SELECT min({alias}.ts) FROM {table} {alias} WHERE {alias}.session_id = k.session_id{end}) AS lo" in raw
+        )
     activity = rollups._text_array(ACTIVITY_HOOK_TYPES)
     assert f"FROM hook_events h WHERE h.session_id = k.session_id AND h.event_type = ANY({activity})) AS hi" in raw
     assert "FROM usage_requests u WHERE u.session_id = k.session_id) AS hi" in raw
@@ -1802,6 +1812,22 @@ def test_the_fallback_range_starts_at_any_record_and_ends_at_real_activity_only(
     span_end = f"FROM spans s WHERE s.session_id = k.session_id{real_work_filter('spans', 's')}) AS hi"
     assert span_end in raw
     assert f"AND s.span_kind <> {int(SpanKind.OTHER)}" in span_end
-    # Only lines of code count at the end: an active_time point is sent while a reopen is typed into.
+    # Only lines of code count at the end, and only a nonzero delta (an active_time point is sent while a reopen is
+    # typed into; a zero-value point only says "lines are known", EPMCDME-16496 AC4).
     metrics = rollups._text_array(LINES_METRICS)
-    assert f"FROM metric_points m WHERE m.session_id = k.session_id AND m.metric_name = ANY({metrics})) AS hi" in raw
+    metric_end = (
+        f"FROM metric_points m WHERE m.session_id = k.session_id{real_work_filter('metric_points', 'm')}) AS hi"
+    )
+    assert metric_end in raw
+    assert f"AND m.metric_name = ANY({metrics}) AND m.value <> 0" in metric_end
+
+
+def test_a_start_stored_from_a_lone_session_end_is_replaced_by_the_first_start_hook():
+    sql = _dims_statement()
+
+    assert "started_at = " + rollups._MERGED_START in sql
+    assert "WHEN EXCLUDED.started_at IS NULL THEN sd.started_at" in rollups._MERGED_START
+    assert "ELSE LEAST(sd.started_at, EXCLUDED.started_at) END" in rollups._MERGED_START
+    # only when the stored instant is that of an end hook and of no start hook of the session
+    assert "e.event_type = 'agent.session.end'" in rollups._STORED_START_IS_A_LONE_END
+    assert f"e.event_type = ANY({rollups._text_array(START_HOOK_TYPES)})" in rollups._STORED_START_IS_A_LONE_END

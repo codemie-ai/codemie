@@ -20,7 +20,7 @@ import re
 
 from codemie.repository.cli_analytics.postgres import reader, session_binding, session_derived
 from codemie.repository.cli_analytics.postgres.rollups import RECOMPUTE
-from codemie.repository.cli_analytics.postgres.session_activity import ACTIVITY_TABLES
+from codemie.repository.cli_analytics.postgres.session_activity import ACTIVITY_TABLES, DERIVE_SQL
 
 
 def test_the_session_binding_never_writes_the_start_or_a_day_row() -> None:
@@ -50,3 +50,15 @@ def test_the_activity_tables_of_the_stored_facts_are_the_ones_of_the_window_rule
     # session_activity keeps its own copy (the two modules do not import each other): the facts stand in for the rule's
     # probes of these tables only while the tuples are equal, so a change to one must fail here until the other follows
     assert ACTIVITY_TABLES == reader._ACTIVITY_TABLES
+
+
+def test_has_activity_ignores_zero_value_lines_daily_rows_but_resumed_stays_value_blind() -> None:
+    # has_activity/last_activity_day must ignore a lines_daily row whose counts are both zero (EPMCDME-16496 AC4):
+    # lines_daily gets a value-aware `real` projection, and last_day is filtered on it.
+    assert "(lines_added <> 0 OR lines_removed <> 0) AS real" in DERIVE_SQL
+    assert "max(d.day) FILTER (WHERE d.real) AS last_day" in DERIVE_SQL
+
+    # resumed's own definition is untouched: it still sees every row, real or not, and must not reference d.real.
+    resumed_clause = "coalesce(bool_or(d.day IS DISTINCT FROM (sd.started_at AT TIME ZONE 'UTC')::date)\n                    FILTER (WHERE d.day IS NOT NULL), false) AS resumed"
+    assert resumed_clause in DERIVE_SQL
+    assert "d.real" not in resumed_clause

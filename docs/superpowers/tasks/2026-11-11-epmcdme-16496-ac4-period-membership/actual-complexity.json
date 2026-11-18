@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-11-12T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 9,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "reader.py's _activity_exists/_ACTIVITY_TABLES (the shared activity-detection primitive used by nearly every session query) and session_activity.py's DERIVE_SQL were both changed to carry the same zero-value-lines distinction, plus a one-time ops SQL script and four test files across repository and service-layer test suites." },
+    { "dimension": "technical_risk", "reason": "Extends an already-established six-arm window-admission rule with a new value-aware predicate (no fully exact precedent for this specific distinction), required a one-time production data-correction script (scripts/ops/epmcdme_16496_reset_zero_lines_has_activity.sql) to repair sessions already derived under the old rule, and needed several code-review fix-up rounds (CR-001..CR-008 per commit history) before converging." },
+    { "dimension": "file_change_estimate", "reason": "7 modified files (2 core postgres repository modules, 2 doc guides, 3 test files) plus 2 new files (ops SQL script, new live-Postgres integration test) spread across 5 distinct directories (.ai-run/guides, scripts/ops, src/.../postgres, tests/.../postgres, tests/.../handlers)." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches the core shared activity-detection utility (_activity_exists / _ACTIVITY_TABLES) used across nearly every reader.py query.",
+    "Technical Risk bumped from M to L: requires a one-time production data-migration-like correction (reset of stale has_activity/last_activity_day for already-derived sessions).",
+    "File Change Estimate bumped from M to L: the same one-time data-correction requirement adds a new ops/ directory to the diff, spreading changes across 5 directories total."
+  ],
+  "split_recommendation": null
+}

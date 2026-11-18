@@ -16,8 +16,11 @@
 
 The rollup (the stored end of a session) and the reader (the end it reports) both stop at the last record of real
 work. A lifecycle hook, Claude Code's own startup record (event kind OTHER), a built-in command typed at a reopen
-(`/exit`), a span of kind OTHER and a metric other than lines of code are not real work: a reopen that does nothing
-must leave no trace in the end. Everything here is built from vocabulary constants, never from input.
+(`/exit`), a span of kind OTHER, a metric other than lines of code, and a zero-value lines-of-code point are not real
+work: a reopen that does nothing, or a zero-delta metric point sent after the last real edit, must leave no trace in
+the end -- the same rule the admission predicate applies to membership (EPMCDME-16496 AC4). Both consumers take
+the rule from here, so a trailing zero-value point neither admits a session nor extends its `ended_at`/duration.
+Everything here is built from vocabulary constants, never from input.
 """
 
 from __future__ import annotations
@@ -97,8 +100,9 @@ _FILTERS: dict[str, Callable[[str], str]] = {
     "usage_requests": lambda _alias: "",
     "log_events": _log_filter,
     "spans": _span_filter,
-    # Lines of code only: an active_time point is sent while a reopen is typed into.
-    "metric_points": lambda a: f" AND {a}.metric_name = ANY({text_array(LINES_METRICS)})",
+    # Lines of code only (an active_time point is sent while a reopen is typed into), and only a nonzero delta: a
+    # zero-value point only says "lines are known", not that a line changed.
+    "metric_points": lambda a: f" AND {a}.metric_name = ANY({text_array(LINES_METRICS)}) AND {a}.value <> 0",
 }
 
 

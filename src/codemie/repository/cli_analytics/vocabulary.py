@@ -93,6 +93,12 @@ DIMENSION_HOOK_TYPES: tuple[str, ...] = (
     "agent.notification",
 )
 
+# The dimension hooks that can start a session: every one but the end. A session end is a lifecycle record a client may
+# send for a session that never ran (GitHub Copilot Chat's pre-warmed session that expires unused, discarded after five
+# minutes), and the first prompt of the chat can come much later under the same session id: the end must not be the
+# start.
+START_HOOK_TYPES: tuple[str, ...] = tuple(t for t in DIMENSION_HOOK_TYPES if t != "agent.session.end")
+
 # Hook-sourced slash-command skill dispatch (UserPromptExpansion); not a dimension type.
 SKILL_DISPATCH_EVENT = "agent.skill.dispatch"
 

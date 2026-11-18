@@ -115,7 +115,7 @@ Additional discard reasons: `evidence_session_conflict`, `session_owner_conflict
 | `agent.git.snapshot` | `hook_events` | `session_dims` |
 
 - In `hook_events` a field named like a typed key (rule 8) goes to that column and is absent from `attrs`; every other field goes to `attrs` with its JSON type.
-- None of the six moves a session's start or end: `session_dims.started_at` comes from the 13 dimension hook events only and `last_event_at` from the 11 real-work ones (prompt, the stop or the error that closes a turn, tool, subagent start, usage and stop, skill dispatch; `ACTIVITY_HOOK_TYPES`), so a lifecycle hook alone never extends a session. A session that sent none of those is in no dashboard window.
+- None of the six moves a session's start or end: `session_dims.started_at` comes from the 12 dimension hook events other than `agent.session.end` only and `last_event_at` from the 11 real-work ones (prompt, the stop or the error that closes a turn, tool, subagent start, usage and stop, skill dispatch; `ACTIVITY_HOOK_TYPES`), so a lifecycle hook alone never extends a session. A session that sent none of those is in no dashboard window.
 
 ## Common fields
 

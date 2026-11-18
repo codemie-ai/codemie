@@ -794,7 +794,9 @@ async def test_each_request_is_counted_once_in_the_overview_user_and_repository_
 
 
 @pytest.mark.asyncio
-async def test_a_session_started_inside_a_sub_day_window_with_activity_after_the_window_end_stays_listed():
+async def test_a_session_started_inside_a_sub_day_window_with_activity_after_the_window_end_is_listed_only_for_a_window_with_the_activity():
+    # EPMCDME-16496 AC4 review: work stamped after the window's end does not admit the window (started 00:00, first
+    # prompt 00:20: not in 23:59-00:05, listed for a window that holds the prompt).
     async def scenario(engine, seed, sids, handler):
         sid = seed.sid("sub-day")
         sids.append(sid)
@@ -805,8 +807,10 @@ async def test_a_session_started_inside_a_sub_day_window_with_activity_after_the
             hooks=[("agent.session.start", seed.d2), ("agent.prompt.submit", work)],
             usage=[(work + timedelta(seconds=10), "w-r1")],
         )
-        f = seed.window(seed.d2 - timedelta(minutes=1), seed.d2 + timedelta(minutes=5))
-        assert (await _endpoints(handler, f))["sessions"] == [sid]
+        before_the_work = seed.window(seed.d2 - timedelta(minutes=1), seed.d2 + timedelta(minutes=5))
+        assert (await _endpoints(handler, before_the_work))["sessions"] == []
+        with_the_work = seed.window(seed.d2 - timedelta(minutes=1), seed.d2 + timedelta(minutes=25))
+        assert (await _endpoints(handler, with_the_work))["sessions"] == [sid]
 
     await _run(scenario)
 

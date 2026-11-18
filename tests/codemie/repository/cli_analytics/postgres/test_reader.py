@@ -40,6 +40,7 @@ from codemie.repository.cli_analytics.postgres.reader import (
     _C,
     _DESKTOP_ENTRYPOINTS_SQL,
     _RAW_RETENTION_DAYS,
+    _activity_exists,
     _is_listed,
     _ms,
     PostgresCliAnalyticsReader,
@@ -522,19 +523,24 @@ def _any_activity(alias: str, days: tuple[str, str | None] | None = None) -> str
         bound = f" AND ax.day >= {days[0]}" + (f" AND ax.day <= {days[1]}" if days[1] else "")
     tables = ("turns_daily", "tool_facts_daily", "cost_daily", "session_usage", "lines_daily")
     clauses = " OR ".join(
-        f"EXISTS (SELECT 1 FROM {t} ax WHERE ax.session_id = {alias}.session_id{bound})" for t in tables
+        f"EXISTS (SELECT 1 FROM {t} ax WHERE ax.session_id = {alias}.session_id{bound}"
+        + (" AND (ax.lines_added <> 0 OR ax.lines_removed <> 0)" if t == "lines_daily" else "")
+        + ")"
+        for t in tables
     )
     return f"({clauses})"
 
 
 # a session that started in the window is admitted for activity from the window's first day on, not for any activity ever
 _START_DAY_BEGIN = f"({_START_DAY_UTC}::timestamp AT TIME ZONE 'UTC')"
-_AFTER_FIRST_DAY = _any_activity("d", (f"({_START_DAY_UTC} + 1)", None))
-_ON_FIRST_DAY = _any_activity("d", (_START_DAY_UTC, _START_DAY_UTC))
-# a first-day row says only the day: a window of a day or less that does not start at midnight, and not before the raw
-# retention (the raw rows may be purged), also needs a real-work record at or after the start to confirm it
+_AFTER_FIRST_DAY = _any_activity("d", (_START_DAY_UTC, None))
+_AFTER_END_DAY = f"(({_END_DAY_UTC} + 1)::timestamp AT TIME ZONE 'UTC')"
+# a day row says only the day: a window of a day or less that does not cover its days whole (it starts after midnight
+# or ends before the day's end), and not before the raw retention (the raw rows may be purged), also needs a real-work
+# record stamped inside the window to confirm it
 _FROM_START_OR_MIDNIGHT = (
-    f"($start_dt::timestamptz = {_START_DAY_BEGIN} "
+    f"(($start_dt::timestamptz = {_START_DAY_BEGIN} "
+    f"AND $end_dt::timestamptz >= {_AFTER_END_DAY} - interval '1 second') "
     "OR $end_dt::timestamptz - $start_dt::timestamptz > interval '1 day 1 second' "
     f"OR $start_dt::timestamptz < now() - interval '{_RAW_RETENTION_DAYS} days') "
     "OR (EXISTS (SELECT 1 FROM hook_events r WHERE"
@@ -542,14 +548,32 @@ _FROM_START_OR_MIDNIGHT = (
 _WHOLE_DAYS = _any_activity("d", (_FIRST_WHOLE_DAY_UTC, _LAST_WHOLE_DAY_UTC))
 _WINDOW_DAYS = _any_activity("d", (_START_DAY_UTC, _END_DAY_UTC))
 _IN_WINDOW = "d.started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
-# the five arms of the admission rule (see `_admitted_arms`): started (stored fact), started and underived (asks the
-# tables), outside and underived (the rule as is), outside and resumed, outside and all rows on one day (the last two
-# decide with `_active_in_window` on their candidates only)
-_ARM_STARTED = (
-    f"AND {_IN_WINDOW} AND d.has_activity AND d.last_activity_day >= {_START_DAY_UTC}"
-    f" AND (d.last_activity_day > {_START_DAY_UTC} OR ({_FROM_START_OR_MIDNIGHT}"
+# the live form of `resumed` (see `_live_resumed`): a row of any day table on a day other than the session's own start day
+_LIVE_RESUMED = (
+    "("
+    + " OR ".join(
+        f"EXISTS (SELECT 1 FROM {t} ax WHERE ax.session_id = d.session_id "
+        f"AND ax.day <> (d.started_at AT TIME ZONE 'UTC')::date OFFSET 0)"
+        for t in ("turns_daily", "tool_facts_daily", "cost_daily", "session_usage", "lines_daily")
+    )
+    + ")"
 )
-_ARM_UNDERIVED = f"AND {_IN_WINDOW} AND d.has_activity IS NULL AND ({_AFTER_FIRST_DAY} OR (("
+# the six arms of the admission rule (see `_admitted_arms`): started and not resumed (stored facts), started and
+# underived (asks the tables, the resumed half through the live form), outside and underived (the rule as is), outside
+# and resumed, outside and all rows on one day, started and resumed (the last three decide with `_active_in_window` on
+# their candidates only)
+_ARM_STARTED = (
+    f"AND {_IN_WINDOW} AND d.has_activity AND NOT d.resumed AND d.last_activity_day >= {_START_DAY_UTC}"
+    f" AND ({_FROM_START_OR_MIDNIGHT}"
+)
+_ARM_UNDERIVED = f"AND {_IN_WINDOW} AND d.has_activity IS NULL AND (({_LIVE_RESUMED} AND "
+_ARM_UNDERIVED_NOT_RESUMED = f"OR (NOT {_LIVE_RESUMED} AND ({_AFTER_FIRST_DAY} AND (("
+_ARM_STARTED_RESUMED = f"AND {_IN_WINDOW} AND d.has_activity AND d.resumed AND ("
+# the resumed-cohort bypass (`_active_in_window`'s `resumed_bypass`): once the window predates the raw
+# retention, the day row decides alone instead of requiring a raw record. Checked separately below, scoped
+# to arm 2's live-resumed branch and arm 6 only -- the two call sites that pass `resumed_bypass=True` -- so
+# dropping it at either one breaks this test too, not just the direct `_active_in_window` unit test.
+_RAW_RETENTION_EXPIRED = f"$start_dt::timestamptz < now() - interval '{_RAW_RETENTION_DAYS} days'"
 _ARM_OUTSIDE_UNDERIVED = (
     f"AND NOT ({_IN_WINDOW}) AND d.has_activity IS NULL AND ({_WHOLE_DAYS} OR ({_WINDOW_DAYS} AND ("
 )
@@ -567,10 +591,19 @@ def test_sessions_cte_decides_the_window_by_session_start(filters):
 
     assert _ARM_STARTED in cte
     assert _ARM_UNDERIVED in cte
+    assert _ARM_UNDERIVED_NOT_RESUMED in cte
+    assert _ARM_STARTED_RESUMED in cte
     assert _ARM_OUTSIDE_UNDERIVED in cte
     assert _ARM_RESUMED in cte
     assert _ARM_ONE_DAY in cte
     assert cte.count("OFFSET 0") > 0  # the derived arms probe the day tables row by row
+    # the retention bypass is scoped to arm 2's live-resumed branch and arm 6 (MR review): present in both
+    # of their spans, each bounded by the next arm's own marker so a match elsewhere in the CTE (arm 1's
+    # `_no_raw_check_needed` gate also spells this same string) cannot satisfy it by accident
+    underived_span = cte[cte.index(_ARM_UNDERIVED) : cte.index(_ARM_OUTSIDE_UNDERIVED)]
+    resumed_arm_span = cte[cte.index(_ARM_STARTED_RESUMED) :]
+    assert _RAW_RETENTION_EXPIRED in underived_span
+    assert _RAW_RETENTION_EXPIRED in resumed_arm_span
 
 
 @pytest.mark.parametrize("table", _RAW_TABLES)
@@ -581,6 +614,27 @@ def test_sessions_cte_times_a_partial_window_day_by_its_raw_records(table):
         f"EXISTS (SELECT 1 FROM {table} r WHERE r.session_id = d.session_id "
         "AND r.ts >= $start_dt::timestamptz AND r.ts <= $end_dt::timestamptz"
     ) in cte
+
+
+def test_sessions_cte_requires_a_nonzero_value_for_a_raw_metric_point():
+    cte = " ".join(PostgresCliAnalyticsReader._sessions_cte(_flt()).split())
+
+    # the nonzero-value check comes from real_work_filter (real_work_sql.py), the same one the rollup's end-of-session
+    # range uses, so a trailing zero-value point neither admits a session nor extends its end
+    assert "r.value <> 0" in real_work_filter("metric_points", "r")
+    assert real_work_filter("metric_points", "r") in cte
+
+
+def test_activity_exists_requires_a_nonzero_lines_daily_row():
+    sql = _activity_exists("d")
+
+    lines_daily_clause = "EXISTS (SELECT 1 FROM lines_daily ax WHERE ax.session_id = d.session_id"
+    assert f"{lines_daily_clause} AND (ax.lines_added <> 0 OR ax.lines_removed <> 0))" in sql
+
+    for table in ("turns_daily", "tool_facts_daily", "cost_daily", "session_usage"):
+        clause = f"EXISTS (SELECT 1 FROM {table} ax WHERE ax.session_id = d.session_id)"
+        assert clause in sql
+        assert "ax.lines_added <> 0 OR ax.lines_removed <> 0" not in clause
 
 
 def test_scope_always_restricts_to_the_selected_sessions():
@@ -631,7 +685,7 @@ async def test_framework_sessions_group_raw_keys_and_bind_the_window_and_label()
 async def test_session_start_times_rely_on_sel_alone():
     sql, _ = await _sql_of("get_session_start_times")
 
-    assert sql.count("BETWEEN") == 5  # only inside sel: one per admission arm (the activity probes use >=/<=)
+    assert sql.count("BETWEEN") == 6  # only inside sel: one per admission arm (the activity probes use >=/<=)
 
 
 @pytest.mark.parametrize("method", ["get_session_durations", "get_session_cost_facts", "get_session_start_times"])
@@ -643,7 +697,7 @@ async def test_session_queries_report_the_activity_range(method):
     assert "act AS (" in sql
     assert "least(" in sql and "greatest(" in sql
     assert "FROM log_events" in sql and "FROM spans" in sql
-    assert sql.count("BETWEEN") == 5  # the window is still decided only in sel (one per admission arm)
+    assert sql.count("BETWEEN") == 6  # the window is still decided only in sel (one per admission arm)
 
 
 @pytest.mark.asyncio
@@ -702,15 +756,17 @@ def test_the_raw_admission_check_reads_the_same_real_work_as_the_end_of_a_sessio
     assert real_work_filter(table, "r") in cte
 
 
-def test_the_raw_check_of_a_started_session_has_no_upper_bound_and_the_one_of_a_resumed_session_has_one():
-    """A session that started in the window may have worked after its end; only the first-day check is open-ended."""
+def test_the_raw_check_of_a_started_session_is_bounded_by_the_window_end():
+    """Work stamped after the window's end admits nobody: a session started at 10:00 whose only prompt is at 11:00 is
+    not in a 10:00-10:30 window. The check of a started session and the one of a resumed session read the same range."""
     cte = " ".join(PostgresCliAnalyticsReader._sessions_cte(_flt()).split())
 
-    open_ended = (
-        f"{_FROM_START_OR_MIDNIGHT} r.session_id = d.session_id AND r.ts >= $start_dt::timestamptz AND r.event_type"
-    )
-    assert open_ended in cte
+    assert (
+        f"{_FROM_START_OR_MIDNIGHT} r.session_id = d.session_id AND r.ts >= $start_dt::timestamptz "
+        "AND r.ts <= $end_dt::timestamptz AND r.event_type"
+    ) in cte
     assert "AND r.ts >= $start_dt::timestamptz AND r.ts <= $end_dt::timestamptz" in cte
+    assert "AND r.ts >= $start_dt::timestamptz AND r.event_type" not in cte
 
 
 @pytest.mark.asyncio
@@ -1859,16 +1915,16 @@ async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(metho
     assert f"WINDOW w AS (PARTITION BY c.day, c.session_id, c.user_email, {model}, c.query_source)) c" in sql
     assert f"(array_agg({model} ORDER BY c.grain_calls DESC NULLS LAST, c.day, c.session_id" in sql
     assert "ORDER BY c.api_call_count" not in sql
-    # cost_daily is read for the grain_calls subquery, again inside sel's own activity-window checks (eight times:
-    # the after-the-first-day and first-day probes of the underived started arm, and the whole-day and window-day
-    # probes of each of the three arms that ask `_active_in_window`), and once more per `_DEVELOPER`
+    # cost_daily is read for the grain_calls subquery, again inside sel's own activity-window checks (thirteen times:
+    # the live-resumed probe twice and the from-the-first-day probe of the underived started arm, and
+    # the whole-day and window-day probes of each of the five arms that ask `_active_in_window`), and once more per `_DEVELOPER`
     # occurrence for its own cost-email fallback subquery (get_users reads the developer column of `sel`, which
     # computes it once, and get_session_cost_facts uses it once); a plain `FROM cost_daily c` has no grain_calls column. The listing gate (`_is_listed`) reads it too, once per
     # arm, and is taken out first, so the count does not move with that gate's own rule.
     listing_gate = re.escape(" ".join(_is_listed("ALIAS").split())).replace("ALIAS", r"\w+")
     without_gate = re.sub(listing_gate, "", sql)
     developer_reads = {"get_users": 1, "get_session_cost_facts": 1}.get(method, 0)
-    expected_cost_daily_reads = 1 if method == "get_session_detail_cost" else 9 + developer_reads
+    expected_cost_daily_reads = 1 if method == "get_session_detail_cost" else 14 + developer_reads
     assert without_gate.count("cost_daily") == expected_cost_daily_reads
     assert "(SELECT c.*, sum(c.api_call_count) OVER w AS grain_calls, " in sql
 
@@ -3097,3 +3153,34 @@ def test_the_raw_check_is_skipped_for_a_window_that_starts_before_the_raw_retent
     # a window of a day or less is asked for a raw record unless one of the three conditions holds
     assert skip.count(" OR ") == 2
     assert "now() - interval '7 days'" in reader._real_work_from_window_start("d")
+
+
+def test_active_in_window_resumed_bypass_falls_back_to_the_day_row_once_raw_retention_has_passed(monkeypatch):
+    """`_active_in_window`'s `resumed_bypass` gates only the started-in-the-window-but-resumed cohort (arm 6 and
+    arm 2's live-resumed branch). Before this fix, its partial-day branch (`window_days AND raw`) required a raw
+    record unconditionally, so a session whose only record of a partial boundary day is a day-rollup row -- the
+    normal state once that day's raw rows have aged out of `CLI_ANALYTICS_RAW_RETENTION_DAYS` -- would wrongly fall
+    out of arm 6, which the pre-fix code never needed to ask for an old window (its old, simpler
+    `last_activity_day > start day` check had no raw dependency at all). `_raw_retention_expired` closes that gap
+    the same way `_no_raw_check_needed` already does for the `_STARTED_IN_WINDOW` gate.
+
+    A session whose `started_at` is outside the window (arms 3, 4 and 5) is not part of that cohort and keeps the
+    plain raw requirement regardless of the window's age: `resumed_bypass` defaults to off, and a purged raw record
+    on a partial boundary day still excludes it, as on main (EPMCDME-16496 MR review)."""
+    from codemie.repository.cli_analytics.postgres import reader
+
+    monkeypatch.setattr(reader, "_RAW_RETENTION_DAYS", 7)
+    expired = "$start_dt::timestamptz < now() - interval '7 days'"
+
+    assert expired in reader._raw_retention_expired()
+    assert expired in reader._no_raw_check_needed()
+
+    bypassed = reader._active_in_window("d", resumed_bypass=True)
+    assert f"({expired} OR {reader._raw_activity_in_window('d')})" in bypassed
+
+    # the outside-the-window arms (3, 4, 5) never get the bypass, with either argument ordering
+    outside_default = reader._active_in_window("d")
+    outside_raw_first = reader._active_in_window("d", raw_first=True)
+    for outside in (outside_default, outside_raw_first):
+        assert expired not in outside
+        assert reader._raw_activity_in_window("d") in outside
