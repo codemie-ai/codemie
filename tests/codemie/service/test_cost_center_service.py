@@ -25,6 +25,9 @@ from codemie.service.cost_center_service import CostCenterService
 
 def _admin_user():
     user = MagicMock()
+    user.is_admin = True
+    user.is_maintainer = False
+    user.is_auditor = False
     user.is_admin_or_maintainer = True
     user.id = "actor-1"
     return user
@@ -147,15 +150,17 @@ class TestCostCenterServiceFeatureGate:
             CostCenterService.list_paginated(MagicMock(), user=_admin_user(), search=None, page=1, per_page=10)
 
         assert exc_info.value.code == 403
+        assert exc_info.value.message == "Feature not available"
 
     @patch("codemie.service.cost_center_service.customer_config", create=True)
-    def test_get_or_404_rejects_when_feature_disabled(self, mock_customer_config):
+    def test_get_for_read_or_404_rejects_when_feature_disabled(self, mock_customer_config):
         mock_customer_config.is_feature_enabled.return_value = False
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            CostCenterService.get_or_404(MagicMock(), user=_admin_user(), cost_center_id=uuid4())
+            CostCenterService.get_for_read_or_404(MagicMock(), user=_admin_user(), cost_center_id=uuid4())
 
         assert exc_info.value.code == 403
+        assert exc_info.value.message == "Feature not available"
 
     @patch("codemie.service.cost_center_service.customer_config", create=True)
     def test_update_rejects_when_feature_disabled(self, mock_customer_config):
@@ -303,3 +308,155 @@ class TestGetOrCreate:
 
         with pytest.raises(IntegrityError):
             CostCenterService.get_or_create(MagicMock(), name="nbs-cmpa", created_by="sa-1")
+
+
+def _auditor_user():
+    user = MagicMock()
+    user.is_admin_or_maintainer = False
+    user.is_auditor = True
+    user.id = "auditor-1"
+    return user
+
+
+def _plain_user():
+    user = MagicMock()
+    user.is_admin_or_maintainer = False
+    user.is_auditor = False
+    user.id = "user-1"
+    return user
+
+
+@patch("codemie.service.cost_center_service.application_repository")
+@patch("codemie.service.cost_center_service.cost_center_repository")
+@patch("codemie.service.cost_center_service.customer_config", create=True)
+class TestCostCenterServiceAuthorization:
+    """EPMCDME-17380: auditors read cost centers; every write stays admin/maintainer-only."""
+
+    def test_auditor_can_list(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = True
+        mock_repo.list_paginated.return_value = ([], 0)
+        session = MagicMock()
+
+        result = CostCenterService.list_paginated(session, user=_auditor_user(), search=None, page=0, per_page=20)
+
+        assert result == ([], 0)
+        mock_repo.list_paginated.assert_called_once_with(session, search=None, page=0, per_page=20)
+
+    def test_auditor_can_get(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = True
+        existing = _cost_center()
+        mock_repo.get_active_by_id.return_value = existing
+
+        result = CostCenterService.get_for_read_or_404(MagicMock(), user=_auditor_user(), cost_center_id=existing.id)
+
+        assert result is existing
+
+    def test_plain_user_cannot_list(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = True
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            CostCenterService.list_paginated(MagicMock(), user=_plain_user(), search=None, page=0, per_page=20)
+
+        assert exc_info.value.code == 403
+        assert exc_info.value.message == "Access denied"
+        mock_repo.list_paginated.assert_not_called()
+
+    def test_plain_user_cannot_get(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = True
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            CostCenterService.get_for_read_or_404(MagicMock(), user=_plain_user(), cost_center_id=uuid4())
+
+        assert exc_info.value.code == 403
+        assert exc_info.value.message == "Access denied"
+        mock_repo.get_active_by_id.assert_not_called()
+
+    def test_feature_gate_runs_before_read_role_check(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = False
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            CostCenterService.get_for_read_or_404(MagicMock(), user=_plain_user(), cost_center_id=uuid4())
+
+        assert exc_info.value.message == "Feature not available"
+
+    def test_list_feature_gate_runs_before_read_role_check(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = False
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            CostCenterService.list_paginated(MagicMock(), user=_plain_user(), search=None, page=1, per_page=10)
+
+        assert exc_info.value.message == "Feature not available"
+        mock_repo.list_paginated.assert_not_called()
+
+    def test_admin_fixture_passes_read_check(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = True
+
+        CostCenterService.ensure_read_access(_admin_user())
+
+    def test_auditor_cannot_create(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = True
+        session = MagicMock()
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            CostCenterService.create(session, user=_auditor_user(), name="eng-123", description=None)
+
+        assert exc_info.value.code == 403
+        mock_repo.create.assert_not_called()
+        session.flush.assert_not_called()
+
+    def test_auditor_cannot_update(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = True
+        existing = _cost_center()
+        mock_repo.get_active_by_id.return_value = existing
+        session = MagicMock()
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            CostCenterService.update(session, user=_auditor_user(), cost_center_id=existing.id, description="new")
+
+        assert exc_info.value.code == 403
+        assert exc_info.value.message == "Access denied"
+        mock_repo.update.assert_not_called()
+        session.flush.assert_not_called()
+
+    def test_auditor_cannot_delete(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = True
+        existing = _cost_center()
+        existing.deleted_at = None
+        mock_repo.get_active_by_id.return_value = existing
+        mock_app_repo.count_active_projects_by_cost_center_id.return_value = 0
+        session = MagicMock()
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            CostCenterService.delete(session, user=_auditor_user(), cost_center_id=existing.id)
+
+        assert exc_info.value.code == 403
+        assert exc_info.value.message == "Access denied"
+        assert existing.deleted_at is None
+        session.add.assert_not_called()
+        session.flush.assert_not_called()
+
+    def test_admin_can_update_and_delete(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = True
+        existing = _cost_center()
+        mock_repo.get_active_by_id.return_value = existing
+        mock_repo.update.return_value = existing
+        mock_app_repo.count_active_projects_by_cost_center_id.return_value = 0
+        session = MagicMock()
+
+        updated = CostCenterService.update(session, user=_admin_user(), cost_center_id=existing.id, description="new")
+        CostCenterService.delete(session, user=_admin_user(), cost_center_id=existing.id)
+
+        assert updated is existing
+        mock_repo.update.assert_called_once_with(session, existing, description="new")
+        assert existing.deleted_at is not None
+        session.flush.assert_called_once()
+
+    def test_update_returns_404_for_missing_cost_center(self, mock_customer_config, mock_repo, mock_app_repo):
+        mock_customer_config.is_feature_enabled.return_value = True
+        mock_repo.get_active_by_id.return_value = None
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            CostCenterService.update(MagicMock(), user=_admin_user(), cost_center_id=uuid4(), description="x")
+
+        assert exc_info.value.code == 404
+        assert exc_info.value.message == "Cost center not found"

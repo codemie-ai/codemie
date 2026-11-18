@@ -1,0 +1,49 @@
+{
+  "decision": "request-changes",
+  "rationale": "CR-001: the service-test admin fixture (MagicMock with only is_admin_or_maintainer=True) now fails the new bool-based read predicate, so the list_paginated feature-gate test passes on 'Access denied' and no longer pins the gate this refactor moved. 2 deferred to D:/Projects/codemie-17380/docs/superpowers/reviews/2026-11-18-cr-17380-arch-fixes/code-review-deferred.local.md: UI AC8/AC9 are codemie-ui deliverables outside this backend AR-2..AR-4 delta. 7 blind-lens candidates dismissed after source checks (update/delete run ensure_feature_enabled first, no stale get_or_404 caller, User.is_admin_or_maintainer delegates to the same predicate, User.is_auditor is a bool field); security standards row n/a because no security-practices guide exists.",
+  "confidence": "high",
+  "risk_flags": ["auth"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: auditor-only user gets 200 from GET list, GET /{costCenterId} and GET /{costCenterId}/budget-rollup", "status": "pass", "notes": "read routes use get_for_read_or_404/list_paginated -> ensure_read_access -> is_admin_maintainer_or_auditor; route guards unchanged"},
+    {"kind": "story-ac", "item": "AC2: auditor-only user gets 403 from POST, PATCH and DELETE; nothing created, changed or deleted", "status": "pass", "notes": "write routes keep admin_access_only; create/update/delete call ensure_admin before any lookup or write"},
+    {"kind": "story-ac", "item": "AC3: CostCenterService.update/delete called directly as auditor raise 403 before any repository write", "status": "pass", "notes": "ensure_feature_enabled + ensure_admin precede _find_active_or_404; test_auditor_cannot_update/delete assert no writes"},
+    {"kind": "story-ac", "item": "AC4: administrator and maintainer keep current results on all six routes", "status": "pass", "notes": "new predicate delegates to is_admin_or_maintainer, the same function User.is_admin_or_maintainer uses (user.py:195-196)"},
+    {"kind": "story-ac", "item": "AC5: user with none of admin, maintainer, auditor gets 403 Access denied on all six routes", "status": "pass", "notes": "predicate returns False for no roles or non-bool flags; service 403 'Access denied' asserted for plain user"},
+    {"kind": "spec", "item": "AC6: feature gate and ENABLE_USER_MANAGEMENT keep order and responses; get_or_create and ensure_exists_for_project stay role-free", "status": "pass", "notes": "every _find_active_or_404 caller runs ensure_feature_enabled first; get_or_create/ensure_exists_for_project unchanged"},
+    {"kind": "spec", "item": "AC7: tests cover service read/write authorization per role, route guards by dependency name, per-role HTTP calls on six routes", "status": "pass", "notes": "renamed test calls plus new test_permissions.py; dependency-name and per-role HTTP tests in base unchanged (see CR-001 for a weakened gate test)"},
+    {"kind": "story-ac", "item": "UI AC8: auditor-only user sees the Cost centers tab in the Administration sidebar (codemie-ui tabs.tsx)", "status": "fail", "notes": "no codemie-ui change in this backend diff; spec places it in codemie-ui branch EPMCDME-17380_auditor-cost-centers-read (deferred DF-001)"},
+    {"kind": "story-ac", "item": "UI AC9: Create, Edit and Delete controls hidden on Cost centers pages for non-admin, non-maintainer users", "status": "fail", "notes": "no codemie-ui change in this backend diff; spec places it in codemie-ui under the same ticket (deferred DF-002)"},
+    {"kind": "spec", "item": "Non-goal: no new router guard and no change to admin_or_maintainer_or_auditor_access or its denial log", "status": "pass", "notes": "authentication.py not in the diff; read rule is a service-side predicate"},
+    {"kind": "spec", "item": "Non-goal: no auditor write access and no auditor access to other cost-center flows", "status": "pass", "notes": "write paths stay on ensure_admin/admin_access_only; get_or_create and ensure_exists_for_project untouched"},
+    {"kind": "spec", "item": "Non-goal: no schema, migration or configuration changes", "status": "pass", "notes": "changed files are router, permissions, service and tests only"},
+    {"kind": "spec", "item": "Decision: separate ensure_read_access (list, get lookup) from ensure_admin (create, update, delete)", "status": "pass", "notes": "service:58-66 two checks used as specified"},
+    {"kind": "spec", "item": "Decision: update/delete do their own admin check then a role-free lookup", "status": "pass", "notes": "service:155-156 and 178-179 call _find_active_or_404 after ensure_admin"},
+    {"kind": "spec", "item": "AR-2: read rule is named predicate is_admin_maintainer_or_auditor in permissions.py, used by ensure_read_access", "status": "pass", "notes": "permissions.py:33-43 added; service:31,65 import and use it"},
+    {"kind": "spec", "item": "AR-3: get_or_404 renamed to get_for_read_or_404; write-side lookup private role-free _find_active_or_404", "status": "pass", "notes": "renamed; router and test callers updated; no remaining get_or_404 caller in src"},
+    {"kind": "spec", "item": "AR-4: _find_active_or_404 no longer repeats the feature-gate check; every caller runs ensure_feature_enabled first", "status": "pass", "notes": "gate removed from the helper; callers at service:137,154,177 run it first"},
+    {"kind": "spec", "item": "AR-5: plan.md acceptance criteria match this spec and name the per-role HTTP test file", "status": "pass", "notes": "plan.md:90 names test_cost_centers_router_http_auth.py; planning artifact outside this diff"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "1 commit in range; subject matches the git-workflow.md 'EPMCDME-####: Description' format"},
+    {"kind": "code-quality", "status": "pass", "notes": "6 changed files checked against code-quality.md: new predicate annotated like its sibling, renamed lookups typed, Apache headers present; Ruff gate not run (read-only review)"},
+    {"kind": "security", "status": "na", "notes": ".ai-run/guides/security/security-practices.md absent; no concrete security issue: read predicate equivalent to base, write paths still on ensure_admin/admin_access_only"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/test_cost_center_service.py",
+      "line": 143,
+      "title": "List feature-gate test no longer pins gate",
+      "problem": "ensure_read_access now calls is_admin_maintainer_or_auditor, which reads is_admin/is_maintainer/is_auditor and treats non-bool values as False. The service-test fixture _admin_user() (lines 26-30) is a MagicMock that only sets is_admin_or_maintainer=True, so it now fails the read check with 403 'Access denied'. test_list_paginated_rejects_when_feature_disabled (lines 143-149) asserts only code == 403, so it passes whether the 403 comes from the feature gate or the role check (broken verification). The get_for_read_or_404 gate test at 152-158 has the same weakness but is still pinned by test_feature_gate_runs_before_read_role_check (lines 369-375), which asserts the message; nothing pins the list path, and the HTTP auth matrix patches the feature to always enabled (test_cost_centers_router_http_auth.py:107).",
+      "impact": "This change moved feature-gate responsibility onto each caller (AR-4) and the task requires the gate's order and responses to stay unchanged. If ensure_feature_enabled() is removed from list_paginated or moved after the role check, GET /v1/admin/cost-centers would be served to admins and auditors with the costCenters feature off and no test would fail. Consumer: CostCenterService.list_paginated (src/codemie/service/cost_center_service.py:129-132) behind the cost center list route.",
+      "recommendation": "Build _admin_user() as a real admin for the new predicate (set is_admin = True and is_maintainer/is_auditor = False as bools, keeping is_admin_or_maintainer = True for ensure_admin), and in test_list_paginated_rejects_when_feature_disabled (and test_get_for_read_or_404_rejects_when_feature_disabled) also assert exc_info.value.message == \"Feature not available\". Optionally add an admin read-success case for list_paginated/get_for_read_or_404 so the fixture is proven to pass ensure_read_access."
+    }
+  ],
+  "deferred": [
+    {"id": "DF-001", "severity": "critical", "file": "codemie-ui tabs.tsx", "title": "Auditor sees Cost centers sidebar tab", "problem": "UI AC8 (auditor-only user sees the Cost centers tab in the Administration sidebar) has no implementing change in this backend diff.", "preexisting": "codemie-ui deliverable (branch EPMCDME-17380_auditor-cost-centers-read); task scopes this delta to backend AR-2..AR-4"},
+    {"id": "DF-002", "severity": "critical", "file": "unknown", "title": "Hide write controls for non-admins", "problem": "UI AC9 (Create, Edit and Delete controls hidden on Cost centers list and details pages for non-admin, non-maintainer users) has no implementing change in this backend diff.", "preexisting": "codemie-ui deliverable under the same ticket; task scopes this delta to backend AR-2..AR-4"}
+  ]
+}

@@ -28,6 +28,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import CostCenter
 from codemie.repository.application_repository import application_repository
 from codemie.repository.cost_center_repository import cost_center_repository
+from codemie.rest_api.security.permissions import is_admin_maintainer_or_auditor
 from codemie.rest_api.security.user import User
 
 
@@ -56,6 +57,12 @@ class CostCenterService:
     @classmethod
     def ensure_admin(cls, user: User) -> None:
         if not user.is_admin_or_maintainer:
+            raise ExtendedHTTPException(code=403, message="Access denied")
+
+    @classmethod
+    def ensure_read_access(cls, user: User) -> None:
+        """Admit admins, maintainers and auditors; auditors get read-only access (EPMCDME-17380)."""
+        if not is_admin_maintainer_or_auditor(user):
             raise ExtendedHTTPException(code=403, message="Access denied")
 
     @classmethod
@@ -121,13 +128,22 @@ class CostCenterService:
     @classmethod
     def list_paginated(cls, session: Session, *, user: User, search: str | None, page: int, per_page: int):
         cls.ensure_feature_enabled()
-        cls.ensure_admin(user)
+        cls.ensure_read_access(user)
         return cost_center_repository.list_paginated(session, search=search, page=page, per_page=per_page)
 
     @classmethod
-    def get_or_404(cls, session: Session, *, user: User, cost_center_id: UUID) -> CostCenter:
+    def get_for_read_or_404(cls, session: Session, *, user: User, cost_center_id: UUID) -> CostCenter:
+        """Read lookup for admins, maintainers and auditors. Write paths must use `_find_active_or_404`."""
         cls.ensure_feature_enabled()
-        cls.ensure_admin(user)
+        cls.ensure_read_access(user)
+        return cls._find_active_or_404(session, cost_center_id)
+
+    @classmethod
+    def _find_active_or_404(cls, session: Session, cost_center_id: UUID) -> CostCenter:
+        """Look up an active cost center without any role check.
+
+        Private, for write paths: the caller must already have run `ensure_feature_enabled()` and `ensure_admin()`.
+        """
         cost_center = cost_center_repository.get_active_by_id(session, cost_center_id)
         if not cost_center:
             raise ExtendedHTTPException(code=404, message="Cost center not found")
@@ -135,7 +151,9 @@ class CostCenterService:
 
     @classmethod
     def update(cls, session: Session, *, user: User, cost_center_id: UUID, description: str | None) -> CostCenter:
-        cost_center = cls.get_or_404(session, user=user, cost_center_id=cost_center_id)
+        cls.ensure_feature_enabled()
+        cls.ensure_admin(user)
+        cost_center = cls._find_active_or_404(session, cost_center_id)
         validated_description = cls.validate_description(description)
         updated = cost_center_repository.update(session, cost_center, description=validated_description)
         logger.info(
@@ -156,7 +174,9 @@ class CostCenterService:
 
     @classmethod
     def delete(cls, session: Session, *, user: User, cost_center_id: UUID) -> None:
-        cost_center = cls.get_or_404(session, user=user, cost_center_id=cost_center_id)
+        cls.ensure_feature_enabled()
+        cls.ensure_admin(user)
+        cost_center = cls._find_active_or_404(session, cost_center_id)
         project_count = application_repository.count_active_projects_by_cost_center_id(session, cost_center.id)
         if project_count:
             raise ExtendedHTTPException(code=409, message="Cost center has linked active projects")

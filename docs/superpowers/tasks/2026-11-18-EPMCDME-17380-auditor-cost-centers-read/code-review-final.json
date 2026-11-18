@@ -1,0 +1,180 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Post-approval delta (AR-2..AR-4 commit 381cf5e3cf) reviewed in docs/superpowers/reviews/2026-11-18-cr-17380-arch-fixes: 1 finding CR-001 (test fixture no longer pinned list feature gate) fixed in 935668dae5, mutation-verified. UI repo change ea25421ad reviewed separately: approve high, 0 findings. Recorded under user's standing instruction."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User requests HTTP-level TestClient auth tests (auditor/maintainer/admin/plain user x 6 endpoints) plus spec.md, re-review against spec and architecture review for compliance"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Round 2 full review with spec: approve, high confidence, 0 findings, spec 17/17. Recorded under user's explicit instruction to run spec, tests, re-review and arch review without per-step approval."
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Post-approval delta (AR-2..AR-4 commit 381cf5e3cf) reviewed in docs/superpowers/reviews/2026-11-18-cr-17380-arch-fixes: 1 finding CR-001 (test fixture no longer pinned list feature gate) fixed in 935668dae5, mutation-verified. UI repo change ea25421ad reviewed separately: approve high, 0 findings. Recorded under user's standing instruction."
+    }
+  ],
+  "reviewed_head": "935668dae51a8a40cb268afb46dded35791a33e6",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "All four lenses and the standards audit ran with parseable output, every spec criterion passes, and all 10 candidates were checked against source and dismissed: get_or_404 has only the two read-route callers, admin_access_only already admitted maintainers, budget-rollup resolves through get_or_404, User.is_auditor is a typed bool, and auditor detail visibility is the requested behavior. The standards code-quality partial (new test module missing `from __future__ import annotations`) was dismissed as a non-blocking guide preference that Ruff does not enforce; 0 deferred, brief written to code-review-brief.local.md.",
+  "confidence": "high",
+  "check_confidence": null,
+  "risk_flags": [
+    "security"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC1: auditor-only user gets 200 from GET list, GET /{costCenterId}, GET /{costCenterId}/budget-rollup with no Access denied",
+      "status": "pass",
+      "notes": "three GET routes use admin_or_maintainer_or_auditor_access; list_paginated/get_or_404 call ensure_read_access; HTTP matrix covers auditor=200"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: auditor-only user gets 403 from POST, PATCH /{costCenterId}, DELETE /{costCenterId}; nothing created/changed/deleted",
+      "status": "pass",
+      "notes": "write routes keep admin_access_only; service create/update/delete call ensure_admin; tests assert no repo writes"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: CostCenterService.update/delete called directly as auditor raise 403 before any repository write",
+      "status": "pass",
+      "notes": "update/delete run ensure_admin then role-free _find_active_or_404; auditor service tests assert 403 and no flush"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: administrator and maintainer keep current results on all six routes",
+      "status": "pass",
+      "notes": "both guards and ensure_read_access admit is_admin_or_maintainer; HTTP matrix asserts admin/maintainer success on all routes"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: user with none of admin/maintainer/auditor gets 403 Access denied on all six routes",
+      "status": "pass",
+      "notes": "auditor guard and write guards raise 403 Access denied; HTTP matrix asserts plain user 403"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: feature gate (403 Feature not available) and ENABLE_USER_MANAGEMENT checks keep current order and responses",
+      "status": "pass",
+      "notes": "guard then _ensure_user_management_enabled; service gates before role check; redundant re-check in _find_active_or_404 is harmless"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: get_or_create and ensure_exists_for_project stay free of a role check",
+      "status": "pass",
+      "notes": "neither method touched; both remain role-free"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: tests cover service-level read/write authorization per role, each route's guard by dependency name, and HTTP calls per role on all six routes",
+      "status": "pass",
+      "notes": "service auth tests, dependency-name route tests and 4x6 HTTP matrix added; pass/fail is Stage 7 evidence"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no UI changes in this repo",
+      "status": "pass",
+      "notes": "diff touches only backend router, service and tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no new router guard and no change to admin_or_maintainer_or_auditor_access",
+      "status": "pass",
+      "notes": "authentication.py not in diff; existing guard reused by import"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no auditor write access and no auditor access to other cost-center flows (provisioning, project creation)",
+      "status": "pass",
+      "notes": "create/update/delete keep ensure_admin; get_or_create/ensure_exists_for_project untouched"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no schema, migration or configuration changes",
+      "status": "pass",
+      "notes": "no model, migration or config files in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach: widen the three GET routes to the existing auditor guard and split read from write authorization in the service",
+      "status": "pass",
+      "notes": "router GETs widened; service split into ensure_read_access vs ensure_admin; ensure_admin unchanged"
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: write routes keep admin_access_only",
+      "status": "pass",
+      "notes": "POST/PATCH/DELETE dependencies unchanged"
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: separate ensure_read_access (list_paginated, get_or_404) from ensure_admin (create, update, delete)",
+      "status": "pass",
+      "notes": "ensure_read_access used only in list_paginated/get_or_404"
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: update/delete do their own admin check then a role-free lookup instead of reusing get_or_404",
+      "status": "pass",
+      "notes": "_find_active_or_404 added and called from update/delete after ensure_admin"
+    },
+    {
+      "kind": "spec",
+      "item": "Builder note: auditor tests must neutralise ENV=local forced admin (resolve_is_admin)",
+      "status": "pass",
+      "notes": "HTTP fixture patches ENV='dev' and ENABLE_USER_MANAGEMENT; test asserts no promotion"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 3 commit subjects in 32b8d69d..HEAD follow the git-workflow.md 'EPMCDME-####: Description' format (EPMCDME-17380 prefix, colon, capitalized description)"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "code-quality.md Types And Imports: new source helpers ensure_read_access and _find_active_or_404 are fully typed and use X | None; changed source files carry license headers and from __future__ import annotations; test_cost_center_service.py stays under the ~500-line cohesion threshold (443). Unmet: the new module tests/codemie/rest_api/routers/test_cost_centers_router_http_auth.py has the license header but omits the from __future__ import annotations the guide says to add in new modules"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": ".ai-run/guides/security/security-practices.md is absent from the repo (security/ holds only README.md, dependencies.md, images.md for CVE remediation) and no security ref was passed; no concrete security issue found: auditor access is added only to list, detail and budget-rollup GET routes via admin_or_maintainer_or_auditor_access plus service ensure_read_access, while create/update/delete keep admin_access_only at the route and ensure_admin in the service"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "All four lenses and the standards audit ran with parseable output, every spec criterion passes, and all 10 candidates were checked against source and dismissed: get_or_404 has only the two read-route callers, admin_access_only already admitted maintainers, budget-rollup resolves through get_or_404, User.is_auditor is a typed bool, and auditor detail visibility is the requested behavior. The standards code-quality partial (new test module missing `from __future__ import annotations`) was dismissed as a non-blocking guide preference that Ruff does not enforce; 0 deferred, brief written to code-review-brief.local.md.",
+    "confidence": "high",
+    "risk_flags": [
+      "security"
+    ]
+  }
+}

@@ -28,3 +28,16 @@ def is_admin_or_maintainer(user: Any) -> bool:
         is_maintainer = False
 
     return is_admin or is_maintainer
+
+
+def is_admin_maintainer_or_auditor(user: Any) -> bool:
+    """Return True when the user may read admin data: an admin, a maintainer or an auditor.
+
+    Auditors are read-only; callers must keep write paths on `is_admin_or_maintainer`.
+    """
+    is_auditor = getattr(user, "is_auditor", False)
+
+    if not isinstance(is_auditor, bool):
+        is_auditor = False
+
+    return is_admin_or_maintainer(user) or is_auditor

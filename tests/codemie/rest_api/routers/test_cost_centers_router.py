@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi.routing import APIRoute
 
 from codemie.configs.customer_config import CustomerConfig
 from codemie.core.exceptions import ExtendedHTTPException
@@ -26,6 +27,7 @@ from codemie.rest_api.routers.cost_centers import (
     create_cost_center,
     get_cost_center_detail,
     list_cost_centers,
+    router,
 )
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import BudgetCategory
@@ -134,7 +136,7 @@ class TestCostCenterRouter:
             date=datetime(2026, 3, 19, tzinfo=UTC),
             cost_center_id=cost_center_id,
         )
-        mock_cost_center_service.get_or_404.return_value = cost_center
+        mock_cost_center_service.get_for_read_or_404.return_value = cost_center
         mock_application_repository.list_projects_by_cost_center_id.return_value = [project]
         mock_application_repository.get_project_member_counts_bulk.return_value = {"data-pipeline": (3, 1)}
         mock_application_repository.count_active_projects_by_cost_center_id.return_value = 1
@@ -169,7 +171,7 @@ class TestCostCenterBudgetRollup:
         mock_config.ENABLE_USER_MANAGEMENT = True
         cost_center_id = uuid4()
         mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_cost_center_service.get_or_404.return_value = SimpleNamespace(id=cost_center_id, name="epm-cdme")
+        mock_cost_center_service.get_for_read_or_404.return_value = SimpleNamespace(id=cost_center_id, name="epm-cdme")
         mock_get_async_session.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_get_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_application_repository.aget_project_names_by_cost_center_name = AsyncMock(
@@ -225,7 +227,7 @@ class TestCostCenterBudgetRollup:
         mock_config.ENABLE_USER_MANAGEMENT = True
         cost_center_id = uuid4()
         mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_cost_center_service.get_or_404.return_value = SimpleNamespace(id=cost_center_id, name="epm-cdme")
+        mock_cost_center_service.get_for_read_or_404.return_value = SimpleNamespace(id=cost_center_id, name="epm-cdme")
         mock_get_async_session.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_get_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_application_repository.aget_project_names_by_cost_center_name = AsyncMock(return_value=[])
@@ -261,7 +263,7 @@ class TestCostCenterBudgetRollup:
         mock_config.ENABLE_USER_MANAGEMENT = True
         cost_center_id = uuid4()
         mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_cost_center_service.get_or_404.return_value = SimpleNamespace(id=cost_center_id, name="epm-cdme")
+        mock_cost_center_service.get_for_read_or_404.return_value = SimpleNamespace(id=cost_center_id, name="epm-cdme")
         mock_get_async_session.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_get_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_application_repository.aget_project_names_by_cost_center_name = AsyncMock(return_value=["proj-a"])
@@ -274,3 +276,41 @@ class TestCostCenterBudgetRollup:
                 asyncio.run(get_cost_center_budget_rollup(cost_center_id=cost_center_id, user=_super_admin(), _=None))
 
         assert exc.value.code == 403
+
+
+def _route_dependency_calls() -> dict[tuple[str, str], set[str]]:
+    return {
+        (route.path, method): {dependency.call.__name__ for dependency in route.dependant.dependencies}
+        for route in router.routes
+        if isinstance(route, APIRoute)
+        for method in route.methods or []
+    }
+
+
+def test_cost_center_read_routes_admit_auditor():
+    calls_by_route = _route_dependency_calls()
+    read_routes = [
+        ("/v1/admin/cost-centers", "GET"),
+        ("/v1/admin/cost-centers/{costCenterId}", "GET"),
+        ("/v1/admin/cost-centers/{costCenterId}/budget-rollup", "GET"),
+    ]
+
+    for route_key in read_routes:
+        calls = calls_by_route[route_key]
+        # EPMCDME-17380: auditors get read-only access to cost centers
+        assert "admin_or_maintainer_or_auditor_access" in calls, route_key
+        assert "admin_access_only" not in calls, route_key
+
+
+def test_cost_center_write_routes_stay_admin_only():
+    calls_by_route = _route_dependency_calls()
+    write_routes = [
+        ("/v1/admin/cost-centers", "POST"),
+        ("/v1/admin/cost-centers/{costCenterId}", "PATCH"),
+        ("/v1/admin/cost-centers/{costCenterId}", "DELETE"),
+    ]
+
+    for route_key in write_routes:
+        calls = calls_by_route[route_key]
+        assert "admin_access_only" in calls, route_key
+        assert "admin_or_maintainer_or_auditor_access" not in calls, route_key

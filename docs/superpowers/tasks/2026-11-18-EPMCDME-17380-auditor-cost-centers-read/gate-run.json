@@ -1,0 +1,158 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17380_auditor-cost-centers-read",
+  "head": "935668dae51a8a40cb268afb46dded35791a33e6",
+  "runner": "custom",
+  "started_at": "2026-11-18T12:51:59Z",
+  "completed_at": "2026-11-18T13:02:07Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2605,
+      "command": "D:/Projects/codemie/.venv/Scripts/ruff.exe format --check && D:/Projects/codemie/.venv/Scripts/ruff.exe check",
+      "exit_code": 0,
+      "notes": "Non-mutating equivalent of `make ruff` (no make on host; worktree has no venv): '3794 files already formatted', 'All checks passed!'."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 62407,
+      "command": "VIRTUAL_ENV=D:/Projects/codemie/.venv poetry build",
+      "exit_code": 0,
+      "notes": "Equivalent of `make build`; built codemie-0.8.0 sdist and wheel into gitignored dist/; no worktree .venv created."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 10216,
+      "command": "D:/Projects/codemie/.venv/Scripts/python.exe scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0,
+      "notes": "Equivalent of `make license-check`: 'Checked 3468 files, 0 missing license headers'."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 460625,
+      "command": "MSYS_NO_PATHCONV=1 docker run --rm -v \"D:/Projects/codemie-17380:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace",
+      "exit_code": 0,
+      "notes": "Makefile form with absolute bind path (Docker 23.0.6 rejects the relative './' bind on this host, as in the prior run): 'no leaks found', 79.64 MB scanned."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "notes": "Scans staged changes only; nothing is staged and branch changes are committed. Working-tree scan (gitleaks gate) covers the branch."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test",
+      "notes": "full suite deferred to MR CI by user decision (Windows host OOM at ~85%). Still owed: only a Linux/CI run of `make test` can settle it."
+    },
+    {
+      "id": "affected",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 225947,
+      "command": "PYTHONPATH=<scratchpad>/shim D:/Projects/codemie/.venv/Scripts/python.exe -m pytest -n 0 -p no:cacheprovider -q $(grep -rl -i -E \"cost_center|CostCenter\" tests --include=*.py | grep -v router_guards) tests/codemie/rest_api/security/test_permissions.py",
+      "exit_code": 0,
+      "notes": "Caller-defined affected set: 26 files (every test file referencing cost centers except router_guards, plus test_permissions.py), serial: '931 passed, 28 warnings in 191.18s'."
+    },
+    {
+      "id": "router-guards",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "pytest tests/codemie/rest_api/router_guards",
+      "notes": "Environment SKIP per caller: fails identically on base 32b8d69d2b and on this branch (4 failed, 10 errors: app_probe subprocess WinError 10106 and CRLF baseline), verified by the caller, not re-run here. Runs in Linux CI."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "notes": "Guide Skip if: coverage not requested."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 759,
+      "command": "node scripts/sonar/run-local-sonar.js",
+      "exit_code": 0,
+      "notes": "Self-skip, exit 0: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' No .env.local in worktree or main checkout. Enable with SONAR_TOKEN (env or .env.local) plus sonar-scanner on PATH. Still owed to CI/KRCI Sonar."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "notes": "Composite of ruff, license, gitleaks, test; each run as its own gate (test deferred)."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Needs docker stack rebuilt from this worktree, superadmin fixtures and ~/.codemie/test-harness.json (live environment). Required before MR: summary goes in the MR '## Test harness' section."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 21822,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file> for each commit in 32b8d69d2b..HEAD",
+      "exit_code": 0,
+      "notes": "5 commits checked, all pass."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 3601,
+      "command": "D:/Projects/codemie/.venv/Scripts/python.exe scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "alembic 219 version files OK; alembic_cli_analytics 14 OK (origin/main fetched to f641395cdd)."
+    },
+    {
+      "id": "ruff-changed",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 5553,
+      "command": "RUFF_BIN=D:/Projects/codemie/.venv/Scripts/ruff.exe D:/Projects/codemie/.venv/Scripts/python.exe scripts/check_ruff_changed.py --base origin/main",
+      "exit_code": 0,
+      "notes": "KRCI changed-checks task, not in quality-gates.md: 'strict ruff: no new issue (3 changed Python file(s) ...; 10 pre-existing not counted)'."
+    },
+    {
+      "id": "check-deps",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make check-deps",
+      "notes": "KRCI runs it only when pyproject.toml or poetry.lock change; neither changed."
+    },
+    {
+      "id": "ci-pipeline",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml wait-ci-init",
+      "notes": "Guide mismatch: quality-gates.md says no pipeline runs here, but .gitlab-ci.yml waits for external 'ci-pipeline' and 'compliance-report' contexts. Needs GitLab; only CI can settle."
+    }
+  ],
+  "failures": {}
+}

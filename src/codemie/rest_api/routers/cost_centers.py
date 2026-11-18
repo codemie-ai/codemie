@@ -32,7 +32,11 @@ from codemie.rest_api.models.cost_center import (
     PaginatedCostCenterListResponse,
     PaginationInfo,
 )
-from codemie.rest_api.security.authentication import admin_access_only, authenticate
+from codemie.rest_api.security.authentication import (
+    admin_access_only,
+    admin_or_maintainer_or_auditor_access,
+    authenticate,
+)
 from codemie.rest_api.security.user import User
 from codemie.service.budget.cost_center_budget_summary import (
     CostCenterBudgetSummary,
@@ -96,7 +100,7 @@ def list_cost_centers(
     page: int = Query(default=0, ge=0),
     per_page: int = Query(default=20, ge=10, le=100),
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(admin_or_maintainer_or_auditor_access),
 ):
     _ensure_user_management_enabled()
     with get_session() as session:
@@ -117,11 +121,11 @@ def list_cost_centers(
 def get_cost_center_detail(
     cost_center_id: UUID = Path(alias="costCenterId"),
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(admin_or_maintainer_or_auditor_access),
 ):
     _ensure_user_management_enabled()
     with get_session() as session:
-        cost_center = cost_center_service.get_or_404(session, user=user, cost_center_id=cost_center_id)
+        cost_center = cost_center_service.get_for_read_or_404(session, user=user, cost_center_id=cost_center_id)
         projects = application_repository.list_projects_by_cost_center_id(session, cost_center.id)
         member_counts = application_repository.get_project_member_counts_bulk(
             session, [project.name for project in projects]
@@ -149,13 +153,13 @@ def get_cost_center_detail(
 async def get_cost_center_budget_rollup(
     cost_center_id: UUID = Path(alias="costCenterId"),
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(admin_or_maintainer_or_auditor_access),
 ):
     _ensure_user_management_enabled()
 
     def _resolve_cost_center_name() -> str:
         with get_session() as session:
-            return cost_center_service.get_or_404(session, user=user, cost_center_id=cost_center_id).name
+            return cost_center_service.get_for_read_or_404(session, user=user, cost_center_id=cost_center_id).name
 
     cost_center_name = await run_in_threadpool(_resolve_cost_center_name)
 

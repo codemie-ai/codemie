@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-11-18T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 13,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Multi-repo changes with distinct content across 2 repos — scope scored additively. Backend: cost_centers router read guards switched to admin_or_maintainer_or_auditor_access (writes stay admin_access_only), CostCenterService split into ensure_read_access/get_for_read_or_404 vs ensure_admin/_find_active_or_404, new is_admin_maintainer_or_auditor predicate in the shared security permissions module. UI: settings tabs (auditor sidebar entry) plus CostCentersManagementPage and CostCenterDetailsPage gating write controls on canManage. Base M (clear pattern), bumped to L for touching a shared security utility." },
+    { "dimension": "file_change_estimate", "reason": "13 files changed in total (backend 7, UI 6; 768 insertions, 69 deletions): 6 source files and 7 test files, of which roughly 4 are new test files (backend per-role HTTP auth matrix, UI tabs.auditor, CostCentersManagementPage.auditor, CostCenterDetailsPage tests). 11-15 files maps to XL; test files dominate the count." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing admin_or_maintainer_or_auditor_access dependency already used by other admin read endpoints, so the authz check itself is a copy of a known pattern (base S). Bumped to M because the change alters authorization: auditors must gain read access without any write path leaking, which the read/write service split and the parameterized role x endpoint HTTP test matrix guard against." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared utility (rest_api/security/permissions.py gains is_admin_maintainer_or_auditor)",
+    "Technical Risk bumped from S to M: affects authorization (role-based read/write access split for cost centers)"
+  ],
+  "split_recommendation": null
+}
