@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Add one paged, newest-first combined list of a person's User and Project integrations with an optional, validated scope filter to the codemie backend, reusing the existing per-scope visibility rules (LiteLLM budget and internal-alias exclusions) while leaving the per-scope lists unchanged.",
+  "generated": "2026-11-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 16,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "The closest pattern is the per-scope visibility branches in SettingsIndexService, and it does cover the authorization rules. The new part is putting both branches into one query whose count and newest-first order span both scopes. Two separately paged queries would put rows on the wrong pages, and a mistake in combining the branches could show other people's or other projects' integrations, or LiteLLM budget settings. Scope validation is also new, because unknown filter keys are ignored without an error today. M as a base, bumped to L because the change affects authorization." },
+    { "dimension": "component_scope", "reason": "Three components in two layers: the settings router (a new or scope-aware list route), SettingsIndexService (reworked so its per-scope branches can be combined and reused under D11) and SettingsFilter (a new scope key). The per-scope lists share the reworked service, so they must stay identical. That keeps this at the top of M. It is not bumped for core shared utilities, because this is a domain service." },
+    { "dimension": "file_change_estimate", "reason": "About 4-6 modified files (router, settings index service, filter service, possibly a settings model or enum for the scope values, and the existing router and service test files), with 0-1 new files, mostly tests. They span rest_api/routers, service/settings, service/filter and tests. The file count fits M even though the change touches 3+ directories." },
+    { "dimension": "affected_layers", "reason": "API, Service, and a read-only DB query composition. No schema change and no migration. This matches the bundled M example (EPMCDME-10203, a REST endpoint with business logic: API + Service + read-only DB, total 15). The S example (EPMCDME-10102, total 11) is lower because it has no persistence-query or authorization work." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: affects authorization. The combined list applies per-person row visibility (only projects the person administers, only the person's own User settings, and the LiteLLM budget and internal-alias exclusions), and a composition error would expose other people's or other projects' integrations."
+  ],
+  "split_recommendation": null
+}

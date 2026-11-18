@@ -27354,6 +27354,16 @@
         "title": "SettingsConfigLevel",
         "type": "string"
       },
+      "SettingsScope": {
+        "description": "Which integrations the combined list returns: one scope, or every scope.",
+        "enum": [
+          "all",
+          "user",
+          "project"
+        ],
+        "title": "SettingsScope",
+        "type": "string"
+      },
       "SharableUsersResponse": {
         "description": "Response model listing users that can be granted access to an assistant",
         "properties": {
@@ -80171,6 +80181,95 @@
         "summary": "Patch Scheduler",
         "tags": [
           "Schedulers"
+        ]
+      }
+    },
+    "/v1/settings": {
+      "get": {
+        "description": "List the requester's user and project integrations as one paged list, newest first.\n\n### Scope\n\n**`scope`** \u2014 which integrations to list. Defaults to `all`.\n\n| Value | Lists |\n|---|---|\n| `all` (default) | User and project integrations together |\n| `user` | User integrations only |\n| `project` | Project integrations only |\n\nEach integration is listed under the visibility rule of its own scope, the same rule as\n`GET /v1/settings/user` and `GET /v1/settings/project`.\n\n### Filters\n\n**`filters`** \u2014 optional URL-encoded JSON object with the keys `search`, `project`, `type`,\n`created_by` and `is_global`. A `scope` key inside `filters` is ignored: use the `scope` parameter.\nMalformed JSON, or JSON that is not an object, returns 422. With `search`, project-name matches are\nlisted first, then newest first.\n\n### Paging\n\n**`page`** is zero-based, from 0 up to 92233720368547758 (the cap keeps the row offset within the\ndatabase's 64-bit range); **`per_page`** is from 1 to 100. A value out of range returns 422.",
+        "operationId": "index_settings_v1_settings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SettingsScope",
+              "default": "all"
+            }
+          },
+          {
+            "in": "query",
+            "name": "filters",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filters"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 92233720368547758,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Index Settings",
+        "tags": [
+          "Settings"
         ]
       }
     },

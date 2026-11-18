@@ -16,12 +16,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from typing import Any
+
+from fastapi import APIRouter, Depends, Query, status
 
 from codemie.configs.logger import logger
-from codemie.rest_api.models.settings import SettingType
+from codemie.rest_api.models.settings import SettingsScope, SettingType
 from codemie.rest_api.models.settings_transfer import TransferSettingsRequest, TransferSettingsResponse
 from codemie.rest_api.security.authentication import User, admin_or_maintainer_access_only, authenticate
+from codemie.service.settings.settings_index_service import SettingsIndexService
 from codemie.service.settings.settings_transfer_service import SettingsTransferService
 
 router = APIRouter(
@@ -31,13 +34,68 @@ router = APIRouter(
 )
 
 
+MAX_PER_PAGE = 100
+# The row offset is page * per_page; this cap keeps it within PostgreSQL's bigint OFFSET at any allowed per_page.
+MAX_PAGE = (2**63 - 1) // MAX_PER_PAGE
+
+
+# response_model=None: without it FastAPI would derive a response model from the return annotation, changing the
+# serialization and OpenAPI schema the per-scope lists share.
+@router.get(
+    "/settings",
+    status_code=status.HTTP_200_OK,
+    response_model=None,
+)
+def index_settings(
+    user: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection
+    scope: SettingsScope = Query(SettingsScope.ALL),  # noqa: B008 - FastAPI dependency injection
+    filters: str | None = None,
+    page: int = Query(0, ge=0, le=MAX_PAGE),  # noqa: B008 - FastAPI dependency injection
+    per_page: int = Query(10, ge=1, le=MAX_PER_PAGE),  # noqa: B008 - FastAPI dependency injection
+) -> dict[str, Any]:
+    """
+    List the requester's user and project integrations as one paged list, newest first.
+
+    ### Scope
+
+    **`scope`** — which integrations to list. Defaults to `all`.
+
+    | Value | Lists |
+    |---|---|
+    | `all` (default) | User and project integrations together |
+    | `user` | User integrations only |
+    | `project` | Project integrations only |
+
+    Each integration is listed under the visibility rule of its own scope, the same rule as
+    `GET /v1/settings/user` and `GET /v1/settings/project`.
+
+    ### Filters
+
+    **`filters`** — optional URL-encoded JSON object with the keys `search`, `project`, `type`,
+    `created_by` and `is_global`. A `scope` key inside `filters` is ignored: use the `scope` parameter.
+    Malformed JSON, or JSON that is not an object, returns 422. With `search`, project-name matches are
+    listed first, then newest first.
+
+    ### Paging
+
+    **`page`** is zero-based, from 0 up to 92233720368547758 (the cap keeps the row offset within the
+    database's 64-bit range); **`per_page`** is from 1 to 100. A value out of range returns 422.
+    """
+    return SettingsIndexService.run(
+        user=user, scopes=scope.setting_types, page=page, per_page=per_page, filters=filters
+    )
+
+
 @router.post(
     "/settings/transfer",
     status_code=status.HTTP_200_OK,
     response_model=TransferSettingsResponse,
     dependencies=[Depends(authenticate), Depends(admin_or_maintainer_access_only)],
 )
-def transfer_settings(request: TransferSettingsRequest, user: User = Depends(authenticate)):
+def transfer_settings(
+    request: TransferSettingsRequest,
+    user: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection
+):
     """
     Transfer integrations from one project to another.
 

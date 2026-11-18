@@ -1,0 +1,476 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "deterministic",
+    "rationale": "Check round: targeted verifier, confidence high, all 7 prior blockers CR-001..CR-007 resolved, 0 new findings"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "deterministic",
+      "rationale": "Full profile, roster complete (4 lenses + standards). 7 major findings CR-001..CR-007: nested filters 500, unbounded paging, typing/annotation standards, scope-in-filters tested only against mock"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "deterministic",
+      "rationale": "Check round: targeted verifier, confidence high, all 7 prior blockers CR-001..CR-007 resolved, 0 new findings"
+    }
+  ],
+  "reviewed_head": "cf292788ad2f6d2948434515c4de7487779c4369",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "Targeted re-check of the 7 prior blocking findings: all 7 resolved on current source (RecursionError in _parse_filters now returns 422, page/per_page capped with over-limit tests, a real-engine test pins that a scope key in filters is ignored, and the 4 Types And Imports violations are fixed). business_review and standards_review are carried forward from the final round, so its code-quality row still reads partial although the violations behind it are resolved; the 2 deferred items (DF-001, DF-002) were not re-checked and remain in code-review-deferred.local.md.",
+  "confidence": "medium",
+  "check_confidence": "high",
+  "risk_flags": [
+    "public-api"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 7,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/settings.py",
+      "line": 52,
+      "title": "Nested filters JSON escapes as 500",
+      "problem": "_parse_filters catches only json.JSONDecodeError. A deeply nested `filters` payload (for example 1,000+ `[` characters) makes json.loads raise RecursionError, which escapes the handler uncaught.",
+      "impact": "GET /v1/settings answers this malformed input with a 500 instead of the documented 422 \"Invalid filters\". Reachability unconfirmed: it depends on the server's request-line limit admitting nesting past the interpreter's recursion limit.",
+      "recommendation": "In _parse_filters, add an `except RecursionError` branch next to `except json.JSONDecodeError` that raises the same 422 \"Invalid filters\" ExtendedHTTPException with a fixed details message (RecursionError has no `.msg`), and add a router test with deeply nested `filters`.",
+      "status": "resolved",
+      "check_notes": "_parse_filters catches RecursionError and raises the 422 Invalid filters exception; test_bad_filters_return_422 adds a 20,000-level deep-nesting case.",
+      "fix": {
+        "change": "_parse_filters catches RecursionError and raises the same 422 Invalid filters ExtendedHTTPException with a fixed details message",
+        "test": "tests/codemie/rest_api/routers/test_settings_list.py::test_bad_filters_return_422[deep-nesting]"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/settings.py",
+      "line": 73,
+      "title": "index_settings lacks return type annotation",
+      "problem": "code-quality.md Types And Imports says to avoid untyped public functions in new code and prefer explicit parameter and return types; the new public route handler index_settings has no return annotation.",
+      "impact": "A documented code-quality rule is broken in new code in this change; the Ruff configuration selects no annotation rules, so no automated gate catches it.",
+      "recommendation": "Annotate the return type of index_settings, e.g. `-> dict[str, Any]`, matching what SettingsIndexService.list_scopes returns.",
+      "status": "resolved",
+      "check_notes": "index_settings is annotated -> dict[str, Any]; response_model=None keeps the OpenAPI shape unchanged.",
+      "fix": {
+        "change": "index_settings annotated -> dict[str, Any]; response_model=None keeps FastAPI from deriving a response model, so serialization and the OpenAPI response schema are unchanged",
+        "test": "tests/codemie/rest_api/router_guards/ (OpenAPI baseline shows no response-schema change)"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/settings.py",
+      "line": 76,
+      "title": "Optional[str] used instead of str | None",
+      "problem": "code-quality.md Types And Imports says to avoid `typing.Optional[X]` and prefer `X | None`; the new GET /v1/settings parameter is declared `filters: Optional[str] = None`, and Optional was newly added to the typing import at line 20 for it, while _parse_filters in the same file uses `str | None`.",
+      "impact": "A documented code-quality rule is broken in new code in this change; the Ruff configuration selects no pyupgrade rules, so no automated gate catches it.",
+      "recommendation": "Declare `filters: str | None = None` and drop Optional from the typing import at line 20.",
+      "status": "resolved",
+      "check_notes": "filters is declared str | None = None; the typing import is now Any only.",
+      "fix": {
+        "change": "filters declared str | None = None; Optional dropped from the typing import",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/settings.py",
+      "line": 77,
+      "title": "Paging params on /v1/settings unbounded",
+      "problem": "The new route bounds `page` only with ge=0 and `per_page` only with ge=1. per_page=1000000 loads and masks every visible row in one request, and page=10**18 with per_page=10 produces an OFFSET (page * per_page, unclamped in _query_postgres) beyond PostgreSQL's bigint range.",
+      "impact": "An authenticated caller can pull an unbounded result set in one request (every project row for a platform admin), and an oversized page surfaces as a database error and 500 instead of a 422 on the new public endpoint; other paged routers in the codebase cap per_page at 100.",
+      "recommendation": "Add upper bounds following the project convention: `per_page: int = Query(10, ge=1, le=100)` (as in routers/skill.py:213 and routers/projects/crud.py:232) and an `le=` on `page` that keeps `page * per_page` inside PostgreSQL's bigint OFFSET range; extend test_bad_paging_returns_422 with over-limit cases and update the endpoint docstring's Paging section.",
+      "status": "resolved",
+      "check_notes": "page le=MAX_PAGE ((2**63-1)//100) and per_page le=100; over-limit and boundary router tests added; docstring Paging section updated.",
+      "fix": {
+        "change": "per_page bounded le=MAX_PER_PAGE (100), page bounded le=MAX_PAGE ((2**63-1)//100) so page*per_page fits PostgreSQL bigint OFFSET; docstring Paging section and openapi.json baseline updated",
+        "test": "tests/codemie/rest_api/routers/test_settings_list.py::test_bad_paging_returns_422, ::test_paging_upper_bounds_are_accepted"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/settings_index_service.py",
+      "line": 54,
+      "title": "list_scopes signature uses Optional and bare dict",
+      "problem": "code-quality.md Types And Imports says to avoid `typing.Optional[X]` and bare `list`/`dict` annotations and prefer `X | None` with parameterized generics; the new list_scopes declares `filters: Optional[Dict[str, Any]] = None` and returns a bare `-> dict`.",
+      "impact": "A documented code-quality rule is broken in new code in this change; the Ruff configuration selects no pyupgrade or annotation rules, so no automated gate catches it.",
+      "recommendation": "Declare `filters: dict[str, Any] | None = None` and `-> dict[str, Any]` on list_scopes.",
+      "status": "resolved",
+      "check_notes": "list_scopes declares filters: dict[str, Any] | None and returns -> dict[str, Any].",
+      "fix": {
+        "change": "list_scopes declares filters: dict[str, Any] | None = None and returns dict[str, Any]",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_settings_list.py",
+      "line": 94,
+      "title": "Scope-in-filters contract tested only against mock",
+      "problem": "The endpoint documents that a `scope` key inside `filters` is ignored, but test_scope_inside_filters_is_ignored patches SettingsIndexService.list_scopes and only asserts the forwarded kwargs. No real-engine test passes a `scope` key (the filter parametrization covers only search, project, type, is_global, created_by), so the contract rests untested on the generic unknown-key skip in BaseFilterData.add_sql_filters (broken-verification-gap; verified by reading the test and the filter class).",
+      "impact": "Clients of GET /v1/settings that send `filters` containing `scope`: if `scope` were added to SettingsFilter.FILTER_CONFIG or unknown keys started being rejected, the response would silently narrow to one scope or fail, and the existing test would still pass.",
+      "recommendation": "Add a real-engine case in tests/codemie/service/settings/test_settings_visibility_real_engine.py asserting that `SettingsIndexService.list_scopes(user=platform_admin, scopes=ALL, filters={\"scope\": \"user\"})` returns the same ids as the call without filters (PROJECT rows still present), or add `{\"scope\": \"user\"}` to the parametrized filters of test_list_scopes_all_filters_are_union_of_scopes with that check.",
+      "status": "resolved",
+      "check_notes": "Real-engine test_list_scopes_all_ignores_scope_key_in_filters asserts filters={\"scope\": \"user\"} returns the unfiltered ids, Project rows included.",
+      "fix": {
+        "change": "Real-engine test asserts a scope key inside filters leaves the Scope All result unchanged, Project rows included",
+        "test": "tests/codemie/service/settings/test_settings_visibility_real_engine.py::test_list_scopes_all_ignores_scope_key_in_filters"
+      }
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_settings_list.py",
+      "title": "New test modules omit future annotations import",
+      "problem": "code-quality.md Types And Imports says to add `from __future__ import annotations` in new modules; both modules this change adds, tests/codemie/rest_api/routers/test_settings_list.py and tests/codemie/service/settings/test_settings_visibility_real_engine.py, omit it.",
+      "impact": "A documented code-quality rule for new modules is not met by the two modules this change adds; no automated gate enforces it.",
+      "recommendation": "Add `from __future__ import annotations` after the license header in tests/codemie/rest_api/routers/test_settings_list.py and tests/codemie/service/settings/test_settings_visibility_real_engine.py.",
+      "status": "resolved",
+      "check_notes": "Both new test modules now import from __future__ import annotations after the module docstring.",
+      "fix": {
+        "change": "from __future__ import annotations added to both new test modules",
+        "test": "n/a"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/service/filter/compose_filter_functions.py",
+      "line": 60,
+      "title": "Wrong-typed filter values raise 500",
+      "problem": "SettingsFilter compose functions accept untyped values, so e.g. {\"search\": 123} reaches escape_like_wildcards (expects str) and surfaces as a 500 rather than a 422; GET /v1/settings inherits this.",
+      "preexisting": "Shared filter layer; /v1/settings/user and /project pass json.loads output to the same SettingsFilter unchanged today."
+    },
+    {
+      "id": "DF-002",
+      "severity": "major",
+      "file": "src/codemie/service/settings/settings_index_service.py",
+      "line": 99,
+      "title": "Unescaped _ in internal-alias LIKE",
+      "problem": "alias.like(\"__internal__%\") treats each _ as a wildcard, so a user's own alias such as \"myinternal-x\" is hidden from their list.",
+      "preexisting": "Identical clause in the pre-change _query_postgres; spec requires visibility rules unchanged and the new test pins it (u_wild)."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "GET /v1/settings in routers/settings.py, authenticated like the per-scope lists",
+      "status": "pass",
+      "notes": "index_settings depends on authenticate; route present in the OpenAPI baseline"
+    },
+    {
+      "kind": "spec",
+      "item": "`scope` optional enum query param all | user | project; omitted means all",
+      "status": "pass",
+      "notes": "SettingsScope bound as Query(SettingsScope.ALL)"
+    },
+    {
+      "kind": "spec",
+      "item": "`filters` JSON with the per-scope keys search, project, created_by, type, is_global",
+      "status": "pass",
+      "notes": "Same SettingsFilter class as the per-scope lists"
+    },
+    {
+      "kind": "spec",
+      "item": "`page` int >= 0 default 0; `per_page` int >= 1 default 10",
+      "status": "pass",
+      "notes": "Query(0, ge=0) and Query(10, ge=1); no upper bound, see CR-004"
+    },
+    {
+      "kind": "spec",
+      "item": "Per-scope envelope {data, pagination{page, per_page, total, pages}}; rows as stored",
+      "status": "pass",
+      "notes": "list_scopes builds the same envelope; no response_model, as on the per-scope routes"
+    },
+    {
+      "kind": "spec",
+      "item": "Visibility rules unchanged per scope: own/internal alias, administered projects, admin bypass, budget rows, untyped rows",
+      "status": "pass",
+      "notes": "_scope_condition reproduces the old clauses; NULL setting_type matches no scope"
+    },
+    {
+      "kind": "spec",
+      "item": "One query: scope visibility, filters, date desc then id, one count, offset/limit",
+      "status": "pass",
+      "notes": "Single select over OR of scope conditions; search priority order precedes date as on per-scope lists"
+    },
+    {
+      "kind": "spec",
+      "item": "Same masking of sensitive values as the per-scope lists",
+      "status": "pass",
+      "notes": "hide_sensitive_fields loop moved into list_scopes, which run delegates to"
+    },
+    {
+      "kind": "spec",
+      "item": "D11 one home: each scope's visibility defined once in SettingsIndexService",
+      "status": "pass",
+      "notes": "_scope_condition is the sole definition; run delegates to list_scopes"
+    },
+    {
+      "kind": "spec",
+      "item": "Combining must not loosen: own setting_type match per condition, explicit scope set, explicit elif, other values raise",
+      "status": "pass",
+      "notes": "and_(setting_type == scope, ...); elif USER / else raise; empty set raises"
+    },
+    {
+      "kind": "spec",
+      "item": "Per-scope routes keep routes, params, responses and order; equal dates gain id tiebreak",
+      "status": "pass",
+      "notes": "user_settings.py and project_settings.py untouched; only id.asc() added"
+    },
+    {
+      "kind": "spec",
+      "item": "Read-only; no schema change, no migration",
+      "status": "pass",
+      "notes": "Enum, GET route and query code only"
+    },
+    {
+      "kind": "spec",
+      "item": "OpenAPI and route-precedence baselines regenerated for the new route",
+      "status": "pass",
+      "notes": "openapi.json adds /v1/settings and SettingsScope; no overlapping route pair"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-1: Scope All one list, newest first, paged, total over both scopes; every row exactly once",
+      "status": "pass",
+      "notes": "test_list_scopes_all_equal_dates_page_every_row_once"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-2: Under Scope All each scope's rows equal its per-scope list, same exclusions",
+      "status": "pass",
+      "notes": "Shared _scope_condition; test_list_scopes_all_project_admin"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-3: Scope User / Project return the same rows, order and total as the per-scope list",
+      "status": "pass",
+      "notes": "One-element scope set runs the same query as run"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-4: No `scope` behaves as Scope All",
+      "status": "pass",
+      "notes": "Default ALL; test_no_scope_lists_both_scopes"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-5: search, project, type, is_global, created_by narrow the result with any scope",
+      "status": "pass",
+      "notes": "test_list_scopes_all_filters_are_union_of_scopes covers all five keys"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-6: Every row carries setting_type and is_global",
+      "status": "pass",
+      "notes": "Rows returned as stored Settings objects"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-7: Member administering no project gets an empty Scope Project result",
+      "status": "pass",
+      "notes": "test_member_without_admin_projects_sees_no_project_rows"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-8: Project admin's Scope All has no project-budget LiteLLM rows",
+      "status": "pass",
+      "notes": "Budget clause for non-admin/maintainer; test_list_scopes_all_project_admin"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-9: Unknown `scope` gets a 422 naming all, user, project",
+      "status": "pass",
+      "notes": "Enum validation; test_unknown_scope_returns_422"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-10: Per-scope lists return the same rows, order, totals and masking as before",
+      "status": "pass",
+      "notes": "Per-scope routers unchanged; run delegates to the same conditions; approved id tiebreak"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-11: Sensitive values masked exactly as in the per-scope lists",
+      "status": "pass",
+      "notes": "test_list_scopes_masks_like_run asserts the masked value"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-12: page < 0 or per_page < 1 on the new route gets a 422",
+      "status": "pass",
+      "notes": "ge bounds; test_bad_paging_returns_422"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-13: Real-engine tests cover each visibility clause on both paths plus cases (a) and (b)",
+      "status": "pass",
+      "notes": "In-memory SQLite as the spec allows; personas set is_admin and ENV explicitly"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no UI, CRUD/permission or Schedulers list change",
+      "status": "pass",
+      "notes": "Diff limited to the list read path, an enum, baselines and tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: GET /v1/settings/user/available unchanged",
+      "status": "pass",
+      "notes": "user_settings.py not in the diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: Created-by options endpoint (get_users) unchanged",
+      "status": "pass",
+      "notes": "get_users body unchanged"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: budget rule's Python predicate not merged with the list SQL",
+      "status": "pass",
+      "notes": "Only change to models/settings.py is the SettingsScope enum"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no missing-date handling; no paging validation on the per-scope lists",
+      "status": "pass",
+      "notes": "Per-scope params unchanged"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: a `scope` key inside `filters` stays ignored",
+      "status": "pass",
+      "notes": "Unknown keys skipped by the filter class; service path untested, see CR-006"
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: filters apply to every row, is_global on Project rows included",
+      "status": "pass",
+      "notes": "Filters ANDed after the scope OR"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Scope All returns both scopes as one list, newest first, paged, total over both scopes",
+      "status": "pass",
+      "notes": "As spec AC-1"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Scope All holds per scope exactly today's per-scope rows, with their exclusions",
+      "status": "pass",
+      "notes": "As spec AC-2"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Scope User or Scope Project returns today's per-scope rows, order and total",
+      "status": "pass",
+      "notes": "As spec AC-3"
+    },
+    {
+      "kind": "story-ac",
+      "item": "No scope sent behaves as Scope All",
+      "status": "pass",
+      "notes": "As spec AC-4"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Search, project, type, Global and Created by narrow the result together with a scope",
+      "status": "pass",
+      "notes": "As spec AC-5"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Every row states its scope and, for User rows, whether it is Global",
+      "status": "pass",
+      "notes": "As spec AC-6"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Member administering no project gets an empty Scope Project result",
+      "status": "pass",
+      "notes": "As spec AC-7"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Project admin's Scope All excludes project-budget LiteLLM integrations",
+      "status": "pass",
+      "notes": "As spec AC-8"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Unknown scope value rejected with a validation error naming the allowed values",
+      "status": "pass",
+      "notes": "As spec AC-9"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Today's per-scope lists, used by the admin project page, return unchanged results",
+      "status": "pass",
+      "notes": "As spec AC-10"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 3 commit subjects in 8b08abb..832a54a use `EPMCDME-17085: <Description>` per git-workflow.md; branch matches the documented `<TICKET>_short-description` form."
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "License headers and module cohesion met. Types And Imports unmet: router Optional param, missing return type; list_scopes Optional/bare dict; new test modules lack future import."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "No security-practices guide to adjudicate. Concrete read found no defect: visibility kept per scope, filters only AND-narrow, masking and auth retained."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "All four lenses and the standards audit ran against the spec and story (43/43 criteria pass); 7 major blockers remain: unbounded page/per_page on GET /v1/settings, an uncaught RecursionError in _parse_filters (reachability unconfirmed), a scope-in-filters contract tested only against a mock, and 4 code-quality Types And Imports violations. 2 deferred as pre-existing to code-review-deferred.local.md in the run dir: untyped filter values 500 in the shared SettingsFilter layer; unescaped `_` in the __internal__ LIKE hides matching user aliases. 11 lens candidates dismissed as already handled, spec-sanctioned or below the emission floor.",
+    "confidence": "medium",
+    "risk_flags": [
+      "public-api"
+    ]
+  }
+}

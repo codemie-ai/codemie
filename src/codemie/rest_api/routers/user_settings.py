@@ -124,7 +124,7 @@ def index_user_settings(
     parsed_filters = json.loads(filters) if filters else {}
 
     return SettingsIndexService.run(
-        settings_type=SettingType.USER, user=user, page=page, per_page=per_page, filters=parsed_filters
+        scopes=frozenset({SettingType.USER}), user=user, page=page, per_page=per_page, filters=parsed_filters
     )
 
 

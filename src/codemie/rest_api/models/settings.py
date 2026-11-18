@@ -268,6 +268,20 @@ class SettingType(str, Enum):
     PROJECT = "project"
 
 
+class SettingsScope(str, Enum):
+    """Which integrations the combined list returns: one scope, or every scope."""
+
+    ALL = "all"
+    USER = "user"
+    PROJECT = "project"
+
+    @property
+    def setting_types(self) -> frozenset[SettingType]:
+        if self is SettingsScope.ALL:
+            return frozenset({SettingType.USER, SettingType.PROJECT})
+        return frozenset({SettingType(self.value)})
+
+
 class SettingsBase(CommonBaseModel):
     user_id: Optional[str] = SQLField(default=None, index=True)
     created_by: Optional[CreatedByUser] = SQLField(default=None, sa_column=Column(PydanticType(CreatedByUser)))

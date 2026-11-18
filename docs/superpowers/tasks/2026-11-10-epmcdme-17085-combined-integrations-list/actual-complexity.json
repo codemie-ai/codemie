@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-11-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 6,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Base M: the per-scope list endpoints (GET /v1/settings/user, /project) are the closest pattern, but the change restructures their visibility rule into SettingsIndexService._scope_condition and ORs several scopes into one query. The existing per-scope endpoints now also run through list_scopes, so a dropped clause (admin_project_names, the project-budget alias hiding, the internal-prefix hiding) would expose other users' or projects' credential rows. Also new: the index_settings router's _parse_filters input validation (422 on malformed or too-deeply-nested JSON), the bigint OFFSET cap (MAX_PAGE) and the date-desc/id-asc tie-break ordering. The authorization red flag bumps it to L." },
+    { "dimension": "component_scope", "reason": "Three components across API and Service plus a read-only persistence query: the SettingsScope enum in the model, the new index_settings route with _parse_filters, and the SettingsIndexService list_scopes/_scope_condition/_query_postgres refactor. The visibility logic stays inside one service class rather than a cross-cutting utility, so the shared-utilities bump was not applied." },
+    { "dimension": "file_change_estimate", "reason": "The diffstat reports 6 files (4-6 maps to M): 3 source files under rest_api/models, rest_api/routers and service/settings, the OpenAPI baseline, and 2 test files including a new real-engine (in-memory SQLite) visibility suite. That is about 787 insertions across the initial commits plus the fix-up." },
+    { "dimension": "calibration", "reason": "Closest anchor is bundle M example epmcdme-10203 (REST endpoint with business logic, total 15). This diff matches it on layers and file count; Technical Risk is higher because of the authorization-sensitive visibility refactor, and Requirements Clarity is lower because the ticket fixed the scope set and ordering up front. The adjacent S example epmcdme-10102 (11) is narrower: 2 layers, 3 files, no authorization surface. No disagreement with the M band." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: affects authorization - per-scope visibility rules that gate which users' and projects' integration credentials are listed were refactored into a shared OR-combined SQL condition"
+  ],
+  "split_recommendation": null
+}

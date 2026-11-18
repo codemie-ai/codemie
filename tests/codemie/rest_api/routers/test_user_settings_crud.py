@@ -141,7 +141,7 @@ async def test_index_user_settings_paginated_list(mock_authenticate, mock_index_
     assert response.status_code == status.HTTP_200_OK
     assert response.json() == expected_result
     mock_index_service.assert_called_once_with(
-        settings_type=SettingType.USER,
+        scopes=frozenset({SettingType.USER}),
         user=mock_user,
         page=0,
         per_page=10,
@@ -170,7 +170,7 @@ async def test_index_user_settings_no_filters(mock_authenticate, mock_index_serv
     # Assert
     assert response.status_code == status.HTTP_200_OK
     mock_index_service.assert_called_once_with(
-        settings_type=SettingType.USER,
+        scopes=frozenset({SettingType.USER}),
         user=mock_user,
         page=0,
         per_page=10,
@@ -200,7 +200,7 @@ async def test_index_user_settings_custom_pagination(mock_authenticate, mock_ind
     # Assert
     assert response.status_code == status.HTTP_200_OK
     mock_index_service.assert_called_once_with(
-        settings_type=SettingType.USER,
+        scopes=frozenset({SettingType.USER}),
         user=mock_user,
         page=2,
         per_page=25,

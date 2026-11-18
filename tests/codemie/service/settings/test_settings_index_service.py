@@ -42,7 +42,7 @@ def test_run_with_user_settings(mock_session_class, mock_settings):
     # When
     result = SettingsIndexService.run(
         user=user,
-        settings_type=SettingType.USER,
+        scopes=frozenset({SettingType.USER}),
         page=3,
         per_page=20,
         filters={"search": "test_integration", "type": "Jira"},
@@ -67,7 +67,7 @@ def test_run_with_project_settings(mock_session_class, mock_settings):
     # When
     result = SettingsIndexService.run(
         user=user,
-        settings_type=SettingType.PROJECT,
+        scopes=frozenset({SettingType.PROJECT}),
         page=3,
         per_page=20,
         filters={"search": "test_integration", "type": "Jira"},

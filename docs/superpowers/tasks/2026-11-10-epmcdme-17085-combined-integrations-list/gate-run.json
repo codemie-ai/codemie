@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17084_unified-integrations-list",
+  "head": "cf292788ad2f6d2948434515c4de7487779c4369",
+  "runner": "custom",
+  "started_at": "2026-11-10T14:50:31Z",
+  "completed_at": "2026-11-10T15:01:50Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1981,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Also covers the codemie-pre-commit hook's ruff steps (_ruff_staged.sh staged format/fix check, `ruff check`). A pre-check (`ruff format --check`) was clean, so no files were rewritten. The working tree has an uncommitted .gitignore line `output/playwright`, which ruff honors; branch files are unaffected."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6986,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1366,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 3075 files, 0 missing headers. Also covers the codemie-pre-commit hook's license step (same script, --check --quiet)."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 204741,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "258 redacted findings, all in gitignored, untracked local files: output/playwright/hosted-qa-20261006/frozen-snapshot.json (221), local/hosted-applications/scanner/signatures/daily.cld (35), .ruff_cache/0.5.7/* (2). None are tracked and none are in the branch diff, but the guide's Fail criterion (a secret-like value is detected) is met. Ran outside the sandbox, which blocks the colima Docker socket. The codemie-gitleaks hook (gitleaks protect --staged, documented only in prose) was not run separately: nothing is staged, and what it would scan is a subset of this full-tree scan."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 220074,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "11 failed / 30829 passed / 168 skipped / 5 xfailed. None of the failing test files are in the branch diff. Sandbox-caused, 7 confirmed: 5 tests/scripts/test_ruff_staged_hook.py (`mktemp: mkdtemp failed ... Operation not permitted`) and 2 email fetch tests (`URL hostname 'example.com' resolves to a private or loopback address`); a diagnostic rerun outside the sandbox passed (9 passed). Sandbox-caused, not rerun: test_oauth_redis_lazy_init (`PermissionError: [Errno 1] Operation not permitted: '/tmp/.azure-devops'`). Depend on local env values not set in the process env, likely from local .env/.env.local (not opened): test_env_local_overrides_env ('info' != 'DEBUG'), test_enrich_index_with_schedule_no_schedule and test_get_scheduler_settings_returns_matching ('Europe/Kyiv' != 'UTC'). The full suite was not rerun outside the sandbox because local :9200 is a production ES tunnel. Skip if not met: AGENTS.md says tests run only on request, but this sdlc-autonomous run's plan is test-first. Covers the opt-in pre-push hook pytest step."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if met: this dispatch did not request coverage. To enable: run `make coverage`; the opt-in pre-push hook (CODEMIE_PREPUSH_ENABLED=true) also generates coverage.xml."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Skip if met (credentials/tooling unavailable): SONAR_TOKEN is not in the process env (the script reads SONAR_* from .env.local, which this run does not open), and sonar-scanner is not on PATH with SONAR_SCANNER_PATH unset. Still owed; only CI or a developer shell can settle it. To enable: install the SonarScanner CLI, provide SONAR_TOKEN, and run `make sonar-local` with network access to the SonarQube host in .sonarlint/connectedMode.json (also the opt-in pre-push hook step)."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 247551,
+      "command": "make verify",
+      "exit_code": 2,
+      "notes": "Stopped at its gitleaks step (same 258 findings as the gitleaks gate). Its test step never ran, so this result is not evidence about tests. Its license step was a no-op: on macOS's case-insensitive filesystem the LICENSE file satisfies the non-.PHONY `license` target (`make -n license` -> `make: 'license' is up to date.`); the license-check gate covers headers. Ran outside the sandbox for Docker."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if met: this subagent does not open merge requests. Still owed before the MR: the auto_epm-cdme_vcs bot fails checks 3.1/3.2 without a `## Test harness` section. Needs the docker compose stack, superadmin fixtures and ~/.codemie/test-harness.json, then `make test-harness`."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 613,
+      "command": "for c in $(git rev-list 8b08abb93a031a048e30782fde66efea6e9b3af9..HEAD); do git log -1 --format=%B \"$c\" > \"$TMPDIR/commit-msg-$c.txt\" && bash scripts/git-hooks/commit_msg.sh \"$TMPDIR/commit-msg-$c.txt\" || exit 1; done",
+      "exit_code": 0,
+      "notes": "Ran the codemie-commit-msg hook (.pre-commit-config.yaml) on all 4 branch commits; each starts with `EPMCDME-17085:`. .git/hooks contains only *.sample files, so no pre-commit-framework hook ran when these commits were made."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 3070,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "This is the CI job check-alembic-heads and the always-on pre-push hook step 0. Ran against the local origin/main ref (8b08abb = merge_base) without fetching; CI fetches a fresh main. Guide mismatch: quality-gates.md lists no alembic gate and says no pipeline runs gates, and AGENTS.md says the repo has no pipeline config, yet .gitlab-ci.yml runs this job on MRs targeting main."
+    },
+    {
+      "id": "wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".wait-ci-init-template (remote include epm-cdme/codemie-gitlab-templates@0.1.2 /templates/pre-ci-guard.yml)",
+      "exit_code": null,
+      "notes": "Waits for external status contexts `ci-pipeline` and `compliance-report`, which run outside this repo and cannot run locally. Their checks are unknown here, and only CI can settle them."
+    }
+  ],
+  "failures": {
+    "gitleaks": "Fingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:generic-api-key:293179\n\nFinding:     curl -u REDACTED\nSecret:      REDACTED\nRuleID:      curl-auth-user\nEntropy:     3.238901\nTags:        [decoded:hex decode-depth:1]\nFile:        /workspace/local/hosted-applications/scanner/signatures/daily.cld\nLine:        295886\nFingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:curl-auth-user:295886\n\nFinding:     intip4ip6keymapnannewnilobjpc=REDACTED;\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.522572\nTags:        [decoded:hex decode-depth:1]\nFile:        /workspace/local/hosted-applications/scanner/signatures/daily.cld\nLine:        309806\nFingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:generic-api-key:309806\n\nFinding:     KEY_SIM1_READY TEXT,REDACTED\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.616875\nTags:        [decoded:hex decode-depth:1]\nFile:        /workspace/local/hosted-applications/scanner/signatures/daily.cld\nLine:        317529\nFingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:generic-api-key:317529\n\nFinding:     curl -u REDACTED\nSecret:      REDACTED\nRuleID:      curl-auth-user\nEntropy:     3.238901\nTags:        [decoded:hex decode-depth:1]\nFile:        /workspace/local/hosted-applications/scanner/signatures/daily.cld\nLine:        352507\nFingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:curl-auth-user:352507\n\nFinding:     OAuth Secret: REDACTED\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     5.072140\nTags:        [decoded:hex decode-depth:1]\nFile:        /workspace/local/hosted-applications/scanner/signatures/daily.cld\nLine:        355293\nFingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:generic-api-key:355293\n\n\u001b[90m2:54PM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~447717114 bytes (447.72 MB) in 3m24s\u001b[0m\n\u001b[90m2:54PM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 258\u001b[0m\nmake: *** [gitleaks] Error 1",
+    "test": "    raise PublicationContractRejected(status.HTTP_503_SERVICE_UNAVAILABLE, \"publication_contract_unavailable\")\n\ntests/codemie/rest_api/routers/test_cli_analytics_publication_contract.py::test_n0_excluded_user_personal_or_unknown_held[external-org_headers0-True-logs]\ntests/codemie/rest_api/routers/test_cli_analytics_publication_contract.py::test_n0_excluded_user_personal_or_unknown_held[external-org_headers0-True-metrics]\ntests/codemie/rest_api/routers/test_cli_analytics_publication_contract.py::test_n0_excluded_user_personal_or_unknown_held[external-org_headers0-True-traces]\ntests/codemie/rest_api/routers/test_cli_analytics_publication_contract.py::test_n0_excluded_user_personal_or_unknown_held[external-org_headers0-True-event-hooks]\ntests/codemie/rest_api/routers/test_cli_analytics_publication_contract.py::test_n0_excluded_user_personal_or_unknown_held[service_account-org_headers1-True-logs]\ntests/codemie/rest_api/routers/test_cli_analytics_publication_contract.py::test_n0_excluded_user_personal_or_unknown_held[service_account-org_headers1-True-metrics]\ntests/codemie/rest_api/routers/test_cli_analytics_publication_contract.py::test_n0_excluded_user_personal_or_unknown_held[service_account-org_headers1-True-traces]\ntests/codemie/rest_api/routers/test_cli_analytics_publication_contract.py::test_n0_excluded_user_personal_or_unknown_held[service_account-org_headers1-True-event-hooks]\n  /Users/Vadym_Vlasenko/AI/projects/codemie/src/codemie/rest_api/routers/cli_analytics_ingest_route.py:168: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise PublicationContractRejected(status.HTTP_503_SERVICE_UNAVAILABLE, \"personal_storage_unsupported\")\n\ntests/codemie/rest_api/routers/test_contract_baseline.py::TestWorkflowContract::test_create_status_and_keys\n  /Users/Vadym_Vlasenko/AI/projects/codemie/.venv/lib/python3.12/site-packages/pydantic/type_adapter.py:677: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `list[GuardrailAssignmentItem]` - serialized value may not be as expected [field_name='guardrail_assignments', input_value=<MagicMock name='get_enti...ents()' id='6086143840'>, input_type=MagicMock])\n    return self.serializer.to_json(\n\ntests/codemie/rest_api/routers/test_contract_baseline.py::TestWorkflowContract::test_update_status_and_keys\n  /Users/Vadym_Vlasenko/AI/projects/codemie/.venv/lib/python3.12/site-packages/pydantic/type_adapter.py:677: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `list[GuardrailAssignmentItem]` - serialized value may not be as expected [field_name='guardrail_assignments', input_value=<MagicMock name='get_enti...ents()' id='6086831632'>, input_type=MagicMock])\n    return self.serializer.to_json(\n\ntests/codemie/rest_api/routers/test_contract_baseline.py::TestSilentRewrites::test_workflow_put_stores_yaml_config_as_sent_when_no_model_id_changes\n  /Users/Vadym_Vlasenko/AI/projects/codemie/.venv/lib/python3.12/site-packages/pydantic/type_adapter.py:677: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `list[GuardrailAssignmentItem]` - serialized value may not be as expected [field_name='guardrail_assignments', input_value=<MagicMock name='get_enti...ents()' id='6083202704'>, input_type=MagicMock])\n    return self.serializer.to_json(\n\ntests/codemie/service/provider/test_provider_service.py::test_create\ntests/codemie/service/provider/test_provider_service.py::test_create_allow_user_context_defaults_true\ntests/codemie/service/provider/test_provider_service.py::test_create_allow_user_context_explicit_true\n  /Users/Vadym_Vlasenko/AI/projects/codemie/.venv/lib/python3.12/site-packages/pydantic/main.py:475: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `<class 'pydantic.networks.HttpUrl'>` but got `<class 'str'>` with value `'http://path1.com/'` - serialized value may not be as expected.)\n    return self.__pydantic_serializer__.to_python(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/configs/test_config.py::test_env_local_overrides_env - A...\nFAILED tests/codemie/rest_api/routers/test_oauth_redis_lazy_init.py::test_app_starts_without_redis_package_when_pkce_disabled\nFAILED tests/codemie/service/index/test_index_service.py::test_enrich_index_with_schedule_no_schedule\nFAILED tests/codemie/service/settings/test_scheduler_settings_service_class.py::test_get_scheduler_settings_returns_matching\nFAILED tests/codemie_tools/file_analysis/email/test_email_analysis_tool.py::test_fetch_url_content_returns_bytes_on_success\nFAILED tests/codemie_tools/file_analysis/email/test_email_analysis_tool.py::test_fetch_url_content_raises_on_404\nFAILED tests/scripts/test_ruff_staged_hook.py::test_clean_staged_plus_unstaged_garbage_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_ruff_reformats_staged_file_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_missing_trailing_newline_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_syntax_error_in_staged_file_reports_clearly\nFAILED tests/scripts/test_ruff_staged_hook.py::test_partial_staging_clean_hunk_dirty_unstaged_exits_zero\n= 11 failed, 30829 passed, 168 skipped, 5 xfailed, 587 warnings in 215.39s (0:03:35) =\nmake: *** [test] Error 1",
+    "verify": "Fingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:generic-api-key:293179\n\nFinding:     curl -u REDACTED\nSecret:      REDACTED\nRuleID:      curl-auth-user\nEntropy:     3.238901\nTags:        [decoded:hex decode-depth:1]\nFile:        /workspace/local/hosted-applications/scanner/signatures/daily.cld\nLine:        295886\nFingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:curl-auth-user:295886\n\nFinding:     intip4ip6keymapnannewnilobjpc=REDACTED;\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.522572\nTags:        [decoded:hex decode-depth:1]\nFile:        /workspace/local/hosted-applications/scanner/signatures/daily.cld\nLine:        309806\nFingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:generic-api-key:309806\n\nFinding:     KEY_SIM1_READY TEXT,REDACTED\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.616875\nTags:        [decoded:hex decode-depth:1]\nFile:        /workspace/local/hosted-applications/scanner/signatures/daily.cld\nLine:        317529\nFingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:generic-api-key:317529\n\nFinding:     curl -u REDACTED\nSecret:      REDACTED\nRuleID:      curl-auth-user\nEntropy:     3.238901\nTags:        [decoded:hex decode-depth:1]\nFile:        /workspace/local/hosted-applications/scanner/signatures/daily.cld\nLine:        352507\nFingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:curl-auth-user:352507\n\nFinding:     OAuth Secret: REDACTED\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     5.072140\nTags:        [decoded:hex decode-depth:1]\nFile:        /workspace/local/hosted-applications/scanner/signatures/daily.cld\nLine:        355293\nFingerprint: /workspace/local/hosted-applications/scanner/signatures/daily.cld:generic-api-key:355293\n\n\u001b[90m3:00PM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~447718340 bytes (447.72 MB) in 4m5s\u001b[0m\n\u001b[90m3:00PM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 258\u001b[0m\nmake: *** [gitleaks] Error 1"
+  }
+}
