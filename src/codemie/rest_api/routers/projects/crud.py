@@ -23,7 +23,6 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BeforeValidator
 
 from codemie.clients.postgres import get_session
-from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.project import (
     PaginatedProjectListResponse,
@@ -42,8 +41,7 @@ from codemie.rest_api.routers.projects._common import (
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import BudgetCategory
-from codemie.service.budget.feature_gate import is_budget_management_enabled
-from codemie.service.budget.provider_registry import get_active_provider
+from codemie.service.budget.feature_gate import is_budget_enforcement_active, is_budget_management_enabled
 from codemie.service.project import cli_analytics_policy
 from codemie.service.project.project_service import project_service
 from codemie.service.project.project_spending_service import (
@@ -126,14 +124,9 @@ def _get_project_detail_sync(
         )
 
 
-def _is_budget_provider_active() -> bool:
-    provider = get_active_provider()
-    return bool(config.LLM_PROXY_BUDGET_CHECK_ENABLED) and provider.provider_name != "noop"
-
-
 def _ensure_project_budget_list_supported() -> None:
     """Require active budget enforcement for explicit project-budget filter params."""
-    if not _is_budget_provider_active():
+    if not is_budget_enforcement_active():
         raise ExtendedHTTPException(
             code=400,
             message="Project budget filtering requires budget enforcement provider configuration",
@@ -307,7 +300,7 @@ async def list_projects(
 
     items = [ProjectListItem(**_with_visible_cli_analytics(user, proj)) for proj in enriched_projects]
 
-    if include_budgets and is_budget_management_enabled() and _is_budget_provider_active():
+    if include_budgets and is_budget_management_enabled() and is_budget_enforcement_active():
         await _attach_assigned_budget_summaries(items, budget_category)
 
     if include_spending and is_budget_management_enabled():

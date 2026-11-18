@@ -388,6 +388,33 @@ class TestVerifyEmailEndpoint:
         assert call_kwargs["value"] == "verify-token-789"
 
     @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.local_auth_router.run_in_threadpool", new_callable=AsyncMock)
+    @patch("codemie.rest_api.routers.local_auth_router.config")
+    @patch("codemie.rest_api.routers.local_auth_router.registration_service")
+    async def test_verify_email_runs_service_in_threadpool(
+        self, mock_service, mock_config, mock_run_in_threadpool, mock_request, mock_response
+    ):
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_config.IDP_PROVIDER = "local"
+        mock_config.AUTH_COOKIE_NAME = "codemie_access_token"
+        mock_config.AUTH_COOKIE_HTTPONLY = True
+        mock_config.AUTH_COOKIE_SECURE = False
+        mock_config.AUTH_COOKIE_SAMESITE = "lax"
+        mock_config.AUTH_COOKIE_PATH = "/"
+        mock_config.JWT_EXPIRATION_HOURS = 24
+        mock_run_in_threadpool.return_value = {
+            "message": "Email verified successfully",
+            "access_token": "verify-token-789",
+        }
+        data = VerifyEmailRequest(token="verification-token-abc")
+
+        result = await verify_email(mock_request, mock_response, data)
+
+        assert result.access_token == "verify-token-789"
+        mock_run_in_threadpool.assert_awaited_once_with(mock_service.verify_email_and_login, "verification-token-abc")
+        mock_service.verify_email_and_login.assert_not_called()
+
+    @pytest.mark.asyncio
     @patch("codemie.rest_api.routers.local_auth_router.config")
     async def test_verify_email_disabled_feature_flag(self, mock_config, mock_request, mock_response):
         """Verify email fails when ENABLE_USER_MANAGEMENT=False"""

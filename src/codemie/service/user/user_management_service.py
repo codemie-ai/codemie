@@ -843,23 +843,9 @@ class UserManagementService:
 
             session.commit()
 
-            # Provision budget immediately upon user creation (fail-open)
-            import asyncio
+            from codemie.service.budget.budget_service import budget_service
 
-            from codemie.service.budget.provider_registry import get_active_provider
-
-            try:
-                asyncio.run(
-                    get_active_provider().provision_global_user(
-                        user_id=new_user_id,
-                        username=username,
-                    )
-                )
-                logger.debug(f"Budget provider provisioned new user: {new_user_id}")
-            except Exception as e:
-                logger.warning(
-                    f"Failed to provision budget for new user {new_user_id}, will retry on first LLM request: {e}"
-                )
+            budget_service.schedule_default_budget_provisioning(new_user_id, username)
 
             logger.info(
                 f"user_created: actor_user_id={actor_user_id}, target_user_id={new_user_id}, domain=user_management"

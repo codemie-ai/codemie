@@ -20,10 +20,15 @@ via run_coroutine_threadsafe, ensuring they share the app's asyncpg pool.
 """
 
 import asyncio
+import concurrent.futures
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from codemie.configs import logger
 
 _main_event_loop: asyncio.AbstractEventLoop | None = None
+
+_background_futures: set[asyncio.Future[Any] | concurrent.futures.Future[Any]] = set()
 
 
 def set_main_event_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -33,6 +38,34 @@ def set_main_event_loop(loop: asyncio.AbstractEventLoop) -> None:
 
 def get_main_event_loop() -> asyncio.AbstractEventLoop | None:
     return _main_event_loop
+
+
+def run_in_background(make_coro: Callable[[], Coroutine[Any, Any, Any]]) -> bool:
+    """Start a coroutine without waiting for it, from sync or async code, and keep it referenced until it finishes.
+
+    Runs on the main loop when it is running, otherwise on this thread's running loop. Returns False, without
+    creating the coroutine, when neither is running.
+    """
+    main_loop = get_main_event_loop()
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    future: asyncio.Future[Any] | concurrent.futures.Future[Any]
+    if main_loop is not None and main_loop.is_running():
+        if current_loop is main_loop:
+            future = main_loop.create_task(make_coro())
+        else:
+            future = asyncio.run_coroutine_threadsafe(make_coro(), main_loop)
+    elif current_loop is not None:
+        future = current_loop.create_task(make_coro())
+    else:
+        return False
+
+    _background_futures.add(future)
+    future.add_done_callback(_background_futures.discard)
+    return True
 
 
 def run_coroutine_blocking(coro, *, timeout: float = 30.0, on_timeout: str = "operation"):

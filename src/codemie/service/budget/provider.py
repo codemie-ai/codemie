@@ -187,7 +187,7 @@ class BudgetEnforcementProvider(Protocol):
       ensure_global_budget, update_global_budget, delete_global_budget,
       assign_user_budget, clear_user_budget, reset_user_budget_spending,
       list_global_budget_states, list_personal_budget_assignments,
-      provision_global_user.
+      provision_category_customer.
 
     Project budget methods (Phase 8 — Release B):
       ensure_project_budget, update_project_budget, delete_project_budget,
@@ -256,12 +256,14 @@ class BudgetEnforcementProvider(Protocol):
 
     async def list_personal_budget_assignments(self) -> list[PersonalBudgetEntry] | None: ...
 
-    async def provision_global_user(
+    async def provision_category_customer(
         self,
         *,
         user_id: str,
         username: str,
-    ) -> None: ...
+        budget_category: BudgetCategory,
+        budget_id: str,
+    ) -> str | None: ...
 
     # ── Project budget methods ───────────────────────────────────────────
 

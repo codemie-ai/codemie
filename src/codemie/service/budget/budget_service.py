@@ -29,6 +29,7 @@ from cachetools import TTLCache
 from codemie.configs import config, logger
 from codemie.configs.budget_config import budget_config
 from codemie.configs.config import PredefinedBudgetConfig
+from codemie.core.event_loop import run_in_background
 from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.repository.budget_repository import budget_repository
 from codemie.repository.user_repository import user_repository
@@ -48,6 +49,7 @@ from codemie.service.budget.budget_models import (
     shared_project_budget_amounts,
 )
 from codemie.service.budget.provider_registry import get_active_provider
+from codemie.service.budget.provision_limiter import run_customer_provisioning_in_slot
 from codemie.service.spend.budget_period import parse_budget_reset_at, running_period_start
 
 if TYPE_CHECKING:
@@ -63,6 +65,9 @@ if TYPE_CHECKING:
 _DURATION_RE = re.compile(r"^\d+[dhm]$")
 
 _CANONICAL_BUDGET_REF_RE = re.compile(r"^codemie:project:.+:category:(?P<category>[^:]+)$")
+
+PROVISION_DEADLINE_SECONDS = 30.0
+
 
 # Budget assignment cache: (user_id, category_value) → budget_id | None
 # Eliminates per-request DB lookups for user→category→budget_id mappings.
@@ -1101,6 +1106,110 @@ class BudgetService:
                 f"budget_category={category.value!r} budget_id={budget_id!r} assigned_by={assigned_by!r} "
                 f"error={exc}"
             )
+
+    async def provision_default_budgets(self, user_id: str, username: str) -> None:
+        """Create the provider customer and mirrored assignment row for every configured default budget.
+
+        Fail-open and bounded by PROVISION_DEADLINE_SECONDS: never raises.
+        """
+        try:
+            from codemie.service.budget.feature_gate import is_budget_enforcement_active, is_budget_management_enabled
+
+            if not (is_budget_management_enabled() and is_budget_enforcement_active()):
+                logger.debug(
+                    f"budget_event=default_budget_provision_skipped component=budget_service "
+                    f"user_id={user_id!r} reason=budget_enforcement_inactive"
+                )
+                return
+            targets = self._default_provision_targets()
+            await asyncio.wait_for(
+                self._provision_targets(user_id, username, targets),
+                timeout=PROVISION_DEADLINE_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                f"budget_event=default_budget_provision_timed_out component=budget_service "
+                f"user_id={user_id!r} deadline_seconds={PROVISION_DEADLINE_SECONDS}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"budget_event=default_budget_provision_failed component=budget_service "
+                f"user_id={user_id!r} error={exc}",
+                exc_info=True,
+            )
+
+    def schedule_default_budget_provisioning(self, user_id: str, username: str) -> None:
+        """Start provision_default_budgets in the background and return without waiting for it. Never raises."""
+        try:
+            started = run_in_background(lambda: self.provision_default_budgets(user_id, username))
+        except Exception as exc:
+            logger.warning(
+                f"budget_event=default_budget_provision_schedule_failed component=budget_service "
+                f"user_id={user_id!r} error={exc}",
+                exc_info=True,
+            )
+            return
+        if not started:
+            logger.debug(
+                f"budget_event=default_budget_provision_skipped component=budget_service "
+                f"user_id={user_id!r} reason=no_running_event_loop"
+            )
+
+    def _default_provision_targets(self) -> list[tuple[BudgetCategory, str]]:
+        targets: dict[BudgetCategory, str] = {}
+        for entry in budget_config.predefined_budgets:
+            try:
+                category = BudgetCategory(entry.budget_category)
+            except ValueError:
+                logger.warning(
+                    f"budget_event=default_budget_provision_category_skipped component=budget_service "
+                    f"budget_category={entry.budget_category!r} reason=unknown_category"
+                )
+                continue
+            targets.setdefault(category, entry.budget_id)
+        return [(category, budget_id) for category, budget_id in targets.items() if budget_id]
+
+    async def _provision_targets(
+        self,
+        user_id: str,
+        username: str,
+        targets: list[tuple[BudgetCategory, str]],
+    ) -> None:
+        results = await asyncio.gather(
+            *(self._provision_category(user_id, username, category, budget_id) for category, budget_id in targets),
+            return_exceptions=True,
+        )
+        for (category, budget_id), result in zip(targets, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    f"budget_event=default_budget_provision_failed component=budget_service "
+                    f"user_id={user_id!r} budget_category={category.value!r} budget_id={budget_id!r} "
+                    f"error={result}",
+                    exc_info=result,
+                )
+
+    async def _provision_category(
+        self,
+        user_id: str,
+        username: str,
+        category: BudgetCategory,
+        budget_id: str,
+    ) -> None:
+        mirrored_budget_id = await run_customer_provisioning_in_slot(
+            get_active_provider().provision_category_customer(
+                user_id=user_id,
+                username=username,
+                budget_category=category,
+                budget_id=budget_id,
+            )
+        )
+        if mirrored_budget_id is None:
+            logger.warning(
+                f"budget_event=default_budget_provision_unavailable component=budget_service "
+                f"user_id={user_id!r} budget_category={category.value!r} budget_id={budget_id!r}"
+            )
+            return
+        await self.track_proxy_budget_assignment_for_request(user_id, category, mirrored_budget_id)
 
     async def get_user_category_budget_id_for_request(self, user_id: str, category: BudgetCategory) -> str | None:
         """Best-effort lookup of the currently assigned budget for a proxy request."""

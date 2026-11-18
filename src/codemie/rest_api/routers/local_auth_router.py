@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from fastapi import APIRouter, Request, Response, Depends
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from codemie.clients.postgres import get_async_session
@@ -138,7 +139,7 @@ async def verify_email(request: Request, response: Response, data: VerifyEmailRe
         raise ExtendedHTTPException(code=400, message="Email verification only available in local auth mode")
 
     # Delegate to service layer
-    result = registration_service.verify_email_and_login(data.token)
+    result = await run_in_threadpool(registration_service.verify_email_and_login, data.token)
 
     _set_auth_cookie(response, result["access_token"])
     return VerifyEmailResponse(message=result["message"], access_token=result["access_token"])

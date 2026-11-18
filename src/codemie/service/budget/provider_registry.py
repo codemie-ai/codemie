@@ -164,8 +164,15 @@ class _NoopBudgetEnforcementProvider:
     async def list_personal_budget_assignments(self) -> list[PersonalBudgetEntry] | None:
         return []
 
-    async def provision_global_user(self, *, user_id: str, username: str) -> None:
-        return self._noop_result(user_id, username)
+    async def provision_category_customer(
+        self,
+        *,
+        user_id: str,
+        username: str,
+        budget_category: BudgetCategory,
+        budget_id: str,
+    ) -> str | None:
+        return self._noop_result(user_id, username, budget_category, budget_id)
 
     # ── Project budget methods ───────────────────────────────────────────
 

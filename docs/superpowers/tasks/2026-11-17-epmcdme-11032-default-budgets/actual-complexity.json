@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-11-17T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 19,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New BudgetService.provision_default_budgets orchestration (target resolution, bounded gather, per-category provisioning) plus protocol/registry/feature-gate/enterprise adapter changes, wired into five user-lifecycle entry points (user management create, registration, post-verification, IdP first login, dev header) and local auth and projects routers." },
+    { "dimension": "technical_risk", "reason": "No exact precedent: fail-open provisioning under an asyncio deadline on login and registration hot paths, concurrent provider calls with a shared slot, idempotency against the existing lazy-assignment mirror, and enforcement-gate behaviour. Defensive edge-case coverage (timeout, unavailable provider, unknown category) is new test surface." },
+    { "dimension": "file_change_estimate", "reason": "19 files changed (10 source, 9 test), 1036 insertions, 110 deletions across budget service, user services, routers and enterprise adapter; diffstat maps to XXL, although about half are test files." }
+  ],
+  "red_flags_applied": [
+    "Component Scope: affects multiple workflows (admin create, local registration, email verification, IdP login, dev header)"
+  ],
+  "split_recommendation": null
+}

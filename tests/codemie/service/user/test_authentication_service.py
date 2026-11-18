@@ -1729,6 +1729,124 @@ class TestAuthenticatePersistentUserRaceCondition:
             mock_sync.assert_called_once()
 
 
+_PROVISION_PATH = "codemie.service.budget.budget_service.BudgetService.schedule_default_budget_provisioning"
+_AUTH_SERVICE = "codemie.service.user.authentication_service"
+
+
+def _idp_user(user_id: str) -> security_user.User:
+    return security_user.User(
+        id=user_id,
+        username="idp-user",
+        name="Idp User",
+        email="idp@example.com",
+        user_type="human",
+        roles=[],
+        project_names=[],
+        admin_project_names=[],
+        knowledge_bases=[],
+        is_admin=False,
+    )
+
+
+def _db_user(user_id: str) -> UserDB:
+    return UserDB(
+        id=user_id,
+        email="idp@example.com",
+        username="idp-user",
+        name="Idp User",
+        is_active=True,
+        deleted_at=None,
+    )
+
+
+class TestDefaultBudgetProvisioningOnUserCreation:
+    """Default budgets are provisioned only for freshly created users (IDP first login, dev header)"""
+
+    async def _run_persistent(self, *, existing, create_side_effect=None):
+        user_id = str(uuid4())
+        db_user = _db_user(user_id)
+        mock_session = AsyncMock()
+        aget_results = [db_user] if existing else [None, db_user]
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch(f"{_AUTH_SERVICE}.user_repository") as mock_user_repo,
+            patch(
+                f"{_AUTH_SERVICE}.AuthenticationService._create_first_login_user",
+                new_callable=AsyncMock,
+                side_effect=create_side_effect,
+                return_value=db_user,
+            ),
+            patch(f"{_AUTH_SERVICE}.AuthenticationService._sync_existing_user", new_callable=AsyncMock),
+            patch(f"{_AUTH_SERVICE}.AuthenticationService._finalize_authentication", new_callable=AsyncMock),
+            patch(_PROVISION_PATH) as mock_provision,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_user_repo.aget_by_id = AsyncMock(side_effect=aget_results)
+
+            await AuthenticationService.authenticate_persistent_user(user_id, _idp_user(user_id), "token-" + user_id)
+
+        return user_id, mock_provision
+
+    @pytest.mark.asyncio
+    async def test_fresh_idp_user_triggers_provisioning_once(self):
+        user_id, mock_provision = await self._run_persistent(existing=False)
+
+        mock_provision.assert_called_once_with(user_id, "idp-user")
+
+    @pytest.mark.asyncio
+    async def test_integrity_error_recovery_does_not_trigger_provisioning(self):
+        _, mock_provision = await self._run_persistent(existing=False, create_side_effect=IntegrityError("x", {}, None))
+
+        mock_provision.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_existing_idp_user_does_not_trigger_provisioning(self):
+        _, mock_provision = await self._run_persistent(existing=True)
+
+        mock_provision.assert_not_called()
+
+    async def _run_dev_header(self, *, existing):
+        user_id = "dev-user-1"
+        mock_session = AsyncMock()
+        order = []
+        mock_session.commit.side_effect = lambda: order.append("commit")
+
+        def provision(*args, **kwargs):
+            order.append("provision")
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch(f"{_AUTH_SERVICE}.user_repository") as mock_user_repo,
+            patch(f"{_AUTH_SERVICE}.activity_event_repository") as mock_activity_repo,
+            patch(f"{_AUTH_SERVICE}.AuthenticationService._finalize_authentication", new_callable=AsyncMock),
+            patch(_PROVISION_PATH, side_effect=provision) as mock_provision,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_activity_repo.async_insert = AsyncMock()
+            db_user = _db_user(user_id)
+            mock_user_repo.aget_by_id = AsyncMock(return_value=db_user if existing else None)
+            mock_user_repo.acreate = AsyncMock(return_value=db_user)
+            mock_user_repo.aupdate_last_login = AsyncMock()
+
+            await AuthenticationService.authenticate_dev_header(user_id)
+
+        return user_id, mock_provision, order
+
+    @pytest.mark.asyncio
+    async def test_dev_header_new_user_triggers_provisioning_once_after_commit(self):
+        user_id, mock_provision, order = await self._run_dev_header(existing=False)
+
+        mock_provision.assert_called_once_with(user_id, user_id)
+        assert order == ["commit", "provision"]
+
+    @pytest.mark.asyncio
+    async def test_dev_header_existing_user_does_not_trigger_provisioning(self):
+        _, mock_provision, _ = await self._run_dev_header(existing=True)
+
+        mock_provision.assert_not_called()
+
+
 class TestAuthenticateAndLogin:
     """Tests for authenticate_and_login() method"""
 

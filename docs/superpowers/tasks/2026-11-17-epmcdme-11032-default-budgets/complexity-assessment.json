@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Provision default LiteLLM customers and user_budget_assignments rows per configured predefined budget at user creation (registration, admin create, IdP first login, dev header), fail-open, instead of lazily on first LLM request.",
+  "generated": "2026-11-17T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Four hook sites across RegistrationService, UserManagementService and AuthenticationService, plus a new BudgetService method and a changed provider contract (protocol, noop, LiteLLM adapter). All within the service layer of one repo and built from reusable pieces (build_user_id, resolve_mirrored_budget_id, upsert_user_category_assignment, _record_default_assignment pattern)." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing fail-open post-commit hooks (provision_global_user, _sync_budget_for_idp_projects) and _record_default_assignment. It does not cover the sync/async seams (async method with sync session, asyncio.run, async IdP and dev-header paths), the login-path latency of 1-3 blocking LiteLLM calls per category, or the None-return failure signal (a row written after a failed customer create would persist a wrong budget that lazy and backfill paths never correct). The per-process assignment cache and the shared provider protocol change add to the risk. Auth-adjacent but no authz change." },
+    { "dimension": "file_change_estimate", "reason": "About 7-8 source files modified (registration_service, user_management_service, authentication_service, budget_service, provider protocol, provider_registry noop, budget_provider_adapter, possibly a gate helper), plus about 5-6 existing test files updated and 1-2 new test files. Three to four directories (service/user, service/budget, enterprise/litellm, tests)." }
+  ],
+  "red_flags_applied": [
+    "Affects multiple workflows: Component Scope held at L (4), not bumped further, since all call sites share one new BudgetService entry point",
+    "Clarity: the task's path 3 (IntegrityError recovery distinction) and path 4 (post-commit point is outside the if-block) are contradicted by the code, so Requirements Clarity sits at M"
+  ],
+  "split_recommendation": null
+}

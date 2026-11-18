@@ -1,0 +1,238 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved the check round"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Fix CR-001, CR-002, CR-003"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved the check round"
+    }
+  ],
+  "reviewed_head": "0bf2fd2c93e570daf4c38b57a8d9f58b04ea8b7e",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All three prior blocking findings verified resolved against current source: provider slot now held until the worker task finishes, missing LiteLLM service raises BudgetProviderUnavailableError and logs at debug, and verify_email_and_login provisions outside the DB session. Regression tests named in the fix log exist; they were not executed (Stage 7 owns execution).",
+  "confidence": "medium",
+  "check_confidence": "high",
+  "risk_flags": [
+    "auth",
+    "auth-adjacent"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 3,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/litellm/budget_provider_adapter.py",
+      "line": 1031,
+      "title": "Provider thread outlives deadline and semaphore slot",
+      "problem": "provision_global_user runs service.get_or_create_customer_with_budget via asyncio.to_thread. When provision_default_budgets' wait_for fires at 8s, the coroutine is cancelled but the worker thread keeps blocking in the provider call, and the semaphore slot is released. Existing test only asserts the slot is freed, not that the work stopped.",
+      "impact": "PROVISION_PROVIDER_CONCURRENCY bounds coroutines, not real provider calls. With a hung or slow proxy, bursts of first logins accumulate blocked threads in the default executor and can starve other to_thread users. Reachability depends on whether the LiteLLM client enforces its own timeout, which was not confirmed.",
+      "recommendation": "Pass an explicit client timeout to get_or_create_customer_with_budget, or hold the semaphore until the worker thread finishes, so hung calls cannot accumulate.",
+      "status": "resolved",
+      "check_notes": "budget_service.py _call_provider_holding_slot acquires semaphore, runs provider as shielded task, releases in done callback; deadline cancel no longer frees slot early.",
+      "fix": {
+        "change": "Semaphore slot is now held until the provider task itself finishes (shielded task releases it on completion), so a deadline cancel no longer frees a slot while the worker thread still runs",
+        "test": "tests/codemie/service/budget/test_provision_default_budgets.py::test_timed_out_call_keeps_semaphore_slots_until_provider_work_finishes"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/budget_service.py",
+      "line": 1117,
+      "title": "Missing LiteLLM service warns on every creation",
+      "problem": "The adapter returns None quietly (debug) when get_litellm_service_or_none() is None, but _provision_category logs logger.warning default_budget_provision_unavailable for every None result, so service-missing and empty-customer outcomes are indistinguishable. AC2 requires nothing above debug when the LiteLLM service is missing. No BudgetService-level test covers the log level.",
+      "impact": "Deployments with budget enforcement configured but no LiteLLM service emit one warning per category on every user creation across all five paths, violating AC2. Reachability of a registered litellm provider with a missing service was not confirmed.",
+      "recommendation": "Log provider-unavailable at debug and keep warning only for a real failed get_or_create (e.g. adapter signals unavailability separately); add a BudgetService test asserting no warning when the service is missing.",
+      "status": "resolved",
+      "check_notes": "Adapter raises BudgetProviderUnavailableError when service missing; _provision_category logs debug and returns; warning kept only for None result.",
+      "fix": {
+        "change": "Adapter raises BudgetProviderUnavailableError when the LiteLLM service is missing; BudgetService logs it at debug and keeps warning only for a None customer result",
+        "test": "tests/codemie/service/budget/test_provision_default_budgets.py::test_provider_unavailable_writes_no_row_and_logs_nothing_above_debug"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/user/registration_service.py",
+      "line": 327,
+      "title": "Sync DB session held during blocking provisioning",
+      "problem": "verify_email_and_login calls run_coroutine_blocking(provision_default_budgets, timeout=10s) inside the with get_session() block after session.commit(). The session and its pooled connection stay checked out for the whole remote provider call, though nothing after it needs the session (values were extracted before commit).",
+      "impact": "With a slow or down budget proxy each email verification pins a pooled connection for up to 10s; concurrent verifications can exhaust the sync pool and stall unrelated requests.",
+      "recommendation": "Extract user_id, user_email and user_username inside the with block, exit it, then run the provisioning call and generate the access token outside the session.",
+      "status": "resolved",
+      "check_notes": "registration_service.py verify_email_and_login exits get_session after commit; provisioning and token generation run outside the session.",
+      "fix": {
+        "change": "verify_email_and_login exits the get_session block after commit, then provisions and mints the token outside the session",
+        "test": "tests/codemie/service/user/test_registration_service.py::TestRegistrationDefaultBudgetProvisioning::test_verify_email_and_login_releases_session_before_provisioning"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "provision_default_budgets(user_id, username): fail-open, per-category gather, semaphore, single wait_for deadline, None skips row with warning",
+      "status": "pass",
+      "notes": "budget_service.py provision_default_budgets/_provision_targets/_provision_category"
+    },
+    {
+      "kind": "spec",
+      "item": "Paths 1-5 hooks: register, verify_email_and_login, admin create, IdP first login, dev header",
+      "status": "pass",
+      "notes": "All five hooks present after the relevant commit; IdP and dev-header gated on created flag"
+    },
+    {
+      "kind": "spec",
+      "item": "Feature gate: is_budget_management_enabled() and is_budget_enforcement_active() in feature_gate.py",
+      "status": "pass",
+      "notes": "Router delegates; matrix tested"
+    },
+    {
+      "kind": "spec",
+      "item": "Provider contract: provision_global_user(...) -> str | None in protocol, noop and adapter",
+      "status": "partial",
+      "notes": "Keyword is budget_category, spec names it category; internally consistent across protocol, noop and adapter"
+    },
+    {
+      "kind": "spec",
+      "item": "Sync/async seams: run_coroutine_blocking with timeout above deadline on sync paths; async paths await inline",
+      "status": "pass",
+      "notes": "PROVISION_BLOCKING_TIMEOUT_SECONDS=10.0 vs PROVISION_DEADLINE_SECONDS=8.0"
+    },
+    {
+      "kind": "spec",
+      "item": "AC1: gate open, each path creates customer and assigned_by=system row for every distinct category",
+      "status": "pass",
+      "notes": "Adapter tests assert customer ids; row via track_proxy_budget_assignment_for_request"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: gate closed or LiteLLM service missing -> no customer, no row, nothing above debug logged",
+      "status": "fail",
+      "notes": "Service-missing case logs warning default_budget_provision_unavailable per category (budget_service.py _provision_category)"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: any failure never fails user creation; warning logged; None writes no row",
+      "status": "pass",
+      "notes": "Per-path try/except plus internal catch-all; tests cover raise, None, timeout"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: one category failing leaves other categories provisioned",
+      "status": "pass",
+      "notes": "gather return_exceptions=True; tests cover provider and row-write failure"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: rows written by separate short sessions, none open during provider call",
+      "status": "pass",
+      "notes": "track_proxy_budget_assignment_for_request opens its own session after provider call"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: provider calls bounded by semaphore; hanging provider ends at deadline",
+      "status": "pass",
+      "notes": "Tested; see CR-001 for the worker-thread residue"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: re-run leaves existing row unchanged and creates no duplicate customer",
+      "status": "pass",
+      "notes": "Existing-row skip plus get_or_create_customer_with_budget"
+    },
+    {
+      "kind": "spec",
+      "item": "AC8: customer ids use username, not email or user id, on all five paths",
+      "status": "pass",
+      "notes": "Verified per path; admin-create test asserts username not email"
+    },
+    {
+      "kind": "spec",
+      "item": "AC9: no provisioning at registration when email verification is enabled; provisions after verification",
+      "status": "pass",
+      "notes": "test_email_verification_branch_does_not_provision"
+    },
+    {
+      "kind": "spec",
+      "item": "AC10: IdP IntegrityError recovery triggers no provisioning; dev-header only when created in the call",
+      "status": "pass",
+      "notes": "Recovery tests present"
+    },
+    {
+      "kind": "spec",
+      "item": "AC11: verify_email runs service through run_in_threadpool",
+      "status": "pass",
+      "notes": "local_auth_router.py:142"
+    },
+    {
+      "kind": "spec",
+      "item": "AC12: signatures updated in protocol/noop/adapter; tests updated and new mock tests added",
+      "status": "pass",
+      "notes": "Gate, hooks, created flag, fail-open, None skip, deadline covered"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals respected (no Keycloak migration, bootstrap_superadmin, schema change, docs pages)",
+      "status": "pass",
+      "notes": "None of those files appear in changed files"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "6 subjects in 71def4ba..HEAD all match the documented EPMCDME-####: Description format in git-workflow.md"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "Changed src hunks reviewed against code-quality.md: new functions typed with modern unions and generics; no new source files so no license-header concern; BudgetService cohesion intact"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Adjudicated against development/security-patterns.md; new logging emits ids and exception text only, no tokens or credentials; no auth or IdP trust changes"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "AC2 fails: a missing LiteLLM service logs a warning per category on every user creation, and two fragility issues (sync DB session held during provisioning; provider thread outliving the deadline) were confirmed in code. All four lenses and standards ran with no coverage gap; 16 candidates were dismissed as noise or by-design, 0 deferred. The provider-contract keyword naming deviation (budget_category vs spec category) was dismissed as internally consistent, and the two reachability-uncertain findings are capped at major.",
+    "confidence": "medium",
+    "risk_flags": [
+      "auth",
+      "auth-adjacent"
+    ]
+  }
+}

@@ -1022,31 +1022,53 @@ class LiteLLMBudgetEnforcementProvider:
             error=error,
         )
 
-    async def provision_global_user(self, *, user_id: str, username: str) -> None:
-        """Ensure a LiteLLM customer record exists for a new Codemie user.
+    async def provision_category_customer(
+        self,
+        *,
+        user_id: str,
+        username: str,
+        budget_category: BudgetCategory,
+        budget_id: str,
+    ) -> str | None:
+        """Ensure the LiteLLM customer for one budget category exists and return its mirrored budget id.
 
-        Called at new-user creation time (SSO first login, admin create).
-        Fail-open: callers log the exception and continue.
+        Called at new-user creation time. Fail-open: callers log the exception and continue.
         """
+        from codemie.enterprise.litellm.budget_categories import build_user_id
         from codemie.enterprise.litellm.dependencies import get_litellm_service_or_none
+        from codemie.enterprise.litellm.llm_factory import resolve_mirrored_budget_id
 
+        litellm_user_id = build_user_id(username, budget_category)
         logger.debug(
             f"budget_event=provider_customer_provision_started component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={username!r}"
+            f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={username!r} "
+            f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r} "
+            f"budget_id={budget_id!r}"
         )
         service = get_litellm_service_or_none()
         if service is None:
             logger.debug(
                 f"budget_event=provider_customer_provision_skipped component=litellm_budget_provider "
                 f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={username!r} "
-                f"reason=provider_unavailable"
+                f"budget_category={budget_category.value!r} reason=provider_unavailable"
             )
-            return
-        await asyncio.to_thread(service.get_or_create_customer_with_budget, username)
+            return None
+        customer = await asyncio.to_thread(service.get_or_create_customer_with_budget, litellm_user_id, budget_id)
+        if customer is None:
+            logger.debug(
+                f"budget_event=provider_customer_provision_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={username!r} "
+                f"budget_category={budget_category.value!r} reason=empty_customer_result"
+            )
+            return None
+        mirrored_budget_id = resolve_mirrored_budget_id(customer, budget_category)
         logger.debug(
             f"budget_event=provider_customer_provision_completed component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={username!r}"
+            f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={username!r} "
+            f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r} "
+            f"budget_id={mirrored_budget_id!r}"
         )
+        return mirrored_budget_id
 
     # ── Project budget methods ───────────────────────────────────────────
 

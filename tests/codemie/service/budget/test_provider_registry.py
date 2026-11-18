@@ -67,13 +67,19 @@ async def test_noop_budget_provider_accepts_all_protocol_arguments(monkeypatch):
         budget_category=BudgetCategory.CLI,
         budget_id="global-budget",
     )
-    await provider.provision_global_user(user_id="user-1", username="user@example.com")
+    provision_result = await provider.provision_category_customer(
+        user_id="user-1",
+        username="user@example.com",
+        budget_category=BudgetCategory.CLI,
+        budget_id="global-budget",
+    )
     await provider.delete_project_budget(budget_state=project_state, project_name="proj-a")
     await provider.delete_member_allocation(allocation=SimpleNamespace(id="alloc-1"))
 
     runtime_result = await provider.resolve_runtime(context=SimpleNamespace(user_id="user-1"))
     runtime_sync_result = provider.resolve_runtime_sync(context=SimpleNamespace(user_id="user-1"))
 
+    assert provision_result is None
     assert global_state.sync_status == SyncStatus.NOOP
     assert project_state.sync_status == SyncStatus.NOOP
     assert member_state.sync_status == SyncStatus.NOOP
@@ -112,13 +118,18 @@ async def test_noop_provider_accepts_username_kwarg_for_clear():
 
 @pytest.mark.asyncio
 async def test_noop_provider_accepts_username_kwarg_for_provision():
+    from codemie.service.budget.budget_enums import BudgetCategory
     from codemie.service.budget.provider_registry import NoopBudgetProvider
 
     provider = NoopBudgetProvider()
-    await provider.provision_global_user(
+    result = await provider.provision_category_customer(
         user_id="uid-1",
         username="john_doe",
+        budget_category=BudgetCategory.PLATFORM,
+        budget_id="global-budget",
     )
+
+    assert result is None
 
 
 def test_register_budget_enforcement_provider_overrides_noop(monkeypatch):

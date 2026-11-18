@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -601,6 +602,122 @@ class TestRegistrationService:
         assert result["access_token"] == "access-token-456"
         mock_session.commit.assert_called_once()
         mock_generate_token.assert_called_once_with(user_id, email, "local")
+
+
+def _registered_user(user_id: str, email: str, username: str, *, verified: bool) -> UserDB:
+    return UserDB(
+        id=user_id,
+        email=email,
+        username=username,
+        name=username,
+        password_hash="hashed",
+        auth_source="local",
+        email_verified=verified,
+        is_active=True,
+        is_admin=False,
+        project_limit=10,
+    )
+
+
+class TestRegistrationDefaultBudgetProvisioning:
+    """Default budget provisioning hooks on the registration paths"""
+
+    @pytest.fixture
+    def flow(self):
+        patches = {
+            "config": patch("codemie.service.user.registration_service.config"),
+            "get_session": patch("codemie.clients.postgres.get_session"),
+            "password_service": patch("codemie.service.password_service.password_service"),
+            "user_repo": patch("codemie.service.user.registration_service.user_repository"),
+            "token_repo": patch("codemie.service.user.registration_service.email_token_repository"),
+            "email_service": patch("codemie.service.email_service.email_service"),
+            "personal": patch("codemie.service.user.registration_service.personal_project_service"),
+            "generate_token": patch("codemie.rest_api.security.jwt_local.generate_access_token"),
+            "async_session": patch("codemie.clients.postgres.get_async_session"),
+            "user_project_repo": patch("codemie.repository.user_project_repository.user_project_repository"),
+            "budget_service": patch("codemie.service.budget.budget_service.budget_service"),
+            "logger": patch("codemie.service.user.registration_service.logger"),
+        }
+        mocks = {name: p.start() for name, p in patches.items()}
+        try:
+            mocks["config"].PASSWORD_MIN_LENGTH = 8
+            mocks["config"].USER_PROJECT_LIMIT = 10
+            mocks["session"] = MagicMock()
+            mocks["get_session"].return_value.__enter__.return_value = mocks["session"]
+            mocks["user_repo"].exists_by_email.return_value = False
+            mocks["user_repo"].exists_by_username.return_value = False
+            mocks["password_service"].hash_password.return_value = "hashed"
+            mocks["personal"].ensure_personal_project_async = AsyncMock()
+            mocks["email_service"].send_verification_email = AsyncMock()
+            mocks["token_repo"].create_token.return_value = ("raw-token", MagicMock())
+            mocks["generate_token"].return_value = "jwt-token"
+            cm = AsyncMock()
+            cm.__aenter__.return_value = AsyncMock()
+            cm.__aexit__.return_value = False
+            mocks["async_session"].return_value = cm
+            mocks["user_project_repo"].aget_by_user_id = AsyncMock(return_value=[])
+            mocks["budget_service"].schedule_default_budget_provisioning = MagicMock()
+            yield SimpleNamespace(**mocks)
+        finally:
+            for p in patches.values():
+                p.stop()
+
+    @pytest.mark.asyncio
+    async def test_instant_login_provisions_after_commit(self, flow):
+        flow.config.EMAIL_VERIFICATION_ENABLED = False
+        user_id = str(uuid4())
+        flow.user_repo.create.return_value = _registered_user(user_id, "a@example.com", "alice", verified=True)
+        order = []
+        flow.session.commit.side_effect = lambda: order.append("commit")
+        flow.budget_service.schedule_default_budget_provisioning.side_effect = lambda *a, **k: order.append("provision")
+
+        result = await RegistrationService.register_user_with_flow("a@example.com", "alice", "password123")
+
+        assert result["type"] == "token"
+        flow.budget_service.schedule_default_budget_provisioning.assert_called_once_with(user_id, "alice")
+        assert order == ["commit", "provision"]
+
+    @pytest.mark.asyncio
+    async def test_email_verification_branch_does_not_provision(self, flow):
+        flow.config.EMAIL_VERIFICATION_ENABLED = True
+        flow.user_repo.create.return_value = _registered_user(str(uuid4()), "a@example.com", "alice", verified=False)
+
+        result = await RegistrationService.register_user_with_flow("a@example.com", "alice", "password123")
+
+        assert result["type"] == "message"
+        flow.budget_service.schedule_default_budget_provisioning.assert_not_called()
+
+    def test_verify_email_and_login_provisions_after_commit_with_pre_commit_username(self, flow):
+        user_id = str(uuid4())
+        verified_user = _registered_user(user_id, "v@example.com", "verifyuser", verified=True)
+        flow.user_repo.update.return_value = verified_user
+        flow.token_repo.verify_token.return_value = MagicMock(id="token-id", user_id=user_id)
+        order = []
+
+        def commit():
+            order.append("commit")
+            verified_user.username = "expired"
+
+        flow.session.commit.side_effect = commit
+        flow.budget_service.schedule_default_budget_provisioning.side_effect = lambda *a, **k: order.append("provision")
+
+        result = RegistrationService.verify_email_and_login("verify-token")
+
+        assert result["access_token"] == "jwt-token"
+        flow.budget_service.schedule_default_budget_provisioning.assert_called_once_with(user_id, "verifyuser")
+        assert order == ["commit", "provision"]
+
+    def test_verify_email_and_login_releases_session_before_provisioning(self, flow):
+        user_id = str(uuid4())
+        flow.user_repo.update.return_value = _registered_user(user_id, "v@example.com", "verifyuser", verified=True)
+        flow.token_repo.verify_token.return_value = MagicMock(id="token-id", user_id=user_id)
+        order = []
+        flow.get_session.return_value.__exit__.side_effect = lambda *a: order.append("session_closed") or False
+        flow.budget_service.schedule_default_budget_provisioning.side_effect = lambda *a, **k: order.append("provision")
+
+        RegistrationService.verify_email_and_login("verify-token")
+
+        assert order == ["session_closed", "provision"]
 
 
 class TestRegistrationServiceSingleton:

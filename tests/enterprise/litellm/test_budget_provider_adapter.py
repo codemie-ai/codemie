@@ -1587,3 +1587,73 @@ class TestSyncMemberAllocationsReviewFixes:
         assert result[1].provider_member_ref == "ordered-user-2"
         assert result[2].sync_status == SyncStatus.OK
         assert result[2].provider_member_ref == "ref-user-3"
+
+
+class TestProvisionGlobalUser:
+    _SERVICE_PATH = "codemie.enterprise.litellm.dependencies.get_litellm_service_or_none"
+
+    @pytest.mark.asyncio
+    async def test_creates_customer_for_category_and_returns_mirrored_budget_id(self):
+        customer = SimpleNamespace(litellm_budget_table=SimpleNamespace(budget_id="premium-budget"))
+        service = SimpleNamespace(get_or_create_customer_with_budget=MagicMock(return_value=customer))
+        adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+        with patch(self._SERVICE_PATH, return_value=service):
+            result = await adapter.provision_category_customer(
+                user_id="user-1",
+                username="john_doe",
+                budget_category=BudgetCategory.PREMIUM_MODELS,
+                budget_id="configured-premium",
+            )
+
+        assert result == "premium-budget"
+        service.get_or_create_customer_with_budget.assert_called_once_with(
+            "john_doe_codemie_premium_models", "configured-premium"
+        )
+
+    @pytest.mark.asyncio
+    async def test_platform_category_uses_bare_username_as_customer_id(self):
+        customer = SimpleNamespace(litellm_budget_table=SimpleNamespace(budget_id="platform-budget"))
+        service = SimpleNamespace(get_or_create_customer_with_budget=MagicMock(return_value=customer))
+        adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+        with patch(self._SERVICE_PATH, return_value=service):
+            result = await adapter.provision_category_customer(
+                user_id="user-1",
+                username="john_doe",
+                budget_category=BudgetCategory.PLATFORM,
+                budget_id="platform-budget",
+            )
+
+        assert result == "platform-budget"
+        service.get_or_create_customer_with_budget.assert_called_once_with("john_doe", "platform-budget")
+
+    @pytest.mark.asyncio
+    async def test_returns_none_quietly_when_service_missing(self, caplog):
+        adapter = LiteLLMBudgetEnforcementProvider(service=None)
+
+        with caplog.at_level("INFO"), patch(self._SERVICE_PATH, return_value=None):
+            result = await adapter.provision_category_customer(
+                user_id="user-1",
+                username="john_doe",
+                budget_category=BudgetCategory.CLI,
+                budget_id="cli-budget",
+            )
+
+        assert result is None
+        assert not [record for record in caplog.records if record.levelno > 10]
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_customer_is_none(self):
+        service = SimpleNamespace(get_or_create_customer_with_budget=MagicMock(return_value=None))
+        adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+        with patch(self._SERVICE_PATH, return_value=service):
+            result = await adapter.provision_category_customer(
+                user_id="user-1",
+                username="john_doe",
+                budget_category=BudgetCategory.CLI,
+                budget_id="cli-budget",
+            )
+
+        assert result is None

@@ -23,14 +23,20 @@ from __future__ import annotations
 
 from fastapi import Depends
 
+from codemie.configs import config
 from codemie.configs.customer_config import customer_config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.authentication import authenticate
+from codemie.service.budget.provider_registry import get_active_provider
 
 
 def is_budget_management_enabled() -> bool:
     """`features:budgetManagement` is available (flag AND enterprise ceiling). For paths that degrade instead of 403."""
     return customer_config.is_feature_enabled("budgetManagement")
+
+
+def is_budget_enforcement_active() -> bool:
+    return bool(config.LLM_PROXY_BUDGET_CHECK_ENABLED) and get_active_provider().provider_name != "noop"
 
 
 def ensure_budget_management_enabled() -> None:

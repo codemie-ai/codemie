@@ -699,8 +699,8 @@ class TestProjectsVisibilityEndpoints:
         )
 
     @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.crud.config")
-    @patch("codemie.rest_api.routers.projects.crud.get_active_provider")
+    @patch("codemie.service.budget.feature_gate.config")
+    @patch("codemie.service.budget.feature_gate.get_active_provider")
     @patch("codemie.rest_api.routers.projects.crud.spend_service")
     @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
     @patch("codemie.service.project.project_spending_service.get_async_session")
@@ -804,8 +804,8 @@ class TestProjectsVisibilityEndpoints:
         assert result.data[0].budgets[0].current_spending == pytest.approx(5.0)
 
     @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.crud.config")
-    @patch("codemie.rest_api.routers.projects.crud.get_active_provider")
+    @patch("codemie.service.budget.feature_gate.config")
+    @patch("codemie.service.budget.feature_gate.get_active_provider")
     @patch("codemie.rest_api.routers.projects.crud.get_session")
     @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio

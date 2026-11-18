@@ -491,7 +491,7 @@ class AuthenticationService:
         session: AsyncSession,
         user_id: str,
         idp_user: Optional[security_user.User],
-    ) -> tuple[UserDB, str | None]:
+    ) -> tuple[UserDB, str | None, bool]:
         """Create user on first login with race-condition recovery.
 
         If a concurrent request already created the user (IntegrityError),
@@ -503,11 +503,11 @@ class AuthenticationService:
             idp_user: IDP user object
 
         Returns:
-            Tuple of (db_user, pre_sync_email)
+            Tuple of (db_user, pre_sync_email, inserted_by_this_request)
         """
         try:
             db_user = await AuthenticationService._create_first_login_user(session, idp_user)
-            return db_user, None
+            return db_user, None, True
         except IntegrityError:
             await session.rollback()
             db_user = await user_repository.aget_by_id(session, user_id)
@@ -515,7 +515,7 @@ class AuthenticationService:
                 raise
             logger.info(f"user_creation_race_handled: target_user_id={user_id}, domain=user_management")
             pre_sync_email = await AuthenticationService._sync_existing_user(session, db_user, idp_user)
-            return db_user, pre_sync_email
+            return db_user, pre_sync_email, False
 
     @staticmethod
     async def authenticate_persistent_user(
@@ -547,15 +547,18 @@ class AuthenticationService:
 
         pre_sync_email = None
         is_new_idp_user = False
+        inserted_by_this_request = False
         async with get_async_session() as session:
             db_user = await user_repository.aget_by_id(session, user_id)
 
             if db_user:
                 pre_sync_email = await AuthenticationService._sync_existing_user(session, db_user, idp_user)
             else:
-                db_user, pre_sync_email = await AuthenticationService._create_or_recover_user(
-                    session, user_id, idp_user
-                )
+                (
+                    db_user,
+                    pre_sync_email,
+                    inserted_by_this_request,
+                ) = await AuthenticationService._create_or_recover_user(session, user_id, idp_user)
                 is_new_idp_user = True
 
             if not db_user.is_active or db_user.deleted_at is not None:
@@ -580,6 +583,11 @@ class AuthenticationService:
                 await AuthenticationService._sync_budget_for_idp_projects(user_id, idp_user.project_names)
             except Exception as e:
                 logger.warning(f"budget_sync_failed_on_idp_bootstrap: user_id={user_id!r} error={e}", exc_info=True)
+
+        if inserted_by_this_request:
+            from codemie.service.budget.budget_service import budget_service
+
+            budget_service.schedule_default_budget_provisioning(user_id, security_user_ins.username)
 
         if pre_sync_email and security_user_ins.email != pre_sync_email:
             from codemie.service.project.personal_project_service import personal_project_service
@@ -653,10 +661,12 @@ class AuthenticationService:
         """
         from codemie.clients.postgres import get_async_session
 
+        created = False
         async with get_async_session() as session:
             db_user = await user_repository.aget_by_id(session, user_id)
 
             if not db_user:
+                created = True
                 # Create minimal profile for dev header user
                 db_user = UserDB(
                     id=user_id,
@@ -700,6 +710,11 @@ class AuthenticationService:
                 session,
             )
             await session.commit()
+
+        if created:
+            from codemie.service.budget.budget_service import budget_service
+
+            budget_service.schedule_default_budget_provisioning(user_id, user_id)
 
         return await AuthenticationService._finalize_authentication(security_user_ins, "dev_header")
 

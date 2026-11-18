@@ -186,6 +186,7 @@ class RegistrationService:
                 # Extract values before commit to avoid expired attribute access
                 user_id = user.id
                 user_email = user.email
+                user_username = user.username
                 user_type = user.user_type
 
                 if config.EMAIL_VERIFICATION_ENABLED:
@@ -251,6 +252,10 @@ class RegistrationService:
                 if not is_personal_project_excluded(user_type):
                     await personal_project_service.ensure_personal_project_async(user_id, user_email)
 
+                from codemie.service.budget.budget_service import budget_service
+
+                budget_service.schedule_default_budget_provisioning(user_id, user_username)
+
                 # Import here to avoid circular dependency
                 from codemie.rest_api.security.jwt_local import generate_access_token
 
@@ -302,6 +307,7 @@ class RegistrationService:
         """
         from codemie.clients.postgres import get_session
         from codemie.rest_api.security.jwt_local import generate_access_token
+        from codemie.service.budget.budget_service import budget_service
 
         with get_session() as session:
             user = RegistrationService.verify_email(session, token)
@@ -309,12 +315,15 @@ class RegistrationService:
             # Extract values before commit to avoid expired attribute access
             user_id = user.id
             user_email = user.email
+            user_username = user.username
 
             session.commit()
 
-            access_token = generate_access_token(user_id, user_email, "local")
+        budget_service.schedule_default_budget_provisioning(user_id, user_username)
 
-            return {"message": "Email verified successfully", "access_token": access_token}
+        access_token = generate_access_token(user_id, user_email, "local")
+
+        return {"message": "Email verified successfully", "access_token": access_token}
 
 
 # Singleton instance
