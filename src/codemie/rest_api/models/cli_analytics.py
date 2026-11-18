@@ -100,6 +100,22 @@ class _EstimateBuckets(BaseModel):
     personal_billed: LocalAnalyticsCostBucket = Field(default_factory=LocalAnalyticsCostBucket)
 
 
+class _RowPricing(BaseModel):
+    """How far this row's own `cost_usd` departs from full pricing, over exactly the sessions behind that amount: not
+    the window's `metadata` and not a funding bucket, which describe other amounts (EPMCDME-17152)."""
+
+    cost_incomplete: bool = Field(False, description="True when some of this amount's tokens had no catalog price")
+    unpriced_models: list[str] = Field(
+        default_factory=list,
+        description="Models without a price behind this amount.",
+    )
+    cost_unknown: bool | None = Field(
+        None,
+        description="True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or "
+        "all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+    )
+
+
 class PaginationMetadata(BaseModel):
     page: int
     per_page: int
@@ -110,7 +126,7 @@ class PaginationMetadata(BaseModel):
 # ── Overview ──────────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsOverviewKPIs(_ClassLists):
+class LocalAnalyticsOverviewKPIs(_ClassLists, _RowPricing):
     total_sessions: int
     total_cost_usd: float
     api_cost_usd: float = Field(0.0, description="Cost of the sessions routed through the CodeMie proxy")
@@ -158,7 +174,7 @@ class LocalAnalyticsOverviewResponse(BaseModel):
 # ── Repositories ──────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsRepositoryBranchRow(_ClassLists):
+class LocalAnalyticsRepositoryBranchRow(_ClassLists, _RowPricing):
     branch: str | None = None
     session_count: int
     turns: int
@@ -172,7 +188,7 @@ class LocalAnalyticsRepositoryBranchRow(_ClassLists):
     tool_success_rate: float = Field(..., description=_TOOL_SUCCESS_RATE_DESCRIPTION)
 
 
-class LocalAnalyticsRepositoryRow(_ClassLists, _EstimateBuckets):
+class LocalAnalyticsRepositoryRow(_ClassLists, _EstimateBuckets, _RowPricing):
     repository: str | None = Field(
         None, description="Repository name. None for the unattributed bucket (plugin was not active)."
     )
@@ -207,7 +223,7 @@ class LocalAnalyticsRepositoriesResponse(BaseModel):
 # ── Projects ──────────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsProjectRow(_ClassLists, _EstimateBuckets):
+class LocalAnalyticsProjectRow(_ClassLists, _EstimateBuckets, _RowPricing):
     project_name: str | None = Field(None, description="CodeMie project. None for sessions without a project.")
     repository_count: int
     session_count: int
@@ -243,7 +259,7 @@ class LocalAnalyticsDailyActivityBucket(_ClassLists):
     session_count: int
 
 
-class LocalAnalyticsUserRow(_ClassLists, _EstimateBuckets):
+class LocalAnalyticsUserRow(_ClassLists, _EstimateBuckets, _RowPricing):
     developer_name: str = Field(..., description="Resolved user email")
     user_email: str = Field("", description=_SAME_AS_DEVELOPER_NAME)
     session_count: int
@@ -262,7 +278,7 @@ class LocalAnalyticsUserRow(_ClassLists, _EstimateBuckets):
     daily_activity: list[LocalAnalyticsDailyActivityBucket] = Field(default_factory=list)
 
 
-class LocalAnalyticsUserCost(BaseModel):
+class LocalAnalyticsUserCost(_RowPricing):
     developer_name: str = Field(..., description="Resolved user email")
     cost_usd: float
 
@@ -331,6 +347,13 @@ class LocalAnalyticsSessionRow(BaseModel):
     ctx_per_call: float = 0.0
     cost_usd: float
     cost_available: bool = True
+    cost_incomplete: bool = Field(
+        False, description="True when some of this session's own tokens had no catalog price: cost_usd is partial"
+    )
+    unpriced_models: list[str] = Field(
+        default_factory=list,
+        description="Models without a price behind this session's cost_usd.",
+    )
     net_lines: int | None = None
     bloat_pct: float = 0.0
     delivery_framework: str | None = Field(None, description="Detected delivery framework")
@@ -450,20 +473,20 @@ class LocalAnalyticsActivityResponse(BaseModel):
 # ── Cost ──────────────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsCostKPIs(_ClassLists):
+class LocalAnalyticsCostKPIs(_ClassLists, _RowPricing):
     total_sessions: int
     total_cost_usd: float
     total_tokens: int
     avg_cost_per_session: float
 
 
-class LocalAnalyticsCostByUserRow(_ClassLists, _EstimateBuckets):
+class LocalAnalyticsCostByUserRow(_ClassLists, _EstimateBuckets, _RowPricing):
     developer_name: str
     user_email: str = Field("", description=_SAME_AS_DEVELOPER_NAME)
     cost_usd: float
 
 
-class LocalAnalyticsCostByModelRow(_ClassLists, _EstimateBuckets):
+class LocalAnalyticsCostByModelRow(_ClassLists, _EstimateBuckets, _RowPricing):
     model_name: str
     cost_usd: float
 

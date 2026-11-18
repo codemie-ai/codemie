@@ -48,6 +48,8 @@ from tests.codemie.service.analytics.handlers.test_cli_analytics_spend_scope imp
 ROUTES = ("api_based", "subscription", "unknown")
 BUCKET_KEYS = {"cost_usd", "session_count", "cost_incomplete", "unpriced_models"}
 NEW_KEYS = {"funding", "personal_billed", "models_without_spend"}
+# EPMCDME-17152: same-scope pricing of each row's own amount, derived from the same grouped rows as the buckets
+ROW_PRICING_KEYS = {"cost_incomplete", "unpriced_models", "cost_unknown"}
 UNPRICED = "mystery-model"
 
 # (handler call, response model, rows that carry their own buckets)
@@ -81,7 +83,7 @@ def _bucket(cost, sessions, unpriced=()):
 def _strip(value):
     """The response without the additive bucket keys."""
     if isinstance(value, dict):
-        return {k: _strip(v) for k, v in value.items() if k not in NEW_KEYS}
+        return {k: _strip(v) for k, v in value.items() if k not in NEW_KEYS | ROW_PRICING_KEYS}
     if isinstance(value, list):
         return [_strip(v) for v in value]
     return value

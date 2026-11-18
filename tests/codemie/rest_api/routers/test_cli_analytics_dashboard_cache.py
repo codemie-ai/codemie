@@ -27,6 +27,8 @@ from codemie.repository.cli_analytics.scope import ViewerScope
 from codemie.rest_api.security.user import User
 from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 
+_VIEWER = User(id="u1")
+
 END = datetime(2026, 9, 23, tzinfo=timezone.utc)
 OTHER_SCOPE = ViewerScope(
     viewer_email="b@example.com", unrestricted=False, admin_projects=frozenset({"p"}), mode="detail"
@@ -82,7 +84,7 @@ async def _call(handler: MagicMock, scope, route: str, **kwargs):
         patch.object(router_module, "_attach_user_ids", AsyncMock()),
         patch.object(router_module.FilterParams, "resolve", fake_resolve),
     ):
-        response = await getattr(router_module, route)(user=User(id="u1"), filters=_params(), **kwargs)
+        response = await getattr(router_module, route)(user=_VIEWER, filters=_params(), **kwargs)
     return json.loads(response.body)
 
 

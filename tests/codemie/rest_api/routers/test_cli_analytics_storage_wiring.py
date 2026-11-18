@@ -291,6 +291,9 @@ def test_handler_reads_through_the_storage_reader(storage):
     assert router_module._handler()._repo is storage.reader
 
 
+_VIEWER = User(id="u1")
+
+
 def _viewer(*, is_admin: bool, admin_projects: list[str], is_auditor: bool = False) -> User:
     """A real User (model_construct skips the ENV=local validator that makes everyone an admin)."""
     return User.model_construct(
@@ -523,10 +526,10 @@ async def test_users_and_repositories_metadata_carry_the_handler_pricing(unprice
         patch.object(router_module.FilterParams, "resolve", fake_resolve),
     ):
         responses = [
-            await router_module.get_users(user=User(id="u1"), filters=_filter_params(), page=None, per_page=None),
-            await router_module.get_user_charts(user=User(id="u1"), filters=_filter_params()),
+            await router_module.get_users(user=_VIEWER, filters=_filter_params(), page=None, per_page=None),
+            await router_module.get_user_charts(user=_VIEWER, filters=_filter_params()),
             await router_module.get_repositories(
-                user=User(id="u1"), filters=_filter_params(), page=0, per_page=20, include_branches=False, search=None
+                user=_VIEWER, filters=_filter_params(), page=0, per_page=20, include_branches=False, search=None
             ),
         ]
 
@@ -579,7 +582,7 @@ async def test_filtered_money_routes_metadata_carry_the_handler_pricing(route, h
         patch.object(router_module, "_respond", side_effect=lambda payload, _: JSONResponse(payload)),
         patch.object(router_module.FilterParams, "resolve", fake_resolve),
     ):
-        response = await getattr(router_module, route)(user=User(id="u1"), filters=_filter_params(), **kwargs)
+        response = await getattr(router_module, route)(user=_VIEWER, filters=_filter_params(), **kwargs)
 
     metadata = json.loads(response.body)["metadata"]
     assert (metadata["unpriced_models"], metadata["catalog_source"]) == (["", "mystery-model"], "litellm")

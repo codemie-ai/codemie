@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "generated": "2026-11-16T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S"
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L"
+    },
+    "file_change_estimate": {
+      "score": 6,
+      "label": "XXL"
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS"
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M"
+    }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 26,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Per-amount pricing fields touch the SQL repository evidence column, CatalogPricer, analytics handlers, roll-up merge, response models and the router _respond projection."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Maintainer-only projection of every unpriced_models list sits after the shared dashboard cache and before the ETag, with all access gates preserved; the tri-state cost_unknown semantics are money-adjacent. The closest existing pattern does not cover the per-viewer projection of a shared cached payload."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "24 files, +1168/-61 across two commits per diffstat, which maps to XXL by file count. Many are tests and mechanical field propagation, so the total is held at M."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk at L: security-sensitive output projection (maintainer-only model names) over a shared cache"
+  ],
+  "split_recommendation": null,
+  "follow_up": {
+    "scope": "two follow-up commits after the first assessment: per-entity session index in get_projects (7b62986c97) and session-scoped cost_incomplete/unpriced_models on Sessions list and Session Details (7e989ea3bf)",
+    "total": 20,
+    "size": "M",
+    "note": "files_changed refreshed from 24 to 26 (25 source/test files + 1 doc, review artifacts excluded). Both commits reuse existing pricing passes and the existing role projection: no new component, layer, query or gate, and every dimension score is unchanged, so the total stays 20 (M). file_change_estimate is already at its top score."
+  },
+  "assessed_range": "4ba6c4d686..7e989ea3bf"
+}

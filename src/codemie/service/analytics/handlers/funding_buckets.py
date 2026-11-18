@@ -19,6 +19,7 @@ The estimate sits next to the spend and never feeds it: its rows are priced by a
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from codemie.repository.cli_analytics.ports import CostGroup
@@ -38,7 +39,8 @@ def price_bucket_rows(rows: list[dict]) -> list[dict]:
     priced = []
     for row in rows:
         model = _s(row.get("model_name"))
-        cost, missing = pricer.price_flagged(model, token_counts(row))
+        counts = token_counts(row)
+        cost, missing = pricer.price_flagged(model, counts)
         route = _s(row.get("funding_route"))
         priced.append(
             {
@@ -49,6 +51,7 @@ def price_bucket_rows(rows: list[dict]) -> list[dict]:
                 "personal_billed": bool(row.get("personal_billed")),
                 "cost_usd": cost,
                 "missing": missing,
+                "priced": pricer.prices_some_usage(model, counts),  # a used kind with a rate: the evidence
             }
         )
     return priced
@@ -102,3 +105,92 @@ def buckets_from_groups(route_rows: list[CostGroup], personal_rows: list[CostGro
         "funding": {route: _group_bucket(by_route.get(route)) for route in FUNDING_ROUTES},
         "personal_billed": _group_bucket(personal),
     }
+
+
+# ── Same-scope pricing of one amount (EPMCDME-17152) ─────────────────────────
+# `cost_incomplete`, `unpriced_models` and `cost_unknown` of ONE amount (a user, a repository, a branch...), computed
+# over exactly the sessions behind that amount's `cost_usd`; never taken from the window or from a funding bucket.
+
+
+EVIDENCE = "_priced"  # internal: whether the amount had a used token kind with a rate (True / False / None unknown)
+
+
+def _pricing(incomplete: bool, names: Any, cost: float, has_priced: bool | None) -> dict[str, Any]:
+    """`cost_unknown` is True only when nothing was priced: an incomplete amount with no priced usage. The evidence
+    is `has_priced` (a used token kind with a rate), or a positive cost, which is priced usage by itself; a $0 total
+    alone is none, and neither is the absence of incompleteness (an empty row is complete). Without evidence
+    (`has_priced` None, the stored rollups) it is None. The evidence rides along as `EVIDENCE`, for the roll-ups that
+    merge amounts; `without_evidence` / `drop_evidence` take it off before a row is answered."""
+    evidence = True if cost > 0 else has_priced
+    unknown: bool | None = False
+    if incomplete:
+        unknown = None if evidence is None else not evidence
+    return {
+        "cost_incomplete": incomplete,
+        "unpriced_models": unpriced_display_names(names) if incomplete else [],
+        "cost_unknown": unknown,
+        EVIDENCE: evidence,
+    }
+
+
+def without_evidence(pricing: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in pricing.items() if k != EVIDENCE}
+
+
+def drop_evidence(rows: list[dict]) -> None:
+    """Takes the merge evidence off rows that nest `branches` / `repositories` (in place)."""
+    for row in rows:
+        row.pop(EVIDENCE, None)
+        for child in ("branches", "repositories"):
+            drop_evidence(row.get(child) or [])
+
+
+def group_pricing(group: CostGroup | None) -> dict[str, Any]:
+    """The pricing of one SQL-grouped amount; no group (no money row) has no usage: complete, nothing priced."""
+    if group is None:
+        return without_evidence(_pricing(False, (), 0.0, False))
+    return without_evidence(_pricing(group.cost_incomplete, group.unpriced_models, group.cost_usd, group.has_priced))
+
+
+def row_pricing(row: dict) -> dict[str, Any]:
+    """The pricing of one reader `group` row (`unpriced_models`, `cost_incomplete`, `cost_priced`, `cost_usd`), with
+    the merge evidence."""
+    return _pricing(
+        bool(row.get("cost_incomplete")),
+        row.get("unpriced_models") or (),
+        float(row.get("cost_usd") or 0),
+        None if row.get("cost_priced") is None else bool(row["cost_priced"]),
+    )
+
+
+def pricing_of_rows(rows: list[dict]) -> dict[str, Any]:
+    """The pricing of the `price_bucket_rows` rows of one amount (already scoped to its sessions)."""
+    missing = [r["model"] for r in rows if r["missing"]]
+    cost = sum(r["cost_usd"] for r in rows)
+    return without_evidence(_pricing(bool(missing), missing, cost, any(r["priced"] for r in rows)))
+
+
+def session_index(priced: list[dict]) -> dict[str, list[int]]:
+    """The positions of the `price_bucket_rows` rows by session, built once for the per-entity reads of one response."""
+    index: dict[str, list[int]] = {}
+    for position, row in enumerate(priced):
+        index.setdefault(row["session_id"], []).append(position)
+    return index
+
+
+def rows_of(priced: list[dict], index: dict[str, list[int]], session_ids: Any) -> list[dict]:
+    """The rows of `session_ids`, in the order of `priced` (so every sum adds in the order the linear scan did)."""
+    return [priced[i] for i in sorted(i for sid in session_ids for i in index.get(sid, ()))]
+
+
+def merge_pricing(children: Iterable[dict]) -> dict[str, Any]:
+    """The pricing of an amount that is the sum of disjoint `children` amounts (branches of a repository...): incomplete
+    when any child is, the unpriced names united, unknown only when no child carries priced evidence. A child's
+    evidence is its own `EVIDENCE` (a complete child may be an empty one), None when it has none."""
+    kids = list(children)
+    evidence = [k.get(EVIDENCE) for k in kids]
+    has_priced: bool | None = True in evidence
+    if not has_priced and None in evidence:
+        has_priced = None
+    names = {name for k in kids for name in k["unpriced_models"]}
+    return _pricing(any(k["cost_incomplete"] for k in kids), names, 0.0, has_priced)

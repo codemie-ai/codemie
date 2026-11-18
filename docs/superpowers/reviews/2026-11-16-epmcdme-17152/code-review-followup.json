@@ -1,0 +1,29 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case lens ran; its 3 reports were dismissed (test fixture hygiene, kept reference wrapper, list-duplicate input that all callers pass as sets). No spec, so acceptance n/a; standards audit was expected but missing, so standards are unverified (coverage gap).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "standards audit output missing; unverified"
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "standards audit output missing; unverified"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "standards audit output missing; unverified"
+    }
+  ],
+  "findings": [],
+  "deferred": [],
+  "reviewed_scope": "follow-up delta a1819e9c16..follow-up commit (3 files, +112/-8): per-entity session index in get_projects; the earlier verdict in code-review-final.json (4ba6c4d686..91877ed1ed) is unchanged",
+  "reviewed_base": "a1819e9c1614482dd398a78b34c47ac580c7be75",
+  "superseded_by": "code-review-final.json (rounds[1], with the standards audit)"
+}

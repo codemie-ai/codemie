@@ -1,0 +1,44 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case and verification-gap lenses returned nothing and standards passed with no coverage gap; acceptance skipped (no spec), so confidence is low. 15 blind-lens candidates dismissed after spot-checking _sids/_roll_up/priced_rows_pricing/stored-arm has_rate in source (internal invariants hold; O(rows x page entities) scan is bounded by page size); 0 deferred. Refreshed for 7e989ea3bf: the 91877ed1ed..7e989ea3bf delta round approved with 0 findings and its standards audit ran (no coverage gap); confidence stays low because no spec was supplied to the acceptance lens.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "2 subjects in range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new module and tests carry the Apache header; pricing concern extracted; handler additions are thin wiring"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no dependency/Dockerfile changes; no credential logging or string-built SQL; model-name visibility gated to maintainers"
+    }
+  ],
+  "findings": [],
+  "deferred": [],
+  "reviewed_base": "4ba6c4d68681c85c8f4bab11190e78ba9cc0f52d",
+  "reviewed_head": "7e989ea3bf20aa80aa3179a0454d010276e4f782",
+  "rounds": [
+    {
+      "range": "4ba6c4d686..91877ed1ed",
+      "head": "91877ed1ed432316c25a1f5531d5b653bb1f4960",
+      "decision": "approve",
+      "confidence": "low",
+      "note": "full standalone review (edge-case, verification-gap, blind, standards pass); decision, standards_review and findings above are this round, unchanged and reused"
+    },
+    {
+      "range": "91877ed1ed..7e989ea3bf",
+      "head": "7e989ea3bf20aa80aa3179a0454d010276e4f782",
+      "decision": "approve",
+      "confidence": "low",
+      "note": "delta round: /projects per-entity session index (7b62986c97) and session-scoped cost_incomplete/unpriced_models (7e989ea3bf); edge-case ran, standards audit ran with diff_base (commit-format pass, code-quality pass, security n/a: no security guide passed), 0 findings. Replaces the earlier local /projects-only round (code-review-followup.json), whose standards audit had not run"
+    }
+  ]
+}

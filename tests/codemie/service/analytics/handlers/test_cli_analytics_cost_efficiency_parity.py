@@ -149,6 +149,11 @@ async def outputs() -> dict:
         handler = _handler()
         cost, cost_pricer = await handler.get_cost(_filter())
         efficiency, efficiency_pricer = await handler.get_efficiency(_filter())
+    # Pricing fields are additive and covered by test_cli_analytics_row_pricing; compare the existing contract here.
+    for rows in ([cost["kpis"]], cost["cost_by_user"], cost["cost_by_model"]):
+        for row in rows:
+            for key in ("cost_incomplete", "unpriced_models", "cost_unknown"):
+                row.pop(key)
     result = {
         "cost": cost,
         "cost_unpriced": cost_pricer.unpriced,

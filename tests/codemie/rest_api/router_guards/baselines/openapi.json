@@ -16169,6 +16169,24 @@
       },
       "LocalAnalyticsCostByModelRow": {
         "properties": {
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this amount's tokens had no catalog price",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
+          "cost_unknown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "title": "Cost Unknown"
+          },
           "cost_usd": {
             "title": "Cost Usd",
             "type": "number"
@@ -16199,6 +16217,14 @@
             },
             "title": "Subscription Types",
             "type": "array"
+          },
+          "unpriced_models": {
+            "description": "Models without a price behind this amount.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
           }
         },
         "required": [
@@ -16210,6 +16236,24 @@
       },
       "LocalAnalyticsCostByUserRow": {
         "properties": {
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this amount's tokens had no catalog price",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
+          "cost_unknown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "title": "Cost Unknown"
+          },
           "cost_usd": {
             "title": "Cost Usd",
             "type": "number"
@@ -16239,6 +16283,14 @@
               "type": "string"
             },
             "title": "Subscription Types",
+            "type": "array"
+          },
+          "unpriced_models": {
+            "description": "Models without a price behind this amount.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
             "type": "array"
           },
           "user_email": {
@@ -16302,6 +16354,24 @@
             "title": "Avg Cost Per Session",
             "type": "number"
           },
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this amount's tokens had no catalog price",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
+          "cost_unknown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "title": "Cost Unknown"
+          },
           "project_origins": {
             "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
             "items": {
@@ -16329,6 +16399,14 @@
           "total_tokens": {
             "title": "Total Tokens",
             "type": "integer"
+          },
+          "unpriced_models": {
+            "description": "Models without a price behind this amount.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
           }
         },
         "required": [
@@ -16853,6 +16931,24 @@
             "title": "Cache Read Cost Usd",
             "type": "number"
           },
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this amount's tokens had no catalog price",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
+          "cost_unknown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "title": "Cost Unknown"
+          },
           "dead_sessions": {
             "title": "Dead Sessions",
             "type": "integer"
@@ -16937,6 +17033,14 @@
           "total_turns": {
             "title": "Total Turns",
             "type": "integer"
+          },
+          "unpriced_models": {
+            "description": "Models without a price behind this amount.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
           }
         },
         "required": [
@@ -16979,6 +17083,24 @@
       },
       "LocalAnalyticsProjectRow": {
         "properties": {
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this amount's tokens had no catalog price",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
+          "cost_unknown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "title": "Cost Unknown"
+          },
           "cost_usd": {
             "title": "Cost Usd",
             "type": "number"
@@ -17087,6 +17209,14 @@
           "turns": {
             "title": "Turns",
             "type": "integer"
+          },
+          "unpriced_models": {
+            "description": "Models without a price behind this amount.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
           }
         },
         "required": [
@@ -17205,6 +17335,24 @@
             ],
             "title": "Branch"
           },
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this amount's tokens had no catalog price",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
+          "cost_unknown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "title": "Cost Unknown"
+          },
           "cost_usd": {
             "title": "Cost Usd",
             "type": "number"
@@ -17282,6 +17430,14 @@
           "turns": {
             "title": "Turns",
             "type": "integer"
+          },
+          "unpriced_models": {
+            "description": "Models without a price behind this amount.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
           }
         },
         "required": [
@@ -17315,6 +17471,24 @@
             ],
             "description": "Present only when include_branches=True: this repository's branches, each with its own tool_success_rate.",
             "title": "Branches"
+          },
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this amount's tokens had no catalog price",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
+          "cost_unknown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "title": "Cost Unknown"
           },
           "cost_usd": {
             "title": "Cost Usd",
@@ -17423,6 +17597,14 @@
           "turns": {
             "title": "Turns",
             "type": "integer"
+          },
+          "unpriced_models": {
+            "description": "Models without a price behind this amount.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
           }
         },
         "required": [
@@ -17585,6 +17767,12 @@
           "cost_available": {
             "default": true,
             "title": "Cost Available",
+            "type": "boolean"
+          },
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this session's own tokens had no catalog price: cost_usd is partial",
+            "title": "Cost Incomplete",
             "type": "boolean"
           },
           "cost_usd": {
@@ -17799,6 +17987,14 @@
             "description": "User turns, whole-session. None is unknown (no summary reports it, no observed turn); 0 is a reported zero. At least the observed turns; complete only when summary_state is final and summary_metrics lists 'turns'.",
             "title": "Turns"
           },
+          "unpriced_models": {
+            "description": "Models without a price behind this session's cost_usd.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
+          },
           "user_email": {
             "default": "",
             "description": "Same value as developer_name",
@@ -17985,6 +18181,12 @@
             "title": "Cost Available",
             "type": "boolean"
           },
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this session's own tokens had no catalog price: cost_usd is partial",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
           "cost_usd": {
             "title": "Cost Usd",
             "type": "number"
@@ -18147,6 +18349,14 @@
             ],
             "description": "User turns, whole-session. None is unknown (no summary reports it, no observed turn); 0 is a reported zero. At least the observed turns; complete only when summary_state is final and summary_metrics lists 'turns'.",
             "title": "Turns"
+          },
+          "unpriced_models": {
+            "description": "Models without a price behind this session's cost_usd.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
           },
           "user_email": {
             "default": "",
@@ -18352,6 +18562,24 @@
       },
       "LocalAnalyticsUserCost": {
         "properties": {
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this amount's tokens had no catalog price",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
+          "cost_unknown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "title": "Cost Unknown"
+          },
           "cost_usd": {
             "title": "Cost Usd",
             "type": "number"
@@ -18360,6 +18588,14 @@
             "description": "Resolved user email",
             "title": "Developer Name",
             "type": "string"
+          },
+          "unpriced_models": {
+            "description": "Models without a price behind this amount.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
           }
         },
         "required": [
@@ -18378,6 +18614,24 @@
           "cache_read_tokens": {
             "title": "Cache Read Tokens",
             "type": "integer"
+          },
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of this amount's tokens had no catalog price",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
+          "cost_unknown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "title": "Cost Unknown"
           },
           "cost_usd": {
             "title": "Cost Usd",
@@ -18479,6 +18733,14 @@
             "default": 0,
             "title": "Turns",
             "type": "integer"
+          },
+          "unpriced_models": {
+            "description": "Models without a price behind this amount.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
           },
           "user_email": {
             "default": "",

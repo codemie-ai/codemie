@@ -22,7 +22,12 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
 
-from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts, kind_tokens
+from codemie.service.analytics.handlers.coding_agent_pricing import (
+    CatalogPricer,
+    TokenCounts,
+    kind_tokens,
+    unpriced_display_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +61,20 @@ class SessionMoney:
     by_session: dict[str, float] = dataclass_field(default_factory=dict)
     cache_read_by_session: dict[str, float] = dataclass_field(default_factory=dict)
     by_model: dict[str, float] = dataclass_field(default_factory=dict)
+    unpriced_by_session: dict[str, set[str]] = dataclass_field(default_factory=dict)
 
     def of_sessions(self, session_ids: list[str]) -> float:
         return sum(self.by_session.get(sid, 0.0) for sid in session_ids)
+
+    def session_pricing(self, session_id: str | None = None) -> dict[str, Any]:
+        """`cost_incomplete` and `unpriced_models` of ONE session's `cost_usd`: the models of its own rows that had
+        tokens without a price, never the window's (EPMCDME-17152). `session_id` None reads every priced row, for the
+        detail's rows, which are one session's and carry no id."""
+        if session_id is None:
+            names = set().union(*self.unpriced_by_session.values())
+        else:
+            names = self.unpriced_by_session.get(session_id, set())
+        return {"cost_incomplete": bool(names), "unpriced_models": unpriced_display_names(names)}
 
 
 def token_counts(row: dict[str, Any]) -> TokenCounts:
@@ -111,7 +127,9 @@ def price_session_models(rows: list[dict[str, Any]], pricer: CatalogPricer | Non
         sid = _s(row.get("session_id"))
         model = _s(row.get("model_name"))
         counts = token_counts(row)
-        cost = money.pricer.price(model, counts)
+        cost, missing = money.pricer.price_flagged(model, counts)
+        if missing:
+            money.unpriced_by_session.setdefault(sid, set()).add(model)
         cache_read = money.pricer.price(model, TokenCounts(cache_read=counts.cache_read))
         money.total += cost
         money.cache_read += cache_read

@@ -167,6 +167,19 @@ def unpriced_test() -> str:
     )
 
 
+def priced_test() -> str:
+    """Boolean: some kind with tokens > 0 has a rate (a zero rate is a rate): the usage of the group was priced, in
+    part at least. A row with no used kind is neither this nor `unpriced_test`, so it is no evidence either way."""
+    return (
+        "("
+        + " OR ".join(
+            f"({tokens} > 0 AND r.{column} IS NOT NULL)"
+            for tokens, column in zip(KIND_TOKENS, RATE_COLUMNS, strict=True)
+        )
+        + ")"
+    )
+
+
 RATES_JOIN = (
     "LEFT JOIN unnest($rate_models::text[], "
     + ", ".join(f"$rate_{c}::float8[]" for c in RATE_COLUMNS)

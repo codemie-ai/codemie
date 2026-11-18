@@ -49,6 +49,8 @@ class CostGroup:
     session_count: int
     unpriced_models: tuple[str, ...]
     cost_incomplete: bool
+    # Some usage of the group had a price. None: the source cannot say (the stored rollups keep names, not usage).
+    has_priced: bool | None = None
 
 
 # The groupings a dashboard request asks for, by the name each carries in the `grouping` column.

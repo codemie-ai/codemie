@@ -38,6 +38,7 @@ from codemie.repository.cli_analytics.postgres.cost_key_sql import (
     cache_read_term,
     cost_terms,
     model_token_groups,
+    priced_test,
     unpriced_test,
 )
 from codemie.repository.cli_analytics.scope import FUNDING_ROUTES, sql_personal_billed, sql_subscription_type
@@ -119,7 +120,7 @@ _STORED_ARM = """SELECT m.session_id, m.model_name, m.normalized_model_name, m.i
 def priced_groups_cte(stored: bool = False) -> str:
     """The CTE `priced_groups AS MATERIALIZED (...)`: session_id, model_name, normalized_model_name, "user"
     (the developer of `sel`), project, repository, branch, funding_route (NULL or outside `FUNDING_ROUTES`:
-    'unknown'), personal_billed, sub_class, has_cost_daily, cost, cache_read_cost, unpriced.
+    'unknown'), personal_billed, sub_class, has_cost_daily, cost, cache_read_cost, unpriced, has_rate.
     Needs `sel` with the developer column and the `rates_params` of the window's models.
 
     `stored=False` (the default, and the fallback of every stored read) builds every group live from `cost_daily` and
@@ -155,7 +156,8 @@ def priced_groups_cte(stored: bool = False) -> str:
                {has_cost_daily} AS has_cost_daily,
                round(({cost_terms()})::numeric, 9)          AS cost,
                round(({cache_read_term()})::numeric, 9)     AS cache_read_cost,
-               {unpriced_test()}                            AS unpriced
+               {unpriced_test()}                            AS unpriced,
+               {priced_test()}                              AS has_rate
         FROM {source}
         JOIN sel s ON s.session_id = g.session_id
         LEFT JOIN session_dims d ON d.session_id = g.session_id
@@ -199,15 +201,16 @@ def _cells(keys: Sequence[str], with_model: bool) -> str:
     unpriced_group = ", ".join(unpriced_exprs)
     return f"""SELECT {cols},
                sum(cost) AS cost, sum(cache_read_cost) AS cache_read_cost, count(*) AS n,
-               bool_or(unpriced) AS unpriced, NULL::text AS uname
+               bool_or(unpriced) AS unpriced, bool_or(priced) AS priced, NULL::text AS uname
         FROM (SELECT {model_in}{session_cols}bool_and(p.has_cost_daily) AS has_cost_daily,
-                     sum(p.cost) AS cost, sum(p.cache_read_cost) AS cache_read_cost, bool_or(p.unpriced) AS unpriced
+                     sum(p.cost) AS cost, sum(p.cache_read_cost) AS cache_read_cost, bool_or(p.unpriced) AS unpriced,
+                     bool_or(p.has_rate) AS priced
               FROM priced_groups p
               WHERE true{blank}
               GROUP BY {grain}) s
         GROUP BY {cols}
         UNION ALL
-        SELECT {unpriced_cols}, 0::numeric, 0::numeric, 0::bigint, true, p.model_name
+        SELECT {unpriced_cols}, 0::numeric, 0::numeric, 0::bigint, true, false, p.model_name
         FROM priced_groups p
         WHERE p.unpriced{blank}
         GROUP BY {unpriced_group}, p.model_name"""
@@ -231,20 +234,25 @@ def _arm(grouping: Grouping, used: Sequence[str]) -> str:
                sum(c.n)::bigint                             AS session_count,
                coalesce(array_agg(DISTINCT c.uname COLLATE "C" ORDER BY c.uname COLLATE "C")
                         FILTER (WHERE c.uname IS NOT NULL), '{{}}')::text[] AS unpriced_models,
-               coalesce(bool_or(c.unpriced), false)        AS cost_incomplete
+               coalesce(bool_or(c.unpriced), false)        AS cost_incomplete,
+               coalesce(bool_or(c.priced), false)          AS cost_priced
         FROM {source} c
         WHERE {" AND ".join(where) or "true"}{group_by}"""
 
 
 def grouped_cost_sql(groupings: Sequence[Grouping]) -> str:
     """The derived table `gc("grouping", <one column per key any grouping uses, NULL where unused>, cost_usd,
-    cache_read_cost_usd, session_count, unpriced_models, cost_incomplete)`, one UNION ALL arm per grouping over the
-    CTE `priced_groups` of the same statement (priced once, it is MATERIALIZED). The key columns follow `GroupKey`
-    order; `user` is quoted. A grouping that matches no row has no row, `[]` included.
+    cache_read_cost_usd, session_count, unpriced_models, cost_incomplete, cost_priced)`, one UNION ALL arm per
+    grouping over the CTE `priced_groups` of the same statement (priced once, it is MATERIALIZED). The key columns
+    follow `GroupKey` order; `user` is quoted. A grouping that matches no row has no row, `[]` included.
 
     The `priced_groups` rows (one per session and raw model, about 800K at 600K sessions) are aggregated once or twice
     into small cells (`cells_session` for the groupings without a model, `cells_model` for the ones with it) and
-    every arm sums those, so no arm sorts the priced rows."""
+    every arm sums those, so no arm sorts the priced rows.
+
+    `cost_priced` is the evidence that some usage of the group had a price: a (session, model) row with a positive
+    used token kind that has a rate (`priced_test`; a zero rate is a rate, a row with no used tokens is none). A group
+    with `cost_incomplete` and no `cost_priced` is entirely unknown; a $0 total alone proves nothing."""
     if not groupings:
         raise ValueError("grouped_cost_sql needs at least one grouping")
     names = [g.name for g in groupings]

@@ -108,6 +108,8 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
             "cost_usd": spend.total,
             "cache_read_cost_usd": spend.cache_read,
             "unpriced_models": spend.pricer.unpriced,
+            "cost_incomplete": bool(spend.pricer.unpriced),
+            "cost_priced": any(row["priced"] for row in priced if row["session_id"] in spend.by_session),
         }
         return [spend_row, *_estimate_rows(priced, session_ids, estimate_prefix)]
 
@@ -206,7 +208,19 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
         ranked = [{**g, "key": str(rank)} for rank, g in enumerate(out, 1)]
         shown = ranked if include_branches or per_page is None else ranked[page * per_page : (page + 1) * per_page]
 
-        rows = [{"part": "group", **{k: v for k, v in g.items() if k != "_sids"}} for g in shown]
+        def pricing(sids) -> dict:  # the group's own priced rows, as `cost_priced` and the unpriced list in the SQL
+            mine = [r for r in priced_rows if r["session_id"] in sids]
+            names = sorted({r["model"] for r in mine if r["missing"]})
+            return {
+                "unpriced_models": names,
+                "cost_incomplete": bool(names),
+                "cost_priced": any(r["priced"] for r in mine),
+            }
+
+        rows = [
+            {"part": "group", **{k: v for k, v in g.items() if k != "_sids"}, **(pricing(g["_sids"]) if priced else {})}
+            for g in shown
+        ]  # the facts read (`priced=False`) has no pricing, as the SQL of `get_repository_facts` has none
         rows.append({"part": "count", "n": len(out)})
         rows += [{"part": "total", **row} for row in total_rows(spend, priced_rows, returned)]
         # the funding and personal-billed estimates of the groups shown, by repository (by project and repository when
@@ -306,7 +320,17 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
 
     async def repository_ranking(f, include_branches=False, search=None, rates=(), page=0, per_page=None):
         rows = await repository_all(f, include_branches, search, rates, page, per_page)
-        ranked = ("key", "n", "project_name", "repository", "branch", "cost_usd")
+        ranked = (
+            "key",
+            "n",
+            "project_name",
+            "repository",
+            "branch",
+            "cost_usd",
+            "unpriced_models",
+            "cost_incomplete",
+            "cost_priced",
+        )
         return [
             {"part": "group", **{k: r.get(k) for k in ranked}} if r["part"] == "group" else r
             for r in rows

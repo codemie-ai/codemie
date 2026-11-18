@@ -87,9 +87,18 @@ from codemie.service.analytics.handlers.coding_agent_pricing import (
     unpriced_display_names,
 )
 from codemie.service.analytics.handlers.funding_buckets import (
+    EVIDENCE,
     buckets,
     buckets_from_groups,
+    drop_evidence,
+    group_pricing,
+    merge_pricing,
     price_bucket_rows,
+    pricing_of_rows,
+    row_pricing,
+    rows_of,
+    session_index,
+    without_evidence,
 )
 from codemie.service.analytics.handlers.session_money import (
     cost_available,
@@ -441,9 +450,11 @@ def _repository_bucket(group: dict, include_branches: bool) -> dict:
         "subscription_types": sorted({_s(v) or "unknown" for v in group.get("subscription_types") or []}),
         "project_origins": sorted({_s(v) or "none" for v in group.get("project_origins") or []}),
         "net_lines": _nnet(added, removed),
+        **row_pricing(group),
     }
 
 
+_PRICING_FIELDS = ("cost_incomplete", "unpriced_models", "cost_unknown")
 _BRANCH_ROW_FIELDS = (
     "branch",
     "session_count",
@@ -523,6 +534,9 @@ def _roll_up(
     for group in out:
         group["net_lines"] = _nnet(group["lines_added"], group["lines_removed"])
         group["tool_success_rate"] = _pct(group["tool_calls_success"], group["tool_calls"])
+        # The amount is the sum of its children: priced rows carry their pricing up, session-priced ones are set later.
+        if group[children] and all("cost_incomplete" in child for child in group[children]):
+            group.update(merge_pricing(group[children]))
     return out
 
 
@@ -533,7 +547,10 @@ def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
         key_of=lambda row: (row["project_name"], row["repository"]),
         new_group=lambda row: {"repository": row["repository"], "project_name": row["project_name"]},
         children="branches",
-        child_of=lambda row: {field: row[field] for field in _BRANCH_ROW_FIELDS},
+        child_of=lambda row: {
+            **{field: row[field] for field in _BRANCH_ROW_FIELDS},
+            **{field: row[field] for field in (*_PRICING_FIELDS, EVIDENCE, "_sids") if field in row},
+        },
     )
     for repo in out:
         repo["branches"].sort(key=lambda b: b["branch"] or "")
@@ -574,12 +591,14 @@ def _cost_kpis(total: CostGroup | None, kpi_rows: list[dict], all_classes: list[
         "total_cost_usd": total_cost,
         "total_tokens": total_tokens,
         "avg_cost_per_session": (total_cost / spend_sessions) if spend_sessions else 0.0,
+        **group_pricing(total),
         **_lists(_first(all_classes)),
     }
 
 
 def _cost_by_user(groups: dict[str, list[CostGroup]], by_user: list[dict], include_buckets: bool) -> list[dict]:
     user_cost = {g.keys["user"]: g.cost_usd for g in groups.get(G_USER, [])}
+    user_money = {g.keys["user"]: g for g in groups.get(G_USER, [])}
     user_routes = _by_group_key(groups.get(G_USER_ROUTE, []), "user")
     user_personal = _by_group_key(groups.get(G_USER_PERSONAL, []), "user")
     rows = [
@@ -587,6 +606,7 @@ def _cost_by_user(groups: dict[str, list[CostGroup]], by_user: list[dict], inclu
             "developer_name": _s(r.get("developer_name")),
             "user_email": _s(r.get("developer_name")),
             "cost_usd": user_cost.get(_s(r.get("developer_name")), 0.0),
+            **group_pricing(user_money.get(_s(r.get("developer_name")))),
             **_lists(r),
             **(
                 buckets_from_groups(
@@ -611,10 +631,11 @@ def _cost_by_model(groups: dict[str, list[CostGroup]], model_classes: list[dict]
     model_routes = _by_group_key(groups.get(G_MODEL_ROUTE, []), "model")
     model_personal = _by_group_key(groups.get(G_MODEL_PERSONAL, []), "model")
 
-    def model_row(name: str, cost: float) -> dict[str, Any]:
+    def model_row(name: str, cost: float, money: CostGroup) -> dict[str, Any]:
         return {
             "model_name": name,
             "cost_usd": cost,
+            **group_pricing(money),
             **_lists(by_model_classes.get(name)),
             **(
                 buckets_from_groups(model_routes.get(name, []), model_personal.get(name, [])) if include_buckets else {}
@@ -622,7 +643,7 @@ def _cost_by_model(groups: dict[str, list[CostGroup]], model_classes: list[dict]
         }
 
     return sorted(
-        (model_row(g.keys["model"], g.cost_usd) for g in groups.get(G_MODEL, [])),
+        (model_row(g.keys["model"], g.cost_usd, g) for g in groups.get(G_MODEL, [])),
         key=lambda r: (-_float_sort_key(r["cost_usd"]), r["model_name"]),
     )
 
@@ -951,6 +972,7 @@ class LocalAnalyticsHandler:
         total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens
 
         kpis = {
+            **without_evidence(row_pricing({**spend, "cost_incomplete": bool(pricer.unpriced)})),
             "total_sessions": total_sessions,
             "total_cost_usd": total_cost,
             "api_cost_usd": api_cost,
@@ -1154,9 +1176,14 @@ class LocalAnalyticsHandler:
             daily_rows,
         )
         if with_chart:
-            user_cost = {g.keys["user"]: g.cost_usd for g in everyone.money.groups.get(G_USER, [])}
+            user_money = {g.keys["user"]: g for g in everyone.money.groups.get(G_USER, [])}
             data["chart"] = [
-                {"developer_name": name, "cost_usd": user_cost.get(name, 0.0)} for name in everyone.developers
+                {
+                    "developer_name": name,
+                    "cost_usd": user_money[name].cost_usd if name in user_money else 0.0,
+                    **group_pricing(user_money.get(name)),
+                }
+                for name in everyone.developers
             ]
         return data, pricer
 
@@ -1230,6 +1257,7 @@ class LocalAnalyticsHandler:
         if total is not None:
             pricer._unpriced.update(total.unpriced_models)  # the spend scope only; estimate buckets never feed it
         user_cost = {g.keys["user"]: g.cost_usd for g in groups.get(G_USER, [])}
+        user_money = {g.keys["user"]: g for g in groups.get(G_USER, [])}
         user_routes = _by_group_key(groups.get(G_USER_ROUTE, []), "user")
         user_personal = _by_group_key(groups.get(G_USER_PERSONAL, []), "user")
         facts_by_user = {_s(r.get("developer")): r for r in developer_facts}
@@ -1258,6 +1286,7 @@ class LocalAnalyticsHandler:
                     "cache_read_tokens": _i(row.get("cache_read_tokens")),
                     "cache_creation_tokens": _i(row.get("cache_creation_tokens")),
                     "cost_usd": user_cost.get(name, 0.0),
+                    **group_pricing(user_money.get(name)),
                     "turns": _i(facts.get("turns")),
                     "tool_calls": tool_calls,
                     "tool_success_rate": _pct(_i(facts.get("tool_successes")), tool_calls),
@@ -1364,11 +1393,25 @@ class LocalAnalyticsHandler:
         groups = [
             {
                 **facts.get(group_key(g), {}),
-                **{k: g.get(k) for k in ("key", "n", "project_name", "repository", "branch", "cost_usd")},
+                **{
+                    k: g.get(k)
+                    for k in (
+                        "key",
+                        "n",
+                        "project_name",
+                        "repository",
+                        "branch",
+                        "cost_usd",
+                        "unpriced_models",
+                        "cost_incomplete",
+                        "cost_priced",
+                    )
+                },
             }
             for g in ranked
         ]
         page_rows = _build_repository_rows(groups, include_branches)
+        drop_evidence(page_rows)
 
         if include_branches:
             total_count = len(page_rows)
@@ -1419,11 +1462,18 @@ class LocalAnalyticsHandler:
         priced = price_bucket_rows(await self._repo.get_session_funding_costs(window))
 
         page_rows = _group_repositories_into_projects(rows, result.project_names)
+        drop_evidence(page_rows)
+        # Each entity reads only its own sessions' rows through one index of the window's rows, not the whole window.
+        index = session_index(priced)
         for project in page_rows:
-            project.update(buckets(priced, project.pop("_sids")))
+            scoped = rows_of(priced, index, project.pop("_sids"))
+            project.update(buckets(scoped), **pricing_of_rows(scoped))
             # Not `repo`: that name is the reader yielded by `bounded()` (test_ports).
             for repo_row in project["repositories"]:
-                repo_row.update(buckets(priced, repo_row.pop("_sids")))
+                scoped = rows_of(priced, index, repo_row.pop("_sids"))
+                repo_row.update(buckets(scoped), **pricing_of_rows(scoped))
+                for branch_row in repo_row["branches"]:
+                    branch_row.update(pricing_of_rows(rows_of(priced, index, branch_row.pop("_sids"))))
         pagination = _pagination(page, per_page, result.total)
         return {"rows": page_rows, "pagination": pagination, **buckets(priced, result.matched_session_ids)}, pricer
 
@@ -1615,6 +1665,7 @@ class LocalAnalyticsHandler:
         for s in page_rows:
             s["cost_usd"] = money.by_session.get(s["trace_id"], 0.0)
             s["cost_available"] = s["trace_id"] not in unpriced_sessions
+            s.update(money.session_pricing(s["trace_id"]))
             s["bloat_pct"] = _pct(money.cache_read_by_session.get(s["trace_id"], 0.0), s["cost_usd"])
         self._log_unavailable_cost([s["trace_id"] for s in page_rows], unpriced_sessions)
 
@@ -1722,6 +1773,7 @@ class LocalAnalyticsHandler:
             "cache_creation_tokens": cache_creation,
             "cost_usd": cost_usd,
             "cost_available": cost_available(model_cost_rows, pricer),
+            **money.session_pricing(),  # the detail's rows are this one session's
             "net_lines": _nnet(lines_added, lines_removed),
             "bloat_pct": _pct(crc, cost_usd),
             "events": events,

@@ -267,6 +267,16 @@ class CatalogPricer:
             self._unpriced.add(model)
         return total, missing
 
+    def prices_some_usage(self, model: str, counts: TokenCounts) -> bool:
+        """Whether some used kind (tokens > 0) of these tokens has a rate, a zero rate included: the evidence that the
+        usage was priced in part. The same rate resolution as `price_flagged`; tokens of no used kind are none."""
+        cost = self._cost(model)
+        if cost is None:
+            return False
+        return any(
+            tokens > 0 and rate is not None for tokens, rate in zip(kind_tokens(counts), _kind_rates(cost), strict=True)
+        )
+
     def record_unpriced(self, models: Iterable[str]) -> None:
         """Record models already known to have tokens without a price (the unpriced models the database summed)."""
         self._unpriced.update(models)

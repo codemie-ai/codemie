@@ -353,6 +353,7 @@ _PART_COLUMNS = (
     ("session_count", "bigint"),
     ("unpriced_models", _TEXT_ARRAY),
     ("cost_incomplete", "boolean"),
+    ("cost_priced", "boolean"),
 )
 
 
@@ -389,6 +390,7 @@ def _gc_part(part: str, groupings: Sequence[Grouping], alias: str = "m") -> str:
         "session_count": f"{alias}.session_count",
         "unpriced_models": f"{alias}.unpriced_models",
         "cost_incomplete": f"{alias}.cost_incomplete",
+        "cost_priced": f"{alias}.cost_priced",
     }
     values.update({column: f"{alias}.{key}" for key, column in _GC_KEY_PARTS.items() if key in used})
     values.update(
@@ -870,6 +872,7 @@ def grouped_money(rows: Rows, groupings: Sequence[Grouping]) -> GroupedMoney:
                 session_count=int(row["session_count"]),
                 unpriced_models=tuple(row["unpriced_models"] or ()),
                 cost_incomplete=bool(row["cost_incomplete"]),
+                has_priced=bool(row["cost_priced"]),
             )
         )
     return GroupedMoney(groups)
@@ -2183,7 +2186,8 @@ class PostgresCliAnalyticsReader:
         grp AS ({groups}),
         money AS (SELECT * FROM {grouped_cost_sql(groupings)}),
         ranked AS (
-            SELECT g.*, coalesce(m.cost_usd, 0) AS cost,
+            SELECT g.*, coalesce(m.cost_usd, 0) AS cost, m.unpriced_models AS unpriced,
+                   coalesce(m.cost_incomplete, false) AS incomplete, coalesce(m.cost_priced, false) AS priced,
                    row_number() OVER (ORDER BY g.session_count DESC, coalesce(m.cost_usd, 0) DESC,
                                       coalesce(g.repository, '') {_C}, coalesce(g.project_name, '') {_C}) AS rn
             FROM grp g LEFT JOIN money m ON m."grouping" = 'g_spend' AND {money_key}
@@ -2191,7 +2195,8 @@ class PostgresCliAnalyticsReader:
         page AS (SELECT * FROM ranked {paging})
         SELECT {_part(
             "group", key="rn::text", n="session_count", project_name="project_name", repository="repository",
-            branch="branch", cost_usd="cost")} FROM page
+            branch="branch", cost_usd="cost", unpriced_models="unpriced", cost_incomplete="incomplete",
+            cost_priced="priced")} FROM page
         UNION ALL
         SELECT {_part("count", n="count(*)")} FROM grp
         UNION ALL

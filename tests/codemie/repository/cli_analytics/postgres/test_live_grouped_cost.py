@@ -47,9 +47,10 @@ from codemie.repository.cli_analytics.postgres.reader import (
 )
 from codemie.repository.cli_analytics.scope import FUNDING_ROUTES
 from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts, model_rates_for
-from codemie.service.analytics.handlers.funding_buckets import buckets, price_bucket_rows
+from codemie.service.analytics.handlers.funding_buckets import buckets, group_pricing, price_bucket_rows
 from codemie.service.analytics.handlers.session_money import price_session_models, token_counts
 from tests.codemie.repository.cli_analytics.postgres.live_helpers import (
+    _API_REQUEST_SQL,
     _COST_SQL,
     _MODULE,
     _TOTALS_SQL,
@@ -63,7 +64,12 @@ from tests.codemie.service.analytics.handlers.test_coding_agent_pricing import (
     _NO_1H,
     _PARTIAL,
     PRICING_CASES,
+    _priced_model,
 )
+
+# EPMCDME-17152 evidence cases: cache read is free (a zero rate is a rate), cache write has no rate
+_ZERO_RATE = _priced_model("zero-rate-model", 1.0e-6, 5.0e-6, 0.0, None, None)
+_CATALOG = [_HAIKU, _NO_1H, _PARTIAL, _ZERO_RATE]
 
 _DIMS_SQL = """
     INSERT INTO session_dims (session_id, started_at, last_event_at, jwt_email, project_name, repository, branch,
@@ -168,7 +174,16 @@ async def _seed_all(engine, seed: _GroupedSeed) -> dict[str, str]:
         "costless": await seed.dims(engine, "costless", route="api_based"),
         # a second session of the same user, route and cells: unpriced names are unioned across sessions, not summed
         "mixed2": await seed.dims(engine, "mixed2", route="api_based"),
+        # priced evidence (EPMCDME-17152): own repositories, so a repository grouping isolates each case
+        "zero_tokens": await seed.dims(engine, "zero-tokens", route="api_based", repo="r-zero-tokens"),
+        "zero_rate": await seed.dims(engine, "zero-rate", route="api_based", repo="r-zero-rate"),
     }
+    # unpriced usage plus a row with no used token: nothing was priced
+    await seed.cost(
+        engine, named["zero_tokens"], [("mystery-model", 4, 0, 0, 0, None, None), _row("claude-haiku-4-5", {})]
+    )
+    # a used kind with a zero rate and a used kind with no rate in one model: incomplete, and priced at $0
+    await seed.cost(engine, named["zero_rate"], [_row("zero-rate-model", {"cache_read": 3, "cache_creation": 7})])
     await seed.cost(engine, named["mixed"], [("Foo-X", 5, 0, 0, 0, None, None), ("foo-x", 3, 0, 0, 0, None, None)])
     await seed.cost(engine, named["mixed2"], [("Bar-Y", 2, 0, 0, 0, None, None), ("FOO-X", 1, 0, 0, 0, None, None)])
     await seed.cost(
@@ -188,8 +203,9 @@ _VERSION = "parity-v1"
 # Re-pinned on the EPMCDME-16427 part2 base, which moved the shared pricing terms, and for EPMCDME-16457, which dashes
 # dotted Claude versions in normalized_model_name, for the `sub_class` column (the subscription class the Overview
 # splits its cost by), which only adds a column of `sel`, and for EPMCDME-17260, which drops the `spend` column (every
-# session counts toward the money, the Personal-paid ones too).
-_LIVE_FORM_SHA256 = "7e2a43e92983b35d6945c8659724878324d831e6a306f7ccb6c022e6a9c88576"
+# session counts toward the money, the Personal-paid ones too), and for EPMCDME-17152, which adds the `has_rate`
+# column (a used token kind with a rate: the priced evidence of `cost_priced`) and changes nothing else.
+_LIVE_FORM_SHA256 = "2135f576f5140b3226bb518088e266dcee79c6cd9717e6cb4e23301034d967ba"
 
 
 async def _stamp_for(engine, seed: _GroupedSeed, source: str) -> list[str] | None:
@@ -261,6 +277,7 @@ def _python_groups(rows: list[dict], grouping: Grouping) -> dict[tuple, dict]:
             "session_count": len({r["session_id"] for r in members}),
             "unpriced_models": unpriced,
             "cost_incomplete": bool(unpriced),
+            "cost_priced": any(r["priced"] for r in members),
         }
     return result
 
@@ -278,6 +295,7 @@ def _sql_groups(gc_rows: list[dict], grouping: Grouping) -> dict[tuple, dict]:
             "session_count": row["session_count"],
             "unpriced_models": list(row["unpriced_models"]),
             "cost_incomplete": row["cost_incomplete"],
+            "cost_priced": row["cost_priced"],
         }
     return result
 
@@ -288,6 +306,7 @@ def _assert_group_equal(actual: dict, expected: dict, label) -> None:
     assert actual["session_count"] == expected["session_count"], label
     assert actual["unpriced_models"] == expected["unpriced_models"], label
     assert actual["cost_incomplete"] == expected["cost_incomplete"], label
+    assert actual["cost_priced"] == expected["cost_priced"], label
 
 
 def _assert_bucket(actual: dict | None, bucket: dict, label) -> None:
@@ -310,7 +329,7 @@ async def test_grouped_sql_cost_equals_the_python_pricer_on_every_case(source):
         stale = await _stamp_for(engine, seed, source)
         reader = PostgresCliAnalyticsReader(engine)
         f = seed.filter()
-        with patch(f"{_MODULE}.llm_service.get_all_llm_model_info", return_value=[_HAIKU, _NO_1H, _PARTIAL]):
+        with patch(f"{_MODULE}.llm_service.get_all_llm_model_info", return_value=_CATALOG):
             funding_rows = await reader.get_session_funding_costs(f)
             spend_money = price_session_models(await reader.get_session_model_costs(f))
             rates = [model_rates_for(m) for m in sorted({r["model_name"] for r in funding_rows})]
@@ -396,7 +415,14 @@ async def test_grouped_sql_cost_equals_the_python_pricer_on_every_case(source):
 
         # cost_daily_only leaves out the session with only subagent totals, the plain grouping keeps it
         assert _python_groups(python_rows, GROUPINGS[1]) != _python_groups(python_rows, GROUPINGS[2])
-        sub_repo = _sql_groups(gc_rows, GROUPINGS[4])[("r-sub",)]
+        # the priced evidence, stated rather than only equal to the Python path
+        by_repo = _sql_groups(gc_rows, GROUPINGS[4])
+        zero_tokens, zero_rate = by_repo[("r-zero-tokens",)], by_repo[("r-zero-rate",)]
+        assert (zero_tokens["cost_incomplete"], zero_tokens["cost_priced"]) == (True, False)  # unknown
+        assert zero_tokens["unpriced_models"] == ["mystery-model"] and zero_tokens["cost_usd"] == 0
+        assert (zero_rate["cost_incomplete"], zero_rate["cost_priced"]) == (True, True)  # incomplete, but priced
+        assert zero_rate["unpriced_models"] == ["zero-rate-model"] and zero_rate["cost_usd"] == 0
+        sub_repo = by_repo[("r-sub",)]
         assert sub_repo["session_count"] == 1
         assert sub_repo["cost_usd"] > 0
     finally:
@@ -473,3 +499,100 @@ def test_priced_groups_columns_are_the_same_for_both_forms(stored):
         "normalized_model_name",
     ):
         assert column in sql, column
+
+
+@pytest.mark.asyncio
+async def test_the_readers_serve_the_priced_evidence_of_the_two_edge_cases():
+    """EPMCDME-17152 through the readers the handler calls: the repository ranking row and the cost-money total.
+    Unpriced usage plus a zero-token row is unknown; a used zero-rate kind beside a used no-rate kind is incomplete and
+    priced (at $0)."""
+    from codemie.repository.cli_analytics.ports import G_TOTAL
+
+    engine = await _engine()
+    seed = _GroupedSeed()
+    try:
+        named = await _seed_all(engine, seed)
+        reader = PostgresCliAnalyticsReader(engine)
+        f = seed.filter()
+        with patch(f"{_MODULE}.llm_service.get_all_llm_model_info", return_value=_CATALOG):
+            rates = [model_rates_for(m) for m in await reader.get_cost_models(f)]
+            ranking = await reader.get_repository_ranking(f, False, None, rates, 0, None)
+            money = {
+                case: (await reader.get_cost_money(f.restricted_to([named[case]]), rates)).groups[G_TOTAL][0]
+                for case in ("zero_tokens", "zero_rate")
+            }
+
+        group = {r["repository"]: r for r in ranking if r["part"] == "group"}
+        assert (group["r-zero-tokens"]["cost_incomplete"], group["r-zero-tokens"]["cost_priced"]) == (True, False)
+        assert group["r-zero-tokens"]["unpriced_models"] == ["mystery-model"]
+        assert (group["r-zero-rate"]["cost_incomplete"], group["r-zero-rate"]["cost_priced"]) == (True, True)
+        assert group["r-zero-rate"]["unpriced_models"] == ["zero-rate-model"]
+        assert (money["zero_tokens"].cost_incomplete, money["zero_tokens"].has_priced) == (True, False)
+        assert (money["zero_rate"].cost_incomplete, money["zero_rate"].has_priced) == (True, True)
+        assert money["zero_rate"].cost_usd == 0
+    finally:
+        await seed.cleanup(engine)
+        await engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dimension", ["project", "user", "period"])
+@pytest.mark.parametrize("selection", ["clean", "partial", "unknown", "mixed"])
+async def test_pricing_follows_project_user_and_period_filters(dimension, selection):
+    from codemie.repository.cli_analytics.ports import G_TOTAL
+
+    engine = await _engine()
+    seed = _GroupedSeed()
+    names = ["clean", "partial", "unknown"]
+    projects = {name: f"{seed.suffix}-{name}" for name in names}
+    users = {name: f"{name}-{seed.suffix}@example.com" for name in names}
+    times = {name: seed.t0 + timedelta(hours=index) for index, name in enumerate(names)}
+    try:
+        for name in names:
+            sid = await seed.dims(engine, name, email=users[name], project=projects[name], repo="filtered")
+            async with engine.acquire() as conn:
+                await conn.execute(
+                    "UPDATE session_dims SET started_at=$2, last_event_at=$2 WHERE session_id=$1", sid, times[name]
+                )
+            rows = [] if name == "unknown" else [_row("claude-haiku-4-5", {"input": 100})]
+            if name != "clean":
+                rows.append(_row("mystery-model", {"input": 50}))
+            await seed.cost(engine, sid, rows)
+            async with engine.acquire() as conn:
+                await conn.execute("UPDATE cost_daily SET user_email=$2 WHERE session_id=$1", sid, users[name])
+                await conn.execute(_API_REQUEST_SQL, times[name], sid, 0, 0, 0, 0, 0)
+        chosen = names if selection == "mixed" else [selection]
+        start, end = seed.t0 - timedelta(minutes=1), seed.t0 + timedelta(hours=3)
+        if dimension == "period" and selection != "mixed":
+            start, end = times[selection] - timedelta(seconds=1), times[selection] + timedelta(minutes=1)
+        f = LocalAnalyticsFilter(
+            scope=EXCLUDE_SCOPE,
+            start_dt=start.replace(tzinfo=None),
+            end_dt=end.replace(tzinfo=None),
+            projects=[projects[name] for name in chosen] if dimension == "project" else list(projects.values()),
+            users=[users[name] for name in chosen] if dimension == "user" else list(users.values()),
+        )
+        reader = PostgresCliAnalyticsReader(engine)
+        with patch(f"{_MODULE}.llm_service.get_all_llm_model_info", return_value=_CATALOG):
+            rates = [model_rates_for(model) for model in await reader.get_cost_models(f)]
+            money = await reader.get_cost_money(f, rates)
+            ranking = await reader.get_repository_ranking(f, False, None, rates, 0, None)
+        expected_incomplete = selection != "clean"
+        expected_unknown = selection == "unknown"
+        expected_names = ["mystery-model"] if expected_incomplete else []
+        assert money.groups[G_TOTAL][0].session_count == len(chosen)
+        pricing = group_pricing(money.groups[G_TOTAL][0])
+        assert pricing == {
+            "cost_incomplete": expected_incomplete,
+            "cost_unknown": expected_unknown,
+            "unpriced_models": expected_names,
+        }
+        row = next(row for row in ranking if row["part"] == "group")
+        assert row["cost_incomplete"] is expected_incomplete
+        assert row["cost_priced"] is (not expected_unknown)
+        assert row["unpriced_models"] == expected_names
+    finally:
+        async with engine.acquire() as conn:
+            await conn.execute("DELETE FROM log_events WHERE session_id = ANY($1::text[])", seed.sids)
+        await seed.cleanup(engine)
+        await engine.close()

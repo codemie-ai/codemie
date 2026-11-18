@@ -79,6 +79,7 @@ def price_groups(rows: Iterable[dict[str, Any]], developers: dict[str, str] | No
                 "cost": cost,
                 "cache": pricer.price(model, TokenCounts(cache_read=counts.cache_read)),
                 "missing": missing,
+                "priced": pricer.prices_some_usage(model, counts),
             }
         )
     groups: dict[str, list[CostGroup]] = {}
@@ -98,6 +99,7 @@ def price_groups(rows: Iterable[dict[str, Any]], developers: dict[str, str] | No
                 session_count=len({p["sid"] for p in members}),
                 unpriced_models=tuple(sorted({p["raw"] for p in members if p["missing"]})),
                 cost_incomplete=any(p["missing"] for p in members),
+                has_priced=any(p["priced"] for p in members),  # as `cost_priced` in the SQL
             )
             for key, members in buckets.items()
         ]

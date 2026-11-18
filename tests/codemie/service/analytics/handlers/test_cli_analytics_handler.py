@@ -3326,7 +3326,7 @@ async def test_users_page_with_the_chart_ranks_everyone_once_and_serves_the_page
     )
     assert [r["developer_name"] for r in data["rows"]] == ["alice"]
     assert data["total_count"] == 2
-    assert data["chart"] == [{"developer_name": "bob", "cost_usd": 6.0}, {"developer_name": "alice", "cost_usd": 3.0}]
+    assert [(c["developer_name"], c["cost_usd"]) for c in data["chart"]] == [("bob", 6.0), ("alice", 3.0)]
     assert ("get_users", ["alice"]) in reader.calls  # the facts stay those of the page's developers
 
 
@@ -3467,7 +3467,7 @@ async def test_the_rollup_answers_a_page_without_touching_the_live_statements():
 
     assert [r["developer_name"] for r in data["rows"]] == ["alice"]  # the second page of the ranking
     assert data["total_count"] == 2
-    assert data["chart"] == [{"developer_name": "bob", "cost_usd": 6.0}, {"developer_name": "alice", "cost_usd": 3.0}]
+    assert [(c["developer_name"], c["cost_usd"]) for c in data["chart"]] == [("bob", 6.0), ("alice", 3.0)]
     assert data["avg_session_duration_ms"] is None and data["rows"][0]["daily_activity"] == []
 
 
