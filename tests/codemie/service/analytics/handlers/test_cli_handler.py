@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.cli.classification_engine import CLIClassificationEngine
@@ -3032,3 +3033,104 @@ class TestTheUserDetailEndpointKeepsItsTypedSignature:
             )
             for field in fields(CLIUserDetailRequest)
         ]
+
+
+class TestCLIInsightsUserDetailUnknownUser:
+    """User detail for an identifier that matches no user is a 404, never an all-zero report."""
+
+    _MODULE = "codemie.service.analytics.handlers.cli.insights_handler"
+
+    @pytest.fixture
+    def handler(self, mock_user, mock_repository):
+        h = CLIInsightsHandler(mock_user, mock_repository)
+        h.repository.execute_aggregation_query = AsyncMock(return_value={"aggregations": {"users": {"buckets": []}}})
+        h.repository.execute_search_query = AsyncMock(return_value={"hits": {"hits": []}})
+        return h
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_user_raises_404_before_any_detail_aggregation(self, handler):
+        with (
+            patch.object(CLIInsightsHandler, "_resolve_cli_insights_user_id", AsyncMock(return_value=None)),
+            patch(f"{self._MODULE}.user_repository.afind_users_by_identifiers", AsyncMock(return_value={})),
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                await handler._get_cli_insights_user_usage_payload(CLIUserDetailRequest(user_name="ghost@example.com"))
+
+        assert exc_info.value.code == 404
+        assert "ghost@example.com" in exc_info.value.message
+        handler.repository.execute_aggregation_query.assert_not_called()
+        handler.repository.execute_search_query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_known_user_without_activity_in_the_period_still_gets_a_detail_report(self, handler):
+        """A real account with no activity is a fact, not a missing account: no 404."""
+        with (
+            patch.object(CLIInsightsHandler, "_resolve_cli_insights_user_id", AsyncMock(return_value=None)),
+            patch.object(CLIInsightsHandler, "_parse_cli_insights_user_usage_result", return_value={"ok": True}),
+        ):
+            detail = await handler._get_cli_insights_user_usage_payload(
+                CLIUserDetailRequest(user_name="idle@example.com")
+            )
+
+        assert detail == {"ok": True}
+        handler.repository.execute_aggregation_query.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_explicit_user_id_raises_404(self, handler):
+        """An obsolete detail link carries a user_id: no user and no activity for it is still a 404."""
+        with (
+            patch.object(CLIInsightsHandler, "_resolve_cli_insights_user_id", AsyncMock(return_value=None)),
+            patch(f"{self._MODULE}.user_repository.afind_users_by_identifiers", AsyncMock(return_value={})),
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                await handler._get_cli_insights_user_usage_payload(
+                    CLIUserDetailRequest(user_name="ghost", user_id="uuid-gone")
+                )
+
+        assert exc_info.value.code == 404
+        assert "uuid-gone" in exc_info.value.message
+        handler.repository.execute_search_query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_user_id_known_as_a_codemie_user_gets_a_report(self, handler):
+        resolve = AsyncMock(return_value=None)
+        with (
+            patch.object(CLIInsightsHandler, "_resolve_cli_insights_user_id", resolve),
+            patch.object(CLIInsightsHandler, "_parse_cli_insights_user_usage_result", return_value={"ok": True}),
+        ):
+            detail = await handler._get_cli_insights_user_usage_payload(
+                CLIUserDetailRequest(user_name="someone", user_id="uuid-1")
+            )
+
+        assert detail == {"ok": True}
+        resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_user_id_matching_activity_survives_an_outdated_label(self, handler):
+        """The link's id still keys the period's activity after the display label changed: no 404."""
+        handler.repository.execute_aggregation_query = AsyncMock(
+            return_value={"aggregations": {"users": {"buckets": [{"key": "es-only-id"}]}}}
+        )
+        with (
+            patch(f"{self._MODULE}.user_repository.afind_users_by_identifiers", AsyncMock(return_value={})),
+            patch.object(CLIInsightsHandler, "_parse_cli_insights_user_usage_result", return_value={"ok": True}),
+        ):
+            detail = await handler._get_cli_insights_user_usage_payload(
+                CLIUserDetailRequest(user_name="Old Label", user_id="ES-Only-Id")
+            )
+
+        assert detail == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_user_id_with_activity_but_no_codemie_account_gets_a_report(self, handler):
+        """A CLI user seen only in the metrics data is still a user with activity, not a 404."""
+        with (
+            patch.object(CLIInsightsHandler, "_resolve_cli_insights_user_id", AsyncMock(return_value="es-only-id")),
+            patch(f"{self._MODULE}.user_repository.afind_users_by_identifiers", AsyncMock(return_value={})),
+            patch.object(CLIInsightsHandler, "_parse_cli_insights_user_usage_result", return_value={"ok": True}),
+        ):
+            detail = await handler._get_cli_insights_user_usage_payload(
+                CLIUserDetailRequest(user_name="cli-user", user_id="es-only-id")
+            )
+
+        assert detail == {"ok": True}

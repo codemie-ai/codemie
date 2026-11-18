@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -36,6 +36,9 @@ from codemie.service.analytics.query_pipeline import (
     AnalyticsQueryPipeline,
     EnrichedRows,
 )
+
+
+_MODULE = "codemie.service.analytics.query_pipeline"
 
 
 class TestAnalyticsQueryPipeline:
@@ -731,7 +734,8 @@ class TestAnalyticsQueryPipeline:
     # ===== _build_query Tests =====
 
     @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
-    def test_build_query_creates_secure_query_builder_with_user(
+    @pytest.mark.asyncio
+    async def test_build_query_creates_secure_query_builder_with_user(
         self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt
     ):
         """Verify query builder is initialized with user context."""
@@ -741,14 +745,17 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        query = pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
+        query = await pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
 
         # Assert
         mock_query_builder_class.assert_called_once_with(pipeline._user)
         assert query == {"query": "built"}
 
     @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
-    def test_build_query_adds_time_range(self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt):
+    @pytest.mark.asyncio
+    async def test_build_query_adds_time_range(
+        self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt
+    ):
         """Verify time range always added."""
         # Arrange
         mock_builder = MagicMock()
@@ -756,13 +763,14 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
+        await pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
 
         # Assert
         mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt, "@timestamp")
 
     @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
-    def test_build_query_conditionally_adds_optional_filters(
+    @pytest.mark.asyncio
+    async def test_build_query_conditionally_adds_optional_filters(
         self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt
     ):
         """Verify optional filters only added when provided."""
@@ -772,7 +780,7 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        pipeline._build_query(
+        await pipeline._build_query(
             sample_start_dt,
             sample_end_dt,
             AnalyticsQueryFilters(users=["u1"], projects=["p1"], metric_filters=["m1"]),
@@ -784,7 +792,10 @@ class TestAnalyticsQueryPipeline:
         mock_builder.add_project_filter.assert_called_once_with(["p1"])
 
     @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
-    def test_build_query_skips_none_filters(self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt):
+    @pytest.mark.asyncio
+    async def test_build_query_skips_none_filters(
+        self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt
+    ):
         """Verify None filters are not added."""
         # Arrange
         mock_builder = MagicMock()
@@ -792,7 +803,7 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        pipeline._build_query(
+        await pipeline._build_query(
             sample_start_dt, sample_end_dt, AnalyticsQueryFilters(users=None, projects=None, metric_filters=None)
         )
 
@@ -803,7 +814,10 @@ class TestAnalyticsQueryPipeline:
         mock_builder.add_project_filter.assert_not_called()
 
     @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
-    def test_build_query_returns_built_query(self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt):
+    @pytest.mark.asyncio
+    async def test_build_query_returns_built_query(
+        self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt
+    ):
         """Verify built query is returned."""
         # Arrange
         expected_query = {"bool": {"must": [{"range": {"timestamp": {}}}]}}
@@ -812,10 +826,51 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        result = pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
+        result = await pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
 
         # Assert
         assert result == expected_query
+
+    # ===== _expand_user_filters Tests =====
+
+    @pytest.mark.asyncio
+    async def test_expand_user_filters_resolves_uuid_to_all_identifier_forms(self, pipeline):
+        """Verify a resolved UUID expands to {uuid, username, email}."""
+        record = MagicMock(id="uuid-1", username="jdoe", email="jdoe@example.com")
+
+        with patch(f"{_MODULE}.user_repository.afind_users_by_identifiers", AsyncMock(return_value={"uuid-1": record})):
+            result = await pipeline._expand_user_filters(["uuid-1"])
+
+        assert set(result) == {"uuid-1", "jdoe", "jdoe@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_expand_user_filters_rejects_unknown_identifier(self, pipeline):
+        """Verify an identifier that doesn't resolve to a known user raises a descriptive ValueError."""
+        with patch(f"{_MODULE}.user_repository.afind_users_by_identifiers", AsyncMock(return_value={})):
+            with pytest.raises(ValueError, match="Unknown user\\(s\\) in users filter: typed-email@example.com"):
+                await pipeline._expand_user_filters(["typed-email@example.com"])
+
+    @pytest.mark.asyncio
+    async def test_expand_user_filters_names_only_the_unknown_identifiers(self, pipeline):
+        """Verify a mixed list fails and names only the identifiers that did not resolve."""
+        record = MagicMock(id="uuid-2", username="asmith", email="asmith@example.com")
+
+        with patch(f"{_MODULE}.user_repository.afind_users_by_identifiers", AsyncMock(return_value={"uuid-2": record})):
+            with pytest.raises(ValueError) as exc_info:
+                await pipeline._expand_user_filters(["uuid-2", "unknown-user"])
+
+        assert str(exc_info.value) == "Unknown user(s) in users filter: unknown-user"
+
+    @pytest.mark.asyncio
+    async def test_build_query_with_unknown_user_filter_raises_value_error(
+        self, pipeline, sample_start_dt, sample_end_dt
+    ):
+        """Verify an unknown users value fails the query build instead of returning empty results."""
+        with patch(f"{_MODULE}.user_repository.afind_users_by_identifiers", AsyncMock(return_value={})):
+            with pytest.raises(ValueError, match="nobody@example.com"):
+                await pipeline._build_query(
+                    sample_start_dt, sample_end_dt, AnalyticsQueryFilters(users=["nobody@example.com"])
+                )
 
     # ===== _build_filters_applied Tests =====
 
@@ -868,7 +923,8 @@ class TestAnalyticsQueryPipeline:
     # ===== client_source Tests =====
 
     @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
-    def test_build_query_adds_client_source_filter_when_set(
+    @pytest.mark.asyncio
+    async def test_build_query_adds_client_source_filter_when_set(
         self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt
     ):
         """Verify add_client_source_filter is called when client_source is provided."""
@@ -878,13 +934,14 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters(client_source="teams"))
+        await pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters(client_source="teams"))
 
         # Assert
         mock_builder.add_client_source_filter.assert_called_once_with("teams")
 
     @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
-    def test_build_query_skips_client_source_filter_when_none(
+    @pytest.mark.asyncio
+    async def test_build_query_skips_client_source_filter_when_none(
         self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt
     ):
         """Verify add_client_source_filter is not called when client_source is not provided."""
@@ -894,7 +951,7 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
+        await pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
 
         # Assert
         mock_builder.add_client_source_filter.assert_not_called()
@@ -908,12 +965,13 @@ class TestAnalyticsQueryPipeline:
         user.is_auditor = False
         return user
 
-    def test_build_query_adds_assistant_term_and_keeps_access_filter(
+    @pytest.mark.asyncio
+    async def test_build_query_adds_assistant_term_and_keeps_access_filter(
         self, plain_user, mock_repository, sample_start_dt, sample_end_dt
     ):
         pipeline = AnalyticsQueryPipeline(user=plain_user, repository=mock_repository)
 
-        query = pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters(assistant_id="a-1"))
+        query = await pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters(assistant_id="a-1"))
 
         assert {"term": {"attributes.assistant_id.keyword": "a-1"}} in query["bool"]["filter"]
         access_filter = query["bool"]["must"][0]
@@ -925,12 +983,15 @@ class TestAnalyticsQueryPipeline:
         assert access_filter["bool"]["minimum_should_match"] == 1
 
     @pytest.mark.parametrize("assistant_id", ["", None])
-    def test_build_query_skips_assistant_term_when_empty(
+    @pytest.mark.asyncio
+    async def test_build_query_skips_assistant_term_when_empty(
         self, assistant_id, plain_user, mock_repository, sample_start_dt, sample_end_dt
     ):
         pipeline = AnalyticsQueryPipeline(user=plain_user, repository=mock_repository)
 
-        query = pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters(assistant_id=assistant_id))
+        query = await pipeline._build_query(
+            sample_start_dt, sample_end_dt, AnalyticsQueryFilters(assistant_id=assistant_id)
+        )
 
         assert "attributes.assistant_id.keyword" not in str(query)
 

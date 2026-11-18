@@ -23,6 +23,7 @@ All models in this module are based on Pydantic's BaseModel for automatic valida
 and serialization/deserialization of data.
 """
 
+import json
 import os
 from enum import Enum
 from typing import Any
@@ -482,11 +483,22 @@ class MCPToolInvocationResponse(BaseModel):
 
     Attributes:
         content (list[MCPToolContentItem]): Output content items from the tool
+        structuredContent (Optional[dict[str, Any]]): Structured tool output (MCP 2025-06-18+)
         isError (bool): Indicates if the invocation encountered an error
     """
 
     content: list[MCPToolContentItem] = Field(description="Array of content items produced by the tool")
+    structuredContent: dict[str, Any] | None = Field(
+        None,
+        description="Structured tool output. Some servers (e.g. Airtable) return data only here with empty content",
+    )
     isError: bool = Field(default=False, description="Flag indicating if the invocation resulted in an error")
+
+    def structured_content_text(self) -> str | None:
+        """Return structuredContent as JSON text when content has no text items, otherwise None."""
+        if self.structuredContent is None or any(item.is_text() and item.text for item in self.content):
+            return None
+        return json.dumps(self.structuredContent, ensure_ascii=False)
 
 
 class MCPToolInvocationRequest(BaseModel):

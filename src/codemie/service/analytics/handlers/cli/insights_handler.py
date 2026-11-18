@@ -23,9 +23,13 @@ from collections.abc import Awaitable
 from datetime import datetime
 from typing import Any
 
+from fastapi import status
+
 from codemie.clients.postgres import get_async_session
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.repository.user_enrichment_repository import user_enrichment_repository
+from codemie.repository.user_repository import user_repository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import (
     METRIC_NAME_KEYWORD_FIELD,
@@ -298,7 +302,7 @@ class CLIInsightsHandler(CLIBaseHandler):
         `user_count` is a count of people and stays a count: a zero there would be a fact.
         """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-        query = self._pipeline._build_query(
+        query = await self._pipeline._build_query(
             start_dt,
             end_dt,
             AnalyticsQueryFilters(
@@ -364,7 +368,7 @@ class CLIInsightsHandler(CLIBaseHandler):
         is both a wrong amount and a wrong position.
         """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-        query = self._pipeline._build_query(
+        query = await self._pipeline._build_query(
             start_dt,
             end_dt,
             AnalyticsQueryFilters(
@@ -598,18 +602,25 @@ class CLIInsightsHandler(CLIBaseHandler):
         self, request: CLIUserDetailRequest
     ) -> tuple[str | None, datetime, datetime, dict[str, Any]]:
         """The user id (resolved from the name when absent), the window and the details' entity query."""
+        # A user is found when they have activity rows in the period or exist as a CodeMie user.
+        # An explicit user_id (e.g. from an old detail link) is checked too, so it cannot turn an
+        # unknown account into a zero-activity report.
         user_id = request.user_id
         if not user_id:
-            user_id = await self._resolve_cli_insights_user_id(
-                entity_name=request.user_name,
-                time_period=request.time_period,
-                start_date=request.start_date,
-                end_date=request.end_date,
-                users=request.users,
-                projects=request.projects,
+            user_id = await self._resolve_cli_insights_user_id(request)
+            found = user_id is not None or await self._is_known_user(request.user_name)
+        else:
+            found = await self._is_known_user(user_id, request.user_name) or (
+                await self._resolve_cli_insights_user_id(request) is not None
+            )
+        if not found:
+            raise ExtendedHTTPException(
+                code=status.HTTP_404_NOT_FOUND,
+                message=f"User {user_id or request.user_name} not found.",
+                help="Verify the user id, name or email and try again.",
             )
         start_dt, end_dt = TimeParser.parse(request.time_period, request.start_date, request.end_date)
-        detail_query = self._build_cli_insights_entity_query(
+        detail_query = await self._build_cli_insights_entity_query(
             start_dt,
             end_dt,
             request.users,
@@ -628,34 +639,47 @@ class CLIInsightsHandler(CLIBaseHandler):
             self.repository.execute_search_query(self._build_cli_insights_tool_docs_query(detail_query), size=10000),
         )
 
-    async def _resolve_cli_insights_user_id(
-        self,
-        entity_name: str,
-        time_period: str | None,
-        start_date: datetime | None,
-        end_date: datetime | None,
-        users: list[str] | None,
-        projects: list[str] | None,
-    ) -> str | None:
-        """Resolve user_id from existing CLI insights user rows when only label/email is provided."""
+    async def _resolve_cli_insights_user_id(self, request: CLIUserDetailRequest) -> str | None:
+        """Resolve user_id from existing CLI insights user rows by the request's explicit id, else by label/email."""
+        entity_name = request.user_name
         normalized_entity_name = entity_name.strip().lower()
-        if not normalized_entity_name:
+        normalized_entity_id = (request.user_id or "").strip().lower()
+        if not normalized_entity_name and not normalized_entity_id:
             return None
 
-        start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-        query = self._pipeline._build_query(
+        start_dt, end_dt = TimeParser.parse(request.time_period, request.start_date, request.end_date)
+        query = await self._pipeline._build_query(
             start_dt,
             end_dt,
             AnalyticsQueryFilters(
-                users=users, projects=projects, metric_filters=MetricName.to_list_from_group(MetricName.CLI_METRICS)
+                users=request.users,
+                projects=request.projects,
+                metric_filters=MetricName.to_list_from_group(MetricName.CLI_METRICS),
             ),
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_identity_aggregation(query))
         buckets = result.get("aggregations", {}).get("users", {}).get("buckets", [])
 
+        if normalized_entity_id:
+            for bucket in buckets:
+                if str(bucket["key"]).strip().lower() == normalized_entity_id:
+                    return str(bucket["key"])
+        if not normalized_entity_name:
+            return None
+
         return self._match_user_id_by_name(
             buckets, normalized_entity_name
         ) or await self._match_user_id_by_email_fallback(buckets, entity_name, normalized_entity_name)
+
+    @staticmethod
+    async def _is_known_user(*identifiers: str | None) -> bool:
+        """Whether any id, name, username or email belongs to a CodeMie user, active in the period or not."""
+        candidates = {i.strip() for i in identifiers if i and i.strip()}
+        if not candidates:
+            return False
+        async with get_async_session() as session:
+            resolved = await user_repository.afind_users_by_identifiers(session, candidates)
+        return bool(resolved)
 
     def _match_user_id_by_name(self, buckets: list, normalized_entity_name: str) -> str | None:
         """Match user_id from ES buckets by comparing normalized name or email."""
@@ -772,7 +796,7 @@ class CLIInsightsHandler(CLIBaseHandler):
     ) -> dict[str, dict]:
         """Aggregate hourly histogram into weekday and hour counts."""
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-        query = self._pipeline._build_query(
+        query = await self._pipeline._build_query(
             start_dt,
             end_dt,
             AnalyticsQueryFilters(
@@ -826,7 +850,7 @@ class CLIInsightsHandler(CLIBaseHandler):
     ) -> list[dict]:
         """Build session depth distribution from prompts-per-session counts."""
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-        query = self._pipeline._build_query(
+        query = await self._pipeline._build_query(
             start_dt,
             end_dt,
             AnalyticsQueryFilters(
@@ -884,7 +908,7 @@ class CLIInsightsHandler(CLIBaseHandler):
         Session and line counts stay integers - a zero in a line count is a measurement.
         """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-        query = self._pipeline._build_query(
+        query = await self._pipeline._build_query(
             start_dt,
             end_dt,
             AnalyticsQueryFilters(
@@ -950,7 +974,7 @@ class CLIInsightsHandler(CLIBaseHandler):
         rather than add the cells (AD-29).
         """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-        query = self._pipeline._build_query(
+        query = await self._pipeline._build_query(
             start_dt,
             end_dt,
             AnalyticsQueryFilters(
@@ -1200,7 +1224,7 @@ class CLIInsightsHandler(CLIBaseHandler):
             },
         }
 
-    def _build_cli_insights_entity_query(
+    async def _build_cli_insights_entity_query(
         self,
         start_dt: datetime,
         end_dt: datetime,
@@ -1210,7 +1234,7 @@ class CLIInsightsHandler(CLIBaseHandler):
         entity_id: str | None = None,
     ) -> dict:
         """Build base query scoped to one CLI user by name or email."""
-        query = self._pipeline._build_query(
+        query = await self._pipeline._build_query(
             start_dt,
             end_dt,
             AnalyticsQueryFilters(
@@ -1892,7 +1916,7 @@ class CLIInsightsHandler(CLIBaseHandler):
         head count and stays exact.
         """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-        query = self._pipeline._build_query(
+        query = await self._pipeline._build_query(
             start_dt,
             end_dt,
             AnalyticsQueryFilters(

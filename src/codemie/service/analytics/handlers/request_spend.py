@@ -178,7 +178,7 @@ async def price_filtered_requests(
     """Each group's money over the requests the pipeline's secured query selects for `filters`."""
     usage = await collect_request_usage(
         pipeline.search_aggregation,
-        pipeline.secure_query(start_dt, end_dt, filters),
+        await pipeline.secure_query(start_dt, end_dt, filters),
         group_field=group_field,
         id_fields=id_fields,
         cost_bearing=cost_bearing,

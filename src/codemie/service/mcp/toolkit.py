@@ -271,11 +271,12 @@ class MCPTool(CodeMieTool):
         Raises:
             TruncatedOutputError: If the output exceeds the token size limit and throwing errors is enabled.
         """
-        str_output = (
-            "\n".join(str(item) for item in output.content if not item.is_image())
-            if isinstance(output, MCPToolInvocationResponse)
-            else str(output)
-        )
+        if isinstance(output, MCPToolInvocationResponse):
+            str_output = output.structured_content_text() or "\n".join(
+                str(item) for item in output.content if not item.is_image()
+            )
+        else:
+            str_output = str(output)
 
         encoding = get_encoding(self.base_llm_model_name)
         tokens = encoding.encode(str_output)
@@ -306,7 +307,9 @@ class MCPTool(CodeMieTool):
 
     @override
     def _post_process_output_content(self, mcp_tool_output: Any, *args, **kwargs) -> Any:
-        if isinstance(mcp_tool_output, MCPToolInvocationResponse) and mcp_tool_output.content:
+        if isinstance(mcp_tool_output, MCPToolInvocationResponse) and (
+            mcp_tool_output.content or mcp_tool_output.structuredContent is not None
+        ):
             # Own the screenshot by the authenticated initiator of the request, taken from
             # `user_context`. `execution_context.user_id` is the credential-resolution id, which for
             # a global assistant or workflow is the *creator* (workflows/nodes/agent_node.py sets it
@@ -499,6 +502,11 @@ def _convert_mcp_response_to_tool_message(tool_result: MCPToolInvocationResponse
         formatted = _format_content_item(item)
         if formatted:
             text_parts.append(formatted)
+
+    # Servers may return data only in structuredContent (content has no text)
+    structured_text = tool_result.structured_content_text()
+    if structured_text is not None:
+        text_parts.append(structured_text)
 
     return "\n".join(text_parts)
 

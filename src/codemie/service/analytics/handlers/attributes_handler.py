@@ -130,7 +130,7 @@ class AttributesHandler:
             prefix = pair_prefix(attribute_key)
             listed = await collect_request_usage(
                 self._pipeline.search_aggregation,
-                _scoped_to_key(self._pipeline.secure_query(start_dt, end_dt, filters), attribute_key),
+                _scoped_to_key(await self._pipeline.secure_query(start_dt, end_dt, filters), attribute_key),
                 group_field=PAIRS_FIELD,
                 id_fields=(EXECUTION_ID_KEYWORD_FIELD, REQUEST_ID_KEYWORD_FIELD),
                 cost_bearing={"exists": {"field": INPUT_TOKENS_FIELD}},

@@ -69,10 +69,11 @@ class TestSecureQueryBuilder:
         assert PAIRS_FIELD not in str(query)
 
 
-def test_all_time_query_ignores_the_attributes_filter(user, repository):
+@pytest.mark.asyncio
+async def test_all_time_query_ignores_the_attributes_filter(user, repository):
     filters = AnalyticsQueryFilters(metric_filters=["conversation_assistant_usage"], attributes=ATTRIBUTES)
 
-    query = AnalyticsQueryPipeline(user, repository)._build_query_without_time_filter(filters)
+    query = await AnalyticsQueryPipeline(user, repository)._build_query_without_time_filter(filters)
 
     assert PAIRS_FIELD not in str(query)
 

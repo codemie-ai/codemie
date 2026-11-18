@@ -137,6 +137,15 @@ GROUP_A_PATHS = [
 assert len(GROUP_A_PATHS) == 59, f"Expected 59 Group A paths, got {len(GROUP_A_PATHS)}"
 
 
+async def _only_the_requested_user_is_known(_session, identifiers):
+    """Postgres identity lookup that knows only the user the ?user_name=test paths ask for."""
+    return {
+        i: MagicMock(id="test-user-id", username="test", email="test@example.com", name="test")
+        for i in identifiers
+        if i == "test"
+    }
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("path", GROUP_A_PATHS)
 async def test_group_a_returns_200_empty_when_elasticsearch_unconfigured(path):
@@ -144,8 +153,9 @@ async def test_group_a_returns_200_empty_when_elasticsearch_unconfigured(path):
 
     A handful of ?user_name=... paths fall back to a Postgres identity lookup when
     the (now-empty) ES buckets contain no match for the requested user — that lookup
-    is outside this plan's ES/ClickHouse scope, so it's mocked to "no user found"
-    here to isolate the ES-unavailable behavior under test. The enriched-user paths
+    is outside this plan's ES/ClickHouse scope, so it's mocked to know only the requested
+    user ("test") here to isolate the ES-unavailable behavior under test. An unknown user
+    is a 404 on those paths, which is a separate contract. The enriched-user paths
     are additionally gated by the unrelated `userEnrichmentEnabled` feature flag,
     which is force-enabled here for the same reason.
     """
@@ -157,7 +167,7 @@ async def test_group_a_returns_200_empty_when_elasticsearch_unconfigured(path):
         patch(
             "codemie.repository.user_repository.user_repository.afind_users_by_identifiers",
             new_callable=AsyncMock,
-            return_value={},
+            side_effect=_only_the_requested_user_is_known,
         ),
         # The budget-limit tables take their candidates from the Postgres budget assignments, not
         # from ES - outside this scope too, so mocked to "no assignment" for the same reason.

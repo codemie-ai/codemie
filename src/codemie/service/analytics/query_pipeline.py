@@ -29,8 +29,10 @@ from typing import Any, Awaitable, Callable
 
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
+from codemie.clients.postgres import get_async_session
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
+from codemie.repository.user_repository import user_repository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.access_filter import AccessFilter
 from codemie.service.analytics.aggregation_builder import AggregationBuilder
@@ -167,6 +169,7 @@ class AnalyticsQueryPipeline:
         """
         self._user = user
         self._repository = repository
+        self._expanded_user_filters_cache: dict[tuple[str, ...], list[str]] = {}
 
     @property
     def access_scope(self) -> AccessScope:
@@ -212,7 +215,7 @@ class AnalyticsQueryPipeline:
         page, per_page = filters.page, filters.per_page
         start_time = time.time()
         start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters)
+        query = await self._build_query(start_dt, end_dt, filters)
         sort_kwargs = {"sort": sort} if sort is not None else {}
         result = await self._repository.execute_search_query(query, size=per_page, from_=page * per_page, **sort_kwargs)
         rows = await asyncio.to_thread(result_parser, result)
@@ -278,7 +281,7 @@ class AnalyticsQueryPipeline:
 
         # 1. Parse time and build base query with filters
         start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters)
+        query = await self._build_query(start_dt, end_dt, filters)
 
         # 2. Fetch: every bucket in one query, or the current page beside a totals query
         if use_bucket_selector:
@@ -350,7 +353,7 @@ class AnalyticsQueryPipeline:
         page, per_page = filters.page, filters.per_page
         started_at = time.time()
         start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters)
+        query = await self._build_query(start_dt, end_dt, filters)
 
         data_result = await self._fetch_every_bucket(agg_builder, query, totals_aggs=None)
         rows, total_count, totals = await self._enriched_page(
@@ -427,7 +430,7 @@ class AnalyticsQueryPipeline:
         """
         start_time = time.time()
         start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters)
+        query = await self._build_query(start_dt, end_dt, filters)
         fetch_size = (filters.page + 1) * filters.per_page
         selection_body = selection_builder(query, fetch_size)
         AggregationBuilder.add_cardinality_for_total(selection_body, field=group_by_field)
@@ -521,7 +524,7 @@ class AnalyticsQueryPipeline:
 
         # 1. Parse time and build base query with filters
         start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters)
+        query = await self._build_query(start_dt, end_dt, filters)
 
         # 2. Calculate over-fetch size to account for nested flattening
         # If page=0 and per_page=10 with multiplier=10: fetch_size=100
@@ -628,7 +631,7 @@ class AnalyticsQueryPipeline:
 
         # Parse time and build query
         start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters, timestamp_field)
+        query = await self._build_query(start_dt, end_dt, filters, timestamp_field)
 
         # Build aggregation
         agg_body = agg_builder(query)
@@ -673,7 +676,7 @@ class AnalyticsQueryPipeline:
 
         # 1. Parse time and build secure query with filters
         start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters)
+        query = await self._build_query(start_dt, end_dt, filters)
 
         # 2. Build aggregation body
         agg_body = agg_builder(query)
@@ -729,7 +732,7 @@ class AnalyticsQueryPipeline:
 
         # 1. Parse time and build filter query
         start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        filter_query = self._build_query(start_dt, end_dt, filters)
+        filter_query = await self._build_query(start_dt, end_dt, filters)
 
         # 2. Execute ES|QL query (fetch ALL results, up to 10k limit)
         result = await self._repository.execute_esql_query(esql_query, filter_query=filter_query)
@@ -873,15 +876,54 @@ class AnalyticsQueryPipeline:
         # Calculate totals from all rows
         return TotalsCalculator.calculate_totals(columns=columns, rows=all_rows_for_totals)
 
-    def secure_query(self, start_dt: datetime, end_dt: datetime, filters: AnalyticsQueryFilters) -> dict[str, Any]:
+    async def secure_query(
+        self, start_dt: datetime, end_dt: datetime, filters: AnalyticsQueryFilters
+    ) -> dict[str, Any]:
         """The access-scoped query every table built from `filters` over this window reads."""
-        return self._build_query(start_dt, end_dt, filters)
+        return await self._build_query(start_dt, end_dt, filters)
 
     async def search_aggregation(self, body: dict[str, Any]) -> dict[str, Any]:
         """One aggregation search against the metrics store."""
         return await self._repository.execute_aggregation_query(body)
 
-    def _build_query(
+    async def _expand_user_filters(self, users: list[str]) -> list[str]:
+        """Expand each requested user identifier to its full identifier set (id, username, email).
+
+        codemie_metrics_logs docs key attributes.user_id differently depending on the emitter
+        (UUID, username, or email), so a UUID-only filter must also match email/username-keyed
+        docs for the same person. Email is always included for a resolved identifier, even when
+        the caller only passed a UUID.
+
+        A CLI user-detail request builds several queries from the same `filters.users`, so the
+        Postgres lookup is cached per pipeline instance - which is created fresh per request, so
+        the cache never reaches across requests.
+
+        Raises:
+            ValueError: If any identifier does not resolve to a known user, so an unknown account
+                is reported (HTTP 400 via handle_analytics_errors) rather than shown as empty results.
+        """
+        cache_key = tuple(sorted(set(users)))
+        if cache_key not in self._expanded_user_filters_cache:
+            self._expanded_user_filters_cache[cache_key] = await self._resolve_expanded_user_filters(users)
+        return self._expanded_user_filters_cache[cache_key]
+
+    @staticmethod
+    async def _resolve_expanded_user_filters(users: list[str]) -> list[str]:
+        """Look up `users` in Postgres and expand each to its id, username and email."""
+        async with get_async_session() as session:
+            resolved = await user_repository.afind_users_by_identifiers(session, set(users))
+
+        unknown = sorted({identifier for identifier in users if identifier not in resolved})
+        if unknown:
+            raise ValueError(f"Unknown user(s) in users filter: {', '.join(unknown)}")
+
+        expanded: set[str] = set()
+        for identifier in users:
+            record = resolved[identifier]
+            expanded.update(v for v in (record.id, record.username, record.email) if v)
+        return list(expanded)
+
+    async def _build_query(
         self,
         start_dt: datetime,
         end_dt: datetime,
@@ -895,7 +937,7 @@ class AnalyticsQueryPipeline:
         if filters.metric_filters:
             query_builder.add_metric_filter(filters.metric_filters)
         if filters.users:
-            query_builder.add_user_filter(filters.users)
+            query_builder.add_user_filter(await self._expand_user_filters(filters.users))
         if filters.projects:
             query_builder.add_project_filter(filters.projects)
         if filters.client_source:
@@ -907,7 +949,7 @@ class AnalyticsQueryPipeline:
 
         return query_builder.build()
 
-    def _build_query_without_time_filter(self, filters: AnalyticsQueryFilters) -> dict:
+    async def _build_query_without_time_filter(self, filters: AnalyticsQueryFilters) -> dict:
         """Build secure query WITHOUT time filter — for all-time engagement metrics (DAU, MAU, weekly).
 
         Access control (project/user scoping) is still fully applied.
@@ -917,7 +959,7 @@ class AnalyticsQueryPipeline:
         if filters.metric_filters:
             query_builder.add_metric_filter(filters.metric_filters)
         if filters.users:
-            query_builder.add_user_filter(filters.users)
+            query_builder.add_user_filter(await self._expand_user_filters(filters.users))
         if filters.projects:
             query_builder.add_project_filter(filters.projects)
         if filters.client_source:
