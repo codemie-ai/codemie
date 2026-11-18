@@ -109,6 +109,27 @@ class CliUsageFigures:
     complete: bool = field(default=True, compare=False)
 
 
+@dataclass(frozen=True)
+class WhoPaysSplit:
+    """One channel's ledger money by who paid; charged, shared, personal and unclassified sum to its card.
+
+    ``no_customer`` is part of ``unclassified``, also given on its own.
+    """
+
+    charged: float | None = None
+    shared: float | None = None
+    personal: float | None = None
+    unclassified: float | None = None
+    no_customer: float | None = None
+
+
+@dataclass(frozen=True)
+class WhoPaysFigures:
+    web: WhoPaysSplit = field(default_factory=WhoPaysSplit)
+    cli: WhoPaysSplit = field(default_factory=WhoPaysSplit)
+    complete: bool = field(default=True, compare=False)
+
+
 class WidgetCache(Protocol):
     async def get(self, key: str) -> bytes | None: ...
 
@@ -131,7 +152,7 @@ class WidgetContext:
         return self._access
 
 
-class SpendWidget[SpendOutput: (SpendFigures, SpendTable, CliUsageFigures)](ABC):
+class SpendWidget[SpendOutput: (SpendFigures, SpendTable, CliUsageFigures, WhoPaysFigures)](ABC):
     """One entity's spend, read from the hourly ledger and clipped to the coverage floor.
 
     A subclass names its cache ``view`` and its ``output`` type, and implements ``read``, its one public method.

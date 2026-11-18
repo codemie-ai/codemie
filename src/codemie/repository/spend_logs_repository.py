@@ -61,6 +61,7 @@ from codemie.service.spend.spend_group import SpendGroup, spend_group_predicate
 from codemie.service.spend.traffic_class import (
     UNION_CLASSES,
     TrafficClass,
+    cli_complement,
     request_resolved,
     request_unresolved,
     traffic_class_predicate,
@@ -1071,6 +1072,25 @@ class SpendLogsRepository:
         )
         result = await session.execute(statement)
         return dict(result.tuples().all())
+
+    @staticmethod
+    def _sum_by_request_id_statement(period: TimeRange, *, cli: bool = True, access: AccessScope | None = None):
+        """`SUM(spend)` per `codemie_request_id` over the CLI card's rows, or the platform card's, retries summed.
+
+        Raw rows only: only they carry a request id. Rows without one group under NULL.
+        """
+        traffic = traffic_class_predicate(TrafficClass.CLI) if cli else cli_complement()
+        return (
+            select(Row.codemie_request_id, func.sum(Row.spend))
+            .where(within(period), narrowed_by_access(traffic, access))
+            .group_by(Row.codemie_request_id)
+        )
+
+    async def sum_by_request_id(
+        self, session: AsyncSession, period: TimeRange, *, cli: bool = True, access: AccessScope | None = None
+    ) -> dict[str | None, Decimal]:
+        result = await session.execute(self._sum_by_request_id_statement(period, cli=cli, access=access))
+        return {request_id: Decimal(total) for request_id, total in result.tuples().all()}
 
     async def count_requests(self, session: AsyncSession, period: TimeRange) -> int:
         """How many requests a period saw - **distinct calls, not rows**.

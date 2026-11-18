@@ -698,3 +698,57 @@ class TestTheResidueWhenTheMetricStoreRESOLVEDNOTHING:
         `IS NULL` test is what keeps a NULL-id row in the residue rather than in no bucket at all."""
         for ids in ((), ("req-1",)):
             assert "codemie_request_id IS NULL" in self._residue_sql(ids)
+
+
+class TestSumByRequestId:
+    """Per-request ledger money for Who Pays, retries summed into one figure per request."""
+
+    def test_it_groups_by_request_id_and_sums_spend(self):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        rendered = sql(SpendLogsRepository._sum_by_request_id_statement(PERIOD))
+
+        assert "GROUP BY litellm_spend_logs.codemie_request_id" in rendered
+        assert "sum(litellm_spend_logs.spend)" in rendered.lower()
+
+    def test_it_is_bounded_by_the_half_open_period(self):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        rendered = sql(SpendLogsRepository._sum_by_request_id_statement(PERIOD))
+
+        assert "start_time >=" in rendered
+        assert "start_time <" in rendered
+        assert "<=" not in rendered
+
+    def test_rows_without_a_request_id_are_kept_under_their_own_key(self):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        rendered = sql(SpendLogsRepository._sum_by_request_id_statement(PERIOD))
+
+        assert "codemie_request_id IS NOT NULL" not in rendered
+
+    def test_it_reads_under_the_callers_boundary(self):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+        from codemie.service.spend.ledger import AccessScope
+
+        scope = AccessScope(unrestricted=False, user_id="u-1", plain_projects=("p",))
+        unscoped = sql(SpendLogsRepository._sum_by_request_id_statement(PERIOD))
+        scoped = sql(SpendLogsRepository._sum_by_request_id_statement(PERIOD, access=scope))
+
+        assert "u-1" in scoped and "u-1" not in unscoped
+
+    def test_the_platform_read_is_the_complement_of_the_cli_card(self):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        cli = sql(SpendLogsRepository._sum_by_request_id_statement(PERIOD))
+        web = sql(SpendLogsRepository._sum_by_request_id_statement(PERIOD, cli=False))
+
+        assert web != cli and "NOT" in web.upper()
+
+    def test_it_reads_only_cli_rows_by_the_cli_card_predicate(self):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        rendered = sql(SpendLogsRepository._sum_by_request_id_statement(PERIOD))
+
+        assert "codemie_origin" in rendered
+        assert "attr_category" in rendered

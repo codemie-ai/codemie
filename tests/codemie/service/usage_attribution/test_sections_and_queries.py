@@ -23,6 +23,7 @@ import elastic_transport
 import pytest
 from elasticsearch import ApiError
 
+from codemie.service.spend.coverage import TimeRange
 from codemie.service.usage_attribution import fetch as fetch_module
 from codemie.service.usage_attribution import parsing, queries
 from codemie.service.usage_attribution.fetch import FetchError, Fetcher, Spec
@@ -222,7 +223,7 @@ class TestQueries:
     def test_cache_namespace_is_bumped_for_the_fallback_kind(self):
         from codemie.service.usage_attribution.constants import CACHE_NAMESPACE
 
-        assert CACHE_NAMESPACE == "codemie:ua:v3"
+        assert CACHE_NAMESPACE == "codemie:ua:v7"
 
     def test_no_shared_projects(self):
         assert queries.shared_clause([]) == {"match_none": {}}
@@ -247,6 +248,40 @@ class TestQueries:
     def test_tool_evidence_counts_days_with_a_runtime_field(self):
         body = queries.tools_body(S, E, None, 100, 10)
         assert "ua_day" in body["runtime_mappings"]
+
+    def test_request_classification_body_partitions_on_request_id(self):
+        body = queries.request_classification_body(TimeRange(S, E), ["p"], "cli", ((2, 7), 500))
+
+        requests = body["aggs"]["requests"]
+        assert requests["terms"]["field"] == "attributes.request_id.keyword"
+        assert requests["terms"]["include"] == {"partition": 2, "num_partitions": 7}
+        assert requests["terms"]["size"] == 500
+        assert set(requests["aggs"]) == {"cb", "sh", "pr", "nc"}
+        assert requests["aggs"]["cb"]["filter"] == queries.who_pays_filters(["p"])["charged_back"]
+
+    def test_request_classification_body_cli_vs_web_query_scope(self):
+        cli_body = queries.request_classification_body(TimeRange(S, E), [], "cli", (None, 10))
+        web_body = queries.request_classification_body(TimeRange(S, E), [], "web", (None, 10))
+
+        assert cli_body["query"] == queries.cli_query(S, E)
+        assert web_body["query"] == queries.web_query(S, E)
+
+    def test_parse_request_classification_keeps_one_category_per_request_id(self):
+        buckets = [
+            {"key": "req-1", "cb": {"doc_count": 2}, "sh": {"doc_count": 0}, "pr": {"doc_count": 0}, "nc": {"doc_count": 0}},
+            {"key": "req-2", "cb": {"doc_count": 0}, "sh": {"doc_count": 1}, "pr": {"doc_count": 0}, "nc": {"doc_count": 0}},
+        ]  # fmt: skip
+        acc = parsing.parse_request_classification(buckets, {}, "cli")
+
+        assert acc == {"req-1": ("cli", "charged_back"), "req-2": ("cli", "shared_no_budget")}
+
+    def test_parse_request_classification_skips_a_bucket_with_no_matching_filter(self):
+        """Defensive: a request_id bucket every filter missed (should not happen, who_pays_filters is
+        exhaustive) is left out rather than mis-assigned to an arbitrary category."""
+        buckets = [{"key": "req-3", "cb": {"doc_count": 0}, "sh": {"doc_count": 0}, "pr": {"doc_count": 0},
+                    "nc": {"doc_count": 0}}]  # fmt: skip
+
+        assert parsing.parse_request_classification(buckets, {}, "cli") == {}
 
     def test_parse_totals(self):
         aggs = {

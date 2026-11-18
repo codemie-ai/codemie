@@ -23,7 +23,7 @@ not activated, gives no figure for every figure - never a zero.
 attaches are dropped, because the Usage Attribution responses carry plain numbers only.
 
 **One widget, one public method.** Each widget in ``widgets`` (``PlatformSpend``, ``PeopleSpend``,
-``ProjectSpend``, ``CliUsageSpend``) subclasses ``SpendWidget``, names its cache view and output type,
+``ProjectSpend``, ``CliUsageSpend``, ``WhoPaysSpend``) subclasses ``SpendWidget``, names its cache view and output type,
 and has one ``read``, cached by ``@cached_read``.
 A caller's ``WidgetContext`` holds the user, the shared cache and the access boundary, derived once. The widgets
 hand out ready data - figures in cents - and the caller lays them into its own response.
@@ -37,6 +37,8 @@ from codemie.service.usage_attribution.spend_widgets.base import (
     SpendFigures,
     SpendTable,
     SpendWidget,
+    WhoPaysFigures,
+    WhoPaysSplit,
     WidgetCache,
     WidgetContext,
 )
@@ -46,6 +48,7 @@ from codemie.service.usage_attribution.spend_widgets.widgets import (
     PeopleSpend,
     PlatformSpend,
     ProjectSpend,
+    WhoPaysSpend,
 )
 
 __all__ = [
@@ -58,6 +61,9 @@ __all__ = [
     "SpendFigures",
     "SpendTable",
     "SpendWidget",
+    "WhoPaysFigures",
+    "WhoPaysSpend",
+    "WhoPaysSplit",
     "WidgetCache",
     "WidgetContext",
     "cached_read",

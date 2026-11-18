@@ -117,6 +117,7 @@ def emit_llm_token_metric(name: str, request_id: Optional[str], base_attributes:
         attributes={
             **base_attributes,
             MetricsAttributes.USER_EMAIL: current_username.get("-"),
+            **({MetricsAttributes.REQUEST_ID: request_id} if request_id else {}),
             **token_attributes,
         },
     )

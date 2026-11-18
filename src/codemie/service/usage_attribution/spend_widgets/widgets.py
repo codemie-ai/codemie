@@ -16,10 +16,14 @@
 
 import asyncio
 from collections import Counter, defaultdict
+from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
+from codemie.clients.postgres import get_ledger_async_session
+from codemie.repository.spend_logs_repository import spend_logs_repository
 from codemie.service.analytics.handlers.ledger_group_spend import project_report_filters, user_report_filters
+from codemie.service.spend.coverage import TimeRange
 from codemie.service.spend.spend_service import spend_service
 from codemie.service.spend.ledger import CliSpendRow
 from codemie.service.usage_attribution.pipeline import Analysis
@@ -41,6 +45,8 @@ from codemie.service.usage_attribution.spend_widgets.base import (
     SpendFigures,
     SpendTable,
     SpendWidget,
+    WhoPaysFigures,
+    WhoPaysSplit,
     WidgetContext,
 )
 from codemie.service.usage_attribution.spend_widgets.caching import cached_read
@@ -62,6 +68,68 @@ class PlatformSpend(SpendWidget[SpendFigures]):
 
         answer = await spend_service.aggregate_by_spend_group(window, access=self._context.scope, report_filter=None)
         return helpers.rendered(answer)
+
+
+class WhoPaysSpend(SpendWidget[WhoPaysFigures]):
+    """Who Pays: each request's ledger money, in the bucket ``classify`` gives its request id.
+
+    Each channel sums to its ``PlatformSpend`` card: what no classified request covers is unclassified - money with
+    no request id, an id Elasticsearch has not classified, or hourly-imported money with no raw rows. ``classify`` is
+    called only when the answer is not cached.
+    """
+
+    view = "who_pays"
+    output = WhoPaysFigures
+    _BUCKETS: ClassVar[dict[str, str]] = {
+        "charged_back": "charged",
+        "shared_no_budget": "shared",
+        "personal": "personal",
+        "no_customer": "no_customer",
+    }
+
+    def __init__(
+        self,
+        context: WidgetContext,
+        *,
+        classify: Callable[[TimeRange, str], Awaitable[dict[str, tuple[str, str]]]],
+    ):
+        super().__init__(context)
+        self._classify = classify
+
+    @cached_read
+    async def read(
+        self,
+        start: datetime,
+        end: datetime,
+        classification_key: str,  # noqa: ARG002 - consumed by cached_read
+    ) -> WhoPaysFigures:
+        window = self._window(start, end)
+        if window is None:
+            return WhoPaysFigures()
+        cards = await PlatformSpend(self._context).read(start, end)
+        web = await self._split(window, "web", cards.platform)
+        cli = await self._split(window, "cli", cards.cli)
+        return WhoPaysFigures(web=web, cli=cli, complete=cards.complete)
+
+    async def _split(self, window: TimeRange, channel: str, card: float | None) -> WhoPaysSplit:
+        if card is None:
+            return WhoPaysSplit()
+        classification = await self._classify(window, channel)
+        async with get_ledger_async_session() as session:
+            ledger = await spend_logs_repository.sum_by_request_id(
+                session, window, cli=channel == "cli", access=self._context.scope
+            )
+        money = dict.fromkeys(self._BUCKETS.values(), 0.0)
+        for request_id, amount in ledger.items():
+            found = classification.get(request_id) if request_id is not None else None
+            if found is not None:
+                money[self._BUCKETS[found[1]]] += float(amount)
+        paid = {key: helpers.round_cents(money[key]) for key in ("charged", "shared", "personal")}
+        return WhoPaysSplit(
+            **paid,
+            unclassified=helpers.round_cents(card - sum(paid.values())),
+            no_customer=helpers.round_cents(money["no_customer"]),
+        )
 
 
 class PeopleSpend(SpendWidget[SpendTable]):

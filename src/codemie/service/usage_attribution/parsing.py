@@ -289,6 +289,24 @@ def parse_web_funding(aggs: dict | None, fplan: dict[str, Any]) -> dict[str, dic
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# Who Pays request classification
+# ---------------------------------------------------------------------------------------------------------------------
+def parse_request_classification(
+    buckets: list[dict], acc: dict[str, tuple[str, str]], channel: str
+) -> dict[str, tuple[str, str]]:
+    """Accumulate ``request_id -> (channel, category)`` from one partition's buckets; the first claiming filter wins."""
+    from codemie.service.usage_attribution.queries import CLASSIFICATION_ALIASES
+
+    aliases = CLASSIFICATION_ALIASES[channel]
+    for bucket in buckets:
+        request_id = str(bucket["key"])
+        category = next((name for alias, name in aliases if (bucket.get(alias) or {}).get("doc_count")), None)
+        if category:
+            acc[request_id] = (channel, category)
+    return acc
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # Totals (A1)
 # ---------------------------------------------------------------------------------------------------------------------
 def parse_totals(aggs: dict | None) -> dict[str, Any]:

@@ -150,10 +150,14 @@ class TestWebFundingRequest:
             {"range": {"@timestamp": {"gte": ms(MID), "lt": ms(E), "format": "epoch_millis"}}}
         ]
 
-    def test_totals_add_the_funding_to_the_web_who_pays_request(self):
-        body = queries.web_pay_body(S, E, ["p"], self.fplan())
-        assert {"fb", "personal", "shared", "fp", "fg"} == set(body["aggs"])
-        assert set(queries.web_pay_body(S, E, ["p"], funding.plan({}, S, E))["aggs"]) == {"fb", "personal", "shared"}
+    def test_the_funded_clause_charges_whole_range_and_part_range_members(self):
+        clause = queries.funded_clause(self.fplan())["bool"]["should"]
+        assert clause[0] == {"bool": {"filter": [{"term": {"attributes.project.keyword": "p"}},
+                                                 {"terms": {"attributes.user_id.keyword": ["u1"]}}]}}  # fmt: skip
+        assert clause[1]["bool"]["filter"][2]["bool"]["should"] == [
+            {"range": {"@timestamp": {"gte": ms(MID), "lt": ms(E), "format": "epoch_millis"}}}
+        ]
+        assert queries.funded_clause(funding.plan({}, S, E)) == {"match_none": {}}
 
     def test_parsing_charges_back_the_funded_part(self):
         aggs = {

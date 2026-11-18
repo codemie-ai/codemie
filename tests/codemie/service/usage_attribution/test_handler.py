@@ -25,12 +25,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.service.spend.coverage import TimeRange
 from codemie.service.usage_attribution import handler as h
 from codemie.service.usage_attribution.analysis import AnalysisHandle, resolve_range
 from codemie.service.usage_attribution.constants import CATEGORIES, DEFAULT_FRAMEWORK_SKILL_REGEX
 from codemie.service.usage_attribution.sections import shard_of
 from codemie.service.usage_attribution.settings import SettingsError, build_defaults, build_effective, encode_overrides
-from codemie.service.usage_attribution.spend_widgets import CliUsageFigures, SpendFigures, SpendTable
+from codemie.service.usage_attribution.spend_widgets import (
+    CliUsageFigures,
+    SpendFigures,
+    SpendTable,
+    WhoPaysFigures,
+    WhoPaysSplit,
+)
 from codemie.service.usage_attribution.spend_widgets.base import CliCategorySpend, CliReasonSpend
 
 NOW = datetime(2026, 10, 13, 15, 0, tzinfo=timezone.utc)
@@ -111,10 +118,23 @@ class FakeLedger:
     """What the hourly ledger says: a test sets the async ``platform(start, end)``, ``people(start, end, uids)`` and
     ``projects(start, end, names)`` the spend widgets answer through."""
 
-    platform = people = projects = None
+    platform = people = projects = who_pays = None
 
 
 LEDGER = FakeLedger()
+
+
+class FakeWhoPaysSpend:
+    """The Who Pays widget: answers ``LEDGER.who_pays`` and keeps the classifier the handler gave it."""
+
+    classify = None
+
+    def __init__(self, context, *, classify):
+        self.context = context
+        FakeWhoPaysSpend.classify = classify
+
+    async def read(self, *args):
+        return await LEDGER.who_pays(*args)
 
 
 def fake_widget(name):
@@ -134,6 +154,7 @@ def spend_widgets_say_what_the_test_says():
         patch.object(h.spend_widgets, "PlatformSpend", fake_widget("platform")),
         patch.object(h.spend_widgets, "PeopleSpend", fake_widget("people")),
         patch.object(h.spend_widgets, "ProjectSpend", fake_widget("projects")),
+        patch.object(h.spend_widgets, "WhoPaysSpend", FakeWhoPaysSpend),
     ):
         yield
 
@@ -463,27 +484,35 @@ class TestSettingsChecks:
         assert re.fullmatch(h.framework_regex(), name)
 
 
-class TestWebWhoPaysInTotals:
-    def test_the_funded_part_is_charged_back(self):
+class TestWebWhoPaysClassification:
+    """The Web Platform's per-request classification: fallback, funded, shared project, personal project."""
+
+    def fplan(self):
         start, end = datetime(2026, 9, 13, tzinfo=timezone.utc), datetime(2026, 10, 13, tzinfo=timezone.utc)
         s_ms, e_ms = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
         mid = int(datetime(2026, 9, 28, tzinfo=timezone.utc).timestamp() * 1000)
-        fplan = h.funding.plan({"budgeted": {"uA": [[s_ms, e_ms]], "uB": [[mid, e_ms]]}}, start, end)
-        aggs = {
-            "fb": {"spend": {"value": 20}},
-            "personal": {"spend": {"value": 30}},
-            "shared": {"spend": {"value": 150}},
-            "fp": {"p": {"buckets": [{"key": "budgeted", "u": {"buckets": [
-                {"key": "uA", "spend": {"value": 60}}, {"key": "uB", "spend": {"value": 40}}]}}]}},
-            "fg": {"g": {"buckets": {"g0": {"u": {"buckets": [{"key": "uB", "spend": {"value": 10}}]}}}}},
-        }  # fmt: skip
-        # uA all period (60), uB only for part of it (10 of 40); fallback records and the rest paid personally.
-        assert h._web_who_pays(aggs, fplan) == {"charged": 70, "shared": 100, "personal": 30}
+        return start, end, h.funding.plan({"budgeted": {"uA": [[s_ms, e_ms]], "uB": [[mid, e_ms]]}}, start, end)
+
+    def test_the_funded_members_are_charged_back_inside_their_intervals(self):
+        start, end, fplan = self.fplan()
+        body = h.queries.request_classification_body(TimeRange(start, end), ["budgeted"], "web", (None, 10), fplan)
+        sub = body["aggs"]["requests"]["aggs"]
+        assert list(sub) == ["fb", "fd", "sh", "pr"]
+        funded = json.dumps(sub["fd"])
+        assert '"uA"' in funded and '"uB"' in funded and "epoch_millis" in funded
 
     def test_without_funding_nothing_is_charged_back(self):
-        aggs = {"fb": {"spend": {"value": 0}}, "personal": {"spend": {"value": 5}}, "shared": {"spend": {"value": 9}}}
-        fplan = {"projects": [], "full": {}, "groups": []}
-        assert h._web_who_pays(aggs, fplan) == {"charged": 0, "shared": 9, "personal": 5}
+        start, end, _fplan = self.fplan()
+        body = h.queries.request_classification_body(
+            TimeRange(start, end), [], "web", (None, 10), h.funding.plan({}, start, end)
+        )
+        assert {"match_none": {}} in body["aggs"]["requests"]["aggs"]["fd"]["filter"]["bool"]["filter"]
+
+    def test_a_fallback_record_is_shared_before_it_is_charged_back(self):
+        buckets = [
+            {"key": "r", "fb": {"doc_count": 1}, "fd": {"doc_count": 1}, "sh": {"doc_count": 0}, "pr": {"doc_count": 0}}
+        ]
+        assert h.parsing.parse_request_classification(buckets, {}, "web") == {"r": ("web", "shared_no_budget")}
 
 
 @pytest.mark.asyncio
@@ -512,9 +541,7 @@ TOTALS_RESP = {
     "aggregations": {
         "source": {
             "buckets": {
-                "cli": {"spend": {"value": 100}, "who_pays": {"buckets": {
-                    "charged_back": {"spend": {"value": 30}}, "shared_no_budget": {"spend": {"value": 20}},
-                    "personal": {"spend": {"value": 45}}, "no_customer": {"spend": {"value": 5}}}}},
+                "cli": {"spend": {"value": 100}},
                 "other_proxy": {"spend": {"value": 7}},
                 "web_assistant": {"spend": {"value": 40}},
                 "web_workflow": {"spend": {"value": 10}},
@@ -523,79 +550,129 @@ TOTALS_RESP = {
         }
     }
 }  # fmt: skip
-WEB_RESP = {
-    "aggregations": {
-        "fb": {"spend": {"value": 0}},
-        "personal": {"spend": {"value": 20}},
-        "shared": {"spend": {"value": 10}},
-    }
-}
+
+WHO_PAYS = WhoPaysFigures(
+    web=WhoPaysSplit(charged=1.0, shared=2.0, personal=0.5, unclassified=46.5, no_customer=0.0),
+    cli=WhoPaysSplit(charged=30.0, shared=20.0, personal=45.0, unclassified=5.0, no_customer=5.0),
+)
 
 
-async def totals_with(handler, rng, ledger):
-    """``totals()`` over the Elasticsearch answers above, with the hourly ledger answering ``ledger``."""
+async def totals_with(handler, rng, ledger, who_pays=WHO_PAYS, facts=None):
+    """``totals()`` with the hourly ledger's cards answering ``ledger`` and the Who Pays widget ``who_pays``."""
     handler.service.cache = MagicMock()
     handler.service.cache.get = AsyncMock(return_value=None)
     handler.service.cache.set_many = AsyncMock()
     LEDGER.platform = AsyncMock(return_value=ledger)
+    LEDGER.who_pays = AsyncMock(return_value=who_pays)
     repo = MagicMock()
-    repo.execute_aggregation_query = AsyncMock(side_effect=[TOTALS_RESP, WEB_RESP])
+    repo.execute_aggregation_query = AsyncMock(return_value=TOTALS_RESP)
     with (
-        patch.object(h.app_db, "project_facts", AsyncMock(return_value={"shared": ["p"], "funding": {}})),
+        patch.object(h.app_db, "project_facts", AsyncMock(return_value=facts or {"shared": ["p"], "funding": {}})),
         patch("codemie.repository.metrics_elastic_repository.MetricsElasticRepository", return_value=repo),
     ):
         return await handler.totals(rng)
 
 
 @pytest.mark.asyncio
-async def test_totals_are_computed_and_cached():
-    handler, _eff, rng = setup({})
-    data = await totals_with(handler, rng, ledger_groups(10.0, 4.0, 6.0, 1.0))
-    assert data["who_pays"]["web"] == {"charged": 0, "shared": 10, "personal": 43}  # 23 more records without a project
-    assert data["charged_back"] == 30
-    assert data["excluded"] == {"no_customer": 5, "other_proxy": 7}
-    handler.service.cache.set_many.assert_awaited_once()
-    # The cached block is the Elasticsearch one: the ledger figures are laid over it when a response is built.
-    cached = json.loads(next(iter(handler.service.cache.set_many.await_args.args[0].values())))
-    assert (cached["total"], cached["cli"]["total"], cached["web"]["total"]) == (148, 95, 53)
+class TestTotals:
+    async def test_who_pays_is_the_widgets_and_foots_on_the_cards(self):
+        handler, _eff, rng = setup({})
+        data = await totals_with(handler, rng, ledger_groups(150.0, 50.0, 100.0, 1.0))
+        assert data["who_pays"] == {
+            "web": {"charged": 1.0, "shared": 2.0, "personal": 0.5, "unclassified": 46.5},
+            "cli": {"charged": 30.0, "shared": 20.0, "personal": 45.0, "unclassified": 5.0},
+        }
+        assert data["charged_back"] == 31.0
+        assert data["excluded"] == {"other_proxy": 7, "no_customer": 5.0}
 
-
-@pytest.mark.asyncio
-class TestTotalsFromTheLedger:
     async def test_the_platform_figures_come_from_the_ledger(self):
         handler, _eff, rng = setup({})
-        data = await totals_with(handler, rng, ledger_groups(10.0, 4.0, 6.0, 1.0))
-        assert data["total"] == 10.0
-        assert data["cli"] == {"total": 6.0}
-        assert (data["web"]["total"], data["web"]["datasource"]) == (4.0, 1.0)
+        data = await totals_with(handler, rng, ledger_groups(150.0, 50.0, 100.0, 1.0))
+        assert (data["total"], data["cli"], data["web"]["total"]) == (150.0, {"total": 100.0}, 50.0)
+        assert (data["web"]["assistant"], data["web"]["workflow"], data["web"]["datasource"]) == (40, 10, 1.0)
 
-    async def test_the_other_figures_stay_on_elasticsearch(self):
+    async def test_without_ledger_figures_charged_back_has_no_value(self):
         handler, _eff, rng = setup({})
-        data = await totals_with(handler, rng, ledger_groups(10.0, 4.0, 6.0, 1.0))
-        assert (data["web"]["assistant"], data["web"]["workflow"]) == (40, 10)
-        assert data["charged_back"] == 30
-        assert data["who_pays"]["cli"] == {"charged": 30, "shared": 20, "personal": 45}
-        assert data["excluded"] == {"no_customer": 5, "other_proxy": 7}
+        data = await totals_with(handler, rng, ledger_groups(), who_pays=WhoPaysFigures())
+        assert data["charged_back"] is None and data["excluded"]["no_customer"] is None
+        assert data["who_pays"]["cli"] == {"charged": None, "shared": None, "personal": None, "unclassified": None}
 
-    async def test_below_the_floor_the_moved_figures_have_no_value_and_no_key_is_added(self):
+    async def test_the_widget_is_keyed_on_the_shared_projects_and_funding(self):
         handler, _eff, rng = setup({})
-        data = await totals_with(handler, rng, ledger_groups())
-        assert data["total"] is None and data["cli"]["total"] is None
-        assert data["web"]["total"] is None and data["web"]["datasource"] is None
-        cached = json.loads(next(iter(handler.service.cache.set_many.await_args.args[0].values())))
-        assert set(data) == set(cached)
-        assert set(data["web"]) == set(cached["web"]) and set(data["cli"]) == set(cached["cli"])
+        await totals_with(handler, rng, ledger_groups(150.0, 50.0, 100.0, 1.0))
+        start, end, key = LEDGER.who_pays.await_args.args
+        assert (start, end) == (rng.start, rng.end)
+        assert key == h.stable_hash([["p"], h.funding.plan({}, rng.start, rng.end)])
+
+    async def test_the_cached_block_holds_only_what_elasticsearch_has(self):
+        handler, _eff, rng = setup({})
+        await totals_with(handler, rng, ledger_groups(150.0, 50.0, 100.0, 1.0))
+        key, cached = next(iter(handler.service.cache.set_many.await_args.args[0].items()))
+        assert key.startswith("codemie:ua:v7:totals:")
+        assert set(json.loads(cached)) == {"web", "excluded", "duration_ms", "cache"}
 
     async def test_a_cache_hit_gets_the_ledger_figures_too(self):
         handler, _eff, rng = setup({})
-        es = {"total": 148, "web": {"total": 53, "datasource": 3, "assistant": 40}, "cli": {"total": 95}}
+        cached = {"web": {"assistant": 40, "workflow": 10, "datasource": 3}, "excluded": {"other_proxy": 7},
+                  "duration_ms": 1.0, "cache": "miss"}  # fmt: skip
         handler.service.cache = MagicMock()
-        handler.service.cache.get = AsyncMock(return_value=json.dumps(es).encode("utf-8"))
+        handler.service.cache.get = AsyncMock(return_value=json.dumps(cached).encode("utf-8"))
         LEDGER.platform = AsyncMock(return_value=ledger_groups(10.0, 4.0, 6.0, 1.0))
+        LEDGER.who_pays = AsyncMock(return_value=WHO_PAYS)
         with patch.object(h.app_db, "project_facts", AsyncMock(return_value={"shared": [], "funding": {}})):
             data = await handler.totals(rng)
         assert (data["total"], data["cli"]["total"], data["web"]["total"], data["web"]["assistant"]) == (10, 6, 4, 40)
-        assert data["cache"] == "hit"
+        assert data["who_pays"]["cli"]["charged"] == 30.0 and data["cache"] == "hit"
+
+
+def classified(channel, **ids):
+    """A classification response: request id -> its alias (cb/sh/pr/nc for CLI, fb/fd/sh/pr for web)."""
+    aliases = [alias for alias, _ in h.queries.CLASSIFICATION_ALIASES[channel]]
+    return {"aggregations": {"requests": {"buckets": [
+        {"key": rid, **{a: {"doc_count": int(a == alias)} for a in aliases}} for rid, alias in ids.items()]}}}  # fmt: skip
+
+
+@pytest.mark.asyncio
+class TestClassifyRequests:
+    """The classifier the handler gives the Who Pays widget: every request id of a channel, in partitions."""
+
+    WINDOW = SimpleNamespace(start=NOW - timedelta(days=30), end=NOW)
+
+    async def classify(self, channel, ids, fplan=None):
+        async def answer(body):
+            if "cardinality" in json.dumps(body):
+                return {"aggregations": {"requests": {"value": len(ids)}}}
+            return classified(channel, **ids)
+
+        repo = MagicMock()
+        repo.execute_aggregation_query = AsyncMock(side_effect=answer)
+        fplan = fplan or h.funding.plan({}, self.WINDOW.start, self.WINDOW.end)
+        with patch("codemie.repository.metrics_elastic_repository.MetricsElasticRepository", return_value=repo):
+            out = await h._classify_requests(self.WINDOW, ["p"], channel, fplan)
+        return out, [c.args[0] for c in repo.execute_aggregation_query.await_args_list]
+
+    async def test_every_request_id_gets_its_category(self):
+        out, _bodies = await self.classify("cli", {"a": "cb", "b": "sh", "c": "pr", "d": "nc"})
+        assert out == {"a": ("cli", "charged_back"), "b": ("cli", "shared_no_budget"), "c": ("cli", "personal"),
+                       "d": ("cli", "no_customer")}  # fmt: skip
+
+    async def test_many_request_ids_are_read_in_partitions(self):
+        _out, bodies = await self.classify("cli", {f"r{i}": "pr" for i in range(25_000)})
+        parts = [b["aggs"]["requests"]["terms"].get("include") for b in bodies[1:]]
+        assert parts == [{"partition": i, "num_partitions": 3} for i in range(3)]
+
+    async def test_the_web_funding_reaches_the_classification(self):
+        start, end = self.WINDOW.start, self.WINDOW.end
+        whole = [[int(start.timestamp() * 1000), int(end.timestamp() * 1000)]]
+        _out, bodies = await self.classify("web", {"w": "fd"}, h.funding.plan({"p": {"uA": whole}}, start, end))
+        assert '"uA"' in json.dumps(bodies[1]["aggs"]["requests"]["aggs"]["fd"])
+
+    async def test_the_handler_gives_the_widget_this_classifier(self):
+        handler, _eff, rng = setup({})
+        await totals_with(handler, rng, ledger_groups(150.0, 50.0, 100.0, 1.0))
+        with patch.object(h, "_classify_requests", AsyncMock(return_value={"r": ("cli", "personal")})) as real:
+            assert await FakeWhoPaysSpend.classify(self.WINDOW, "cli") == {"r": ("cli", "personal")}
+        real.assert_awaited_once_with(self.WINDOW, ["p"], "cli", h.funding.plan({}, rng.start, rng.end))
 
 
 SUMMARY = {
@@ -716,44 +793,6 @@ class TestTheSpendWidgetsShareOneContext:
         assert len(seen) == 2 and seen[0] is seen[1]
         assert seen[0].user is ADMIN and seen[0].cache is handler.service.cache
         assert reads == [(rng.start, rng.end)] * 2
-
-
-@pytest.mark.asyncio
-async def test_totals_charge_back_the_funded_web_platform_spend():
-    handler, _eff, rng = setup({})
-    handler.service.cache = MagicMock()
-    handler.service.cache.get = AsyncMock(return_value=None)
-    handler.service.cache.set_many = AsyncMock()
-    facts = {
-        "shared": ["p"],
-        "funding": {
-            "assignments": [["p", "b1", "2026-01-01T00:00:00Z", None, True, None]],
-            "allocations": [["p", "uA", "2026-01-01T00:00:00Z", None]],
-            "stops": [],
-        },
-    }
-    totals_resp = {"aggregations": {"source": {"buckets": {"cli": {"spend": {"value": 0}}}}}}
-    web_resp = {
-        "aggregations": {
-            "fb": {"spend": {"value": 0}},
-            "personal": {"spend": {"value": 0}},
-            "shared": {"spend": {"value": 100}},
-            "fp": {"p": {"buckets": [{"key": "p", "u": {"buckets": [
-                {"key": "uA", "spend": {"value": 60}}, {"key": "uB", "spend": {"value": 40}}]}}]}},
-        }
-    }  # fmt: skip
-    repo = MagicMock()
-    repo.execute_aggregation_query = AsyncMock(side_effect=[totals_resp, web_resp])
-    with (
-        patch.object(h.app_db, "project_facts", AsyncMock(return_value=facts)),
-        patch("codemie.repository.metrics_elastic_repository.MetricsElasticRepository", return_value=repo),
-    ):
-        data = await handler.totals(rng)
-    web_body = repo.execute_aggregation_query.await_args_list[1].args[0]
-    assert web_body["aggs"]["fp"]["filter"]["bool"]["filter"][1] == {"terms": {"attributes.project.keyword": ["p"]}}
-    # uA has an allocation of the active budget for the whole range; uB has none and paid personally.
-    assert data["who_pays"]["web"] == {"charged": 60, "shared": 40, "personal": 0}
-    assert data["charged_back"] == 60
 
 
 @pytest.mark.asyncio

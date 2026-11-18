@@ -273,3 +273,34 @@ def test_emit_llm_token_metric_sets_user_email_attribute_to_bound_username():
     attributes = mock_send.call_args.kwargs["attributes"]
     assert attributes[MetricsAttributes.USER_EMAIL] == "jdoe"
     assert attributes["k"] == "v"
+
+
+class TestEmitLlmTokenMetricRequestId:
+    """EPMCDME-17194 follow-up: the ES metric document must carry the same request_id Postgres's
+    ``litellm_spend_logs.codemie_request_id`` carries, so the two can be joined by request_id later."""
+
+    def _emit(self, request_id):
+        with patch("codemie.service.monitoring.base_monitoring_service.send_log_metric") as mock_send:
+            emit_llm_token_metric("some_metric", request_id, {"k": "v"})
+        return mock_send.call_args.kwargs["attributes"]
+
+    def test_request_id_is_written_into_the_metric_attributes(self):
+        attributes = self._emit("req-123")
+
+        assert attributes[MetricsAttributes.REQUEST_ID] == "req-123"
+
+    def test_no_request_id_means_no_attribute(self):
+        attributes = self._emit(None)
+
+        assert MetricsAttributes.REQUEST_ID not in attributes
+
+    def test_round_trip_matches_the_spend_logs_header_byte_for_byte(self):
+        """The two systems this feature joins (ES metric doc, Postgres spend log) must carry an
+        identical string for the same request, or the join silently drops rows."""
+        from codemie.service.spend.spend_logs_metadata import KEY_REQUEST_ID, build_spend_logs_metadata
+
+        request_id = "req-shared-123"
+        attributes = self._emit(request_id)
+        spend_logs_payload = build_spend_logs_metadata(request_id=request_id)
+
+        assert attributes[MetricsAttributes.REQUEST_ID] == spend_logs_payload[KEY_REQUEST_ID]

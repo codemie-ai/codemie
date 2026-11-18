@@ -30,6 +30,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from codemie.service.spend.coverage import TimeRange
 from codemie.service.usage_attribution.constants import (
     EDIT_TOOL_PATTERNS,
     F_ASSISTANT,
@@ -50,6 +51,7 @@ from codemie.service.usage_attribution.constants import (
     F_PROJECT,
     F_PROMPTS,
     F_REPOSITORY,
+    F_REQUEST_ID,
     F_SESSION,
     F_SKILLS_PROJECT,
     F_TOOL_NAMES,
@@ -194,6 +196,75 @@ def who_pays_filters(shared: list[str]) -> dict[str, dict]:
     }
 
 
+#: Per channel, in precedence order: a classification sub-aggregation's alias and the who-pays category it means.
+CLASSIFICATION_ALIASES = {
+    "cli": (("cb", "charged_back"), ("sh", "shared_no_budget"), ("pr", "personal"), ("nc", "no_customer")),
+    # Fallback first: a fallback record is paid inside its shared project however its project is funded.
+    "web": (("fb", "shared_no_budget"), ("fd", "charged_back"), ("sh", "shared_no_budget"), ("pr", "personal")),
+}
+
+
+def funded_clause(fplan: dict[str, Any]) -> dict:
+    """Records a project's platform budget paid for: a funded member, inside their funded intervals (funding.py)."""
+    should: list[dict] = [
+        {"bool": {"filter": [{"term": {F_PROJECT: project}}, {"terms": {F_USER_ID: uids}}]}}
+        for project, uids in sorted((fplan.get("full") or {}).items())
+    ]
+    for project, uids, intervals in fplan.get("groups") or []:
+        in_time = [{"range": {F_TS: {"gte": a, "lt": b, "format": "epoch_millis"}}} for a, b in intervals]
+        should.append(
+            {
+                "bool": {
+                    "filter": [
+                        {"term": {F_PROJECT: project}},
+                        {"terms": {F_USER_ID: uids}},
+                        {"bool": {"should": in_time, "minimum_should_match": 1}},
+                    ]
+                }
+            }
+        )
+    return {"bool": {"should": should, "minimum_should_match": 1}} if should else {"match_none": {}}
+
+
+def _web_classification_filters(shared: list[str], fplan: dict[str, Any]) -> dict[str, dict]:
+    funded = funded_clause(fplan)
+    return {
+        "fb": has_fb(),
+        "fd": {"bool": {"filter": [no_fb(), funded]}},
+        "sh": {"bool": {"filter": [no_fb(), shared_clause(shared)]}},
+        "pr": {"bool": {"filter": [no_fb(), personal_clause(shared)]}},
+    }
+
+
+def _channel_query(channel: str, start: datetime, end: datetime) -> dict:
+    return cli_query(start, end) if channel == "cli" else web_query(start, end)
+
+
+def request_count_body(start: datetime, end: datetime, channel: str) -> dict:
+    """How many distinct request ids a channel's records carry: sizes the classification's partitions."""
+    return {"size": 0, "query": _channel_query(channel, start, end), "aggs": {"requests": card(F_REQUEST_ID, 40000)}}
+
+
+def request_classification_body(
+    window: TimeRange, shared: list[str], channel: str, page: tuple[Part, int], fplan: dict[str, Any] | None = None
+) -> dict:
+    """For every ``request_id`` a channel's records carry in ``window``, which who-pays category it falls in.
+
+    ``page`` is the ``(partition, size)`` of the request-id terms aggregation.
+    """
+    part, size = page
+    if channel == "cli":
+        filters = who_pays_filters(shared)
+        sub = {alias: {"filter": filters[key]} for alias, key in CLASSIFICATION_ALIASES["cli"]}
+    else:
+        sub = {alias: {"filter": clause} for alias, clause in _web_classification_filters(shared, fplan or {}).items()}
+    return {
+        "size": 0,
+        "query": _channel_query(channel, window.start, window.end),
+        "aggs": {"requests": {"terms": terms(F_REQUEST_ID, size, part, order=None), "aggs": sub}},
+    }
+
+
 def wp_aggs(shared: list[str], names: tuple[str, ...] = ("cb", "sh", "nc")) -> dict:
     filters = who_pays_filters(shared)
     by_alias = {"cb": filters["charged_back"], "sh": filters["shared_no_budget"], "nc": filters["no_customer"]}
@@ -316,19 +387,6 @@ def web_funding_aggs(fplan: dict[str, Any]) -> dict:
             },
         }
     return aggs
-
-
-def web_pay_body(start: datetime, end: datetime, shared: list[str], fplan: dict[str, Any]) -> dict:
-    """Web Platform who pays for /totals: fallback records, records in personal and in shared projects, and the
-    funding of the shared ones (funding.py)."""
-    aggs: dict[str, Any] = {
-        "fb": {"filter": has_fb(), "aggs": money()},
-        "personal": {"filter": {"bool": {"filter": [no_fb(), personal_clause(shared)]}}, "aggs": money()},
-        "shared": {"filter": {"bool": {"filter": [no_fb(), shared_clause(shared)]}}, "aggs": money()},
-    }
-    if fplan["projects"]:
-        aggs.update(web_funding_aggs(fplan))
-    return {"size": 0, "query": web_query(start, end), "aggs": aggs}
 
 
 # ---------------------------------------------------------------------------------------------------------------------

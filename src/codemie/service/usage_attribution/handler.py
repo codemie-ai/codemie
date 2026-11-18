@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import logging
 import time
 from collections import Counter, OrderedDict
@@ -43,6 +44,7 @@ from codemie.service.usage_attribution.constants import (
     CATEGORIES,
     EXPERIMENTS,
     LIKELY_PRODUCTION,
+    MAX_BUCKETS_DEFAULT,
     NO_REPOSITORY,
     OUTSIDE_LIMITS,
     PRODUCTION,
@@ -50,9 +52,10 @@ from codemie.service.usage_attribution.constants import (
     SECTION_CLI_EVIDENCE,
     UNCLASSIFIED,
     CHARGED,
+    PERSONAL,
+    SHARED,
     DEFAULT_FRAMEWORK_SKILL_REGEX,
     FEATURE_KEY,
-    PERSONAL,
     SECTION_BREAKDOWN,
     SECTION_GROUP_DETAIL,
     SECTION_GROUPS,
@@ -62,7 +65,6 @@ from codemie.service.usage_attribution.constants import (
     SECTION_SHARED,
     SECTION_SHARED_DETAIL,
     SECTION_SUMMARY,
-    SHARED,
     WEB_KIND_BY_METRIC,
 )
 from codemie.service.usage_attribution.people_groups import candidate_ids, group_candidates, median_days
@@ -384,23 +386,35 @@ class UsageAttributionHandler:
     # ------------------------------------------------------------------ fast totals
     async def totals(self, rng: RangeInfo) -> dict[str, Any]:
         """Total, Web Platform, CLI, Charged Back and Who Pays, without the analysis (A1)."""
-        data = await self._elastic_totals(rng)
-        figures = await spend_widgets.PlatformSpend(self._widget_context()).read(rng.start, rng.end)
-        return {
-            **data,
-            "total": figures.total,
-            "cli": {**data["cli"], "total": figures.cli},
-            "web": {**data["web"], "total": figures.platform, "datasource": figures.embedding},
-        }
-
-    async def _elastic_totals(self, rng: RangeInfo) -> dict[str, Any]:
-        """The totals the analysis side answers, cached; the hourly ledger's figures are laid in by ``totals``."""
         facts = await app_db.project_facts()
         shared = facts["shared"]
         fplan = funding.plan(funding.funded_intervals(facts["funding"], rng.start, rng.end), rng.start, rng.end)
+        data = await self._elastic_totals(rng, shared)
+        context = self._widget_context()
+        figures = await spend_widgets.PlatformSpend(context).read(rng.start, rng.end)
+
+        async def classify(window: Any, channel: str) -> dict[str, tuple[str, str]]:
+            return await _classify_requests(window, shared, channel, fplan)
+
+        who = await spend_widgets.WhoPaysSpend(context, classify=classify).read(
+            rng.start, rng.end, stable_hash([shared, fplan])
+        )
+        charged = None if who.cli.charged is None or who.web.charged is None else r2(who.cli.charged + who.web.charged)
+        return {
+            **data,
+            "total": figures.total,
+            "cli": {"total": figures.cli},
+            "web": {**data["web"], "total": figures.platform, "datasource": figures.embedding},
+            "charged_back": charged,
+            "who_pays": {"web": _who_pays_bars(who.web), "cli": _who_pays_bars(who.cli)},
+            "excluded": {**data["excluded"], "no_customer": who.cli.no_customer},
+        }
+
+    async def _elastic_totals(self, rng: RangeInfo, shared: list[str]) -> dict[str, Any]:
+        """The Web Platform types and other proxied spend, which only Elasticsearch has; cached."""
         key = (
             f"{CACHE_NAMESPACE}:totals:{int(rng.start.timestamp())}:{int(rng.end.timestamp())}:"
-            f"{stable_hash([shared, fplan])}"
+            f"{stable_hash([shared])}"
         )
         cached = await self.service.cache.get(key)
         if cached is not None:
@@ -411,32 +425,11 @@ class UsageAttributionHandler:
 
         repo = MetricsElasticRepository()
         t0 = time.perf_counter()
-        totals_resp, web_resp = await _gather(
-            _query(repo, queries.totals_body(rng.start, rng.end, shared)),
-            _query(repo, queries.web_pay_body(rng.start, rng.end, shared, fplan)),
-        )
+        totals_resp = await _query(repo, queries.totals_body(rng.start, rng.end, shared))
         totals = parsing.parse_totals(totals_resp.get("aggregations"))
-        web_aggs = web_resp.get("aggregations") or {}
-        web_pay = _web_who_pays(web_aggs, fplan)
-        cli = totals["cli"]
-        cli_billed = cli["charged_back"] + cli["shared_no_budget"] + cli["personal"]
-        web_total = sum(totals["web"].values())
-        # Records without a project are personal; the split covers the whole Web Platform total.
-        web_pay[PERSONAL] += max(0.0, web_total - sum(web_pay.values()))
         data = {
-            "total": r2(cli_billed + web_total),
-            "web": {"total": r2(web_total), **{k: r2(v) for k, v in totals["web"].items()}},
-            "cli": {"total": r2(cli_billed)},
-            "charged_back": r2(cli["charged_back"] + web_pay[CHARGED]),
-            "who_pays": {
-                "web": {k: r2(v) for k, v in web_pay.items()},
-                "cli": {
-                    CHARGED: r2(cli["charged_back"]),
-                    SHARED: r2(cli["shared_no_budget"]),
-                    PERSONAL: r2(cli["personal"]),
-                },
-            },
-            "excluded": {"no_customer": r2(cli["no_customer"]), "other_proxy": r2(totals["other_proxy"])},
+            "web": {k: r2(v) for k, v in totals["web"].items()},
+            "excluded": {"other_proxy": r2(totals["other_proxy"])},
             "duration_ms": round((time.perf_counter() - t0) * 1000.0, 1),
             "cache": "miss",
         }
@@ -1155,20 +1148,42 @@ class UsageAttributionHandler:
         return assets
 
 
-def _web_who_pays(aggs: dict[str, Any], fplan: dict[str, Any]) -> dict[str, float]:
-    """Web Platform who pays from ``web_pay_body``: fallback records and the part of shared projects that no project
-    budget paid were paid personally inside shared projects; the funded part was charged back (funding.py)."""
-    shared = parsing.num(aggs, "shared", "spend")
-    funded = parsing.parse_web_funding(aggs, fplan)
-    charged = min(shared, sum(row[1] for members in funded.values() for row in members.values()))
+_QUERY_FAILED = "Usage data could not be read from Elasticsearch. Try again in a few minutes."
+
+
+#: Request ids per classification partition: each carries four filter sub-aggregations, so this bounds the
+#: buckets one response holds to five times it, under Elasticsearch's search.max_buckets.
+_REQUESTS_PER_PARTITION = 10_000
+
+
+def _who_pays_bars(split: spend_widgets.WhoPaysSplit) -> dict[str, float | None]:
     return {
-        CHARGED: charged,
-        SHARED: parsing.num(aggs, "fb", "spend") + shared - charged,
-        PERSONAL: parsing.num(aggs, "personal", "spend"),
+        CHARGED: split.charged,
+        SHARED: split.shared,
+        PERSONAL: split.personal,
+        UNCLASSIFIED: split.unclassified,
     }
 
 
-_QUERY_FAILED = "Usage data could not be read from Elasticsearch. Try again in a few minutes."
+async def _classify_requests(
+    window: Any, shared: list[str], channel: str, fplan: dict[str, Any]
+) -> dict[str, tuple[str, str]]:
+    """``request_id -> (channel, category)`` for every request id a channel's records carry in ``window``."""
+    from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
+
+    repo = MetricsElasticRepository()
+    count_resp = await _query(repo, queries.request_count_body(window.start, window.end, channel))
+    count = int(parsing.num(count_resp.get("aggregations") or {}, "requests"))
+    parts = max(1, math.ceil(count * 1.1 / _REQUESTS_PER_PARTITION))
+    size = min(MAX_BUCKETS_DEFAULT, math.ceil(count * 1.1 / parts) + 1)
+    out: dict[str, tuple[str, str]] = {}
+    for index in range(parts):
+        part = (index, parts) if parts > 1 else None
+        body = queries.request_classification_body(window, shared, channel, (part, size), fplan)
+        resp = await _query(repo, body)
+        buckets = ((resp.get("aggregations") or {}).get("requests") or {}).get("buckets") or []
+        parsing.parse_request_classification(buckets, out, channel)
+    return out
 
 
 async def _query(repo: Any, body: dict[str, Any]) -> dict[str, Any]:
