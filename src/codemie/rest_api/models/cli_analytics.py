@@ -220,6 +220,16 @@ class LocalAnalyticsRepositoriesResponse(BaseModel):
     metadata: LocalAnalyticsResponseMetadata
 
 
+class LocalAnalyticsBranchesData(BaseModel):
+    rows: list[LocalAnalyticsRepositoryBranchRow]
+    pagination: PaginationMetadata
+
+
+class LocalAnalyticsBranchesResponse(BaseModel):
+    data: LocalAnalyticsBranchesData
+    metadata: LocalAnalyticsResponseMetadata
+
+
 # ── Projects ──────────────────────────────────────────────────────────────────
 
 
@@ -236,8 +246,10 @@ class LocalAnalyticsProjectRow(_ClassLists, _EstimateBuckets, _RowPricing):
     tool_calls: int
     tool_calls_success: int
     tool_success_rate: float = Field(..., description=_TOOL_SUCCESS_RATE_DESCRIPTION)
-    repositories: list[LocalAnalyticsRepositoryRow] = Field(
-        ..., description="This project's repositories by cost, each with its branches nested."
+    repositories: list[LocalAnalyticsRepositoryRow] | None = Field(
+        None,
+        description="This project's repositories by cost, each with its branches nested. Null when the request "
+        "sent include_repositories=false.",
     )
 
 

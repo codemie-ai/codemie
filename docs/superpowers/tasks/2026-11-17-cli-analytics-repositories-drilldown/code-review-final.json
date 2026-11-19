@@ -1,0 +1,220 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Check round approved; CR-001..CR-004 resolved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User requested fixes for CR-001..CR-004"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Check round approved; CR-001..CR-004 resolved"
+    }
+  ],
+  "reviewed_head": "34a54062a6e87e2e772734d0473fc6711d0e0321",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All four prior blocking findings (CR-001..CR-004) are resolved on current source: last-page SQL, cache-key and branch-ranking SQL are now pinned by tests, the branches SQL moved to branch_page_sql.py, and the two-project and non-super-admin /repositories tests exist. Source/test files were read, not executed; Stage 7 owns running them.",
+  "confidence": "medium",
+  "check_confidence": "high",
+  "risk_flags": [
+    "breaking-change",
+    "public-api",
+    "data-contract"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 4,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/project_page_sql.py",
+      "line": 55,
+      "title": "Last-page SQL and cache key unpinned by tests",
+      "problem": "The condition returning unattributed session ids only on the last page is not asserted (tests check only the column alias and the NULL project condition). No test asserts branch_unattributed changes dashboard_key or the reader sel key.",
+      "impact": "Changing >= or dropping the condition, or dropping the cache-key line, would show the Unattributed row on every page or serve cached responses across scopes with no test failing. Reachability confirmed only via test grep.",
+      "recommendation": "Assert the offset+limit >= count(projects) condition in the unsearched SQL and ARRAY[]::text[] for the searched one; assert dashboard_key differs for branch_unattributed True vs False.",
+      "status": "resolved",
+      "check_notes": "test_reader asserts last-page condition and ARRAY[] for searched page; dashboard_key and _sel_key tests cover branch_unattributed",
+      "fix": {
+        "change": "Added tests pinning the last-page unattributed-ids condition, the searched empty array, and branch_unattributed in sel key and dashboard_key",
+        "test": "test_reader.py::test_the_project_page_returns_the_unattributed_ids_only_on_the_last_page_of_an_unsearched_page; test_dashboard_cache.py::test_branch_unattributed_changes_the_dashboard_key"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 2176,
+      "title": "Branch ranking SQL has no SQL-level test",
+      "problem": "get_branch_ranking is exercised only by statement-count tests, signature parity and AsyncMock handler tests. NULL-branch ordering, the page filter, count FILTER, selp restriction and facts join are never asserted; the aggregating test support does not cover it.",
+      "impact": "A regression would ship wrong rows or total_count on GET /branches with no failing test.",
+      "recommendation": "Add a reader SQL-recorder test or live-DB aggregate test asserting NULL group ordering, the 'branch IS NULL OR (rn ...)' page filter, count(*) FILTER (WHERE branch IS NOT NULL) and that the NULL group returns its sessions' facts.",
+      "status": "resolved",
+      "check_notes": "test_reader SQL-recorder test asserts NULL ordering, page filter, count FILTER, selp and facts join; strings present in branch_page_sql.py",
+      "fix": {
+        "change": "Added SQL-recorder test for get_branch_ranking: NULL-branch ordering, page filter, selp, count FILTER, facts join",
+        "test": "test_reader.py::test_the_branch_ranking_ranks_named_branches_first_and_pages_only_them"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "title": "Branches SQL bloats reader.py",
+      "problem": "code-quality Module Cohesion: the paged branches query and SQL (~100 lines) were appended to the 3727-line reader.py instead of a sibling module like project_page_sql.py or session_page_sql.py.",
+      "impact": "The documented code-quality standard is blocking and is only partially met.",
+      "recommendation": "Extract the branches page SQL and its helpers into a new module next to project_page_sql.py and import it from reader.py.",
+      "status": "resolved",
+      "check_notes": "branch ranking SQL moved to branch_page_sql.py, imported by reader.py",
+      "fix": {
+        "change": "Moved branch ranking SQL into postgres/branch_page_sql.py; reader.py calls branch_ranking_sql",
+        "test": "n/a (covered by CR-002 test)"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_cli_analytics_storage_wiring.py",
+      "title": "AC-B3/AC-B9 required tests missing",
+      "problem": "The spec requires /repositories?projects=P to be tested with two projects sharing a repository, and the non-super-admin result pinned. Neither exists; the /repositories test only checks is_project_unattributed is forwarded to resolve, and the empty-200 case is pinned for /branches only.",
+      "impact": "Required acceptance criteria are partially unmet; project-scoped metrics and the access outcome for /repositories are unpinned.",
+      "recommendation": "Add a /repositories?projects=P test with two projects sharing a repository asserting P-only metrics, and a test pinning empty 200 for a non-super-admin with is_project_unattributed.",
+      "status": "resolved",
+      "check_notes": "new router test file covers two-project shared repository and non-super-admin empty 200 on /repositories",
+      "fix": {
+        "change": "Added /repositories router tests: shared repository counts only selected project sessions; non-super-admin unattributed gets empty 200",
+        "test": "test_cli_analytics_repositories_scope_router.py"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "B1/AC-B1: /projects is totals-only, no repositories key",
+      "status": "pass",
+      "notes": "repositories dropped from model and handler; test asserts absence"
+    },
+    {
+      "kind": "spec",
+      "item": "B2/AC-B2: /projects search matches project name only; no null row under search",
+      "status": "pass",
+      "notes": "_SEARCH_CONDITION is project_name only"
+    },
+    {
+      "kind": "spec",
+      "item": "B3/AC-B3: /repositories?projects=P gives P-only metrics, tested with two projects sharing a repository",
+      "status": "partial",
+      "notes": "no two-project shared-repository test exists"
+    },
+    {
+      "kind": "spec",
+      "item": "B4/AC-B4: is_project_unattributed on /repositories and /branches via FilterParams.resolve",
+      "status": "pass",
+      "notes": "repositories test only asserts the flag is forwarded"
+    },
+    {
+      "kind": "spec",
+      "item": "B5/AC-B5: GET /branches paged in SQL, repository ANDed with repositories",
+      "status": "pass",
+      "notes": "route, handler and reader added"
+    },
+    {
+      "kind": "spec",
+      "item": "B6/AC-B6: null-named row last row of last page, outside per_page",
+      "status": "pass",
+      "notes": "with_unattributed helper used by all three lists"
+    },
+    {
+      "kind": "spec",
+      "item": "B7/AC-B7: /sessions is_branch_unattributed ANDs with scope; 422 guard",
+      "status": "pass",
+      "notes": "router guard and reader condition tested"
+    },
+    {
+      "kind": "spec",
+      "item": "B8/AC-B8: unpaged /repositories returns as before",
+      "status": "pass",
+      "notes": "null-row logic skipped when include_branches"
+    },
+    {
+      "kind": "spec",
+      "item": "B9 Viewer scope; admin gate, handle_errors, timeout wrapper",
+      "status": "pass",
+      "notes": "present on all three list routes"
+    },
+    {
+      "kind": "spec",
+      "item": "B10/AC-B9: tests pin two-project case and non-super-admin result",
+      "status": "partial",
+      "notes": "two-project test missing; non-super-admin pinned for /branches only"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-B10: fe-contract.md documented",
+      "status": "pass",
+      "notes": "file exists with matching terms; not audited in depth"
+    },
+    {
+      "kind": "spec",
+      "item": "Constraint: EXPLAIN ANALYZE and p95 measured before release",
+      "status": "pending-stage-7",
+      "notes": "runtime measurement only"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 5 commit subjects match EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "Module Cohesion: ~100 lines of branches SQL added to 3727-line reader.py while sibling SQL modules exist"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Security guide absent; sampled SQL uses bound parameters; no concrete security issue found"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Spec AC-B3/AC-B9 are partial (no two-project shared-repository test, no non-super-admin /repositories test), the new branch-ranking SQL is untested, and the standards Module Cohesion rule is partially violated. 8 candidates dismissed as noise or intended (breaking /projects change is spec-mandated); 0 deferred.",
+    "confidence": "medium",
+    "risk_flags": [
+      "breaking-change",
+      "public-api",
+      "data-contract"
+    ]
+  }
+}

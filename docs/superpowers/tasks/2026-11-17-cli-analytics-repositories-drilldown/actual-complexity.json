@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-11-17T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 24,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Filters, ports, Postgres reader plus new branch/project page SQL modules, REST models, router, dashboard cache and analytics handler across repository, service and API layers." },
+    { "dimension": "technical_risk", "reason": "Behavior-changing API contract (totals-only /projects, project-scoped /repositories, new paged /branches, Unattributed null row, is_branch_unattributed filter) over raw paged SQL; OpenAPI baseline regenerated; no schema migration." },
+    { "dimension": "file_change_estimate", "reason": "24 files changed (9 source, about 15 tests and OpenAPI baseline), 1480 insertions; file count is test-heavy so scoring is driven by diffstat mapping." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

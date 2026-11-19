@@ -119,7 +119,9 @@ from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
 from codemie.repository.cli_analytics.postgres.request_routes import REQUEST_ROUTES_CTE, request_route
 from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms, _has_totals
+from codemie.repository.cli_analytics.postgres.branch_page_sql import branch_ranking_sql
 from codemie.repository.cli_analytics.postgres.project_page_sql import project_page_sql
+from codemie.repository.cli_analytics.postgres.project_totals_sql import project_totals_sql
 from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.session_page_sql import (
     FRAMEWORK_NAMES_TABLE,
@@ -1158,7 +1160,13 @@ class PostgresCliAnalyticsReader:
         """What fixes the rows of `sel` apart from the developers filter: the window, the viewer scope and the other
         filters (their bound values and the scope condition)."""
         params = {k: v for k, v in window_params(f).items() if k != "developers"}
-        return (sql_list_condition(f.scope)[0], f.deny_all, f.project_unattributed, sorted(params.items(), key=str))
+        return (
+            sql_list_condition(f.scope)[0],
+            f.deny_all,
+            f.project_unattributed,
+            f.branch_unattributed,
+            sorted(params.items(), key=str),
+        )
 
     async def materialize_sel(self, f: LocalAnalyticsFilter, cohort: str | None = None) -> None:
         """Builds `sel` of `f` once into a TEMP TABLE of the held connection (with the `developer` column and the
@@ -1271,6 +1279,8 @@ class PostgresCliAnalyticsReader:
             conditions.append("repository = ANY($repositories::text[])")
         if f.branch:
             conditions.append("branch = $branch::text")
+        if f.branch_unattributed:
+            conditions.append("coalesce(branch, '') = ''")
         if f.session_ids is not None:
             conditions.append("session_id = ANY($session_ids::text[])")
         if f.subscription_types:
@@ -2189,6 +2199,7 @@ class PostgresCliAnalyticsReader:
         rates: Sequence[ModelRates] = (),
         page: int = 0,
         per_page: int | None = None,
+        unattributed_last: bool = False,
     ) -> Rows:
         """The Repositories groups of the sessions that `search` keeps (ILIKE on the repository, applied to the
         selection before anything is priced or paged), priced, ranked and paged, as rows of `part`:
@@ -2196,14 +2207,17 @@ class PostgresCliAnalyticsReader:
         - `group`: a repository (project_name is its most frequent project, ties to the alphabetically first) or, with
           `include_branches`, a (project, repository, branch). Empty names are NULL. `n` is its session count and
           `cost_usd` its spend; `key` is the rank by session count, then spend, then name. Without `include_branches`
-          only the page is returned (`page` of `per_page`; every group when `per_page` is None).
-        - `count`: `n` groups before paging.
+          only the page is returned (`page` of `per_page`; every group when `per_page` is None). With
+          `unattributed_last` (paged, without branches) the NULL-repository group is not ranked or counted: it ranks
+          after the named ones and rides along with every page for the handler to place (`with_unattributed`).
+        - `count`: `n` groups before paging (named repositories only with `unattributed_last`).
         - `total`: `spend`, `route` and `billed` over the whole selection (before paging), as in Overview.
         - `bucket`: `b_route` / `b_billed` rows, the funding and personal-billed estimates of the returned groups,
           by repository (with `include_branches`: by project and repository, the level the branches roll up to).
 
         The counts of the groups (turns, files, lines, tool calls, classes) are `get_repository_facts`."""
         params = {**window_params(f), **rates_params(rates)}
+        unattributed_apart = False
         if search:
             params["search"] = f"%{search.strip().lower()}%"
         if include_branches:
@@ -2225,7 +2239,16 @@ class PostgresCliAnalyticsReader:
             paging = ""
             if per_page is not None:
                 paging = "WHERE rn > $offset::bigint AND rn <= $offset::bigint + $limit::bigint"
+                if unattributed_last:
+                    # The NULL-repository group ranks after the named ones, is never paged or counted, and rides
+                    # along with every page for the handler to place (`with_unattributed`).
+                    unattributed_apart = True
+                    paging = (
+                        "WHERE repository IS NULL OR (rn > $offset::bigint AND rn <= $offset::bigint + $limit::bigint)"
+                    )
                 params["offset"], params["limit"] = page * per_page, per_page
+        null_last = "(g.repository IS NULL), " if unattributed_apart else ""
+        count_groups = "count(*) FILTER (WHERE repository IS NOT NULL)" if unattributed_apart else "count(*)"
         groupings = [*_TOTAL_GROUPINGS, Grouping("g_spend", group_keys)]
         if include_branches:  # the branches roll up to (project, repository): their estimates come with the groups
             groupings += [
@@ -2250,7 +2273,7 @@ class PostgresCliAnalyticsReader:
         ranked AS (
             SELECT g.*, coalesce(m.cost_usd, 0) AS cost, m.unpriced_models AS unpriced,
                    coalesce(m.cost_incomplete, false) AS incomplete, coalesce(m.cost_priced, false) AS priced,
-                   row_number() OVER (ORDER BY g.session_count DESC, coalesce(m.cost_usd, 0) DESC,
+                   row_number() OVER (ORDER BY {null_last}g.session_count DESC, coalesce(m.cost_usd, 0) DESC,
                                       coalesce(g.repository, '') {_C}, coalesce(g.project_name, '') {_C}) AS rn
             FROM grp g LEFT JOIN money m ON m."grouping" = 'g_spend' AND {money_key}
         ),
@@ -2260,13 +2283,52 @@ class PostgresCliAnalyticsReader:
             branch="branch", cost_usd="cost", unpriced_models="unpriced", cost_incomplete="incomplete",
             cost_priced="priced")} FROM page
         UNION ALL
-        SELECT {_part("count", n="count(*)")} FROM grp
+        SELECT {_part("count", n=count_groups)} FROM grp
         UNION ALL
         SELECT {_gc_part("total", groupings)} FROM money m WHERE m."grouping" IN ('spend', 'route', 'billed')
         UNION ALL
         SELECT {_gc_part("bucket", groupings)} FROM money m WHERE m."grouping" IN ('b_route', 'b_billed')""",
             params,
         )
+
+    async def get_branch_ranking(
+        self,
+        f: LocalAnalyticsFilter,
+        rates: Sequence[ModelRates] = (),
+        page: int = 0,
+        per_page: int = 10,
+    ) -> Rows:
+        """The branches of the sessions selected (the caller scopes `f.repositories` to one repository), priced, ranked
+        by session count, then spend, then name, and paged, as rows of `part`:
+
+        - `group`: a branch (`branch` NULL for the sessions with none) with its counts: `n` sessions, `turns`,
+          `files_changed`, `lines_added` / `lines_removed` (NULL while no session reports lines), `tool_calls`,
+          `tool_calls_success`, the class lists and `cost_usd`; `key` is its rank. Only the page's sessions are read for
+          the counts. The NULL-branch group ranks after the named ones, is never paged or counted, and rides along with
+          every page for the handler to place (`with_unattributed`).
+        - `count`: `n` named branches before paging.
+        - `total`: `spend`, `route` and `billed` over the whole selection, as in Overview."""
+        groupings = [*_TOTAL_GROUPINGS, Grouping("g_spend", ["branch"])]
+        params = {
+            **window_params(f),
+            **rates_params(rates),
+            "offset": min(page * per_page, _MAX_PAGE_OFFSET),
+            "limit": per_page,
+        }
+        sql = branch_ranking_sql(
+            sel_ctes=self._sessions_cte(f, with_developer=True),
+            priced_groups=priced_groups_cte(),
+            money_from=grouped_cost_sql(groupings),
+            fact_ctes=lambda sessions: ",\n        ".join(
+                [_turns_cte(sessions), _tools_cte(sessions), _files_ctes(sessions), _lines_cte(sessions)]
+            ),
+            facts_from=f"{_SESSION_FACTS_FROM.replace('sel s', 'selp s', 1)}\n            {_TOOL_FACTS_FROM}",
+            fact_columns=f"{_SESSION_FACT_COLUMNS}, {_TOOL_FACT_COLUMNS}",
+            part=_part,
+            total_part=f"""SELECT {_gc_part("total", groupings)} FROM money m
+        WHERE m."grouping" IN ('spend', 'route', 'billed')""",
+        )
+        return await self._priced_q(f, sql, params)
 
     async def get_repository_buckets(
         self,
@@ -2626,7 +2688,7 @@ class PostgresCliAnalyticsReader:
         )"""
         return ctes, params
 
-    async def get_session_page(
+    async def get_session_page(  # noqa: PLR0913 - implements the port signature of the SQL page statement
         self,
         f: LocalAnalyticsFilter,
         sort_by: str,
@@ -2735,6 +2797,7 @@ class PostgresCliAnalyticsReader:
             or f.project_unattributed
             or f.repositories
             or f.branch
+            or f.branch_unattributed
             or f.subscription_types
             or f.project_origins
             or scope.mode != "exclude"
@@ -2851,22 +2914,27 @@ class PostgresCliAnalyticsReader:
         per_page: int,
         rates: Sequence[ModelRates],
         search: str | None = None,
+        drilldown: bool = False,
     ) -> ProjectPage:
         """One page of the project breakdown, decided in SQL (`project_page_sql`): the sessions of `sel` whose
         project or repository contains `search` (case-insensitive) are grouped by project ('' reads NULL, the
-        unattributed project) and ordered by their spend priced with `rates`, highest first, the unattributed
-        project last, then by name. `matched_session_ids` is None without a search (every session of the window)."""
+        unattributed project) and ordered by their spend priced with `rates`, highest first, the unattributed project
+        last, then by name. With `drilldown` the search matches project names only and the unattributed project is
+        kept out of the ranking and the count: its sessions come apart (`unattributed_session_ids`, last page only).
+        `matched_session_ids` is None without a search (every session of the window)."""
         search = search.strip().lower() if search and search.strip() else None
         if search and "\x00" in search:
             # PostgreSQL text cannot hold a NUL, so no session matches; the driver would reject it.
-            return ProjectPage(0, [], [], [], await self.get_window_model_flags(f))
+            return ProjectPage(0, [], [], [], [], await self.get_window_model_flags(f))
         params = window_params(f)
         params.update(rates_params(rates))
         params["limit"] = per_page
         params["offset"] = min(page * per_page, _MAX_PAGE_OFFSET)
         if search:
             params["search"] = search
-        rows = await self._q(project_page_sql(self._sessions_cte(f, lean=True), searched=bool(search)), params)
+        rows = await self._q(
+            project_page_sql(self._sessions_cte(f, lean=True), searched=bool(search), drilldown=drilldown), params
+        )
         row = rows[0]
         flags = json.loads(row["flags"]) if isinstance(row["flags"], str) else row["flags"]
         matched = row["matched_session_ids"]
@@ -2874,9 +2942,28 @@ class PostgresCliAnalyticsReader:
             total=int(row["total"]),
             project_names=[name or None for name in row["project_names"]],
             session_ids=list(row["session_ids"]),
+            unattributed_session_ids=list(row["unattributed_session_ids"]),
             matched_session_ids=None if matched is None else list(matched),
             model_flags=[(entry[0], tuple(bool(v) for v in entry[1:])) for entry in flags],
         )
+
+    async def get_project_totals(self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates] = ()) -> Rows:
+        """The totals of every project of the sessions selected (the caller restricts `f` to the page's sessions), one
+        statement (`project_totals_sql`): per project (`project_name` NULL for the unattributed one, last) its
+        `session_count`, `turns`, `files_changed`, `lines_added` / `lines_removed` (NULL while no session reports
+        lines), `tool_calls`, `tool_calls_success`, the class lists, `cost_usd` (catalog-priced with `rates`),
+        `repository_count` (distinct repositories, the sessions without one counted as one) and `session_ids`. The
+        drill-down of GET /projects reads this instead of the per-session facts and the nested repository rows."""
+        groupings = [Grouping("g_spend", ["project"])]
+        sql = project_totals_sql(
+            sel_ctes=self._sessions_cte(f, with_developer=True),
+            priced_groups=priced_groups_cte(),
+            money_from=grouped_cost_sql(groupings),
+            fact_ctes=",\n        ".join([_turns_cte(), _tools_cte(), _files_ctes(), _lines_cte()]),
+            facts_from=f"{_SESSION_FACTS_FROM}\n            {_TOOL_FACTS_FROM}",
+            fact_columns=f"{_SESSION_FACT_COLUMNS}, {_TOOL_FACT_COLUMNS}",
+        )
+        return await self._priced_q(f, sql, {**window_params(f), **rates_params(rates)})
 
     async def get_framework_page(
         self,
@@ -3393,7 +3480,7 @@ class PostgresCliAnalyticsReader:
 
         # each predicate selects the API requests `a` that both the token/cost sums and the per-model sums read
         def agent_requests(a: str) -> str:
-            return f"{a}.span_id IN (SELECT ag.parent_span_id FROM agent_groups ag WHERE ag.agent_id = g.agent_id)"
+            return f"{a}.span_id IN (SELECT ag.parent_span_id FROM agent_groups ag WHERE ag.agent_id = g.agent_id)"  # noqa: S608 - `a` is a table alias written in this method
 
         def window_requests(a: str) -> str:
             return (

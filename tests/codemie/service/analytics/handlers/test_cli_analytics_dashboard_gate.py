@@ -179,13 +179,14 @@ async def test_other_paths_do_not_use_the_gate():
             if "dashboard_request" in inspect.getsource(m)
         ]
         # every window-wide dashboard: /cost (live) and its rollup read, the two steps of /users and /user-charts
-        # (rollup read, live statements), Overview (live) and its rollup read, Efficiency, Repositories and Tools; not
+        # (rollup read, live statements), Overview (live) and its rollup read, Efficiency, Repositories, Branches and Tools; not
         # Sessions or a session detail
         assert sorted(users) == [
             "_rollup_cost",
             "_rollup_overview",
             "_rollup_users",
             "_users_live",
+            "get_branches",
             "get_cost",
             "get_efficiency",
             "get_overview",

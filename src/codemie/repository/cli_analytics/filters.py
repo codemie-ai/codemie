@@ -52,6 +52,8 @@ class LocalAnalyticsFilter:
         self.projects = projects or None
         self.repositories = repositories or None
         self.branch = branch or None
+        # Only the sessions with no branch; set by the /sessions route, which requires a repository scope with it.
+        self.branch_unattributed = False
         self.deny_all = deny_all
         self.project_unattributed = project_unattributed
         self.session_ids: list[str] | None = None
@@ -77,6 +79,7 @@ class LocalAnalyticsFilter:
             or self.users
             or self.projects
             or self.repositories
+            or self.branch_unattributed
             or self.project_unattributed
             or self.subscription_types
             or self.project_origins

@@ -343,3 +343,18 @@ async def test_an_expired_answer_is_dropped_when_it_is_looked_up():
     assert ("k",) not in cache._entries  # not kept until 32 newer keys push it out
     waiting.cancel()
     await asyncio.gather(waiting, return_exceptions=True)
+
+
+def test_branch_unattributed_changes_the_dashboard_key():
+    plain = make_filter()
+    flagged = make_filter()
+    flagged.branch_unattributed = True
+
+    assert dashboard_key("sessions", plain, now=NOW) != dashboard_key("sessions", flagged, now=NOW)
+
+
+def test_include_repositories_changes_the_dashboard_key():
+    # `/projects` answers differently per mode (nested repositories or not): a keyed `extra` keeps the two apart.
+    f = make_filter()
+
+    assert dashboard_key("projects", f, True, now=NOW) != dashboard_key("projects", f, False, now=NOW)

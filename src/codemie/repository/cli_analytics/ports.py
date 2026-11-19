@@ -148,13 +148,16 @@ RatesFor = Callable[[Iterable[str]], Mapping[str, ModelRates]]
 class ProjectPage:
     """One page of the project breakdown as the database decided it (`get_project_page`).
 
-    `project_names` is the page in order (None = the unattributed project), `session_ids` the matching sessions of
-    those projects, `matched_session_ids` every matching session of the window (None without a search: all of
-    them) and `model_flags` the priced-kind flags of the window's spend models (`record_unpriced_from_flags`)."""
+    `project_names` is the page in order (None = the unattributed project, last, only without `drilldown`) and
+    `session_ids` the matching sessions of those projects. With `drilldown` the unattributed project is not ranked or
+    counted (`total` counts named projects only): `unattributed_session_ids` are its sessions, filled only on the last
+    page and never under a search. `matched_session_ids` every matching session of the window (None without a search:
+    all of them) and `model_flags` the priced-kind flags of the window's spend models (`record_unpriced_from_flags`)."""
 
     total: int
     project_names: list[str | None]
     session_ids: list[str]
+    unattributed_session_ids: list[str]
     matched_session_ids: list[str] | None
     model_flags: list[tuple[str, tuple[bool, ...]]]
 
@@ -554,7 +557,22 @@ class CliAnalyticsReader(Protocol):
         rates: Sequence[ModelRates] = (),
         page: int = 0,
         per_page: int | None = None,
+        unattributed_last: bool = False,
     ) -> Rows: ...
+
+    async def get_branch_ranking(
+        self,
+        f: LocalAnalyticsFilter,
+        rates: Sequence[ModelRates] = (),
+        page: int = 0,
+        per_page: int = 10,
+    ) -> Rows: ...
+
+    async def get_project_totals(self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates] = ()) -> Rows:
+        """The totals of every project of the sessions selected (the caller restricts `f` to the page's sessions): one
+        row per project with its counts, catalog-priced `cost_usd`, `repository_count` and `session_ids`, the
+        unattributed project (`project_name` NULL) last."""
+        ...
 
     async def get_repository_buckets(
         self,
@@ -588,7 +606,7 @@ class CliAnalyticsReader(Protocol):
         include_costless: bool = False,
     ) -> Rows: ...
 
-    async def get_session_page(
+    async def get_session_page(  # noqa: PLR0913 - port signature mirrors the SQL page statement's parameters
         self,
         f: LocalAnalyticsFilter,
         sort_by: str,
@@ -623,8 +641,11 @@ class CliAnalyticsReader(Protocol):
         per_page: int,
         rates: Sequence[ModelRates],
         search: str | None = None,
+        drilldown: bool = False,
     ) -> ProjectPage:
-        """One spend-ordered page of projects (unattributed last); `search` matches a project or repository name."""
+        """One spend-ordered page of projects (unattributed last); `search` matches a project or repository name.
+        With `drilldown`, `search` matches project names only and the unattributed project is not ranked or counted:
+        its sessions are returned apart on the last page (never under a search)."""
         ...
 
     async def get_framework_page(

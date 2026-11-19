@@ -143,7 +143,15 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
         return rows
 
     async def repository_all(
-        f, include_branches=False, search=None, rates=(), page=0, per_page=None, priced=True, spend=True
+        f,
+        include_branches=False,
+        search=None,
+        rates=(),
+        page=0,
+        per_page=None,
+        priced=True,
+        spend=True,
+        unattributed_last=False,
     ):
         facts = await repo.get_session_cost_facts(f, search=search, include_costless=True)
         turns = {_s(r.get("session_id")): _i(r.get("turns")) for r in await repo.get_turns_by_session(f)}
@@ -205,8 +213,17 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
             out.append(group)
         out.sort(key=lambda r: (r["repository"] or "", r["project_name"] or ""))
         out.sort(key=lambda r: (r["n"], _float_sort_key(r["cost_usd"])), reverse=True)
+        paged = unattributed_last and not include_branches and per_page is not None
+        if paged:  # with unattributed_last the NULL-repository group ranks after the named ones, is never paged or counted, rides every page
+            out = [g for g in out if g["repository"] is not None] + [g for g in out if g["repository"] is None]
         ranked = [{**g, "key": str(rank)} for rank, g in enumerate(out, 1)]
-        shown = ranked if include_branches or per_page is None else ranked[page * per_page : (page + 1) * per_page]
+        if paged:
+            named = [g for g in ranked if g["repository"] is not None]
+            shown = [*named[page * per_page : (page + 1) * per_page], *(g for g in ranked if g["repository"] is None)]
+        elif include_branches or per_page is None:
+            shown = ranked
+        else:
+            shown = ranked[page * per_page : (page + 1) * per_page]
 
         def pricing(sids) -> dict:  # the group's own priced rows, as `cost_priced` and the unpriced list in the SQL
             mine = [r for r in priced_rows if r["session_id"] in sids]
@@ -221,7 +238,7 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
             {"part": "group", **{k: v for k, v in g.items() if k != "_sids"}, **(pricing(g["_sids"]) if priced else {})}
             for g in shown
         ]  # the facts read (`priced=False`) has no pricing, as the SQL of `get_repository_facts` has none
-        rows.append({"part": "count", "n": len(out)})
+        rows.append({"part": "count", "n": len([g for g in out if g["repository"] is not None]) if paged else len(out)})
         rows += [{"part": "total", **row} for row in total_rows(spend, priced_rows, returned)]
         # the funding and personal-billed estimates of the groups shown, by repository (by project and repository when
         # the branches roll up)
@@ -318,8 +335,12 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
     async def efficiency_money(f, rates=()):
         return await efficiency_all(f, {"money"})
 
-    async def repository_ranking(f, include_branches=False, search=None, rates=(), page=0, per_page=None):
-        rows = await repository_all(f, include_branches, search, rates, page, per_page)
+    async def repository_ranking(
+        f, include_branches=False, search=None, rates=(), page=0, per_page=None, unattributed_last=False
+    ):
+        rows = await repository_all(
+            f, include_branches, search, rates, page, per_page, unattributed_last=unattributed_last
+        )
         ranked = (
             "key",
             "n",
@@ -362,6 +383,65 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
             for r in keep
         ]
 
+    async def project_totals(f, rates=()):
+        """The per-project totals of the selected sessions, as `get_project_totals` returns them: the same per-session
+        facts the repository oracle sums, grouped by project only, with the repositories counted as the nested rows
+        count them (the sessions without one are one more)."""
+        facts = await repo.get_session_cost_facts(f, include_costless=True)
+        turns = {_s(r.get("session_id")): _i(r.get("turns")) for r in await repo.get_turns_by_session(f)}
+        files = {_s(r.get("session_id")): r for r in await repo.get_file_facts_by_session(f)}
+        tools = {_s(r.get("session_id")): r for r in await repo.get_tool_success_by_session(f)}
+        lines = {_s(r.get("session_id")): r for r in await repo.get_lines_by_session(f)}
+        returned = {_s(r.get("session_id")) for r in facts}
+        spend, _ = await money(f, returned)
+        groups: dict[str | None, dict] = {}
+        for row in facts:
+            sid = _s(row.get("session_id"))
+            project = _s(row.get("project_name")) or None
+            group = groups.setdefault(
+                project,
+                {
+                    "project_name": project,
+                    "session_count": 0,
+                    "turns": 0,
+                    "files_changed": 0,
+                    "_added": [],
+                    "_removed": [],
+                    "tool_calls": 0,
+                    "tool_calls_success": 0,
+                    "subscription_types": set(),
+                    "project_origins": set(),
+                    "_repositories": set(),
+                    "cost_usd": 0.0,
+                    "session_ids": [],
+                },
+            )
+            group["session_count"] += 1
+            group["session_ids"].append(sid)
+            group["turns"] += turns.get(sid, 0)
+            group["files_changed"] += _i(files.get(sid, {}).get("files_changed"))
+            for name in ("added", "removed"):
+                value = lines.get(sid, {}).get(f"lines_{name}")
+                group[f"_{name}"].append(None if value is None else _i(value))
+            group["tool_calls"] += _i(tools.get(sid, {}).get("tool_calls"))
+            group["tool_calls_success"] += _i(tools.get(sid, {}).get("tool_calls_success"))
+            group["subscription_types"].add(_s(row.get("subscription_type")) or "unknown")
+            group["project_origins"].add(_s(row.get("project_origin")) or "none")
+            group["_repositories"].add(_s(row.get("repository")))
+            group["cost_usd"] += spend.by_session.get(sid, 0.0)
+        out = []
+        for group in groups.values():
+            group["lines_added"], group["lines_removed"] = (
+                _known_sum(group.pop("_added")),
+                _known_sum(group.pop("_removed")),
+            )
+            group["repository_count"] = len(group.pop("_repositories"))
+            group["subscription_types"] = sorted(group["subscription_types"])
+            group["project_origins"] = sorted(group["project_origins"])
+            out.append(group)
+        out.sort(key=lambda r: (r["project_name"] is None, r["project_name"] or ""))
+        return out
+
     async def overview_models(f):
         by_model = {_s(r.get("key")): r for r in await repo.get_class_lists(f, "model")}
         return [
@@ -403,6 +483,7 @@ def aggregating(repo: Any) -> Any:  # noqa: C901 - one closure per statement, sh
     repo.get_repository_ranking = AsyncMock(side_effect=repository_ranking)
     repo.get_repository_facts = AsyncMock(side_effect=repository_facts)
     repo.get_repository_buckets = AsyncMock(side_effect=repository_buckets)
+    repo.get_project_totals = AsyncMock(side_effect=project_totals)
     repo.get_efficiency_facts = AsyncMock(side_effect=efficiency_facts)
     repo.get_efficiency_money = AsyncMock(side_effect=efficiency_money)
     return repo

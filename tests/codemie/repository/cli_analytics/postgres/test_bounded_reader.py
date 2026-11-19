@@ -300,6 +300,7 @@ async def test_a_sessions_request_holds_the_connection_block_once_and_frees_it_b
 _DASHBOARD_CALLS = {
     "get_overview": ((), 7, "get_overview_money"),
     "get_repositories": ((0, 10, False), 2, "get_repository_ranking"),
+    "get_branches": (("repo-a", 0, 10), 2, "get_branch_ranking"),
     "get_efficiency": ((), 4, "get_efficiency_money"),
 }  # method: (arguments after the filter, statements the request runs, its priced statement)
 
@@ -345,7 +346,10 @@ async def test_a_dashboard_request_on_the_real_reader_holds_one_connection_and_o
     await getattr(LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)), method)(_filter(), *args)  # type: ignore[arg-type]
 
     assert (engine.acquisitions, engine.max_held, engine.max_running, engine.held) == (1, 1, 1, 0)
-    assert engine.fetch.await_count == statements + 1  # + the probe of the stored-mode switch (cost models)
+    # + the probe of the stored-mode switch (cost models), which only an unnarrowed window makes: a branch list is
+    # always narrowed to its repository
+    probe = 0 if method == "get_branches" else 1
+    assert engine.fetch.await_count == statements + probe
 
 
 @pytest.mark.asyncio
@@ -387,3 +391,14 @@ async def test_a_client_command_timeout_on_a_held_connection_is_a_statement_time
 
     with pytest.raises(StatementTimeout):
         await PostgresCliAnalyticsReader(engine)._fetch(engine, "SELECT 1", {})  # type: ignore[arg-type]
+
+
+def test_the_branch_ranking_is_a_port_statement_the_postgres_reader_implements_with_the_same_signature() -> None:
+    import inspect
+
+    from codemie.repository.cli_analytics.ports import CliAnalyticsReader
+
+    port = inspect.signature(CliAnalyticsReader.get_branch_ranking)
+    real = inspect.signature(PostgresCliAnalyticsReader.get_branch_ranking)
+
+    assert list(port.parameters) == list(real.parameters) == ["self", "f", "rates", "page", "per_page"]

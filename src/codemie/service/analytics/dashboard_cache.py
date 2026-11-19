@@ -91,6 +91,7 @@ def dashboard_key(endpoint: str, f: LocalAnalyticsFilter, *extra: Any, now: date
         _sorted(f.projects),
         _sorted(f.repositories),
         f.branch,
+        f.branch_unattributed,
         f.deny_all,
         f.project_unattributed,
         _sorted(f.session_ids),

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Make CLI analytics /projects totals-only with name-only search, add a paged branches-of-repository endpoint, add project-scoped repository paging with an Unattributed row placed last outside the page of 10, and write an FE contract file (EPMCDME-17349).",
+  "generated": "2026-11-17T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Router, handler, reader port, Postgres reader, project_page_sql and response models all change, and a new branch-paging path is added. All of it sits in the one CLI analytics read subsystem." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the paged /projects and /repositories lists. It does not cover branch paging or an Unattributed row placed outside the page, and total_count semantics change. Removing the required repositories field from the /projects row breaks existing FE consumers and handler tests. Several edge cases are enumerated (empty list, unattributed per level, error state) and no test pins unattributed placement or search semantics today." },
+    { "dimension": "file_change_estimate", "reason": "About 8-10 modified files: router, handler, ports, reader, project_page_sql, models, the OpenAPI baseline and 3-4 existing test files. Also 2-4 new files: the fe-contract.md, new tests and possibly a branch SQL builder." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk held at L: no exact precedent for branch paging or unattributed-last-outside-page, and the contract is breaking for FE consumers"
+  ],
+  "split_recommendation": null
+}

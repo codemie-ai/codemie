@@ -97,6 +97,7 @@ def _handler() -> MagicMock:
     handler.get_users = AsyncMock(return_value=(users, pricer))
     handler.get_repositories = AsyncMock(return_value=({}, pricer))
     handler.get_projects = AsyncMock(return_value=({}, pricer))
+    handler.get_branches = AsyncMock(return_value=({}, pricer))
     handler.get_tools = AsyncMock(return_value={})
     handler.get_activity = AsyncMock(return_value={})
     handler.get_efficiency = AsyncMock(return_value=({}, pricer))
@@ -123,8 +124,12 @@ _ROUTES = [
         },
     ),
     ("get_user_charts", {}),
-    ("get_repositories", {"page": None, "per_page": None, "include_branches": False, "search": None}),
-    ("get_projects", {"page": 0, "per_page": 50, "search": None}),
+    (
+        "get_repositories",
+        {"page": None, "per_page": None, "include_branches": False, "search": None, "unattributed_last": False},
+    ),
+    ("get_projects", {"page": 0, "per_page": 50, "search": None, "include_repositories": True}),
+    ("get_branches", {"repository": "r", "page": 0, "per_page": 10, "is_project_unattributed": False}),
     ("get_tools", {}),
     ("get_activity", {"tz": None}),
     ("get_efficiency", {}),
@@ -139,6 +144,7 @@ _ROUTES = [
             "framework": None,
             "is_unattributed": False,
             "branch": None,
+            "is_branch_unattributed": False,
             "is_project_unattributed": False,
             "personal_only": False,
         },

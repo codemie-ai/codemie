@@ -88,6 +88,7 @@ from codemie.rest_api.models.cli_analytics import (
     LocalAnalyticsFrameworksResponse,
     LocalAnalyticsOverviewResponse,
     LocalAnalyticsProjectsResponse,
+    LocalAnalyticsBranchesResponse,
     LocalAnalyticsRepositoriesResponse,
     LocalAnalyticsSessionDetailResponse,
     LocalAnalyticsSessionsResponse,
@@ -116,6 +117,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_PAGE = 0
 DEFAULT_PER_PAGE = 20
 MAX_PER_PAGE = 1000
+_PROJECT_UNATTRIBUTED_DESCRIPTION = "Return only sessions with no project"
 
 _ERR_BODY_TOO_LARGE = "Request body too large"
 # The storage refuses its configuration; the reason is logged at startup, not sent to clients.
@@ -767,17 +769,23 @@ async def _attach_user_ids(rows: list[dict]) -> None:
     dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics repositories")
-async def get_repositories(
+async def get_repositories(  # noqa: PLR0913 - FastAPI route: one parameter per query parameter
     user: User = Depends(authenticate),
     filters: FilterParams = Depends(FilterParams),
     page: int | None = Query(None, ge=0),
     per_page: int | None = Query(None, ge=1, le=MAX_PER_PAGE),
     include_branches: bool = Query(False, description="Include nested branch rows within each repository row"),
     search: str | None = Query(None, description="Filter by repository name"),
+    is_project_unattributed: bool = Query(False, description=_PROJECT_UNATTRIBUTED_DESCRIPTION),
+    unattributed_last: bool = Query(
+        False,
+        description="When true, `total_count`/`has_more` count named repositories only and the group of sessions with "
+        "no repository is the last row of the last page, outside `per_page`; a search never returns it.",
+    ),
 ) -> JSONResponse:
     _ensure_enabled()
     start_ns = time.monotonic_ns()
-    f = await filters.resolve(user)
+    f = await filters.resolve(user, is_project_unattributed)
     # Omitting both page and per_page means "all repositories with nested branches".
     fetch_all = page is None and per_page is None
     if fetch_all:
@@ -787,9 +795,37 @@ async def get_repositories(
         resolved_page = page if page is not None else DEFAULT_PAGE
         resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
     with _statement_timeout_as_504("repositories"):
-        data, pricer = await _handler().get_repositories(f, resolved_page, resolved_per_page, include_branches, search)
+        data, pricer = await _handler().get_repositories(
+            f, resolved_page, resolved_per_page, include_branches, search, unattributed_last
+        )
     metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsRepositoriesResponse)
+
+
+@router.get(
+    "/branches",
+    response_model=LocalAnalyticsBranchesResponse,
+    summary="Local analytics branches of one repository",
+    dependencies=[Depends(_admin_gate)],
+)
+@handle_errors("local analytics branches")
+async def get_branches(
+    user: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection
+    filters: FilterParams = Depends(FilterParams),  # noqa: B008 - FastAPI dependency injection
+    repository: str = Query(..., min_length=1, description="Repository whose branches are listed"),
+    page: int = Query(DEFAULT_PAGE, ge=0),
+    per_page: int = Query(DEFAULT_PER_PAGE, ge=1, le=MAX_PER_PAGE),
+    is_project_unattributed: bool = Query(False, description=_PROJECT_UNATTRIBUTED_DESCRIPTION),
+) -> JSONResponse:
+    """One page of a repository's branches by session count, then spend, then name. The sessions without a branch are
+    the last row of the last page, outside `per_page` and `total_count`. `repository` is ANDed with `repositories`."""
+    _ensure_enabled()
+    start_ns = time.monotonic_ns()
+    f = await filters.resolve(user, is_project_unattributed)
+    with _statement_timeout_as_504("branches"):
+        data, pricer = await _handler().get_branches(f, repository, page, per_page)
+    metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
+    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsBranchesResponse)
 
 
 @router.get(
@@ -799,18 +835,28 @@ async def get_repositories(
     dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics projects")
-async def get_projects(
+async def get_projects(  # noqa: PLR0913 - FastAPI route: one parameter per query parameter
     user: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection
     filters: FilterParams = Depends(FilterParams),  # noqa: B008 - FastAPI dependency injection
     page: int = Query(DEFAULT_PAGE, ge=0),
     per_page: int = Query(DEFAULT_PER_PAGE, ge=1, le=MAX_PER_PAGE),
-    search: str | None = Query(None, description="Filter by project or repository name"),
+    search: str | None = Query(
+        None, description="Filter by project name (and, with include_repositories=true, by repository name)"
+    ),
+    include_repositories: bool = Query(
+        True,
+        description="Nest each project's repositories (with their branches) in its row. Send false for totals-only "
+        "rows (no `repositories`): the search then matches project names only and the unattributed project is the "
+        "last row of the last page, outside `per_page` and `total_count`; a search never returns it.",
+    ),
 ) -> JSONResponse:
-    """One page of projects sorted by cost, each with its repositories and their branches nested."""
+    """One page of projects sorted by cost, each with its repositories and their branches nested; with
+    `include_repositories=false`, totals only (drill-down: repositories come from `/repositories`)."""
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, pricer = await _handler().get_projects(f, page, per_page, search)
+    with _statement_timeout_as_504("projects"):
+        data, pricer = await _handler().get_projects(f, page, per_page, search, include_repositories)
     metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsProjectsResponse)
 
@@ -925,7 +971,7 @@ async def get_frameworks(user: User = Depends(authenticate)) -> JSONResponse:
     summary="Local analytics session list",
 )
 @handle_errors("local analytics sessions", timeout_504=_ERR_SESSIONS_TIMEOUT)
-async def get_sessions(
+async def get_sessions(  # noqa: PLR0913 - FastAPI route: one parameter per query parameter
     user: User = Depends(authenticate),
     filters: FilterParams = Depends(FilterParams),
     page: int | None = Query(None, ge=0),
@@ -935,19 +981,29 @@ async def get_sessions(
     framework: str | None = Query(None, description="Filter by delivery framework"),
     is_unattributed: bool = Query(False, description="Return only sessions with no attributed repository"),
     branch: str | None = Query(None, description="Filter sessions by branch name"),
-    is_project_unattributed: bool = Query(False, description="Return only sessions with no project"),
+    is_branch_unattributed: bool = Query(
+        False, description="Return only sessions with no branch; requires `repositories`, excludes `branch`"
+    ),
+    is_project_unattributed: bool = Query(False, description=_PROJECT_UNATTRIBUTED_DESCRIPTION),
     personal_only: bool = Query(
         False, description="Return only the caller's own Personal sessions (always on for non-admins)"
     ),
 ) -> JSONResponse:
     # No _admin_gate: any authenticated user may list; a non-admin is forced to own Personal by the scope.
     _ensure_enabled()
+    if is_branch_unattributed and (branch or not filters._split(filters.repositories)):
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Invalid is_branch_unattributed",
+            details="is_branch_unattributed needs the repositories parameter and cannot be combined with branch.",
+            help="Send repositories (and projects) with is_branch_unattributed, and omit branch.",
+        )
     start_ns = time.monotonic_ns()
     f = await filters.resolve_sessions(user, is_project_unattributed, personal_only)
     resolved_page = page if page is not None else DEFAULT_PAGE
     resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
     data, pricer, data_as_of = await _handler().get_sessions(
-        f, resolved_page, resolved_per_page, sort_by, search, framework, is_unattributed, branch
+        f, resolved_page, resolved_per_page, sort_by, search, framework, is_unattributed, branch, is_branch_unattributed
     )
     metadata = _metadata(start_ns, data_as_of, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsSessionsResponse)

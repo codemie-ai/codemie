@@ -16088,6 +16088,42 @@
         "title": "LocalAnalyticsActivityResponse",
         "type": "object"
       },
+      "LocalAnalyticsBranchesData": {
+        "properties": {
+          "pagination": {
+            "$ref": "#/components/schemas/codemie__rest_api__models__cli_analytics__PaginationMetadata"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/LocalAnalyticsRepositoryBranchRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows",
+          "pagination"
+        ],
+        "title": "LocalAnalyticsBranchesData",
+        "type": "object"
+      },
+      "LocalAnalyticsBranchesResponse": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/LocalAnalyticsBranchesData"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/LocalAnalyticsResponseMetadata"
+          }
+        },
+        "required": [
+          "data",
+          "metadata"
+        ],
+        "title": "LocalAnalyticsBranchesResponse",
+        "type": "object"
+      },
       "LocalAnalyticsCodeChangesKPIs": {
         "properties": {
           "files_changed": {
@@ -17170,12 +17206,19 @@
             "type": "array"
           },
           "repositories": {
-            "description": "This project's repositories by cost, each with its branches nested.",
-            "items": {
-              "$ref": "#/components/schemas/LocalAnalyticsRepositoryRow"
-            },
-            "title": "Repositories",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/LocalAnalyticsRepositoryRow"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "This project's repositories by cost, each with its branches nested. Null when the request sent include_repositories=false.",
+            "title": "Repositories"
           },
           "repository_count": {
             "title": "Repository Count",
@@ -17230,8 +17273,7 @@
           "net_lines",
           "tool_calls",
           "tool_calls_success",
-          "tool_success_rate",
-          "repositories"
+          "tool_success_rate"
         ],
         "title": "LocalAnalyticsProjectRow",
         "type": "object"
@@ -45668,6 +45710,241 @@
         ]
       }
     },
+    "/v1/analytics/cli-analytics/branches": {
+      "get": {
+        "description": "One page of a repository's branches by session count, then spend, then name. The sessions without a branch are\nthe last row of the last page, outside `per_page` and `total_count`. `repository` is ANDed with `repositories`.",
+        "operationId": "get_branches_v1_analytics_cli_analytics_branches_get",
+        "parameters": [
+          {
+            "description": "Repository whose branches are listed",
+            "in": "query",
+            "name": "repository",
+            "required": true,
+            "schema": {
+              "description": "Repository whose branches are listed",
+              "minLength": 1,
+              "title": "Repository",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Return only sessions with no project",
+            "in": "query",
+            "name": "is_project_unattributed",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Return only sessions with no project",
+              "title": "Is Project Unattributed",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "e.g. last_7_days, last_30_days",
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "e.g. last_7_days, last_30_days",
+              "title": "Time Period"
+            }
+          },
+          {
+            "description": "Custom range start (ISO 8601)",
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Custom range start (ISO 8601)",
+              "title": "Start Date"
+            }
+          },
+          {
+            "description": "Custom range end (ISO 8601)",
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Custom range end (ISO 8601)",
+              "title": "End Date"
+            }
+          },
+          {
+            "description": "Comma-separated CodeMie user IDs or emails",
+            "in": "query",
+            "name": "users",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated CodeMie user IDs or emails",
+              "title": "Users"
+            }
+          },
+          {
+            "description": "Comma-separated CodeMie project names",
+            "in": "query",
+            "name": "projects",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated CodeMie project names",
+              "title": "Projects"
+            }
+          },
+          {
+            "description": "Comma-separated repository names",
+            "in": "query",
+            "name": "repositories",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated repository names",
+              "title": "Repositories"
+            }
+          },
+          {
+            "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+            "in": "query",
+            "name": "subscription_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+              "title": "Subscription Type"
+            }
+          },
+          {
+            "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+            "in": "query",
+            "name": "project_origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+              "title": "Project Origin"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocalAnalyticsBranchesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Local analytics branches of one repository",
+        "tags": [
+          "OTel CLI Analytics"
+        ]
+      }
+    },
     "/v1/analytics/cli-analytics/classification-policy": {
       "get": {
         "operationId": "classification_policy_v1_analytics_cli_analytics_classification_policy_get",
@@ -46420,7 +46697,7 @@
     },
     "/v1/analytics/cli-analytics/projects": {
       "get": {
-        "description": "One page of projects sorted by cost, each with its repositories and their branches nested.",
+        "description": "One page of projects sorted by cost, each with its repositories and their branches nested; with\n`include_repositories=false`, totals only (drill-down: repositories come from `/repositories`).",
         "operationId": "get_projects_v1_analytics_cli_analytics_projects_get",
         "parameters": [
           {
@@ -46447,7 +46724,7 @@
             }
           },
           {
-            "description": "Filter by project or repository name",
+            "description": "Filter by project name (and, with include_repositories=true, by repository name)",
             "in": "query",
             "name": "search",
             "required": false,
@@ -46460,8 +46737,20 @@
                   "type": "null"
                 }
               ],
-              "description": "Filter by project or repository name",
+              "description": "Filter by project name (and, with include_repositories=true, by repository name)",
               "title": "Search"
+            }
+          },
+          {
+            "description": "Nest each project's repositories (with their branches) in its row. Send false for totals-only rows (no `repositories`): the search then matches project names only and the unattributed project is the last row of the last page, outside `per_page` and `total_count`; a search never returns it.",
+            "in": "query",
+            "name": "include_repositories",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Nest each project's repositories (with their branches) in its row. Send false for totals-only rows (no `repositories`): the search then matches project names only and the unattributed project is the last row of the last page, outside `per_page` and `total_count`; a search never returns it.",
+              "title": "Include Repositories",
+              "type": "boolean"
             }
           },
           {
@@ -46714,6 +47003,30 @@
               ],
               "description": "Filter by repository name",
               "title": "Search"
+            }
+          },
+          {
+            "description": "Return only sessions with no project",
+            "in": "query",
+            "name": "is_project_unattributed",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Return only sessions with no project",
+              "title": "Is Project Unattributed",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "When true, `total_count`/`has_more` count named repositories only and the group of sessions with no repository is the last row of the last page, outside `per_page`; a search never returns it.",
+            "in": "query",
+            "name": "unattributed_last",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "When true, `total_count`/`has_more` count named repositories only and the group of sessions with no repository is the last row of the last page, outside `per_page`; a search never returns it.",
+              "title": "Unattributed Last",
+              "type": "boolean"
             }
           },
           {
@@ -47017,6 +47330,18 @@
               ],
               "description": "Filter sessions by branch name",
               "title": "Branch"
+            }
+          },
+          {
+            "description": "Return only sessions with no branch; requires `repositories`, excludes `branch`",
+            "in": "query",
+            "name": "is_branch_unattributed",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Return only sessions with no branch; requires `repositories`, excludes `branch`",
+              "title": "Is Branch Unattributed",
+              "type": "boolean"
             }
           },
           {

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Overview, Repositories and Efficiency answer 504, naming the statement time limit, when a statement exceeds it
+"""Overview, Repositories, Projects, Branches and Efficiency answer 504, naming the statement time limit, when a statement exceeds it
 (server side: QueryCanceledError; client side: the command timeout) instead of a 503 (EPMCDME-17052)."""
 
 from unittest.mock import AsyncMock, patch
@@ -35,6 +35,8 @@ _PATHS = {
     "get_efficiency": "/v1/analytics/cli-analytics/efficiency",
     "get_tools": "/v1/analytics/cli-analytics/tools",
     "get_activity": "/v1/analytics/cli-analytics/activity",
+    "get_branches": "/v1/analytics/cli-analytics/branches?repository=r",
+    "get_projects": "/v1/analytics/cli-analytics/projects",
 }
 
 

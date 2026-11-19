@@ -38,7 +38,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import date, datetime, timezone, tzinfo
 from collections.abc import Callable, Hashable
-from typing import Any
+from typing import Any, TypeVar
 
 from codemie.configs.config import config
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
@@ -56,6 +56,7 @@ from codemie.repository.cli_analytics.ports import (
     CostGroup,
     GroupedMoney,
     ModelRates,
+    ProjectPage,
     RequestBudgetExceeded,
     RollupCost,
     RollupOverview,
@@ -113,6 +114,8 @@ _MAX_INVOCATIONS = 10
 _PROMPT_PREVIEW_LEN = 50
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 def depth_bucket(turns: int) -> str:
@@ -748,11 +751,13 @@ def _cost_split(total_cost: float, rows: list[dict]) -> tuple[float, float]:
     return api_cost, max(0.0, total_cost - api_cost)
 
 
-def _group_repositories_into_projects(repo_rows: list[dict], project_order: list[str | None]) -> list[dict]:
+def _group_repositories_into_projects(
+    repo_rows: list[dict], project_order: list[str | None], include_repositories: bool = True
+) -> list[dict]:
     """Rolls (project, repository) rows with nested branches up into one row per project (see `_roll_up`), each with
-    its repositories nested by cost. Which sessions belong in the rows (the search) and the order of the projects
-    (`project_order`, by spend with the unattributed project last) were decided by the database
-    (`get_project_page`)."""
+    its repositories nested by cost, or, without `include_repositories`, with only its `repository_count`. Which
+    sessions belong in the rows (the search) and the order of the projects (`project_order`, by spend) were decided
+    by the database (`get_project_page`)."""
     out = _roll_up(
         repo_rows,
         key_of=lambda repo: repo["project_name"],
@@ -762,14 +767,62 @@ def _group_repositories_into_projects(repo_rows: list[dict], project_order: list
     )
     for project in out:
         project["repository_count"] = len(project["repositories"])
-        project["repositories"].sort(key=lambda r: (-_float_sort_key(r["cost_usd"]), r["repository"] or ""))
+        if include_repositories:
+            project["repositories"].sort(key=lambda r: (-_float_sort_key(r["cost_usd"]), r["repository"] or ""))
+        else:
+            del project["repositories"]
     position = {name: index for index, name in enumerate(project_order)}
     out.sort(key=lambda p: position.get(p["project_name"], len(position)))
     return out
 
 
+def _project_total_row(row: dict) -> dict:
+    """One drill-down project row from a `get_project_totals` row: the fields the nested rollup of the default response
+    gives a project (`_group_repositories_into_projects` without `include_repositories`), with the project's session
+    ids (`_sids`) for the handler to price the estimate buckets from."""
+    added, removed = _ni(row.get("lines_added")), _ni(row.get("lines_removed"))
+    tool_calls, tool_ok = _i(row.get("tool_calls")), _i(row.get("tool_calls_success"))
+    return {
+        "project_name": _s(row.get("project_name")) or None,
+        "session_count": _i(row.get("session_count")),
+        "turns": _i(row.get("turns")),
+        "cost_usd": _f(row.get("cost_usd")),
+        "files_changed": _i(row.get("files_changed")),
+        "lines_added": added,
+        "lines_removed": removed,
+        "tool_calls": tool_calls,
+        "tool_calls_success": tool_ok,
+        "subscription_types": sorted({_s(v) or "unknown" for v in row.get("subscription_types") or []}),
+        "project_origins": sorted({_s(v) or "none" for v in row.get("project_origins") or []}),
+        "net_lines": _nnet(added, removed),
+        "tool_success_rate": _pct(tool_ok, tool_calls),
+        "repository_count": _i(row.get("repository_count")),
+        "_sids": {_s(sid) for sid in row.get("session_ids") or []},
+    }
+
+
 def _pagination(page: int, per_page: int, total: int) -> dict[str, Any]:
     return {"page": page, "per_page": per_page, "total_count": total, "has_more": (page + 1) * per_page < total}
+
+
+def with_unattributed(rows: list[T], null_row: T | None, pagination: dict[str, Any]) -> list[T]:
+    """Appends the null-named row once, as the last row of the last page (outside `per_page`; `total_count` and
+    `has_more` count named rows only). Never on another page, and never on a page beyond the last (no rows there)."""
+    if null_row is None or pagination["has_more"]:
+        return rows
+    return [*rows, null_row] if rows or pagination["page"] == 0 else rows
+
+
+def _unattributed_repository_last(
+    page_rows: list[dict], search: str | None, pagination: dict[str, Any], *, enabled: bool
+) -> list[dict]:
+    """With `unattributed_last` (paged, no branches) the group without a repository leaves the ranked rows and is
+    appended as the last row of the last page. A search names a repository, so it never keeps that group."""
+    if not enabled:
+        return page_rows
+    named_rows = [r for r in page_rows if r["repository"] is not None]
+    null_row = None if search else next((r for r in page_rows if r["repository"] is None), None)
+    return with_unattributed(named_rows, null_row, pagination)
 
 
 def _page(rows: list[dict], page: int, per_page: int) -> tuple[list[dict], dict[str, Any]]:
@@ -1359,13 +1412,19 @@ class LocalAnalyticsHandler:
         per_page: int,
         include_branches: bool,
         search: str | None = None,
+        unattributed_last: bool = False,
     ) -> tuple[dict[str, Any], CatalogPricer]:
+        # With `unattributed_last` (paged, without branches) the group without a repository is not ranked or counted:
+        # `total_count`/`has_more` count named repositories and that group is the last row of the last page. By
+        # default it ranks and counts like any row.
         # The first statement ranks, pages and prices the groups of the sessions the search keeps (the whole selection,
         # before the page is cut); the totals, the unpriced models and the estimates are those of that selection. The
         # second reads the counts of the groups on the page only.
         async with dashboard_request(), self._repo.bounded() as repo:
             rates = [model_rates_for(model) for model in await repo.get_cost_models(f)]
-            rows = await repo.get_repository_ranking(f, include_branches, search, rates, page, per_page)
+            rows = await repo.get_repository_ranking(
+                f, include_branches, search, rates, page, per_page, unattributed_last=unattributed_last
+            )
             parts = _parts(rows)
             ranked = sorted(parts.get("group", []), key=lambda r: _i(r.get("key")))  # the reader's rank
             # The counts of the groups, for the groups of the page only (every group with branches).
@@ -1417,13 +1476,8 @@ class LocalAnalyticsHandler:
             total_count = len(page_rows)
             pagination = {"page": 0, "per_page": total_count, "total_count": total_count, "has_more": False}
         else:
-            total_count = _i(_first(parts.get("count", [])).get("n"))
-            pagination = {
-                "page": page,
-                "per_page": per_page,
-                "total_count": total_count,
-                "has_more": (page + 1) * per_page < total_count,
-            }
+            # `count` is the named repositories only with `unattributed_last`, else every group.
+            pagination = _pagination(page, per_page, _i(_first(parts.get("count", [])).get("n")))
 
         def row_key(project: Any, repository: Any) -> tuple:
             return (_s(project), _s(repository)) if include_branches else (_s(repository),)
@@ -1436,32 +1490,74 @@ class LocalAnalyticsHandler:
         for row in page_rows:
             mine = bucket_rows_by_key.get(row_key(row["project_name"], row["repository"]), {})
             row.update(_dashboard_buckets(mine.get("route", []), mine.get("billed", [])))
+        page_rows = _unattributed_repository_last(
+            page_rows, search, pagination, enabled=unattributed_last and not include_branches
+        )
         return {"rows": page_rows, "pagination": pagination, **estimate}, pricer
 
-    async def get_projects(
-        self, f: LocalAnalyticsFilter, page: int, per_page: int, search: str | None = None
+    async def get_branches(
+        self, f: LocalAnalyticsFilter, repository: str, page: int, per_page: int
     ) -> tuple[dict[str, Any], CatalogPricer]:
-        """One page of projects by spend, each with its repositories and their branches nested.
+        """One page of the branches of `repository` (ANDed with the filter's repositories) by session count, spend,
+        then name, paged in SQL. The sessions without a branch are the last row of the last page, outside `per_page`
+        and `total_count`."""
+        if f.repositories and repository not in f.repositories:
+            return {"rows": [], "pagination": _pagination(page, per_page, 0)}, CatalogPricer()
+        scoped = copy.copy(f)
+        scoped.repositories = [repository]
+        async with dashboard_request(), self._repo.bounded() as repo:
+            rates = [model_rates_for(model) for model in await repo.get_cost_models(scoped)]
+            rows = await repo.get_branch_ranking(scoped, rates, page, per_page)
+        parts = _parts(rows)
+        _spend, _estimate, pricer = _money(parts.get("total", []))
+        pagination = _pagination(page, per_page, _i(_first(parts.get("count", [])).get("n")))
+        ranked = sorted(parts.get("group", []), key=lambda r: _i(r.get("key")))  # the reader's rank
+        branch_rows = [
+            {field: row[field] for field in _BRANCH_ROW_FIELDS} for row in (_repository_bucket(g, True) for g in ranked)
+        ]
+        named = [r for r in branch_rows if r["branch"] is not None]
+        null_row = next((r for r in branch_rows if r["branch"] is None), None)
+        return {"rows": with_unattributed(named, null_row, pagination), "pagination": pagination}, pricer
 
-        The database matches the search (a project or repository name), groups the sessions by project, orders and
-        cuts the page (`get_project_page`, priced with the catalog rates of the window's models); only the page's
-        sessions are then read in detail and priced here, so the response cost is the catalog price, as everywhere."""
+    async def get_projects(
+        self,
+        f: LocalAnalyticsFilter,
+        page: int,
+        per_page: int,
+        search: str | None = None,
+        include_repositories: bool = True,
+    ) -> tuple[dict[str, Any], CatalogPricer]:
+        """One page of projects by spend.
+
+        The database matches the search, groups the sessions by project, orders and cuts the page (`get_project_page`,
+        priced with the catalog rates of the window's models); only the page's sessions are then read in detail and
+        priced here, so the response cost is the catalog price, as everywhere.
+
+        By default each project carries its repositories and their branches nested, the search matches a project or
+        repository name and the unattributed project is ranked last and counted. Without `include_repositories`
+        (drill-down) the rows are totals only (`repository_count`, no repositories), the search matches project names
+        only, and the unattributed project is the last row of the last page, outside `per_page` and `total_count`,
+        and never under a search."""
         search = search.strip() if search and search.strip() else None
         rates = [model_rates_for(model) for model in await self._repo.get_cost_models(f)]
-        result = await self._repo.get_project_page(f, page, per_page, rates, search)
+        result = await self._repo.get_project_page(f, page, per_page, rates, search, drilldown=not include_repositories)
+        if not include_repositories:
+            return await self._drilldown_projects(f, result, page, per_page, rates)
         # The window buckets cover every matching session: the whole window without a search.
         window = f if result.matched_session_ids is None else f.restricted_to(result.matched_session_ids)
+        pagination = _pagination(page, per_page, result.total)
+        page_session_ids = [*result.session_ids, *result.unattributed_session_ids]
         rows: list[dict] = []
         pricer = CatalogPricer()
-        if result.session_ids:
+        if page_session_ids:
             rows, _, pricer = await self._repository_rows(
-                f.restricted_to(result.session_ids), include_branches=True, search=None
+                f.restricted_to(page_session_ids), include_branches=True, search=None
             )
         # metadata.unpriced_models covers the window's spend models, not only the page's.
         pricer.record_unpriced_from_flags(result.model_flags)
         priced = price_bucket_rows(await self._repo.get_session_funding_costs(window))
 
-        page_rows = _group_repositories_into_projects(rows, result.project_names)
+        page_rows = _group_repositories_into_projects(rows, result.project_names, include_repositories)
         drop_evidence(page_rows)
         # Each entity reads only its own sessions' rows through one index of the window's rows, not the whole window.
         index = session_index(priced)
@@ -1469,12 +1565,46 @@ class LocalAnalyticsHandler:
             scoped = rows_of(priced, index, project.pop("_sids"))
             project.update(buckets(scoped), **pricing_of_rows(scoped))
             # Not `repo`: that name is the reader yielded by `bounded()` (test_ports).
-            for repo_row in project["repositories"]:
+            for repo_row in project.get("repositories", ()):
                 scoped = rows_of(priced, index, repo_row.pop("_sids"))
                 repo_row.update(buckets(scoped), **pricing_of_rows(scoped))
                 for branch_row in repo_row["branches"]:
                     branch_row.update(pricing_of_rows(rows_of(priced, index, branch_row.pop("_sids"))))
+        return {"rows": page_rows, "pagination": pagination, **buckets(priced, result.matched_session_ids)}, pricer
+
+    async def _drilldown_projects(
+        self,
+        f: LocalAnalyticsFilter,
+        result: ProjectPage,
+        page: int,
+        per_page: int,
+        rates: list[ModelRates],
+    ) -> tuple[dict[str, Any], CatalogPricer]:
+        """The drill-down page (`include_repositories=false`): the totals of the page's projects come from one database
+        statement (`get_project_totals`, grouped by project over the page's sessions), priced with the catalog rates
+        in SQL. No per-session read and no nested repository or branch row is built; the estimate buckets of a project
+        are priced from its session ids, which the same statement returns."""
+        # The window buckets cover every matching session: the whole window without a search.
+        window = f if result.matched_session_ids is None else f.restricted_to(result.matched_session_ids)
         pagination = _pagination(page, per_page, result.total)
+        page_session_ids = [*result.session_ids, *result.unattributed_session_ids]
+        project_rows = []
+        if page_session_ids:
+            totals = await self._repo.get_project_totals(f.restricted_to(page_session_ids), rates)
+            project_rows = [_project_total_row(row) for row in totals]
+        position = {name: index for index, name in enumerate(result.project_names)}
+        project_rows.sort(key=lambda p: position.get(p["project_name"], len(position)))
+        # The pricer holds the window's unpriced spend models (the flags), not only the page's.
+        pricer = CatalogPricer()
+        pricer.record_unpriced_from_flags(result.model_flags)
+        priced = price_bucket_rows(await self._repo.get_session_funding_costs(window))
+        index = session_index(priced)
+        for project in project_rows:
+            scoped = rows_of(priced, index, project.pop("_sids"))
+            project.update(buckets(scoped), **pricing_of_rows(scoped))
+        named = [p for p in project_rows if p["project_name"] is not None]
+        null_row = next((p for p in project_rows if p["project_name"] is None), None)
+        page_rows = with_unattributed(named, null_row, pagination)
         return {"rows": page_rows, "pagination": pagination, **buckets(priced, result.matched_session_ids)}, pricer
 
     # ── Sessions ─────────────────────────────────────────────────────────────
@@ -1486,7 +1616,7 @@ class LocalAnalyticsHandler:
             logger.info("cli_analytics: %d sessions listed with cost_available=false: unpriced models", unpriced_models)
 
     @staticmethod
-    def _session_row(
+    def _session_row(  # noqa: PLR0913 - one argument per per-session fact read, merged here
         row: dict,
         turns_by_session: dict[str, dict],
         success_by_session: dict[str, dict],
@@ -1604,7 +1734,7 @@ class LocalAnalyticsHandler:
             raise failure.exceptions[0] from None
         return tuple(task.result() for task in tasks)
 
-    async def get_sessions(
+    async def get_sessions(  # noqa: PLR0913 - mirrors the Sessions route's query parameters
         self,
         f: LocalAnalyticsFilter,
         page: int,
@@ -1614,8 +1744,10 @@ class LocalAnalyticsHandler:
         framework: str | None = None,
         is_unattributed: bool = False,
         branch: str | None = None,
+        is_branch_unattributed: bool = False,
     ) -> tuple[dict[str, Any], CatalogPricer, str | None]:
         f.branch = branch or None
+        f.branch_unattributed = is_branch_unattributed
         # A blank search filters nothing: it must not route the request through the searched statements.
         search = search if search and search.strip() else None
         pricer = CatalogPricer()

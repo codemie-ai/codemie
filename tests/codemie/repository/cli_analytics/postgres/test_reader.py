@@ -389,6 +389,7 @@ class _ProjectPageRecorder(_SqlRecorder):
             "total": 0,
             "project_names": [],
             "session_ids": [],
+            "unattributed_session_ids": [],
             "matched_session_ids": None,
             "flags": "[]",
         }
@@ -2864,9 +2865,26 @@ async def test_the_project_page_groups_orders_and_cuts_projects_in_one_statement
     # LEFT: a session without spend has no cost key and still counts, so a project without spend stays listed.
     assert "FROM sel s LEFT JOIN (" in sql and "coalesce(k.cost_key, 0::numeric) AS cost_key" in sql
     assert "strpos(" not in sql and "NULL::text[] AS matched_session_ids" in sql
+    assert "WHERE project_name IS NOT NULL" not in sql  # legacy: the unattributed project is ranked and counted
+    assert "ARRAY[]::text[] AS unattributed_session_ids" in sql
     args = recorder.args[0]
     assert ["m"] in args  # the rate models are bound, never interpolated
     assert 10 in args and 20 in args  # limit, offset = page * per_page
+
+
+@pytest.mark.asyncio
+async def test_the_drilldown_project_page_ranks_named_projects_only():
+    recorder = _ProjectPageRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_project_page(  # type: ignore[arg-type]
+        _flt(), 2, 10, _RATES, drilldown=True
+    )
+    sql = " ".join(recorder.statements[0].split())
+
+    assert f"ORDER BY p.cost_key DESC, p.project_name {_C}" in sql  # the NULL project is not ranked
+    assert "WHERE project_name IS NOT NULL" in sql  # ...nor paged nor counted
+    assert "AS unattributed_session_ids" in sql and "m.project_name IS NULL" in sql
+    assert "p.project_name = m.project_name" in sql
+    assert "strpos(" not in sql and "NULL::text[] AS matched_session_ids" in sql
 
 
 @pytest.mark.asyncio
@@ -2884,12 +2902,27 @@ async def test_the_project_page_searches_project_and_repository_names_literally(
 
 
 @pytest.mark.asyncio
+async def test_the_drilldown_project_page_searches_project_names_literally():
+    recorder = _ProjectPageRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_project_page(  # type: ignore[arg-type]
+        _flt(), 0, 10, _RATES, search="  A%b_ ", drilldown=True
+    )
+    sql = " ".join(recorder.statements[0].split())
+
+    assert "strpos(lower(s.project_name), $" in sql and "s.repository" not in sql.split("matched AS")[1]
+    assert "m.project_name IS NULL" not in sql  # a search never carries the null group
+    assert "ILIKE" not in sql.split("matched AS")[1]
+    assert "a%b_" in recorder.args[0]
+
+
+@pytest.mark.asyncio
 async def test_the_project_page_maps_its_row_and_reads_null_as_the_unattributed_project():
     recorder = _ProjectPageRecorder(
         {
             "total": 3,
             "project_names": ["alpha", None],
             "session_ids": ["s1", "s2"],
+            "unattributed_session_ids": [],
             "matched_session_ids": ["s1", "s2", "s3"],
             "flags": '[["m", true, false, false, false, false]]',
         }
@@ -2901,8 +2934,29 @@ async def test_the_project_page_maps_its_row_and_reads_null_as_the_unattributed_
     assert result.total == 3
     assert result.project_names == ["alpha", None]
     assert result.session_ids == ["s1", "s2"]
+    assert result.unattributed_session_ids == []
     assert result.matched_session_ids == ["s1", "s2", "s3"]
     assert result.model_flags == [("m", (True, False, False, False, False))]
+
+
+@pytest.mark.asyncio
+async def test_the_drilldown_project_page_maps_its_row_with_the_null_group_apart():
+    recorder = _ProjectPageRecorder(
+        {
+            "total": 3,
+            "project_names": ["alpha"],
+            "session_ids": ["s1", "s2"],
+            "unattributed_session_ids": ["s9"],
+            "matched_session_ids": ["s1", "s2", "s3"],
+            "flags": '[["m", true, false, false, false, false]]',
+        }
+    )
+    result = await PostgresCliAnalyticsReader(recorder).get_project_page(  # type: ignore[arg-type]
+        _flt(), 0, 2, _RATES, search="a", drilldown=True
+    )
+
+    assert result.project_names == ["alpha"]
+    assert result.unattributed_session_ids == ["s9"]
 
 
 @pytest.mark.asyncio
@@ -3184,3 +3238,196 @@ def test_active_in_window_resumed_bypass_falls_back_to_the_day_row_once_raw_rete
     for outside in (outside_default, outside_raw_first):
         assert expired not in outside
         assert reader._raw_activity_in_window("d") in outside
+
+
+@pytest.mark.asyncio
+async def test_branch_unattributed_filter_adds_a_no_branch_condition_anded_with_the_scope():
+    recorder = _PageArgRecorder()
+    flt = _flt(projects=["p"], repositories=["r"])
+    flt.branch_unattributed = True
+    await PostgresCliAnalyticsReader(recorder).get_session_page(flt, "start_time", 0, 5)  # type: ignore[arg-type]
+    sql, args = _without_control(recorder)[0][0], _without_control(recorder)[0][1]
+    sql = " ".join(sql.split())
+
+    assert "coalesce(branch, '') = ''" in sql
+    # the no-branch condition joins the project and repository conditions: their values are still bound
+    assert ["r"] in args and ["p"] in args
+
+
+@pytest.mark.asyncio
+async def test_without_the_flag_there_is_no_no_branch_condition():
+    recorder = _PageArgRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_session_page(_flt(), "start_time", 0, 5)  # type: ignore[arg-type]
+
+    assert "coalesce(branch, '') = ''" not in " ".join(_without_control(recorder)[0][0].split())
+
+
+@pytest.mark.asyncio
+async def test_the_project_page_returns_the_unattributed_ids_only_on_the_last_page_of_an_unsearched_page():
+    recorder = _ProjectPageRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_project_page(  # type: ignore[arg-type]
+        _flt(), 0, 10, _RATES, drilldown=True
+    )
+    sql = " ".join(recorder.statements[0].split())
+
+    assert "m.project_name IS NULL AND $" in sql
+    assert "::bigint + $" in sql and "::bigint >= (SELECT count(*) FROM projects)" in sql
+
+
+@pytest.mark.asyncio
+async def test_a_searched_project_page_never_carries_the_unattributed_ids():
+    recorder = _ProjectPageRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_project_page(  # type: ignore[arg-type]
+        _flt(), 0, 10, _RATES, search="a", drilldown=True
+    )
+    sql = " ".join(recorder.statements[0].split())
+
+    assert "ARRAY[]::text[] AS unattributed_session_ids" in sql
+    assert ">= (SELECT count(*) FROM projects)" not in sql
+
+
+@pytest.mark.asyncio
+async def test_the_branch_ranking_ranks_named_branches_first_and_pages_only_them():
+    recorder = _ArgsRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_branch_ranking(  # type: ignore[arg-type]
+        _flt(repositories=["r"]), _RATES, page=2, per_page=5
+    )
+    sql = " ".join(recorder.statements[0].split())
+
+    assert len(recorder.statements) == 1
+    # the NULL branch ranks last and rides along with every page
+    assert "ORDER BY (g.branch IS NULL), g.session_count DESC, coalesce(m.cost_usd, 0) DESC" in sql
+    assert "WHERE branch IS NULL OR (rn > $" in sql and "rn <= $" in sql
+    # the facts are read from the page's sessions only, and the NULL group keeps its sessions
+    assert "selp AS (SELECT * FROM sel WHERE nullif(branch, '') IN (SELECT branch FROM page)" in sql
+    assert "nullif(branch, '') IS NULL AND EXISTS (SELECT 1 FROM page WHERE branch IS NULL)" in sql
+    assert "FROM selp s" in sql and "FROM page p LEFT JOIN facts a ON a.branch IS NOT DISTINCT FROM p.branch" in sql
+    # the count is of the named branches only
+    assert "count(*) FILTER (WHERE branch IS NOT NULL)" in sql
+    args = recorder.args[0]
+    assert 10 in args and 5 in args  # offset = page * per_page, limit
+    assert ["m"] in args
+
+
+@pytest.mark.asyncio
+async def test_a_huge_branch_page_binds_a_clamped_offset_that_fits_bigint():
+    recorder = _ArgsRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_branch_ranking(  # type: ignore[arg-type]
+        _flt(repositories=["r"]), _RATES, page=10**18, per_page=50
+    )
+
+    assert 4611686018427387904 in recorder.args[0]  # 2**62, not 5 * 10**19 that overflows int64 in the driver
+    assert max(a for a in recorder.args[0] if isinstance(a, int)) <= 2**63 - 1
+
+
+async def _project_totals_sql(**kwargs) -> tuple[str, tuple]:
+    recorder = _ArgsRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_project_totals(  # type: ignore[arg-type]
+        _flt().restricted_to(["s1", "s2"]), _RATES, **kwargs
+    )
+    assert len(recorder.statements) == 1  # one statement, no per-session read
+    return " ".join(recorder.statements[0].split()), recorder.args[0]
+
+
+@pytest.mark.asyncio
+async def test_the_project_totals_group_the_page_sessions_by_project_in_one_statement():
+    sql, args = await _project_totals_sql()
+
+    # the page is the filter's session ids, bound, never interpolated; the rates are bound too
+    assert ["s1", "s2"] in args and ["m"] in args
+    assert "session_id = ANY($" in sql
+    # the unattributed project is the NULL one: '' reads NULL and it is joined to the money with the empty key
+    assert "nullif(s.project_name, '') AS project" in sql
+    assert "m.project = coalesce(a.project, '')" in sql and "m.\"grouping\" = 'g_spend'" in sql
+    assert "GROUP BY project" in sql
+    # named projects first, the NULL project last, by name
+    assert f"ORDER BY (a.project IS NULL), a.project {_C}" in sql
+    # the money is priced in SQL from the catalog rates (the grouped cost statement)
+    assert "priced_groups AS MATERIALIZED" in sql
+
+
+@pytest.mark.asyncio
+async def test_the_project_totals_count_repositories_with_the_repository_less_sessions_as_one():
+    sql, _ = await _project_totals_sql()
+
+    assert "coalesce(nullif(s.repository, ''), '') AS repository" in sql
+    assert "count(DISTINCT repository)::bigint AS repository_count" in sql
+
+
+@pytest.mark.asyncio
+async def test_the_project_totals_sum_lines_so_that_no_reported_line_is_null_and_return_the_session_ids():
+    sql, _ = await _project_totals_sql()
+
+    # sum() of no value is NULL: the handler reads it as unknown, not 0
+    assert "sum(lines_added)::bigint AS lines_added" in sql and "sum(lines_removed)::bigint AS lines_removed" in sql
+    assert "sum(tool_calls_success)::bigint AS tool_calls_success" in sql
+    assert f"array_agg(session_id ORDER BY session_id {_C}) AS session_ids" in sql
+    # the facts are read from the page's sessions only: every fact CTE joins the restricted `sel`
+    assert "JOIN sel s ON s.session_id = t.session_id" in sql
+
+
+@pytest.mark.asyncio
+async def test_the_project_totals_carry_no_page_cut_because_the_filter_is_the_page():
+    sql, args = await _project_totals_sql()
+
+    assert "ranked AS" not in sql and "page AS" not in sql and "$offset" not in sql
+    assert not any(isinstance(a, int) and a >= 2**62 for a in args)
+
+
+def test_the_branch_unattributed_flag_changes_the_sel_key():
+    key = PostgresCliAnalyticsReader._sel_key
+    flagged = _flt()
+    flagged.branch_unattributed = True
+
+    assert key(flagged) != key(_flt())
+
+
+def test_the_drilldown_project_page_statement_differs_from_the_legacy_one():
+    from codemie.repository.cli_analytics.postgres.project_page_sql import project_page_sql
+
+    legacy = " ".join(project_page_sql("sel AS (SELECT 1)", searched=False).split())
+    drilldown = " ".join(project_page_sql("sel AS (SELECT 1)", searched=False, drilldown=True).split())
+
+    assert legacy != drilldown
+
+
+def _ranking_sql(recorder: _PageArgRecorder) -> str:
+    """The repository ranking statement among the recorded ones, whitespace-normalised."""
+    (sql,) = [s for s, _ in _without_control(recorder) if "ranked AS" in s]
+    return " ".join(sql.split())
+
+
+@pytest.mark.asyncio
+async def test_the_repository_ranking_ranks_and_counts_the_null_repository_group_by_default():
+    recorder = _PageArgRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_repository_ranking(_flt(), False, None, (), 0, 5)  # type: ignore[arg-type]
+    sql = _ranking_sql(recorder)
+
+    assert re.search(r"FROM ranked WHERE rn > \$\d+::bigint AND rn <= \$\d+::bigint \+ \$\d+::bigint\)", sql)
+    assert "FROM ranked WHERE repository IS NULL" not in sql and "(g.repository IS NULL)," not in sql
+    assert "count(*) FILTER" not in sql
+
+
+@pytest.mark.asyncio
+async def test_the_repository_ranking_with_unattributed_last_keeps_the_null_group_apart_from_page_and_count():
+    recorder = _PageArgRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_repository_ranking(  # type: ignore[arg-type]
+        _flt(), False, None, (), 0, 5, unattributed_last=True
+    )
+    sql = _ranking_sql(recorder)
+
+    assert re.search(r"FROM ranked WHERE repository IS NULL OR \(rn > \$\d+::bigint", sql)
+    assert "ORDER BY (g.repository IS NULL), g.session_count DESC" in sql
+    assert "count(*) FILTER (WHERE repository IS NOT NULL)" in sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{"include_branches": True, "per_page": 5}, {"per_page": None}])
+async def test_unattributed_last_changes_nothing_without_a_page_or_with_branches(kwargs):
+    plain, flagged = _PageArgRecorder(), _PageArgRecorder()
+    for recorder, flag in ((plain, False), (flagged, True)):
+        await PostgresCliAnalyticsReader(recorder).get_repository_ranking(  # type: ignore[arg-type]
+            _flt(), **{"include_branches": False, **kwargs}, unattributed_last=flag
+        )
+
+    assert _ranking_sql(plain) == _ranking_sql(flagged)

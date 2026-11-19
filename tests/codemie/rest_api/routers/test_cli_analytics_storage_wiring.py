@@ -485,6 +485,7 @@ async def test_get_sessions_forwards_is_project_unattributed_to_the_resolved_fil
             framework=None,
             is_unattributed=False,
             branch=None,
+            is_branch_unattributed=False,
             is_project_unattributed=flag,
             personal_only=False,
         )
@@ -529,7 +530,14 @@ async def test_users_and_repositories_metadata_carry_the_handler_pricing(unprice
             await router_module.get_users(user=_VIEWER, filters=_filter_params(), page=None, per_page=None),
             await router_module.get_user_charts(user=_VIEWER, filters=_filter_params()),
             await router_module.get_repositories(
-                user=_VIEWER, filters=_filter_params(), page=0, per_page=20, include_branches=False, search=None
+                user=_VIEWER,
+                filters=_filter_params(),
+                page=0,
+                per_page=20,
+                include_branches=False,
+                search=None,
+                is_project_unattributed=False,
+                unattributed_last=False,
             ),
         ]
 
@@ -553,6 +561,7 @@ _SESSIONS_KWARGS = {
     "framework": None,
     "is_unattributed": False,
     "branch": None,
+    "is_branch_unattributed": False,
     "is_project_unattributed": False,
 }
 
@@ -616,3 +625,122 @@ async def test_subscription_type_and_project_origin_params_become_filter_values_
     assert f.subscription_types == ["corporate", "unknown"]
     assert f.project_origins == ["none", "other"]
     assert (f.scope.mode, f.scope.unrestricted, f.scope.admin_projects) == ("exclude", False, frozenset({"p"}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", [True, False])
+async def test_get_repositories_resolves_with_is_project_unattributed(flag):
+    handler = MagicMock()
+    handler.get_repositories = AsyncMock(
+        return_value=({"rows": [], "pagination": {}}, MagicMock(unpriced=[], catalog_source="yaml"))
+    )
+    captured: dict = {}
+
+    async def fake_resolve(self, user, project_unattributed=False):
+        captured["project_unattributed"] = project_unattributed
+        end = datetime(2026, 9, 23, tzinfo=timezone.utc)
+        return router_module.LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=end - timedelta(days=1), end_dt=end)
+
+    with (
+        patch.object(router_module, "_ensure_enabled", return_value=None),
+        patch.object(router_module, "_handler", return_value=handler),
+        patch.object(router_module, "_respond", return_value=JSONResponse({})),
+        patch.object(router_module.FilterParams, "resolve", fake_resolve),
+    ):
+        await router_module.get_repositories(
+            user=User(id="u1"),
+            filters=_filter_params(),
+            page=None,
+            per_page=None,
+            include_branches=False,
+            search=None,
+            is_project_unattributed=flag,
+            unattributed_last=False,
+        )
+
+    assert captured["project_unattributed"] is flag
+    # unpaged: all repositories with nested branches, as before
+    assert handler.get_repositories.await_args.args[1:4] == (0, router_module.MAX_PER_PAGE, True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", [True, False])
+async def test_get_repositories_forwards_unattributed_last_to_the_handler(flag):
+    handler = MagicMock()
+    handler.get_repositories = AsyncMock(
+        return_value=({"rows": [], "pagination": {}}, MagicMock(unpriced=[], catalog_source="yaml"))
+    )
+
+    async def fake_resolve(self, user, project_unattributed=False):
+        end = datetime(2026, 9, 23, tzinfo=timezone.utc)
+        return router_module.LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=end - timedelta(days=1), end_dt=end)
+
+    with (
+        patch.object(router_module, "_ensure_enabled", return_value=None),
+        patch.object(router_module, "_handler", return_value=handler),
+        patch.object(router_module, "_respond", return_value=JSONResponse({})),
+        patch.object(router_module.FilterParams, "resolve", fake_resolve),
+    ):
+        await router_module.get_repositories(
+            user=User(id="u1"),
+            filters=_filter_params(),
+            page=0,
+            per_page=10,
+            include_branches=False,
+            search="x",
+            is_project_unattributed=False,
+            unattributed_last=flag,
+        )
+
+    assert handler.get_repositories.await_args.args[1:] == (0, 10, False, "x", flag)
+
+
+def test_unattributed_last_defaults_to_false_on_the_repositories_route():
+    import inspect
+
+    param = inspect.signature(router_module.get_repositories).parameters["unattributed_last"]
+    assert param.default.default is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", [True, False])
+async def test_get_projects_forwards_include_repositories_to_the_handler(flag):
+    handler = MagicMock()
+    handler.get_projects = AsyncMock(
+        return_value=({"rows": [], "pagination": {}}, MagicMock(unpriced=[], catalog_source="yaml"))
+    )
+
+    async def fake_resolve(self, user, project_unattributed=False):
+        end = datetime(2026, 9, 23, tzinfo=timezone.utc)
+        return router_module.LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=end - timedelta(days=1), end_dt=end)
+
+    with (
+        patch.object(router_module, "_ensure_enabled", return_value=None),
+        patch.object(router_module, "_handler", return_value=handler),
+        patch.object(router_module, "_respond", return_value=JSONResponse({})),
+        patch.object(router_module.FilterParams, "resolve", fake_resolve),
+    ):
+        await router_module.get_projects(
+            user=User(id="u1"),
+            filters=_filter_params(),
+            page=0,
+            per_page=10,
+            search="x",
+            include_repositories=flag,
+        )
+
+    assert handler.get_projects.await_args.args[1:] == (0, 10, "x", flag)
+
+
+def test_include_repositories_defaults_to_true_on_the_projects_route():
+    import inspect
+
+    param = inspect.signature(router_module.get_projects).parameters["include_repositories"]
+    assert param.default.default is True
+
+
+def test_the_projects_response_serves_both_modes_with_one_row_model():
+    from codemie.rest_api.models.cli_analytics import LocalAnalyticsProjectRow
+
+    assert LocalAnalyticsProjectRow.model_fields["repositories"].default is None
+    assert not LocalAnalyticsProjectRow.model_fields["repositories"].is_required()
