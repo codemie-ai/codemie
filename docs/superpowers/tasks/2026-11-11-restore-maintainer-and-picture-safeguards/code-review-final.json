@@ -1,0 +1,100 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "0 findings, confidence high; AC12/AC14 verified at Stage 7"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "0 findings, confidence high; AC12/AC14 verified at Stage 7"
+    }
+  ],
+  "reviewed_head": "c290c34592881e209e865fed0a265d68174e9729",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "All four lenses and standards ran; no blocking findings after reachability checks (9 candidates dismissed: no whole-state compare of picture in reconcile, job strips picture, scheme validation and warning-repeat are below the emission floor, maintainer_unknown withholding is spec-mandated). AC12/AC14 are pending-stage-7. Nothing deferred.",
+  "confidence": "high",
+  "check_confidence": null,
+  "risk_flags": [
+    "security",
+    "auth",
+    "public-api"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1-AC11: maintainer not demoted, picture upsert/idempotence, limits, job diff/payload, maintainer_unknown",
+      "status": "pass",
+      "notes": "all verified by lens with tests cited"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC12: OpenAPI baseline updated; snapshot test passes",
+      "status": "pending-stage-7",
+      "notes": "baseline updated; snapshot execution is Stage 7"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC13: docs updated",
+      "status": "pass",
+      "notes": "idp-managed-sync.md updated"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC14: tests and fakes added; test_import_purity passes",
+      "status": "pending-stage-7",
+      "notes": "import purity run is Stage 7"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC15: 2026-11-10 spec changes described, file not edited",
+      "status": "pass",
+      "notes": "spec.md section present"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 6 subjects in the review range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "no documented rule broken in the changed source; all touched modules are under 500 lines, new functions are typed, annotations use modern unions"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no credential logging; log lines carry only user ids; picture length is bounded server-side via max_length and client-side; no injection or auth bypass seen in the changed source"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "All four lenses and standards ran; no blocking findings after reachability checks (9 candidates dismissed: no whole-state compare of picture in reconcile, job strips picture, scheme validation and warning-repeat are below the emission floor, maintainer_unknown withholding is spec-mandated). AC12/AC14 are pending-stage-7. Nothing deferred.",
+    "confidence": "high",
+    "risk_flags": [
+      "security",
+      "auth",
+      "public-api"
+    ]
+  }
+}

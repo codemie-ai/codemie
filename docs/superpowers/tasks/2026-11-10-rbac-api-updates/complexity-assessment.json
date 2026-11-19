@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Add a service-account-only management API in codemie with identity guard, idempotent user/membership operations and user reads including deactivated users, for a customer-side Keycloak sync job (EPMCDME-16895).",
+  "generated": "2026-11-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New management router, new identity-based guard (no precedent beyond the Teams resolver), orchestration over UserManagementService, ProjectAssignmentService, AuthenticationService helpers and user repository read paths; must bypass switch locks in UserAccessService; route restriction for the service account outside the management API has no existing mechanism." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the Teams resolver, which silently falls back on a miss and does not cover fail-closed authorization or route-scoped denial. Security-sensitive guard, none of the operations is idempotent today, reactivation affects shared active-only getters, auth-cache invalidation is missing on deactivation, and a 1s page of 100 at 60,000 users is unverified. The AC enumerates many edge cases with no existing parameterized test template." },
+    { "dimension": "file_change_estimate", "reason": "About 8-10 modified (main.py, config.py, user_repository, user services, project assignment service, baselines) plus 3-4 new (router, guard, models, service) across several directories, plus tests." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: security requirement and authentication/authorization guard",
+    "Component Scope bumped: touches multiple workflows (user, membership, auth cache) and shared services"
+  ],
+  "split_recommendation": null
+}

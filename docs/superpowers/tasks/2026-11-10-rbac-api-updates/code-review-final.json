@@ -1,0 +1,378 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "6/6 findings resolved; authenticate early return and deactivate_user deviation accepted by user"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "6 major findings (CR-001..CR-006); one fix-up round"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "6/6 findings resolved; authenticate early return and deactivate_user deviation accepted by user"
+    }
+  ],
+  "reviewed_head": "305f58609a40e929d0e7e2a9d55a133ff4a2edd7",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All 6 prior blocking findings are resolved on source/evidence inspection. Two deviations from spec text were assessed and accepted: authenticate() now reuses the caller stored on request.state by the guard (server-side only, not client-settable, touches a spec non-goal minimally), and deactivation runs deactivate_user under a row lock in the router transaction instead of deactivate_user_flow (avoids self-deadlock). CR-006 is a legitimate no-op since route_precedence.json lists only overlapping route pairs and idp-sync routes have none; tests were not re-run here (Stage 7).",
+  "confidence": "low",
+  "check_confidence": "medium",
+  "risk_flags": [
+    "security",
+    "auth",
+    "public-api"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 6,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/user_repository.py",
+      "line": 355,
+      "title": "Row-locked admin count has no real test",
+      "problem": "Every service test stubs lock_and_count_active_admins; the real query (active, non-deleted admins, FOR UPDATE) is never executed or asserted.",
+      "impact": "Dropping with_for_update() or the is_active/deleted_at filter would ship a last-admin race without any test failing. Consumer: IdpSyncService._ensure_not_last_admin via PUT /v1/idp-sync/users/{user_id}.",
+      "recommendation": "Add a repository test seeding admin, inactive-admin, soft-deleted-admin and non-admin users, asserting the count, plus a PostgreSQL compiled-statement check that the SQL contains FOR UPDATE.",
+      "status": "resolved",
+      "check_notes": "Repository tests added: counts only active non-deleted admins and asserts FOR UPDATE in compiled PostgreSQL statement.",
+      "fix": {
+        "change": "Added real-SQL tests for lock_and_count_active_admins (filters, FOR UPDATE on PostgreSQL dialect)",
+        "test": "tests/codemie/repository/test_user_repository_idp_sync.py"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/idp_sync.py",
+      "line": 124,
+      "title": "Bad project name path gives 500, not 422",
+      "problem": "assign_project builds IdpAssignRequest(project_name=...) inside the handler; a blank-after-strip or over-255 char path segment raises a pydantic ValidationError there, which FastAPI does not map to a 422. Path user_id is also not UUID-validated on non-PUT routes.",
+      "impact": "Malformed input surfaces as a 500 instead of a validation error (AC14). Likely live since the construction is unconditional on the route.",
+      "recommendation": "Validate at the route: project_name: str = Path(min_length=1, max_length=255), and normalise/validate path user_id the same way as the body id.",
+      "status": "resolved",
+      "check_notes": "Path(min_length, max_length, pattern) on user_id and project_name; tests assert 422; openapi baseline updated.",
+      "fix": {
+        "change": "Path params validated at the route (length, non-blank project name) so bad input is 422",
+        "test": "tests/codemie/rest_api/routers/test_idp_sync_router.py::test_bad_project_name_is_422_not_500"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/security/idp_sync_guard.py",
+      "line": 52,
+      "title": "Sync-account restriction fails open on some routes",
+      "problem": "_requires_authentication returns False for non-APIRoute routes (mounted sub-apps, websockets) and for routes that authenticate via a dependency other than authenticate, so the guard returns early without checking the caller. Reachability of such routes in the real app was not confirmed.",
+      "impact": "The sync account could reach routes outside /v1/idp-sync/, contradicting the documented 'every other authenticated route answers 403'. Reachability unconfirmed.",
+      "recommendation": "Fail closed: for non-public routes outside the prefix, resolve the caller and deny the sync account unless the route is on an explicit public allowlist; handle non-APIRoute routes explicitly.",
+      "status": "resolved",
+      "check_notes": "_requires_authentication now returns True for non-APIRoute; fail-closed tests added.",
+      "fix": {
+        "change": "Guard treats non-APIRoute routes as authenticated (fail closed)",
+        "test": "tests/codemie/rest_api/security/test_idp_sync_guard.py::test_non_api_route_fails_closed_for_the_sync_account"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/security/idp_sync_guard.py",
+      "line": 85,
+      "title": "Every authenticated request authenticates twice",
+      "problem": "enforce_idp_sync_identity calls authenticate directly, then the route's own Depends(authenticate) runs again; the spec requires the caller to be resolved once per request.",
+      "impact": "With the setting non-empty, each authenticated request pays double token/DB/IdP lookups and any replay or nonce check may fail on the second pass.",
+      "recommendation": "Make the app-level guard depend on authenticate via Depends so FastAPI caches the result, or reuse request.state.user set by the first authentication.",
+      "status": "resolved",
+      "check_notes": "Guard stores User on request.state; authenticate returns it if isinstance User. request.state is server-side per-request scope, not client-settable, so no bypass; spec non-goal touched minimally.",
+      "fix": {
+        "change": "Guard stores resolved caller on request.state; authenticate reuses it",
+        "test": "tests/codemie/rest_api/security/test_idp_sync_guard.py::test_authenticate_reuses_the_caller_the_guard_resolved"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/user/idp_sync_service.py",
+      "line": 318,
+      "title": "Deactivation last-admin check is not row-locked",
+      "problem": "deactivate delegates to deactivate_user_flow, which uses the unlocked count_active_admins (user_management_service.py:289) and commits in its own session, outside the router transaction. Also assign calls session.rollback() itself while the router owns the transaction.",
+      "impact": "Two parallel deactivations, or a deactivation racing a demotion, can both pass and leave zero active admins, violating AC15.",
+      "recommendation": "Take lock_and_count_active_admins before delegating, in the same transaction, and drop the in-service session.rollback() in assign.",
+      "status": "resolved",
+      "check_notes": "Row lock taken for admin targets, deactivate_user runs in router transaction, post-commit cleanup/cache invalidation; in-service rollback removed. Deviates from deactivate_user_flow text to avoid self-deadlock; accepted.",
+      "fix": {
+        "change": "Deactivation runs in the router transaction under the admin row lock; post-commit cleanup split out; assign no longer rolls back itself",
+        "test": "tests/codemie/service/user/test_idp_sync_service.py::test_deactivate_admin_locks_then_deactivates_in_the_callers_session"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "evidence",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/router_guards/baselines/route_precedence.json",
+      "title": "route_precedence baseline not regenerated",
+      "problem": "The spec and AC12 require both openapi.json and route_precedence.json to be regenerated; the file has no idp-sync entries and is not in the diff.",
+      "impact": "AC12 unmet; the router-guard baseline does not cover the new routes.",
+      "recommendation": "Regenerate route_precedence.json with the project's baseline tooling and commit it, or record why it is not required.",
+      "status": "resolved",
+      "check_notes": "Regeneration exit 0 with head matching reviewed_head; route_precedence.json lists only overlapping route pairs and idp-sync routes have none, so no change is correct.",
+      "fix": {
+        "change": "Baselines regenerated; route_precedence unchanged (new routes overlap nothing), openapi idp-sync entries updated",
+        "test": "n/a"
+      },
+      "evidence": {
+        "artifacts": [
+          {
+            "path": "tests/codemie/rest_api/router_guards/baselines/openapi.json"
+          }
+        ],
+        "commands": [
+          {
+            "command": "poetry run python -m tests.codemie.rest_api.router_guards.regenerate_baselines && poetry run pytest -q tests/codemie/rest_api/router_guards/test_route_precedence.py",
+            "exit_code": 0
+          }
+        ]
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Identity guard: IDP_SYNC_SERVICE_ACCOUNT_ID setting, fail-closed, id + user_type==service_account",
+      "status": "pass",
+      "notes": "is_idp_sync_account checks non-empty id, user.id and service_account type"
+    },
+    {
+      "kind": "spec",
+      "item": "App-level dependency on authenticate so caller is resolved once per request",
+      "status": "partial",
+      "notes": "guard calls authenticate directly; routes authenticate again"
+    },
+    {
+      "kind": "spec",
+      "item": "Guard matches route template, 403 outside /v1/idp-sync/, public routes stay public",
+      "status": "pass",
+      "notes": "uses route.path"
+    },
+    {
+      "kind": "spec",
+      "item": "Operations via one thin service reusing existing services/locks",
+      "status": "pass",
+      "notes": "idp_sync_service.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Each call all-or-nothing: one transaction",
+      "status": "partial",
+      "notes": "deactivate commits in own session; assign rolls back inside service"
+    },
+    {
+      "kind": "spec",
+      "item": "Concurrency: last-admin check under row lock for demotion and deactivation",
+      "status": "partial",
+      "notes": "deactivation uses unlocked count_active_admins"
+    },
+    {
+      "kind": "spec",
+      "item": "Upsert user semantics",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Assign semantics",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Unassign semantics",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Deactivate via deactivate_user_flow, cache invalidation, refusals",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Errors via ExtendedHTTPException",
+      "status": "partial",
+      "notes": "malformed input yields RequestValidationError or unhandled ValidationError"
+    },
+    {
+      "kind": "spec",
+      "item": "Reads: get one, list paged incl. deactivated",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Contract: models documented; openapi.json and route_precedence.json regenerated",
+      "status": "partial",
+      "notes": "route_precedence.json has no idp-sync entries"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1 Empty setting: every management call returns 403",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2 Configured account accepted with switch on and off",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3 Other callers get 403",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4 Configured account gets 403 outside prefix; public stays public",
+      "status": "pass",
+      "notes": "tests walk real app"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5 Upsert creates, updates, reactivates",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6 Admin status is is_admin or id == ADMIN_USER_ID",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7 Assign idempotent, budget failure persists nothing",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8 Unassign idempotent, rejects personal and creator",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9 Deactivate via flow, refuses last admin and service account",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC10 Reads return deactivated users in stable id order",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC11 Load check 60,000 users, page of 100 under 1 s",
+      "status": "pending-stage-7",
+      "notes": "execution evidence"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC12 Baselines regenerated and guard tests pass",
+      "status": "partial",
+      "notes": "route_precedence.json absent from diff"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC13 Existing admin and switch-lock tests still pass",
+      "status": "pending-stage-7",
+      "notes": "test run is Stage 7 evidence"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC14 Unknown user not-found; malformed request validation error",
+      "status": "partial",
+      "notes": "pydantic errors not ExtendedHTTPException"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC15 Overlapping calls no-op; parallel demotions never leave zero admins",
+      "status": "partial",
+      "notes": "parallel deactivation path unlocked"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC17 In-repo sync removed and doc replaced",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC16 Models documented as contract, in OpenAPI baseline",
+      "status": "pass",
+      "notes": ""
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 9 subjects in the review range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new modules inspected (idp_sync_guard.py, routers/idp_sync.py) carry license headers, use from __future__ annotations, modern union/generic types, and keep the new concern in its own modules; no documented rule broken"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "new IdP-sync API uses the central authenticate dependency via require_idp_sync_account, guard fails closed when the setting is empty, no credentials logged in inspected files; no concrete security issue found"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "6 blocking findings (partial AC12/AC14/AC15 coverage, guard fail-open on non-APIRoute routes, double authentication, unlocked last-admin deactivation, 500 on bad project name, untested row lock); diff oversized so not every hunk was verified and reachability stays unconfirmed for several candidates; ~20 candidates dismissed as noise or below the floor, 0 deferred; no brief-visible lens failed.",
+    "confidence": "low",
+    "risk_flags": [
+      "security",
+      "auth",
+      "public-api"
+    ]
+  }
+}

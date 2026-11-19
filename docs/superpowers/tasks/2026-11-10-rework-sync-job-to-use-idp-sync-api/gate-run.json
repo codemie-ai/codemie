@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16895",
+  "head": "93e121f4fea8c144be958564a39d3c7bcdf7e4f2",
+  "runner": "poetry",
+  "started_at": "2026-11-11T08:12:58.898069Z",
+  "completed_at": "2026-11-11T08:12:58.898069Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "No tracked files changed by auto-fix"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 39000,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "11 findings: 10 in untracked local files (.env.bak-*, local/.env.bak-*, .env.pre-main-switch, .kube-local/kubeconfig*.yaml; known). 1 in TRACKED file docs/superpowers/tasks/2026-11-10-rbac-api-updates/gate-run.json (another task's artifact, not touched by this task)."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 104000,
+      "command": "REDIS_HOST=localhost make test",
+      "exit_code": 2,
+      "notes": "11 failed, 21039 passed, 178 skipped; all 11 are the known pre-existing environment failures; no hang"
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Opt-in pre-push hook, needs token; owed to CI/reviewer"
+    }
+  ],
+  "failures": {
+    "secrets": "gitleaks exit 2: 11 leaks found (output omitted because --verbose prints secret values). Files: 4x .env.bak-before-main-20260831-132300 (untracked), 2x local/.env.bak-before-enterprise-20260825-174600 (untracked), .env.pre-main-switch (untracked), .env.bak-llmmode-124709 (untracked), .kube-local/kubeconfig.yaml and kubeconfig-internal.yaml (untracked), docs/superpowers/tasks/2026-11-10-rbac-api-updates/gate-run.json (TRACKED).",
+    "unit": "FAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_two_parallel_agents_get_their_own_exact_totals_not_an_even_split\n\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_dispatch_without_an_llm_group_has_no_cost_rather_than_a_guess\n\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_dispatch_with_no_agent_id_falls_back_to_its_parent_span_from_its_start_on\n\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_subagent_run_time_runs_from_its_call_start_to_its_stop_event_and_is_null_without_one\n\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_foreground_agent_runs_from_its_call_start_to_its_stop_even_though_its_stop_precedes_the_result\n\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_parallel_subagents_have_overlapping_windows\n\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_sequential_subagents_do_not_overlap\n\nFAILED tests/codemie/service/test_mcp_config_service_auth_crud.py::test_update_translates_duplicate_auth_config_id_to_409\n\nFAILED tests/codemie/rest_api/routers/test_oauth_redis_lazy_init.py::test_device_code_flow_works_while_pkce_disabled\n\nFAILED tests/enterprise/mcp_auth/test_feature_gating.py::test_is_mcp_auth_enabled_returns_false_cleanly_without_enterprise\n\nFAILED tests/enterprise/mcp_auth/test_feature_gating.py::test_initialize_mcp_auth_skips_activation_time_registration_when_enterprise_package_missing\n\n  /Users/evgeniikvasiuk/Projects/codemie/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:241: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_empty_list_raises_422\n  /Users/evgeniikvasiuk/Projects/codemie/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:249: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferNonTransferableInList::test_copy_blocked_alias_in_list_raises_422\n  /Users/evgeniikvasiuk/Projects/codemie/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:282: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.COPY, _ALL_TYPES, [\"gitlab-hook\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferBothFlagsFalse::test_both_flags_false_raises_422\n  /Users/evgeniikvasiuk/Projects/codemie/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:308: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.MOVE, set(), None)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateProjects::test_rejects_same_source_and_target\n  /Users/evgeniikvasiuk/Projects/codemie/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:347: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_projects(\"same\", \"same\")\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /Users/evgeniikvasiuk/Projects/codemie/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /Users/evgeniikvasiuk/Projects/codemie/codemie/src/codemie/service/settings/settings_transfer_service.py:372: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\ntests/codemie/rest_api/routers/test_permission.py::test_create_permission_unprocessable_entity\n  /Users/evgeniikvasiuk/Projects/codemie/codemie/src/codemie/rest_api/routers/permission.py:63: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise_unprocessable_entity(action=\"create\", resource=\"permission\", exc=e)\n\ntests/codemie/rest_api/routers/test_permission.py::test_delete_permission_unprocessable_entity\n  /Users/evgeniikvasiuk/Projects/codemie/codemie/src/codemie/rest_api/routers/permission.py:79: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise_unprocessable_entity(action=\"delete\", resource=\"permission\", exc=e)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_two_parallel_agents_get_their_own_exact_totals_not_an_even_split\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_dispatch_without_an_llm_group_has_no_cost_rather_than_a_guess\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_dispatch_with_no_agent_id_falls_back_to_its_parent_span_from_its_start_on\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_subagent_run_time_runs_from_its_call_start_to_its_stop_event_and_is_null_without_one\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_foreground_agent_runs_from_its_call_start_to_its_stop_even_though_its_stop_precedes_the_result\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_parallel_subagents_have_overlapping_windows\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_sequential_subagents_do_not_overlap\nFAILED tests/codemie/service/test_mcp_config_service_auth_crud.py::test_update_translates_duplicate_auth_config_id_to_409\nFAILED tests/codemie/rest_api/routers/test_oauth_redis_lazy_init.py::test_device_code_flow_works_while_pkce_disabled\nFAILED tests/enterprise/mcp_auth/test_feature_gating.py::test_is_mcp_auth_enabled_returns_false_cleanly_without_enterprise\nFAILED tests/enterprise/mcp_auth/test_feature_gating.py::test_initialize_mcp_auth_skips_activation_time_registration_when_enterprise_package_missing\n=== 11 failed, 21039 passed, 178 skipped, 263 warnings in 104.39s (0:01:44) ====\nmake: *** [test] Error 1\n"
+  }
+}

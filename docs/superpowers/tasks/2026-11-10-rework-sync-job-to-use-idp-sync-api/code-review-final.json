@@ -1,0 +1,217 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "5/5 findings resolved (CR-002..CR-006); CR-001 wont-fix by requester"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Fix CR-002..CR-006 in one fix-up round; CR-001 left as is with the recorded reason (verified 262 codemie modules pulled by the in-place import)."
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "5/5 findings resolved (CR-002..CR-006); CR-001 wont-fix by requester"
+    }
+  ],
+  "reviewed_head": "01820314b7db2f212629c2827de3216ee8a66427",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "CR-002..CR-006 are resolved at current source with matching tests. CR-001 was excluded from re-check as wont-fix by the requester (no mapped decision record), so confidence is medium; source is verified from the frozen diff, not re-run.",
+  "confidence": "low",
+  "check_confidence": "medium",
+  "risk_flags": [
+    "security",
+    "auth",
+    "public-api"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 5,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 1
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/idp_sync_job/__init__.py",
+      "title": "Job relocated without proof in-place import check fails",
+      "problem": "The spec decision is to rework in place under src/codemie/enterprise/sync/, with a top-level package only as a fallback if the import check cannot pass there. The diff renames the package to src/idp_sync_job/ and shows no evidence the in-place check failed.",
+      "impact": "Deviates from an approved spec decision; docs, Dockerfile and tests all hard-code the new path.",
+      "recommendation": "Show the import check failing in place and record that decision, or move the job back to the specified path.",
+      "status": "wont-fix",
+      "disposition": {
+        "rationale": "Left as is by the requester. The move to the top-level package src/idp_sync_job/ is justified: in a clean interpreter, importing codemie.enterprise.sync pulls in 262 codemie modules, because src/codemie/enterprise/__init__.py eagerly imports loader, langfuse, litellm, plugin, mcp_auth and idp. The spec allowed the top-level fallback exactly when the in-place import check fails, and the requester approved it for that case (AR-7).",
+        "source": "hitl"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/idp_sync_job/coordinator.py",
+      "title": "Dry run omits planned deactivation count vs ceiling",
+      "problem": "SyncCoordinator._apply logs one 'dry_run: would deactivate' line per user and a deactivated= counter, but never compares the planned count with SYNC_DEACTIVATE_MAX_RATIO or the active-user total. docs/operations/idp-managed-sync.md says it does.",
+      "impact": "A required spec criterion is only partly met; operators relying on the dry run cannot see how close a deactivation plan is to the ceiling before going live.",
+      "recommendation": "Log planned deactivations, active-user total and the ratio against the ceiling during dry run, and keep the docs consistent.",
+      "status": "resolved",
+      "check_notes": "coordinator logs planned/active/ratio vs SYNC_DEACTIVATE_MAX_RATIO in dry run; docs updated; test added",
+      "fix": {
+        "change": "dry run logs planned deactivations, active total, ratio and SYNC_DEACTIVATE_MAX_RATIO; docs updated",
+        "test": "tests/idp_sync_job/test_coordinator.py::test_dry_run_logs_the_planned_deactivations_against_the_ceiling"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/idp_sync_job/keycloak_source.py",
+      "line": 129,
+      "title": "Truncated Keycloak list returned as complete",
+      "problem": "In _get_all, when a later page (page_number > 0) is not a list, `return items if page_number else None` returns the partial list as if complete, contradicting the docstring that a cut-short read is never mistaken for the whole list.",
+      "impact": "Admin-role members and group members come from this path, so a truncated read can demote admins or strip memberships. Reachability confirmed in source: the callers use the result directly without marking the snapshot incomplete.",
+      "recommendation": "Raise _ReadError when a later page is not a list so callers mark the snapshot incomplete and skip those changes.",
+      "status": "resolved",
+      "check_notes": "_get_all raises _ReadError on non-list later page; test added",
+      "fix": {
+        "change": "_get_all raises _ReadError when a later page is not a list",
+        "test": "tests/idp_sync_job/test_keycloak_source.py::test_a_non_list_later_page_raises_instead_of_returning_a_partial_list"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/idp_sync_job/reconcile.py",
+      "line": 168,
+      "title": "Non-Keycloak accounts become deactivation targets",
+      "problem": "plan_deactivations targets every active platform user absent from the enabled-Keycloak snapshot, including the sync service account, local accounts and the bootstrap admin (Keycloak /users usually omits service accounts). Nothing excludes them.",
+      "impact": "They consume the max-ratio budget and rely entirely on API 409 refusals each run; if the API does not refuse one, it is deactivated. Whether the API refuses all of them was not confirmed.",
+      "recommendation": "Exclude the sync service account and SYNC_ADMIN_USER_ID from targets and from the ratio denominator.",
+      "status": "resolved",
+      "check_notes": "deactivation_candidates excludes admin and service account, used for targets and ratio denominator; test added",
+      "fix": {
+        "change": "deactivation candidates exclude SYNC_ADMIN_USER_ID and service-account-<client id>, also from the ratio denominator",
+        "test": "tests/idp_sync_job/test_reconcile.py::test_the_admin_user_and_the_sync_service_account_are_never_deactivation_targets"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/idp_sync_job/settings.py",
+      "title": "SYNC_DRY_RUN typo silently enables live writes",
+      "problem": "_flag returns True only for {1,true,yes,on}; any other non-empty value (e.g. 'ture', 'enabled', 'Y') is False, so the dry-run switch fails open.",
+      "impact": "An operator intending a dry run performs live platform writes, including user changes and deactivations.",
+      "recommendation": "Raise ValueError when a non-empty value is not a recognised true/false token.",
+      "status": "resolved",
+      "check_notes": "_flag raises ValueError on unrecognised tokens; tests added",
+      "fix": {
+        "change": "_flag raises ValueError on unrecognised boolean tokens",
+        "test": "tests/idp_sync_job/test_settings.py::test_an_unrecognised_dry_run_value_is_rejected_instead_of_going_live"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/idp_sync_job/settings.py",
+      "title": "Numeric settings have no range validation",
+      "problem": "from_env parses SYNC_BATCH_SIZE, SYNC_MAX_PAGES, SYNC_DEACTIVATE_MIN_USERS and SYNC_DEACTIVATE_MAX_RATIO with no bounds. The old coordinator rejected batch_size < 1 and had a test; both were removed while chart and docs still say 'minimum 1'. float() also accepts nan/inf.",
+      "impact": "Batch size 0 never satisfies len(page) < batch, so the same /users request repeats up to the page ceiling; nan, negative or percent-style ratios silently disable or invert the mass-deactivation ceiling. No test fails if the guard is absent.",
+      "recommendation": "Reject batch_size < 1, max_pages < 1, min_users < 0 and a ratio outside 0..1 or nan; add tests for 0 and -5.",
+      "status": "resolved",
+      "check_notes": "Settings._validate rejects out-of-range batch, pages, min users, ratio, nan/inf; tests added",
+      "fix": {
+        "change": "Settings validates batch_size, max_pages, min_users, ratio range and nan",
+        "test": "tests/idp_sync_job/test_settings.py::test_out_of_range_numbers_are_rejected"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Rework in place under src/codemie/enterprise/sync/ (top-level package only as fallback if import check cannot pass)",
+      "status": "partial",
+      "notes": "Moved to src/idp_sync_job/ with no evidence the in-place import check failed"
+    },
+    {
+      "kind": "spec",
+      "item": "Dry run reports the planned deactivation count against the ceiling",
+      "status": "partial",
+      "notes": "Only per-action lines and a counter are logged; no comparison against SYNC_DEACTIVATE_MAX_RATIO"
+    },
+    {
+      "kind": "spec",
+      "item": "Dockerfile.sync installs only job deps, copies only job dir, runs import check",
+      "status": "pending-stage-7",
+      "notes": "Image build result is Stage 7 evidence"
+    },
+    {
+      "kind": "spec",
+      "item": "AC12 KEYCLOAK_SYNC_* removed; slim Dockerfile.sync builds",
+      "status": "pending-stage-7",
+      "notes": "Image build is Stage 7 evidence"
+    },
+    {
+      "kind": "spec",
+      "item": "AC13 Docs: claims, env table, status/exit table, proxy checklist, dry run, first sync, rollback",
+      "status": "partial",
+      "notes": "Dry-run section claims the planned deactivation count is logged against the ceiling; code does not"
+    },
+    {
+      "kind": "spec",
+      "item": "Other spec items and AC1-AC11 (reads, writes, personal projects, dry run, guards, tokens, import purity, CronJob)",
+      "status": "pass",
+      "notes": "Covered by code and tests per the acceptance lens"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 12 subjects in the review range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new src/idp_sync_job modules have license headers, from __future__ annotations, modern type hints, and are single-concern modules under 300 lines; no Optional or bare generics found"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no logging of tokens or secrets found in idp_sync_job; client secret only sent in token POST body; path segments are URL-quoted in platform_client; explicit httpx timeouts set"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Diff is oversized, so only the highest-risk candidates were verified against source; confidence is low. 2 spec criteria are partial, 6 blocking findings survive, 0 deferred, 17 dismissed or unverified-as-noise (e.g. malformed-item KeyError, 404 on racing DELETE, Helm zero defaults).",
+    "confidence": "low",
+    "risk_flags": [
+      "security",
+      "auth",
+      "public-api"
+    ]
+  }
+}

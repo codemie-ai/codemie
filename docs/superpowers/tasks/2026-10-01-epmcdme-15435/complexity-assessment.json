@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "task": "Implement IdP-managed mutation guard, scheduled Keycloak-to-platform sync job, and dedicated minimal Docker image for the sync process.",
+  "generated": "2026-10-01T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 6, "label": "XXL" }
+  },
+  "total": 28,
+  "size": "XL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Three major sub-features (mutation guard, sync scheduler, Docker image) together touch config.py, main.py, user_management_router.py (10+ mutation endpoints), three service classes (user_management_service, user_access_service, authentication_service), KeycloakClient, enterprise migration coordinator, pyproject.toml, and deploy templates — 10+ components across multiple subsystems with new abstractions (KcSyncScheduler class, sync entrypoint module, new Poetry dependency group). Core shared utilities config.py and main.py are touched by all three sub-features; red flag bumped scope from XL to XXL."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Core requirements are stated but several architectural decisions remain open: whether to reuse or extend the enterprise migration coordinator for idempotent recurring sync (the existing coordinator has non-idempotent steps such as personal-project creation and lock-state machine); how to fix the budget sync thread-loop bridge (ProjectAssignmentService uses asyncio.run_coroutine_threadsafe which breaks in a standalone sync process without an app event loop); whether KeycloakClient needs a full async variant or only pagination support; and exactly which Poetry groups or extras to carve out for the minimal sync image."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Novel Docker image decomposition (no second-image precedent in this repo) is the highest-risk item — getting the Poetry group boundary wrong produces a large CVE-exposed image. Budget sync event-loop bridge requires a genuine refactor. Mutation guard must cover 10+ mutation endpoints plus the first-login path in authentication_service with no miss allowed (any uncovered path is a data integrity hole when IDP-managed mode is active). Enterprise package pinned at 2.3.44 with unverified compatibility for a recurring sync coordinator. Advisory lock ID must differ from the existing coordinator lock (7734269302). Bumped from L to XL for auth/authz scope of the mutation guard."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Approximately 12 modified production files (config.py, user_management_router.py, user_management_service.py, user_access_service.py, authentication_service.py, keycloak_client.py, coordinator.py, main.py, pyproject.toml, docker-compose.yml, .env.example, and one deploy template) plus 6+ new files (KcSyncScheduler class, sync entrypoint module, Dockerfile.sync, deploy template, and at least 3 new test files across 5+ directories). The XL calibration example epmcdme-10303 had 8 modified + 6 new with a file estimate of L(4); this task exceeds that on modified count, supporting XL(5) here."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "API layer (user_management_router.py mutation guard on 10+ paths), Service layer (three service classes plus new KcSyncScheduler class), DB-Persistence layer (sync job writes via user/project/kb repositories and acquires PostgreSQL advisory locks), External layer (Keycloak Admin API as a recurring data source plus codemie_enterprise package as an integration boundary), Infrastructure layer (Dockerfile.sync plus deploy templates plus pyproject.toml group restructure). Five distinct layers with infrastructure changes and multiple external integrations simultaneously — red flag bumped from XL to XXL."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL(5) to XXL(6): task touches core shared utilities config.py and main.py across all three sub-features",
+    "Technical Risk bumped from L(4) to XL(5): mutation guard directly controls authorization for all user/membership mutation endpoints when IDP-managed mode is active — missing any endpoint is a security and data integrity gap",
+    "Affected Layers bumped from XL(5) to XXL(6): introduces a new continuous integration pattern (recurring Keycloak-to-platform sync) together with infrastructure changes (Dockerfile.sync, deploy templates) and multiple external integrations (Keycloak Admin API, codemie_enterprise package) simultaneously"
+  ],
+  "split_recommendation": {
+    "strategy": "by-feature",
+    "secondary_strategy": "by-dependency",
+    "ordering_note": "mutation-guard first (security foundation, clean bounded deliverable); sync-scheduler second (core complexity, inherits config changes from slice 1); sync-docker-image last (packaging depends on scheduler existing).",
+    "slices": [
+      {
+        "title": "IdP-Managed Mutation Guard",
+        "slice_slug": "mutation-guard",
+        "component": "codemie",
+        "feature": "idp-managed-sync",
+        "scope": "Add IDP_MANAGED_ENABLED config flag and enforce it at every user/membership mutation endpoint in user_management_router.py (10+ paths), user_access_service grant/revoke paths, and authentication_service.create_user_from_idp. Includes full unit test coverage for every guarded path and the negative (guard inactive) paths.",
+        "depends_on": null
+      },
+      {
+        "title": "Keycloak Sync Scheduler",
+        "slice_slug": "sync-scheduler",
+        "component": "codemie",
+        "feature": "idp-managed-sync",
+        "scope": "Add KEYCLOAK_SYNC_ENABLED, KEYCLOAK_SYNC_SCHEDULE, and KEYCLOAK_SYNC_BATCH_SIZE config vars; implement a new KcSyncScheduler class following the StaleDatasourceScheduler pattern with AsyncIOScheduler, CronTrigger, and async_leader_lock; extend KeycloakClient with paginated user listing; wire idempotent user/membership/budget reconciliation via the enterprise adapter (resolving the non-idempotent migration coordinator issue); fix the budget sync event-loop bridge for standalone async use; register the scheduler in main.py lifespan.",
+        "depends_on": "IdP-Managed Mutation Guard"
+      },
+      {
+        "title": "Sync Docker Image",
+        "slice_slug": "sync-docker-image",
+        "component": "codemie",
+        "feature": "idp-managed-sync",
+        "scope": "Create a new Poetry dependency group that excludes the web server, LangChain, LiteLLM, Elasticsearch, NATS, and Azure Storage stacks; add Dockerfile.sync with a minimal sync entrypoint module (no uvicorn or AI stack); add a deploy template (Helm chart, Kubernetes Deployment, or CronJob manifest) for the sync process.",
+        "depends_on": "Keycloak Sync Scheduler"
+      }
+    ]
+  }
+}

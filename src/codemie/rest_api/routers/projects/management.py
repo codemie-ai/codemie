@@ -34,6 +34,7 @@ from codemie.rest_api.routers.projects._common import (
     _ensure_user_management_enabled,
     _resolve_cost_center_name,
 )
+from codemie.rest_api.security.idp_lock import require_no_idp_lock
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.project import cli_analytics_policy
@@ -163,8 +164,13 @@ def update_project_ownership(
     request: Request,
     project_name: str = Path(alias="projectName"),
     authorized_project: Application = Depends(_authorize_project_access),
+    __: None = Depends(require_no_idp_lock),
 ):
-    """Reassign ownership of a project to another existing platform user."""
+    """Reassign ownership of a project to another existing platform user.
+
+    The new owner is added to the project as an admin, a membership change the identity provider owns
+    in IDP managed mode.
+    """
     project = project_service.update_project_ownership(
         user=request.state.user,
         project_name=authorized_project.name,
@@ -182,6 +188,7 @@ def delete_project(
     request: Request,
     project_name: str = Path(alias="projectName"),
     authorized_project: Application = Depends(_authorize_project_access),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Hard-delete a project if it has no assigned resources.
 

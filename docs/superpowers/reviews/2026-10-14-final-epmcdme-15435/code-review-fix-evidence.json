@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "reviewed_head": "c2c16eaabecec9cd32b4ea18bd29042c3ae04d9e",
+  "findings": {
+    "CR-023": {
+      "commands": [
+        {
+          "command": "test -z \"$(git log --format=%s origin/main..HEAD | grep -vE '^EPMCDME-[0-9]+: [A-Z]')\"",
+          "exit_code": 0,
+          "head": "a33ac86ba3d097208840e5c6d558fe8c24f15e1e"
+        }
+      ]
+    }
+  }
+}

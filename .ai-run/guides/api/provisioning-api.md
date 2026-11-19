@@ -34,6 +34,7 @@ A client that creates projects with budgets needs both management permissions. A
 | A route declares exactly one permission: `Depends(RequirePermission(...))` | `routers/provisioning/budgets.py`; pinned by `test_every_provisioning_route_declares_one_permission_after_guards` in `tests/codemie/rest_api/routers/test_provisioning_router.py` |
 | A permission the target state triggers is checked with `require_permission(client, permission, actor_user_id)` in the service's check phase, before anything is written. Never add a second dependency or a second 403 path | `ProvisioningBudgetService._check_project` requires `manage-projects` when the project is missing or the `project` block names a cost center or admins |
 | The route's 403 description names every condition that can produce it | `_WRITE_RESPONSES` in `budgets.py` |
+| With `IDP_MANAGED_ENABLED` on, the identity provider owns projects and their membership: a call that would create a project or assign project admins is refused in the check phase with the lock's 403 (`idp_lock_error()`), after the permission check and before any write. Budgets and cost centers of existing projects work as before; with the switch off nothing changes. A new endpoint that creates projects or changes membership must make the same refusal | `refuse_idp_owned_changes` in `provisioning_budget_service.py` |
 
 ## Paths, Bodies And Methods
 

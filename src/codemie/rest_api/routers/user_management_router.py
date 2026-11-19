@@ -48,6 +48,7 @@ from codemie.rest_api.security.authentication import (
     maintainer_access_only,
     project_admin_or_admin_user_detail_access,
 )
+from codemie.rest_api.security.idp_lock import require_no_idp_lock
 from codemie.rest_api.security.user import User
 from codemie.service.budget.feature_gate import ensure_budget_management_enabled
 from codemie.service.budget.budget_service import budget_service
@@ -58,6 +59,7 @@ from codemie.service.user.user_remap_service import UserRemapService
 
 
 _USER_MGMT_NOT_ENABLED = "User management not enabled"
+
 
 router = APIRouter(
     tags=["user-management"],
@@ -208,7 +210,12 @@ def get_user(
 
 
 @router.post("", response_model=CodeMieUserDetail)
-def create_user(data: UserCreateRequest, user: User = Depends(authenticate), _: None = Depends(admin_access_only)):
+def create_user(
+    data: UserCreateRequest,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+    __: None = Depends(require_no_idp_lock),
+):
     """Create a new local user
 
     SuperAdmin only.
@@ -234,7 +241,10 @@ def create_user(data: UserCreateRequest, user: User = Depends(authenticate), _: 
 
 @router.put("/{user_id}", response_model=CodeMieUserDetail)
 def update_user(
-    user_id: str, data: UserUpdateRequest, user: User = Depends(authenticate), _: None = Depends(admin_access_only)
+    user_id: str,
+    data: UserUpdateRequest,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
 ):
     """Update user details
 
@@ -244,8 +254,9 @@ def update_user(
     - name, picture: Always editable
     - email: Local mode only (IDP mode rejects)
     - username: Immutable (always rejected)
-    - user_type: Local mode only, 'regular' or 'external'
-    - is_admin: Subject to revocation protection
+    - user_type: Admin-only, editable in all auth modes
+    - is_maintainer, is_auditor: Platform roles, always editable by admin
+    - is_admin: editable by a maintainer, except in IDP managed mode where the identity provider owns it
     - project_limit: Subject to validation rules
     """
     if not config.ENABLE_USER_MANAGEMENT:
@@ -283,7 +294,12 @@ def remap_user(data: UserRemapRequest, user: User = Depends(authenticate), _: No
 
 
 @router.delete("/{user_id}")
-def deactivate_user(user_id: str, user: User = Depends(authenticate), _: None = Depends(admin_access_only)):
+def deactivate_user(
+    user_id: str,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+    __: None = Depends(require_no_idp_lock),
+):
     """Deactivate (soft delete) a user
 
     Super admins and maintainers only; only a maintainer can deactivate a maintainer.
@@ -296,7 +312,12 @@ def deactivate_user(user_id: str, user: User = Depends(authenticate), _: None = 
 
 
 @router.post("/{user_id}/reactivate", response_model=CodeMieUserDetail)
-def reactivate_user(user_id: str, user: User = Depends(authenticate), _: None = Depends(admin_access_only)):
+def reactivate_user(
+    user_id: str,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+    __: None = Depends(require_no_idp_lock),
+):
     """Reactivate a deactivated user
 
     Super admins and maintainers only; only a maintainer can reactivate a maintainer.
@@ -315,6 +336,7 @@ def admin_change_password(
     data: AdminPasswordChangeRequest,
     user: User = Depends(authenticate),
     _: None = Depends(admin_access_only),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Change user password (admin override, no current password required)
 
@@ -352,7 +374,11 @@ def get_user_projects(
 
 @router.post("/{user_id}/projects")
 def add_project_access(
-    user_id: str, data: ProjectAccessRequest, user: User = Depends(authenticate), _: None = Depends(admin_access_only)
+    user_id: str,
+    data: ProjectAccessRequest,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Grant project access to user
 
@@ -373,6 +399,7 @@ def update_project_access(
     data: ProjectAccessUpdateRequest,
     user: User = Depends(authenticate),
     _: None = Depends(admin_access_only),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Update user's project admin status
 
@@ -388,7 +415,11 @@ def update_project_access(
 
 @router.delete("/{user_id}/projects/{project_name}")
 def remove_project_access(
-    user_id: str, project_name: str, user: User = Depends(authenticate), _: None = Depends(admin_access_only)
+    user_id: str,
+    project_name: str,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Remove user's project access
 
@@ -462,6 +493,7 @@ def add_knowledge_base_access(
     data: KnowledgeBaseAccessRequest,
     user: User = Depends(authenticate),
     _: None = Depends(admin_access_only),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Grant knowledge base access to user
 
@@ -475,7 +507,11 @@ def add_knowledge_base_access(
 
 @router.delete("/{user_id}/knowledge-bases/{kb_name}")
 def remove_knowledge_base_access(
-    user_id: str, kb_name: str, user: User = Depends(authenticate), _: None = Depends(admin_access_only)
+    user_id: str,
+    kb_name: str,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Remove user's knowledge base access
 

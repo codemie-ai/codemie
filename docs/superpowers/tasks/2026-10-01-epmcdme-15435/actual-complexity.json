@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "generated": "2026-10-01T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 6, "label": "XXL" }
+  },
+  "total": 28,
+  "size": "XL",
+  "band_range": "27-31",
+  "files_changed": 29,
+  "routing": "split-required",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "New deployable sync container (Dockerfile.sync), Helm CronJob, KeycloakSyncCoordinator with _reconcile_user/_reconcile_memberships/_sync_budget, standalone entrypoint process, and require_no_idp_lock() guard injected across 3 routers (user_management_router, projects, common) and 2 services (authentication_service, user_access_service). Keycloak used as a scheduled sync data source — a new integration pattern beyond the existing auth-only client — triggered the 'Integration with new external service' bump from XL to XXL."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Advisory lock (_LOCK_ID) for coordinator idempotency, savepoint-per-user transaction isolation (session.begin_nested), Keycloak token caching with 401 retry in execute_request(), httpx boolean serialization edge case requiring 'true' string (CR-019), and IDP_MANAGED_ENABLED guard that blocks all mutation endpoints. Bumped from L to XL by 'Affects authentication/authorization' red flag."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "29 files changed (diffstat: 29 files changed, 2163 insertions, 17 deletions). 9 modified existing files, 20 new files (coordinator, entrypoint, Dockerfile.sync, Helm CronJob, requirements-sync.txt, 6 coordinator test modules, 4 router/service guard test modules, docs, __init__ files). 16+ maps to XXL on the file-count scale."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "API (user_management_router.py, common.py, projects.py), Service (authentication_service.py, user_access_service.py, coordinator.py), DB-Persistence (coordinator writes users, memberships, projects via existing repositories), Infrastructure (Dockerfile.sync multi-stage build, sync-cronjob.yaml Helm CronJob), External (KeycloakClient.list_users() paginating Keycloak Admin API). Five distinct architectural layers; bumped from XL to XXL by the same Keycloak integration red flag."
+    },
+    {
+      "dimension": "dependencies",
+      "reason": "requirements-sync.txt is a new file but pins only packages already present in pyproject.toml (httpx, pydantic-settings, sqlalchemy, asyncpg, sqlmodel, langchain-core). pyproject.toml is not in changed_files — no new packages added to the project, only minor config addition."
+    }
+  ],
+  "red_flags_applied": [
+    "Affects authentication or authorization: IDP_MANAGED_ENABLED guard blocks all mutation endpoints across routers and services — Technical Risk bumped from L (4) to XL (5).",
+    "Integration with new external service: Keycloak Admin API used as a scheduled sync data source (list_users pagination, full user/membership reconciliation), a new integration pattern beyond the existing auth-only client — Component Scope bumped from XL (5) to XXL (6) and Affected Layers bumped from XL (5) to XXL (6)."
+  ],
+  "split_recommendation": "Work already implemented. Advisory: by-component (by-dependency order) — sync-container (coordinator + entrypoint + Dockerfile.sync + Helm CronJob) deliverable first as the foundational piece, then api-guards (IDP_MANAGED_ENABLED flag + require_no_idp_lock across routers/services) as the second slice, since the guard depends on the feature flag introduced alongside the coordinator."
+}

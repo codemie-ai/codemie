@@ -461,6 +461,7 @@ class TestCreateUserFromIdp:
             ) as mock_ensure,
             patch("codemie.service.user.authentication_service.config") as mock_config,
         ):
+            mock_config.IDP_MANAGED_ENABLED = False
             mock_config.IDP_PROVIDER = "keycloak"
             mock_config.ADMIN_USER_ID = "admin-id"
             mock_config.ADMIN_ROLE_NAME = "SuperAdmin"
@@ -540,6 +541,7 @@ class TestCreateUserFromIdp:
             ),
             patch("codemie.service.user.authentication_service.config") as mock_config,
         ):
+            mock_config.IDP_MANAGED_ENABLED = False
             mock_config.IDP_PROVIDER = "keycloak"
             mock_config.ADMIN_USER_ID = "other-id"
             mock_config.ADMIN_ROLE_NAME = "SuperAdmin"
@@ -592,6 +594,7 @@ class TestCreateUserFromIdp:
             ),
             patch("codemie.service.user.authentication_service.config") as mock_config,
         ):
+            mock_config.IDP_MANAGED_ENABLED = False
             mock_config.IDP_PROVIDER = "keycloak"
             mock_config.ADMIN_USER_ID = "other-id"
             mock_config.ADMIN_ROLE_NAME = "SuperAdmin"
@@ -1598,6 +1601,87 @@ class TestFinalizeAuthenticationPersonalProjectGuard:
 
             mock_personal.ensure_personal_project_async.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("idp_managed, expect_created", [(True, False), (False, True)])
+    async def test_personal_project_is_skipped_only_in_idp_managed_mode(self, idp_managed, expect_created):
+        """IdP login: projects come from the identity provider, so no personal (email) project is created."""
+        user_id = str(uuid4())
+        security_user_ins = security_user.User(
+            id=user_id,
+            username="testuser",
+            name="Test User",
+            email="test@example.com",
+            user_type="regular",
+            roles=[],
+            project_names=[],
+            admin_project_names=[],
+            knowledge_bases=[],
+            is_admin=False,
+        )
+
+        with (
+            patch.object(config, "IDP_MANAGED_ENABLED", idp_managed),
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
+            patch("codemie.service.user.authentication_service.user_kb_repository") as mock_kb_repo,
+            patch("codemie.service.project.personal_project_service.personal_project_service") as mock_personal,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(AsyncMock())
+            mock_proj_repo.aget_by_user_id = AsyncMock(return_value=[])
+            mock_kb_repo.aget_by_user_id = AsyncMock(return_value=[])
+            mock_personal.ensure_personal_project_async = AsyncMock()
+
+            await AuthenticationService._finalize_authentication(security_user_ins, "persistent")
+
+        if expect_created:
+            mock_personal.ensure_personal_project_async.assert_called_once_with(user_id, "test@example.com")
+        else:
+            mock_personal.ensure_personal_project_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "listed, expect_created",
+        [("Test@Example.com", True), ("team-a", False)],
+    )
+    async def test_idp_managed_login_ensures_the_personal_project_only_when_the_idp_lists_it(
+        self, listed, expect_created
+    ):
+        """IdP login: the project named like the email becomes the personal one only when the IdP delivers it."""
+        user_id = str(uuid4())
+        security_user_ins = security_user.User(
+            id=user_id,
+            username="testuser",
+            name="Test User",
+            email="test@example.com",
+            user_type="regular",
+            roles=[],
+            project_names=[],
+            admin_project_names=[],
+            knowledge_bases=[],
+            is_admin=False,
+        )
+
+        with (
+            patch.object(config, "IDP_MANAGED_ENABLED", True),
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
+            patch("codemie.service.user.authentication_service.user_kb_repository") as mock_kb_repo,
+            patch("codemie.service.project.personal_project_service.personal_project_service") as mock_personal,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(AsyncMock())
+            mock_proj_repo.aget_by_user_id = AsyncMock(
+                return_value=[MagicMock(project_name=listed, is_project_admin=False)]
+            )
+            mock_kb_repo.aget_by_user_id = AsyncMock(return_value=[])
+            mock_personal.ensure_personal_project_async = AsyncMock()
+
+            await AuthenticationService._finalize_authentication(security_user_ins, "persistent")
+
+        if expect_created:
+            mock_personal.ensure_personal_project_async.assert_called_once_with(user_id, "test@example.com")
+        else:
+            mock_personal.ensure_personal_project_async.assert_not_called()
+
 
 class TestFinalizeAuthenticationDefaultProject:
     """The persistent/IdP login path must carry the default project (EPMCDME-15111 attribution)."""
@@ -1999,6 +2083,52 @@ class TestAuthenticateAndLogin:
 
             await AuthenticationService.authenticate_and_login(email, password)
 
+            mock_personal.ensure_personal_project_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("idp_managed, expect_created", [(True, False), (False, True)])
+    async def test_personal_project_is_skipped_only_in_idp_managed_mode(self, idp_managed, expect_created):
+        """Local login: no personal (email) project is created while IDP_MANAGED_ENABLED is on."""
+        email = "test@example.com"
+        user_id = str(uuid4())
+
+        mock_user = UserDB(
+            id=user_id,
+            username="testuser",
+            email=email,
+            name="Test User",
+            user_type="regular",
+            is_active=True,
+            is_admin=False,
+            auth_source="local",
+            email_verified=True,
+            password_hash="$argon2id$v=19$m=65536,t=3,p=4$hash",
+            last_login_at=None,
+            project_limit=10,
+        )
+
+        with (
+            patch.object(config, "IDP_MANAGED_ENABLED", idp_managed),
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService.authenticate_local",
+                new_callable=AsyncMock,
+            ) as mock_auth,
+            patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
+            patch("codemie.service.project.personal_project_service.personal_project_service") as mock_personal,
+            patch("codemie.rest_api.security.jwt_local.generate_access_token") as mock_gen_token,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(AsyncMock())
+            mock_auth.return_value = mock_user
+            mock_proj_repo.aget_by_user_id = AsyncMock(return_value=[])
+            mock_personal.ensure_personal_project_async = AsyncMock()
+            mock_gen_token.return_value = "jwt-token-123"
+
+            await AuthenticationService.authenticate_and_login(email, "ValidPassword123")
+
+        if expect_created:
+            mock_personal.ensure_personal_project_async.assert_called_once_with(user_id, email)
+        else:
             mock_personal.ensure_personal_project_async.assert_not_called()
 
 

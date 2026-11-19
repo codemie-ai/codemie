@@ -919,6 +919,30 @@ class UserManagementService:
         return is_admin, is_maintainer
 
     @staticmethod
+    def _reject_idp_admin_change(
+        session: Session, user_id: str, requested_is_admin: bool | None, requested_is_maintainer: bool | None = None
+    ) -> None:
+        """In IDP managed mode the Admin role comes from the identity provider and cannot be changed here.
+
+        Not rejected: a value equal to the stored one (clients echo the current flags back), and
+        is_admin=True for a user who is or becomes a maintainer, since a maintainer is always an admin.
+        Maintainer and Auditor stay editable: they are platform roles.
+        """
+        if not config.IDP_MANAGED_ENABLED or requested_is_admin is None:
+            return
+        target = user_repository.get_by_id(session, user_id)
+        if target is None or bool(target.is_admin) == requested_is_admin:
+            return
+        will_be_maintainer = bool(target.is_maintainer) if requested_is_maintainer is None else requested_is_maintainer
+        if requested_is_admin and will_be_maintainer:
+            return
+        raise ExtendedHTTPException(
+            code=403,
+            message="The Admin role is controlled by the identity provider.",
+            details="Change the user's admin role in the identity provider instead.",
+        )
+
+    @staticmethod
     def _validate_role_change_permissions(
         session: Session,
         actor_user_id: str,
@@ -1216,7 +1240,7 @@ class UserManagementService:
                 "Only local auth mode allows email changes.",
             )
 
-        # Rule 3: user_type is conditional - editable by admin in local mode only (Story 8)
+        # Rule 3: user_type is conditional - editable by admin only (all auth modes)
         if user_type is not None and not actor_is_admin:
             raise ExtendedHTTPException(
                 code=403,
@@ -1318,7 +1342,7 @@ class UserManagementService:
         Conditional Field Editability (Story 8):
         - username: Immutable - cannot be changed by anyone
         - email: Editable only in local auth mode (IDP mode: error)
-        - user_type: Editable only in local auth mode (IDP mode: error)
+        - user_type: Editable by admin in all auth modes
 
         Args:
             user_id: Target user UUID
@@ -1359,6 +1383,8 @@ class UserManagementService:
 
             # Story 8: Resolve actor's admin status for user_type validation
             actor_is_admin = UserManagementService._resolve_actor_admin_status(session, actor_user_id, user_type)
+
+            UserManagementService._reject_idp_admin_change(session, user_id, is_admin, is_maintainer)
 
             is_admin, is_maintainer = UserManagementService._validate_role_change_permissions(
                 session, actor_user_id, is_admin, is_maintainer

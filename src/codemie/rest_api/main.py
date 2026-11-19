@@ -79,6 +79,7 @@ from codemie.rest_api.routers import (
     skill,
     schedulers,
     agent_workspace,
+    idp_sync,
     guardrail,
     index,
     common,
@@ -1560,6 +1561,7 @@ app.include_router(skill.router)
 app.include_router(schedulers.router)
 app.include_router(background_tasks.router)
 app.include_router(user.router)
+app.include_router(idp_sync.router)
 app.include_router(user_settings.router)
 app.include_router(project_settings.router)
 app.include_router(settings.router)

@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "task": "Rework the in-repo Keycloak sync job so it reconciles users and memberships through the /v1/idp-sync/ management API instead of the database, as a self-contained platform-import-free job (EPMCDME-16897).",
+  "generated": "2026-11-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Job-local settings, copied Keycloak client, new platform HTTP client with token flow, rewritten reconcile/coordinator, entrypoint, plus self-contained packaging (manifest, Dockerfile context) and Helm CronJob. Read half is reusable, so no new subsystem beyond the job itself; stays L, not XL." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing coordinator read logic and KeycloakClient, which does not cover the new security-sensitive parts: service-account token acquisition for the management API (claim mapping untraced), a second Secret, last-admin 409 handling, and 60,000-user scale (about 600 list calls each side within the schedule). No precedent for a platform-free sub-project in the repo. Existing FakeKeycloak/error-path tests cover the defensive test pattern, so no extra bump. Calibrated against sibling EPMCDME-16895 (L 21)." },
+    { "dimension": "file_change_estimate", "reason": "About 7 modified (coordinator, entrypoint, Dockerfile.sync, sync-cronjob.yaml, values.yaml, config.py KEYCLOAK_SYNC_*, ops doc) and about 6-8 new (own manifest, settings, Keycloak client copy, platform API client, tests/fakes) across several directories; tests are largely discarded and rewritten. Sits in L (8-10 modified / 2-4 new at the low end, trending toward XL), scored L." },
+    { "dimension": "affected_layers", "reason": "Job service logic, two external integrations (Keycloak and the platform management API), and infrastructure (image, CronJob, values). Persistence layer is removed, not changed, and no UI, so L rather than XL." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

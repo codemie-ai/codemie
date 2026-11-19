@@ -1,0 +1,177 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "All 4 findings resolved."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "4 blocking findings CR-001..CR-004 (docs/values); fix in one round."
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "All 4 findings resolved."
+    }
+  ],
+  "reviewed_head": "9cb811beb33f63d17e4da44d28a219d8f0f7459d",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All four prior blocking findings are addressed in docs/operations/idp-managed-users.md: claims table, proxy trust precondition, disable/rollback section and chart upgrade note. CR-001 was resolved via the operations doc, which its recommendation allowed; claim necessity was not re-verified against guard code.",
+  "confidence": "high",
+  "check_confidence": "high",
+  "risk_flags": [
+    "security",
+    "breaking-change"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 4,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "deploy-templates/values.yaml",
+      "title": "No upgrade note for removed keycloakSync values",
+      "problem": "keycloakSync.* and keycloak.* were removed from values.yaml and the CronJob template deleted. Helm ignores unknown keys, so an upgrade with keycloakSync.enabled=true silently drops the CronJob. The codemie-keycloak-sync-read and codemie-idp-sync-write Secrets and the built sync image stay behind. No release or upgrade note is in the diff.",
+      "impact": "Users stop syncing without any error while IDP_MANAGED_ENABLED still blocks in-platform edits, leaving user state stale.",
+      "recommendation": "Add an upgrade note (chart README or the operations doc): keycloakSync.* and keycloak.* are removed, the CronJob is deleted on upgrade, scheduling moves to the customer-side job, and the orphaned Secrets can be removed.",
+      "status": "resolved",
+      "check_notes": "Section 8 documents removed keycloakSync/keycloak values, silent CronJob drop, orphaned Secrets and image.",
+      "fix": {
+        "change": "Added upgrade section 8 for removed keycloakSync/keycloak values",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "docs/operations/idp-managed-users.md",
+      "line": 23,
+      "title": "Required service-account token claims not documented",
+      "problem": "Step 4 mentions only the service_account user type claim. The deleted guide also required sub equal to IDP_SYNC_SERVICE_ACCOUNT_ID, preferred_username, name (via hardcoded-claim mapper, since service accounts have none) and realm_access.roles. Section 3 does not say how the platform user for the service account comes to exist.",
+      "impact": "A customer following the new doc may get 401/403 from the management API with no hint why. Claim necessity was not re-verified against the guard code.",
+      "recommendation": "List all required claims in section 2 and explain how the platform user is created in section 3; verify against the guard code first.",
+      "status": "resolved",
+      "check_notes": "Step 4 table lists sub, preferred_username, name, realm_access.roles, user_type; section 3 explains identity from sub.",
+      "fix": {
+        "change": "Listed required token claims in section 2, clarified identity in section 3",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "docs/operations/idp-managed-users.md",
+      "line": 33,
+      "title": "Proxy trust security precondition no longer documented",
+      "problem": "The deleted guide stated the platform does not verify the token signature and trusts the x-auth-request-access-token header, so the auth proxy is the only control, with four checks (forged header rejected, direct backend call returns 401). The new doc says only to reach the API through the ingress or auth proxy.",
+      "impact": "Customers writing their own job are not told that a reachable backend lets anyone forge the sync account.",
+      "recommendation": "Add a security section restoring the precondition and the verification checks (forged header rejected, direct backend call returns 401).",
+      "status": "resolved",
+      "check_notes": "Section 7 restores proxy trust precondition with four verification checks.",
+      "fix": {
+        "change": "Added section 7 proxy trust precondition with four checks",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "docs/operations/idp-managed-users.md",
+      "line": 44,
+      "title": "No disable or rollback guidance",
+      "problem": "The deleted guide said to suspend the job before setting IDP_MANAGED_ENABLED=false so the next run does not undo in-platform changes. The new doc covers only enabling the mode, and the rollout order has no failure path.",
+      "impact": "Operators disabling the mode while the customer job runs get their in-platform changes overwritten.",
+      "recommendation": "Add a disable/rollback section: suspend the job first, then switch off; add a failure path to the rollout order.",
+      "status": "resolved",
+      "check_notes": "Section 6 adds suspend-first disable/rollback; rollout order gains a failure path.",
+      "fix": {
+        "change": "Added failure path to rollout and section 6 disable/rollback",
+        "test": "n/a"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Client: new characterization tests (admin token fetch, params as JSON body on GET, health_check)",
+      "status": "pending-stage-7",
+      "notes": "tests cover all three with httpx mocked; passing run is execution evidence"
+    },
+    {
+      "kind": "spec",
+      "item": "Doc length about 100 lines",
+      "status": "partial",
+      "notes": "new doc is 51 lines; all required topics present, size deviation only"
+    },
+    {
+      "kind": "spec",
+      "item": "Helm-unittest case asserting no CronJob renders with default values",
+      "status": "pending-stage-7",
+      "notes": "no_cronjob_test.yaml was never run; helm unittest run is execution evidence"
+    },
+    {
+      "kind": "spec",
+      "item": "Regression: existing switch tests pass unchanged",
+      "status": "pending-stage-7",
+      "notes": "execution evidence"
+    },
+    {
+      "kind": "spec",
+      "item": "Helm render differs from 16895 tip only by removed CronJob and keycloak values",
+      "status": "pending-stage-7",
+      "notes": "render comparison is execution evidence"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 6 subjects in the review range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new test file carries the Apache license header; transfer/ python files all carry the header; no documented rule violated"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no credential logging, hardcoded secrets or unsafe input handling seen in changed files"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "All four lenses and standards ran; four doc/upgrade-safety gaps from removing the sync guide and chart values are blocking (security precondition, token claims, upgrade note, rollback). 5 candidates dismissed as noise or out of scope (weak helm test, doc length, test-file nits, unverifiable repo-wide leftovers, API contract tests); 0 deferred.",
+    "confidence": "high",
+    "risk_flags": [
+      "security",
+      "breaking-change"
+    ]
+  }
+}

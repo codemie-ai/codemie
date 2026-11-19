@@ -38,6 +38,7 @@ from codemie.rest_api.routers.projects._common import (
     _ensure_user_management_enabled,
     _resolve_cost_center_name,
 )
+from codemie.rest_api.security.idp_lock import require_no_idp_lock
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import BudgetCategory
@@ -187,7 +188,11 @@ async def _attach_assigned_budget_summaries(
 
 
 @router.post("/projects", response_model=ProjectCreateResponse, status_code=201)
-def create_project(payload: ProjectCreateRequest, user: User = Depends(authenticate)):
+def create_project(
+    payload: ProjectCreateRequest,
+    user: User = Depends(authenticate),
+    __: None = Depends(require_no_idp_lock),
+):
     """Create a new shared project."""
     _ensure_user_management_enabled()
     cli_analytics_policy.require_write(user, payload.model_fields_set)

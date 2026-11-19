@@ -25,6 +25,7 @@ from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.idp.local import USER_ID_HEADER, LocalIdp
+from codemie.rest_api.security.idp_sync_access import enforce_idp_sync_scope
 from codemie.rest_api.security.provisioning_access import enforce_provisioning_scope
 from codemie.rest_api.security.user import User
 from codemie.rest_api.security.user_context import (
@@ -155,6 +156,7 @@ async def authenticate(
                 user = await impersonate_teams_bot_request(user, request)
 
             enforce_provisioning_scope(user, request)
+            enforce_idp_sync_scope(user, request)
 
         # 4. Store in context (unchanged from current behavior)
         request.state.user = user

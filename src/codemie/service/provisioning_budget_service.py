@@ -34,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codemie.clients.postgres import get_async_session, get_session
+from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.configs.provisioning_clients_config import ProvisioningClient, ProvisioningPermission
 from codemie.core.exceptions import ExtendedHTTPException
@@ -54,6 +55,7 @@ from codemie.rest_api.models.provisioning import (
     ProvisioningBudgetSetRequest,
     ProvisioningProjectBlock,
 )
+from codemie.rest_api.security.idp_lock import idp_lock_error
 from codemie.rest_api.security.provisioning_access import require_permission
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
@@ -240,6 +242,19 @@ def _log_partly_applied(call: _Call, project_name: str, cause: str) -> None:
     )
 
 
+def refuse_idp_owned_changes(project: Application | None, block: ProvisioningProjectBlock) -> None:
+    """403 in IdP-managed mode when the call would create a project or assign project admins.
+
+    The identity provider owns projects and their membership there, and the next sync would undo such
+    admins. Budgets and cost centers of existing projects are not affected. Runs in the check phase.
+    """
+    if not config.IDP_MANAGED_ENABLED:
+        return
+    if project is None or block.admin_emails:
+        logger.warning(f"provisioning_refused_idp_managed: creates_project={project is None}, domain=provisioning")
+        raise idp_lock_error()
+
+
 class ProvisioningBudgetService:
     @classmethod
     async def set_budget(
@@ -365,6 +380,7 @@ class ProvisioningBudgetService:
             project = ProvisioningService.find_project(session, call.project_name)
             if project is None or block.cost_center is not None or block.admin_emails:
                 require_permission(call.client, ProvisioningPermission.MANAGE_PROJECTS, call.actor.id)
+            refuse_idp_owned_changes(project, block)
             ProvisioningService.check_project_prerequisites(session, project, call.project_name, block.cost_center)
         return project
 
@@ -390,6 +406,7 @@ class ProvisioningBudgetService:
                 if resolved.created_project:
                     # The project can vanish after the check phase saw it; nothing is committed yet, so 403 holds.
                     require_permission(call.client, ProvisioningPermission.MANAGE_PROJECTS, call.actor.id)
+                    refuse_idp_owned_changes(None, block)
                 admins = ProvisioningService.assign_admins(
                     session, call.actor, resolved.project, block.admin_emails, route
                 )

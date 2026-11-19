@@ -238,8 +238,11 @@ class AuthenticationService:
         # See authenticate_persistent_user for actual call (after session.commit())
 
         # Ensure Application records exist for user's projects (first login only)
-        # This is done here to avoid per-request overhead in the auth hot-path
-        await AuthenticationService._ensure_projects_exist(idp_user.project_names + [db_user.email])
+        # In IDP managed mode personal project (email) is not created — projects come from Keycloak.
+        projects_to_ensure = (
+            idp_user.project_names if config.IDP_MANAGED_ENABLED else idp_user.project_names + [db_user.email]
+        )
+        await AuthenticationService._ensure_projects_exist(projects_to_ensure)
 
         logger.info(
             f"user_created: target_user_id={db_user.id}, auth_source={config.IDP_PROVIDER}, domain=user_management"
@@ -376,6 +379,22 @@ class AuthenticationService:
         )
 
     @staticmethod
+    async def _personal_project_expected(security_user_ins: security_user.User) -> bool:
+        """Whether the login ensures the personal project of the user.
+
+        Always outside IDP managed mode. In that mode the projects come from the IdP, so the personal project is
+        ensured only when the IdP lists the project named like the email: it then becomes the personal project
+        under the same rules as outside the mode.
+        """
+        if not config.IDP_MANAGED_ENABLED:
+            return True
+        from codemie.clients.postgres import get_async_session
+
+        async with get_async_session() as session:
+            memberships = await user_project_repository.aget_by_user_id(session, security_user_ins.id)
+        return any(security_user.same_project_name(m.project_name, security_user_ins.email) for m in memberships)
+
+    @staticmethod
     async def _finalize_authentication(security_user_ins: security_user.User, auth_source: str) -> security_user.User:
         """Ensure personal project and load relationships after commit.
 
@@ -393,7 +412,9 @@ class AuthenticationService:
         from codemie.rest_api.security.user_type_validator import is_personal_project_excluded_account
         from codemie.service.project.personal_project_service import personal_project_service
 
-        if not is_personal_project_excluded_account(security_user_ins.id, security_user_ins.user_type):
+        if not is_personal_project_excluded_account(
+            security_user_ins.id, security_user_ins.user_type
+        ) and await AuthenticationService._personal_project_expected(security_user_ins):
             await personal_project_service.ensure_personal_project_async(security_user_ins.id, security_user_ins.email)
 
         async with get_async_session() as session:
@@ -800,7 +821,7 @@ class AuthenticationService:
         # Story 9: Ensure personal project exists (local login flow, ISOLATED transaction)
         # FR-7.1: Personal project auto-created on authentication
         # Uses separate session to prevent rollback affecting authentication
-        if not is_personal_project_excluded_account(user_id, user_type):
+        if not config.IDP_MANAGED_ENABLED and not is_personal_project_excluded_account(user_id, user_type):
             await personal_project_service.ensure_personal_project_async(user_id, user_email)
 
         access_token = generate_access_token(user_id, user_email, "local")

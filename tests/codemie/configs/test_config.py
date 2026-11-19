@@ -156,6 +156,32 @@ def test_retrieval_available_false_for_none():
     assert retrieval_available(cfg) is False
 
 
+def test_idp_managed_mode_enables_user_management():
+    """User management is a prerequisite of IDP managed mode (budgets need it), so it is switched on."""
+    config = Config(IDP_MANAGED_ENABLED=True, IDP_PROVIDER="keycloak", ENABLE_USER_MANAGEMENT=False)
+
+    assert config.ENABLE_USER_MANAGEMENT is True
+
+
+def test_idp_managed_mode_refuses_to_start_with_the_local_provider():
+    with pytest.raises(ValueError, match="IDP_PROVIDER=local"):
+        Config(IDP_MANAGED_ENABLED=True, IDP_PROVIDER="local")
+
+
+@pytest.mark.parametrize("provider", ["keycloak", "oidc", "entraid-oidc"])
+def test_idp_managed_mode_allows_the_other_providers(provider):
+    assert Config(IDP_MANAGED_ENABLED=True, IDP_PROVIDER=provider).IDP_MANAGED_ENABLED is True
+
+
+def test_local_provider_is_fine_when_idp_managed_mode_is_off():
+    assert Config(IDP_MANAGED_ENABLED=False, IDP_PROVIDER="local").IDP_PROVIDER == "local"
+
+
+def test_user_management_flag_is_untouched_when_idp_managed_mode_is_off():
+    assert Config(IDP_MANAGED_ENABLED=False, ENABLE_USER_MANAGEMENT=False).ENABLE_USER_MANAGEMENT is False
+    assert Config(IDP_MANAGED_ENABLED=False, ENABLE_USER_MANAGEMENT=True).ENABLE_USER_MANAGEMENT is True
+
+
 def test_mcp_connect_available_non_standalone_ignores_url():
     cfg = SimpleNamespace(STANDALONE=False, MCP_CONNECT_ENABLED=True, MCP_CONNECT_URL="")
     assert mcp_connect_available(cfg) is True

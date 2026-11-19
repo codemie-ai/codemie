@@ -25,6 +25,7 @@ from sqlmodel import Session, select, func, or_
 
 from codemie.core.constants import MAX_POSTGRES_QUERY_ARGUMENTS
 from codemie.core.db_utils import escape_like_wildcards
+from codemie.core.models import Application
 from codemie.rest_api.models.user_management import (
     UserDB,
     UserListFilters,
@@ -44,6 +45,15 @@ class _UserFields:
     email: str
     username: str
     name: str | None
+
+
+@dataclass(frozen=True)
+class MembershipRow:
+    """One user-project membership with the project's personal flag (IdP-sync reads)."""
+
+    project_name: str
+    is_project_admin: bool
+    is_personal: bool
 
 
 class UserRepository:
@@ -66,6 +76,42 @@ class UserRepository:
         """
         statement = select(UserDB).where(UserDB.id == user_id)
         return session.exec(statement).first()
+
+    def list_page_including_deleted(self, session: Session, page: int, per_page: int) -> tuple[list[UserDB], int]:
+        """One page of all users, deactivated included, in stable ``UserDB.id`` order; page is 0-based.
+
+        Returns:
+            (users of the page, total number of users)
+        """
+        total = session.exec(select(func.count(UserDB.id))).one()
+        users = session.exec(select(UserDB).order_by(UserDB.id).offset(page * per_page).limit(per_page)).all()
+        return list(users), total
+
+    def fetch_memberships_with_personal(self, session: Session, user_ids: list[str]) -> dict[str, list[MembershipRow]]:
+        """Memberships of the given users with the personal-project flag, in one IN-list query.
+
+        Users without memberships map to an empty list.
+        """
+        result: dict[str, list[MembershipRow]] = {user_id: [] for user_id in user_ids}
+        if not user_ids:
+            return result
+        rows = session.exec(
+            select(
+                UserProject.user_id, UserProject.project_name, UserProject.is_project_admin, Application.project_type
+            )
+            .outerjoin(Application, Application.name == UserProject.project_name)
+            .where(UserProject.user_id.in_(user_ids))  # type: ignore[attr-defined]
+            .order_by(UserProject.user_id, UserProject.project_name)
+        ).all()
+        for user_id, project_name, is_admin, project_type in rows:
+            result[user_id].append(
+                MembershipRow(
+                    project_name=project_name,
+                    is_project_admin=bool(is_admin),
+                    is_personal=project_type == Application.ProjectType.PERSONAL,
+                )
+            )
+        return result
 
     def get_by_email(self, session: Session, email: str) -> Optional[UserDB]:
         """Get user by email (case-insensitive)
@@ -305,6 +351,36 @@ class UserRepository:
         """
         statement = select(func.count(UserDB.id)).where(UserDB.is_maintainer, _ACTIVE)
         return session.exec(statement).one()
+
+    def lock_and_count_active_admins(self, session: Session) -> int:
+        """Count active admins while holding row locks (``SELECT ... FOR UPDATE``) on them.
+
+        A concurrent transaction demoting an admin blocks here until this one ends and then no longer
+        matches the predicate, so two parallel demotions cannot both see "another admin remains".
+        """
+        statement = (
+            select(UserDB.id)
+            .where(UserDB.is_admin, UserDB.is_active, UserDB.deleted_at.is_(None))
+            .order_by(UserDB.id)
+            .with_for_update()
+        )
+        return len(session.exec(statement).all())
+
+    def lock_active_maintainer_ids(self, session: Session) -> list[str]:
+        """Ids of the active maintainers, with row locks (``SELECT ... FOR UPDATE``) on them.
+
+        Same idea as :meth:`lock_and_count_active_admins`: a concurrent demotion of another maintainer blocks
+        here until this transaction ends, so two parallel demotions cannot both see "another maintainer remains".
+        Callers that also lock the administrators take those locks first (maintainers are administrators), so the
+        lock order is the same everywhere.
+        """
+        statement = (
+            select(UserDB.id)
+            .where(UserDB.is_maintainer, UserDB.is_active, UserDB.deleted_at.is_(None))
+            .order_by(UserDB.id)
+            .with_for_update()
+        )
+        return list(session.exec(statement).all())
 
     def update_last_login(self, session: Session, user_id: str) -> bool:
         """Update user's last login timestamp

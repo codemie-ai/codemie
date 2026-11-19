@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16896",
+  "head": "9cb811beb33f63d17e4da44d28a219d8f0f7459d",
+  "runner": "poetry",
+  "started_at": "2026-11-12T12:40:00Z",
+  "completed_at": "2026-11-12T12:55:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-headers",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 55000,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "8 leaks, all in untracked local .env backup files (.env.bak-*, .env.pre-main-switch, local/.env.bak-*), none in branch-changed files; local-environment, not diff-caused"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 163000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "50 failed, 33744 passed; 45 are live-Postgres tests (relation hook_events missing, local DB not migrated); others in langgraph_event_adapter, oauth_redis_lazy_init, mcp_config_service_auth_crud, enterprise/mcp_auth feature_gating. None touch branch-changed files except none; likely environmental/pre-existing"
+    },
+    {
+      "id": "alembic-heads",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 500,
+      "command": "python scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "Ran via poetry run python (system python3 too old for syntax). Also pre-push hook step 0."
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "notes": "pre-push hook (opt-in via CODEMIE_PREPUSH_ENABLED); needs Sonar credentials/network, not run"
+    },
+    {
+      "id": "helm-unittest",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "helm unittest deploy-templates",
+      "notes": "helm not installed; deploy-templates changed (tests/no_cronjob_test.yaml) so helm checks are unverified"
+    }
+  ],
+  "failures": {
+    "secrets": "Secret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.726198\nFile:        /workspace/.env.bak-before-main-20260831-132300\nLine:        55\nFingerprint: /workspace/.env.bak-before-main-20260831-132300:generic-api-key:55\n\nFinding:     MCP_AUTH_HMAC_SECRET=\u001b[1;3;mREDACTED\u001b[0m\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.781949\nFile:        /workspace/.env.bak-before-main-20260831-132300\nLine:        64\nFingerprint: /workspace/.env.bak-before-main-20260831-132300:generic-api-key:64\n\nFinding:     AZURE_OPENAI_API_KEY=\"\u001b[1;3;mREDACTED\u001b[0m\"\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     4.288910\nFile:        /workspace/.env.bak-llmmode-124709\nLine:        16\nFingerprint: /workspace/.env.bak-llmmode-124709:generic-api-key:16\n\nFinding:     AZURE_OPENAI_API_KEY=\"\u001b[1;3;mREDACTED\u001b[0m\"\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     4.288910\nFile:        /workspace/.env.pre-main-switch\nLine:        16\nFingerprint: /workspace/.env.pre-main-switch:generic-api-key:16\n\nFinding:     AZURE_OPENAI_API_KEY=\"\u001b[1;3;mREDACTED\u001b[0m\"\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     4.288910\nFile:        /workspace/local/.env.bak-before-enterprise-20260825-174600\nLine:        16\nFingerprint: /workspace/local/.env.bak-before-enterprise-20260825-174600:generic-api-key:16\n\nFinding:     SHAREPOINT_OAUTH_CLIENT_ID=\u001b[1;3;mREDACTED\u001b[0m\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.726198\nFile:        /workspace/local/.env.bak-before-enterprise-20260825-174600\nLine:        55\nFingerprint: /workspace/local/.env.bak-before-enterprise-20260825-174600:generic-api-key:55\n\n\u001b[90m12:50PM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~85208440 bytes (85.21 MB) in 53.6s\u001b[0m\n\u001b[90m12:50PM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 8\u001b[0m\nmake: *** [gitleaks] Error 1\n",
+    "unit": "FAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_two_calls_naming_one_agent_leave_it_to_the_highest_source_then_the_earliest_call\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_call_ends_at_its_latest_end_or_error\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_started_agent_named_only_by_its_stop_is_no_slash_command_fork_and_is_counted_once\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_fork_candidate_follows_the_one_call_that_names_the_agent_conflicting_stops_included\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_foreground_agent_with_a_cut_result_gets_its_own_data_from_each_source[field]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_foreground_agent_with_a_cut_result_gets_its_own_data_from_each_source[stop]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_foreground_agent_with_a_cut_result_gets_its_own_data_from_each_source[text]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_foreground_agent_with_a_cut_result_gets_its_own_data_from_each_source[stop_over_text]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_resolved_agents_duration_is_the_stops_duration_ms_else_stop_ts_minus_start[3000-3000]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_resolved_agents_duration_is_the_stops_duration_ms_else_stop_ts_minus_start[7438-7438]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_resolved_agents_duration_is_the_stops_duration_ms_else_stop_ts_minus_start[0-0]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_resolved_agents_duration_is_the_stops_duration_ms_else_stop_ts_minus_start[None-5000]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_continued_agents_duration_reads_its_latest_stops_duration_ms_less_the_idle_gap[5000-67000-7000]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_continued_agents_duration_reads_its_latest_stops_duration_ms_less_the_idle_gap[None-67000-7000]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_continued_agents_duration_reads_its_latest_stops_duration_ms_less_the_idle_gap[5000-None-7000]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_parallel_and_sequential_agents_are_not_cross_attributed_or_counted_twice\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_two_sessions_with_identically_keyed_dispatches_never_mix_rows_or_totals\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_resumed_agent_and_a_quoted_agent_id_put_the_usage_on_one_row[quote-stop-text-first-call]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_resumed_agent_and_a_quoted_agent_id_put_the_usage_on_one_row[resume-stop-field-second-call]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_parent_request_logged_after_the_call_returned_is_not_on_its_row[agent.tool.end]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_parent_request_logged_after_the_call_returned_is_not_on_its_row[agent.tool.error]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_call_with_no_start_hook_takes_the_parent_requests_from_its_span_to_its_end\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_stop_alone_is_no_agent_call_so_its_span_shows_an_empty_row\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_siblings_tied_on_start_but_not_on_end_each_take_their_own_window\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_never_ended_call_with_no_id_is_bounded_to_nothing_not_open\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_task_call_keeps_the_open_parent_window\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_call_that_lost_its_agent_id_to_another_call_shows_an_empty_row\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_an_errored_call_shows_its_own_data_when_a_stop_names_it_else_follows_the_fallback[stop]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_an_errored_call_shows_its_own_data_when_a_stop_names_it_else_follows_the_fallback[unnamed]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_never_ended_call_whose_stop_names_it_shows_its_own_data\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_never_ended_call_takes_no_part_in_splitting_a_tied_siblings_window\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_rows_outside_the_claude_code_agent_scope_keep_the_open_parent_window[empty_tool_use_id]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_rows_outside_the_claude_code_agent_scope_keep_the_open_parent_window[other_client]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_rows_outside_the_claude_code_agent_scope_keep_the_open_parent_window[skill]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_an_agent_calls_rows_queue_the_day_of_every_start_they_carry_and_no_other\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_stop_in_a_later_batch_or_the_reverse_queues_the_day_of_the_start_it_names[stop_later]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_stop_in_a_later_batch_or_the_reverse_queues_the_day_of_the_start_it_names[end_later]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_call_start_in_a_later_batch_than_its_stop_still_queues_the_day_the_stop_already_named\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_the_marking_of_many_calls_runs_well_inside_the_ingest_statement_timeout\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_the_range_marking_queues_the_days_of_the_starts_the_ingest_marking_queues\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_the_session_wide_resolution_gives_every_call_what_the_forward_reverse_and_claim_forms_give\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_the_timeline_of_a_long_session_with_many_agent_calls_resolves_each_call_once\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_the_range_marking_of_a_long_session_with_many_agent_calls_is_linear_in_the_session\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_the_parent_fallback_split_of_many_overlapping_siblings_stays_inside_the_statement_timeout\nFAILED tests/codemie/rest_api/routers/test_oauth_redis_lazy_init.py::test_device_code_flow_works_while_pkce_disabled\nFAILED tests/codemie/service/test_mcp_config_service_auth_crud.py::test_update_translates_duplicate_auth_config_id_to_409\nFAILED tests/enterprise/mcp_auth/test_feature_gating.py::test_is_mcp_auth_enabled_returns_false_cleanly_without_enterprise\nFAILED tests/enterprise/mcp_auth/test_feature_gating.py::test_initialize_mcp_auth_skips_activation_time_registration_when_enterprise_package_missing\n= 50 failed, 33744 passed, 385 skipped, 5 xfailed, 644 warnings in 158.74s (0:02:38) =\nmake: *** [test] Error 1\n"
+  }
+}

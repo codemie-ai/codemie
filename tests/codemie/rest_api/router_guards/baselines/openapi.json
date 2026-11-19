@@ -12943,6 +12943,333 @@
         "title": "IdeToolDefinition",
         "type": "object"
       },
+      "IdpMembership": {
+        "properties": {
+          "is_personal": {
+            "description": "Whether this is the user's personal project.",
+            "examples": [
+              false
+            ],
+            "title": "Is Personal",
+            "type": "boolean"
+          },
+          "is_project_admin": {
+            "description": "Whether the user administers the project.",
+            "examples": [
+              false
+            ],
+            "title": "Is Project Admin",
+            "type": "boolean"
+          },
+          "project_name": {
+            "description": "Project name.",
+            "examples": [
+              "team-alpha"
+            ],
+            "title": "Project Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_name",
+          "is_project_admin",
+          "is_personal"
+        ],
+        "title": "IdpMembership",
+        "type": "object"
+      },
+      "IdpUserPage": {
+        "properties": {
+          "items": {
+            "description": "Users of the page, deactivated included, ordered by id.",
+            "items": {
+              "$ref": "#/components/schemas/IdpUserResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "description": "Page number, starting from 0.",
+            "examples": [
+              0
+            ],
+            "title": "Page",
+            "type": "integer"
+          },
+          "per_page": {
+            "description": "Page size.",
+            "examples": [
+              100
+            ],
+            "title": "Per Page",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total number of users.",
+            "examples": [
+              60000
+            ],
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "per_page"
+        ],
+        "title": "IdpUserPage",
+        "type": "object"
+      },
+      "IdpUserResponse": {
+        "properties": {
+          "email": {
+            "description": "User email.",
+            "examples": [
+              "jane.doe@example.com"
+            ],
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "description": "User id in the IdP (UUID).",
+            "examples": [
+              "8f14e45f-ceea-467a-9575-1c5e1f2b3d4a"
+            ],
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "description": "False for a deactivated user.",
+            "examples": [
+              true
+            ],
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "is_admin": {
+            "description": "Platform administrator flag (advisory for the IdP side).",
+            "examples": [
+              false
+            ],
+            "title": "Is Admin",
+            "type": "boolean"
+          },
+          "is_auditor": {
+            "default": false,
+            "description": "Platform auditor flag (read-only access).",
+            "examples": [
+              false
+            ],
+            "title": "Is Auditor",
+            "type": "boolean"
+          },
+          "is_maintainer": {
+            "default": false,
+            "description": "Platform maintainer flag. A maintainer always reports is_admin true.",
+            "examples": [
+              false
+            ],
+            "title": "Is Maintainer",
+            "type": "boolean"
+          },
+          "memberships": {
+            "description": "Project memberships of the user.",
+            "examples": [
+              []
+            ],
+            "items": {
+              "$ref": "#/components/schemas/IdpMembership"
+            },
+            "title": "Memberships",
+            "type": "array"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Display name.",
+            "examples": [
+              "Jane Doe"
+            ],
+            "title": "Name"
+          },
+          "picture": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Avatar URL, when the user has one.",
+            "examples": [
+              null
+            ],
+            "title": "Picture"
+          },
+          "user_type": {
+            "default": "regular",
+            "description": "User type: regular, external or service_account.",
+            "examples": [
+              "regular"
+            ],
+            "title": "User Type",
+            "type": "string"
+          },
+          "username": {
+            "description": "Login name.",
+            "examples": [
+              "jane.doe"
+            ],
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "is_active",
+          "email",
+          "username",
+          "name",
+          "is_admin",
+          "memberships"
+        ],
+        "title": "IdpUserResponse",
+        "type": "object"
+      },
+      "IdpUserUpsertRequest": {
+        "description": "Desired state of one user in the platform, as the customer IdP knows it.",
+        "properties": {
+          "email": {
+            "description": "User email.",
+            "examples": [
+              "jane.doe@example.com"
+            ],
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "description": "User id in the IdP (UUID, the token subject).",
+            "examples": [
+              "8f14e45f-ceea-467a-9575-1c5e1f2b3d4a"
+            ],
+            "title": "Id",
+            "type": "string"
+          },
+          "is_admin": {
+            "description": "Platform administrator flag as the IdP sees it. Advisory: it is applied here, but the last active administrator can never be demoted.",
+            "examples": [
+              false
+            ],
+            "title": "Is Admin",
+            "type": "boolean"
+          },
+          "is_auditor": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Platform auditor flag as the IdP sees it. Omitted leaves the stored flag alone.",
+            "examples": [
+              false
+            ],
+            "title": "Is Auditor"
+          },
+          "is_maintainer": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Platform maintainer flag as the IdP sees it. Omitted leaves the stored flag alone. When sent, it decides: true requires is_admin true (otherwise 422). A user who ends up without is_admin also ends up without the maintainer role. Removing the last active maintainer is refused with 409.",
+            "examples": [
+              false
+            ],
+            "title": "Is Maintainer"
+          },
+          "name": {
+            "description": "Display name.",
+            "examples": [
+              "Jane Doe"
+            ],
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "picture": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Avatar URL. Omitted or empty leaves the stored picture alone; sync never clears it.",
+            "examples": [
+              "https://example.com/avatars/jane.png"
+            ],
+            "title": "Picture"
+          },
+          "user_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "regular",
+                  "external"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "User type: regular or external. Omitted leaves the stored type alone (a new user is regular). service_account is refused (422).",
+            "examples": [
+              "regular"
+            ],
+            "title": "User Type"
+          },
+          "username": {
+            "description": "Login name.",
+            "examples": [
+              "jane.doe"
+            ],
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "username",
+          "name",
+          "is_admin"
+        ],
+        "title": "IdpUserUpsertRequest",
+        "type": "object"
+      },
       "IndexInfo": {
         "description": "A base class for both Code and KnowledgeBase index types",
         "properties": {
@@ -14622,6 +14949,11 @@
           "fileDatasourceMaxUploadCount": {
             "title": "Filedatasourcemaxuploadcount",
             "type": "integer"
+          },
+          "idpManagedEnabled": {
+            "default": false,
+            "title": "Idpmanagedenabled",
+            "type": "boolean"
           },
           "message": {
             "title": "Message",
@@ -43302,7 +43634,7 @@
         ]
       },
       "put": {
-        "description": "Update user details\n\nSuperAdmin only.\n\nField editability rules (Story 8):\n- name, picture: Always editable\n- email: Local mode only (IDP mode rejects)\n- username: Immutable (always rejected)\n- user_type: Local mode only, 'regular' or 'external'\n- is_admin: Subject to revocation protection\n- project_limit: Subject to validation rules",
+        "description": "Update user details\n\nSuperAdmin only.\n\nField editability rules (Story 8):\n- name, picture: Always editable\n- email: Local mode only (IDP mode rejects)\n- username: Immutable (always rejected)\n- user_type: Admin-only, editable in all auth modes\n- is_maintainer, is_auditor: Platform roles, always editable by admin\n- is_admin: editable by a maintainer, except in IDP managed mode where the identity provider owns it\n- project_limit: Subject to validation rules",
         "operationId": "update_user_v1_admin_users__user_id__put",
         "parameters": [
           {
@@ -72287,6 +72619,382 @@
         ]
       }
     },
+    "/v1/idp-sync/users": {
+      "get": {
+        "description": "All users, deactivated included, ordered by id, with their project memberships.",
+        "operationId": "list_users_v1_idp_sync_users_get",
+        "parameters": [
+          {
+            "description": "Page number, starting from 0.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Page number, starting from 0.",
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size, up to 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "Page size, up to 100.",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdpUserPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "List users",
+        "tags": [
+          "IdP sync"
+        ]
+      }
+    },
+    "/v1/idp-sync/users/{user_id}": {
+      "get": {
+        "description": "Includes deactivated users.",
+        "operationId": "get_user_v1_idp_sync_users__user_id__get",
+        "parameters": [
+          {
+            "description": "User id in the IdP.",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "User id in the IdP.",
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdpUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get a user with memberships",
+        "tags": [
+          "IdP sync"
+        ]
+      },
+      "put": {
+        "description": "Idempotent. Creates the user without a personal project, updates profile, the admin, maintainer and auditor flags and the user type (regular or external), and reactivates a deactivated user, keeping its project memberships and budget allocations. An omitted is_maintainer, is_auditor or user_type leaves the stored value alone; is_maintainer true needs is_admin true (422); removing the last active maintainer or administrator is refused with 409.",
+        "operationId": "upsert_user_v1_idp_sync_users__user_id__put",
+        "parameters": [
+          {
+            "description": "User id in the IdP.",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "User id in the IdP.",
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdpUserUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdpUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Create or update a user",
+        "tags": [
+          "IdP sync"
+        ]
+      }
+    },
+    "/v1/idp-sync/users/{user_id}/deactivate": {
+      "post": {
+        "description": "Idempotent. A maintainer can be deactivated too. The last active administrator or maintainer is refused with 409, and so is the sync account itself.",
+        "operationId": "deactivate_user_v1_idp_sync_users__user_id__deactivate_post",
+        "parameters": [
+          {
+            "description": "User id in the IdP.",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "User id in the IdP.",
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Deactivate a user",
+        "tags": [
+          "IdP sync"
+        ]
+      }
+    },
+    "/v1/idp-sync/users/{user_id}/projects/{project_name}": {
+      "delete": {
+        "description": "Idempotent: a user that is not a member is already done. The user may be removed from their own personal project; the project stays. Another user's personal project and the project creator are refused with 409.",
+        "operationId": "unassign_project_v1_idp_sync_users__user_id__projects__project_name__delete",
+        "parameters": [
+          {
+            "description": "User id in the IdP.",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "User id in the IdP.",
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Project name, not blank, without leading or trailing spaces.",
+            "in": "path",
+            "name": "project_name",
+            "required": true,
+            "schema": {
+              "description": "Project name, not blank, without leading or trailing spaces.",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^\\S(.*\\S)?$",
+              "title": "Project Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Remove a user from a project",
+        "tags": [
+          "IdP sync"
+        ]
+      },
+      "put": {
+        "description": "Idempotent. Creates the project when it does not exist; updates the project admin flag when it differs. The name of the personal project of the user is the user email: it creates that project when missing, turns an unshared project of that name into it, and adds the user to it. Another user's personal project and a project with other members are refused with 409.",
+        "operationId": "assign_project_v1_idp_sync_users__user_id__projects__project_name__put",
+        "parameters": [
+          {
+            "description": "User id in the IdP.",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "User id in the IdP.",
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Project name, not blank, without leading or trailing spaces.",
+            "in": "path",
+            "name": "project_name",
+            "required": true,
+            "schema": {
+              "description": "Project name, not blank, without leading or trailing spaces.",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^\\S(.*\\S)?$",
+              "title": "Project Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Whether the user administers the project.",
+            "in": "query",
+            "name": "is_project_admin",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Whether the user administers the project.",
+              "title": "Is Project Admin",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdpUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Assign a user to a project",
+        "tags": [
+          "IdP sync"
+        ]
+      }
+    },
     "/v1/index": {
       "get": {
         "operationId": "index_indexes_progress_v1_index_get",
@@ -79076,7 +79784,7 @@
     },
     "/v1/projects/{projectName}/ownership": {
       "put": {
-        "description": "Reassign ownership of a project to another existing platform user.",
+        "description": "Reassign ownership of a project to another existing platform user.\n\nThe new owner is added to the project as an admin, a membership change the identity provider owns\nin IDP managed mode.",
         "operationId": "update_project_ownership_v1_projects__projectName__ownership_put",
         "parameters": [
           {
@@ -79805,7 +80513,7 @@
                 }
               }
             },
-            "description": "The caller is not a registered provisioning client holding provisioning:manage-budgets, or the call would create the project or carries a project block naming a cost center or admins and the client lacks provisioning:manage-projects, or the project is a personal one, or cost centers are disabled and the call would create or link a cost center."
+            "description": "The caller is not a registered provisioning client holding provisioning:manage-budgets, or the call would create the project or carries a project block naming a cost center or admins and the client lacks provisioning:manage-projects, or the project is a personal one, or cost centers are disabled and the call would create or link a cost center, or the identity provider owns projects (IDP_MANAGED_ENABLED) and the call would create the project or assign project admins."
           },
           "409": {
             "content": {
@@ -79947,7 +80655,7 @@
                 }
               }
             },
-            "description": "The caller is not a registered provisioning client holding provisioning:manage-budgets, or the call would create the project or carries a project block naming a cost center or admins and the client lacks provisioning:manage-projects, or the project is a personal one, or cost centers are disabled and the call would create or link a cost center."
+            "description": "The caller is not a registered provisioning client holding provisioning:manage-budgets, or the call would create the project or carries a project block naming a cost center or admins and the client lacks provisioning:manage-projects, or the project is a personal one, or cost centers are disabled and the call would create or link a cost center, or the identity provider owns projects (IDP_MANAGED_ENABLED) and the call would create the project or assign project admins."
           },
           "409": {
             "content": {

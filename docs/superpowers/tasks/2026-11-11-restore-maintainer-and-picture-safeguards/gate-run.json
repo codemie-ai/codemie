@@ -1,0 +1,23 @@
+{"schema":1,"branch":"EPMCDME-16895","head":"c290c34592881e209e865fed0a265d68174e9729","runner":"poetry",
+"started_at":"2026-11-11T09:15:00Z","completed_at":"2026-11-11T09:25:00Z","status":"BLOCKED","drift_detected":false,
+"gates":[
+{"id":"lint","source":"guide","status":"PASS","duration_ms":1000,"command":"make ruff","exit_code":0,"notes":"no tracked files changed"},
+{"id":"build","source":"guide","status":"PASS","duration_ms":4000,"command":"make build","exit_code":0},
+{"id":"license","source":"guide","status":"PASS","duration_ms":1000,"command":"make license-check","exit_code":0},
+{"id":"secrets","source":"guide","status":"FAIL","duration_ms":40000,"command":"make gitleaks","exit_code":2,"notes":"gitleaks reported 10 findings, all in UNTRACKED local files (known set); 0 in tracked paths. Raw output in /tmp/gates-secrets.log"},
+{"id":"unit","source":"guide","status":"FAIL","duration_ms":108000,"command":"REDIS_HOST=localhost make test","exit_code":2,"notes":"21082 passed, 178 skipped, 11 failed; all 11 are the known pre-existing environment failures"},
+{"id":"area-tests","source":"guide","status":"PASS","command":"pytest tests/idp_sync_job tests/codemie/service/user/test_idp_sync_service.py tests/codemie/rest_api/models/test_idp_sync_models.py tests/codemie/rest_api/router_guards","exit_code":0,"notes":"247 passed"},
+{"id":"sonar-local","source":"hook","status":"SKIPPED","command":"make sonar-local","notes":"opt-in pre-push hook, needs token; only CI/reviewer can settle"}],
+"failures":{
+"secrets":{"exit_code":2,"findings":10,"tracked_findings":0,"items":[
+{"RuleID":"generic-api-key","file":".env.bak-before-main-20260831-132300","line":16},
+{"RuleID":"generic-api-key","file":".env.bak-before-main-20260831-132300","line":32},
+{"RuleID":"generic-api-key","file":".env.bak-before-main-20260831-132300","line":55},
+{"RuleID":"generic-api-key","file":".env.bak-before-main-20260831-132300","line":64},
+{"RuleID":"generic-api-key","file":".env.bak-llmmode-124709","line":16},
+{"RuleID":"generic-api-key","file":".env.pre-main-switch","line":16},
+{"RuleID":"generic-api-key","file":"local/.env.bak-before-enterprise-20260825-174600","line":16},
+{"RuleID":"generic-api-key","file":"local/.env.bak-before-enterprise-20260825-174600","line":55},
+{"RuleID":"private-key","file":".kube-local/kubeconfig-internal.yaml","line":18},
+{"RuleID":"private-key","file":".kube-local/kubeconfig.yaml","line":18}]},
+"unit":"11 failed (all known): test_oauth_redis_lazy_init.py::test_device_code_flow_works_while_pkce_disabled; test_mcp_config_service_auth_crud.py::test_update_translates_duplicate_auth_config_id_to_409; tests/enterprise/mcp_auth/test_feature_gating.py::test_is_mcp_auth_enabled_returns_false_cleanly_without_enterprise and ::test_initialize_mcp_auth_skips_activation_time_registration_when_enterprise_package_missing; 7 in test_reader_live_dispatches.py"}}

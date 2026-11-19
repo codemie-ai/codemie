@@ -382,6 +382,59 @@ class TestRejectionsWriteNothing:
         assert (exc.value.code, exc.value.details) == (403, MANAGE_PROJECTS_DENIED)
         _assert_nothing_written(flow)
 
+    @pytest.mark.parametrize("operation", ["set", "adjust"])
+    @pytest.mark.parametrize(
+        ("existing", "project", "id_"),
+        [
+            pytest.param(None, None, "missing-project", id="creates-project"),
+            pytest.param(_app(), {"admin_emails": ["a@epam.com"]}, "admins", id="assigns-admins"),
+        ],
+    )
+    async def test_idp_managed_mode_refuses_new_projects_and_project_admins(
+        self, flow, actor, operation, existing, project, id_
+    ):
+        flow.apps.get_by_name_case_insensitive.return_value = existing
+
+        with patch(f"{MODULE}.config") as config:
+            config.IDP_MANAGED_ENABLED = True
+            with pytest.raises(ExtendedHTTPException) as exc:
+                await WRITES[operation](actor, {P: 1.0}, project=project)
+
+        assert (exc.value.code, exc.value.message) == (403, "User management is controlled by the identity provider.")
+        _assert_nothing_written(flow)
+
+    @pytest.mark.parametrize("operation", ["set", "adjust"])
+    async def test_idp_managed_mode_keeps_budgets_and_cost_centers_of_existing_projects(self, flow, actor, operation):
+        _with_active_group(flow)
+
+        with patch(f"{MODULE}.config") as config:
+            config.IDP_MANAGED_ENABLED = True
+            result = await WRITES[operation](actor, {P: 300.0}, project={"cost_center": "nbs-cmpa"})
+
+        flow.service.update_project_budget_group.assert_awaited_once()
+        assert result.created_project is False
+
+    @pytest.mark.parametrize("operation", ["set", "adjust"])
+    async def test_idp_managed_mode_off_still_creates_projects_and_admins(self, flow, actor, operation):
+        flow.apps.get_by_name_case_insensitive.return_value = None
+        flow.create_project.return_value = _app()
+
+        with patch(f"{MODULE}.config") as config:
+            config.IDP_MANAGED_ENABLED = False
+            result = await WRITES[operation](actor, {P: 1.0}, project={"admin_emails": ["a@epam.com"]})
+
+        assert result.created_project is True
+
+    async def test_idp_managed_mode_does_not_hide_a_missing_permission(self, flow, actor):
+        flow.apps.get_by_name_case_insensitive.return_value = None
+
+        with patch(f"{MODULE}.config") as config:
+            config.IDP_MANAGED_ENABLED = True
+            with pytest.raises(ExtendedHTTPException) as exc:
+                await _set(actor, {P: 1.0}, client=_client(BUDGET_ONLY))
+
+        assert (exc.value.code, exc.value.details) == (403, MANAGE_PROJECTS_DENIED)
+
     async def test_invalid_project_name_on_missing_project(self, flow, actor):
         flow.apps.get_by_name_case_insensitive.return_value = None
 

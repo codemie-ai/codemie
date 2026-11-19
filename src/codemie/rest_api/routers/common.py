@@ -35,6 +35,7 @@ def app_info():
         version=config.APP_VERSION,
         description=APP_DESCRIPTION,
         file_datasource_max_upload_count=config.FILE_DATASOURCE_MAX_UPLOAD_COUNT,
+        idp_managed_enabled=config.IDP_MANAGED_ENABLED,
     )
 
 

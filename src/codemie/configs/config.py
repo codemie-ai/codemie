@@ -300,6 +300,10 @@ class Config(BaseSettings):
     KEYCLOAK_LOGOUT_URL: str = ""
     ADMIN_USER_ID: str = ""
     TEAMS_SERVICE_ACCOUNT_ID: str = "codemie-teams-bot"
+    # User name of the one service account allowed to call /v1/idp-sync/ (and nothing else), e.g.
+    # service-account-<client-id>. The caller must also have user_type=service_account.
+    # Empty = API closed for everyone.
+    IDP_SYNC_SERVICE_ACCOUNT_USERNAME: str = ""
     ADMIN_ROLE_NAME: str = "admin"
 
     # ===========================================
@@ -330,7 +334,10 @@ class Config(BaseSettings):
     # ===========================================
     # Keycloak Migration
     # ===========================================
-    # Only active when IDP_PROVIDER="keycloak" AND ENABLE_USER_MANAGEMENT=True
+    # The identity provider owns users, platform admin and project membership, and a sync job writes them through
+    # the management API. Turning it on also turns ENABLE_USER_MANAGEMENT on (see finalize_settings).
+    IDP_MANAGED_ENABLED: bool = False
+
     KEYCLOAK_MIGRATION_ENABLED: bool = False
     KEYCLOAK_ADMIN_URL: str = ""  # e.g. https://keycloak.example.com
     KEYCLOAK_ADMIN_REALM: str = ""  # realm to migrate, e.g. "codemie"
@@ -1253,7 +1260,22 @@ class Config(BaseSettings):
         if self.STALE_DATASOURCE_DELETION_ENABLED and not self.STALE_DATASOURCE_ENABLED:
             raise ValueError("STALE_DATASOURCE_DELETION_ENABLED=True requires STALE_DATASOURCE_ENABLED=True")
 
+        self._apply_idp_managed_mode()
+
         return self
+
+    def _apply_idp_managed_mode(self) -> None:
+        """IdP-managed mode needs user management on. It does not depend on the identity provider."""
+        if not self.IDP_MANAGED_ENABLED:
+            return
+        if self.IDP_PROVIDER == "local":
+            raise ValueError(
+                "IDP_MANAGED_ENABLED=true cannot be used with IDP_PROVIDER=local: the local provider accepts only "
+                "platform tokens, so the sync job cannot authenticate. Set IDP_PROVIDER to an external provider."
+            )
+        if not self.ENABLE_USER_MANAGEMENT:
+            logging.getLogger(__name__).info("IDP_MANAGED_ENABLED turns ENABLE_USER_MANAGEMENT on")
+        self.ENABLE_USER_MANAGEMENT = True
 
     @computed_field
     @property

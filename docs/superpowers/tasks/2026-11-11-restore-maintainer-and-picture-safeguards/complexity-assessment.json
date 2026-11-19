@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "task": "Restore the never-demote-a-maintainer rule and optional picture sync in the /v1/idp-sync/ upsert API and the idp_sync_job, with tests, OpenAPI baseline and docs.",
+  "generated": "2026-11-11T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Closest pattern is the old coordinator _profile_changes plus the maintainer-implies-admin invariant (4ee1894, User validator). It does not cover the server-side upsert path, where the effective admin value must be computed after the user is loaded. A refused demotion must also leave project_limit and the last-admin check untouched. Role handling is authorization-sensitive. The job diff may loop (Keycloak False vs server True) and null vs empty picture normalization is unresolved. The calibration example epmcdme-10102 (S) is narrower: it has no authz semantics or cross-package contract."},
+    { "dimension": "file_change_estimate", "reason": "About 6 source files, 7-8 test files, the OpenAPI baseline and 3 docs, roughly 17-18 touched files. By raw count this is XXL, but nearly all edits are small and additive, so it is scored XL. This is the main uncertainty in the total." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk set to L: role/authorization semantics (maintainer must keep is_admin) are affected, and the sanity of the job diff loop is open"
+  ],
+  "split_recommendation": null
+}

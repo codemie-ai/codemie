@@ -195,6 +195,19 @@ class PersonalProjectService:
         return await application_repository.aget_active_by_name_case_insensitive(session, user_email)
 
     @staticmethod
+    def mark_personal(application: Application, user_id: str, user_email: str) -> None:
+        """Turn the application into the personal project of the user (shared by login and the IdP-sync API)."""
+        application.project_type = Application.ProjectType.PERSONAL
+        application.created_by = user_id
+        application.description = f"Personal Project for {user_email}"
+        application.cli_analytics_enabled = False  # personal projects never enable CLI analytics
+
+    @staticmethod
+    def is_reusable(application: Application, user_id: str, user_email: str) -> bool:
+        """Whether the application named like the email can become the personal project of the user."""
+        return PersonalProjectService._is_reusable(application, user_id, user_email)
+
+    @staticmethod
     def _is_reusable(application: Application, user_id: str, user_email: str) -> bool:
         """An exact-name application can be converted as before.
 
@@ -282,10 +295,7 @@ class PersonalProjectService:
                 await PersonalProjectService._ensure_no_other_own_personal_variant(
                     session, existing_app, user_id, user_email
                 )
-                existing_app.project_type = Application.ProjectType.PERSONAL
-                existing_app.created_by = user_id
-                existing_app.description = f"Personal Project for {user_email}"
-                existing_app.cli_analytics_enabled = False  # personal projects never enable CLI analytics
+                PersonalProjectService.mark_personal(existing_app, user_id, user_email)
                 session.add(existing_app)
                 await session.flush()
                 logger.debug(f"Converted application to personal: user_id={user_id}, project_type=personal")

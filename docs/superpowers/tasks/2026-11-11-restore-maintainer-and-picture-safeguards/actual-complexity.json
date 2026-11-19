@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-11-11T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 17,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches idp_sync_job (coordinator, keycloak_source, platform_client, reconcile, state), the idp_sync_service and the idp_sync models: about 4 components, additive." },
+    { "dimension": "technical_risk", "reason": "Maintainer is never demoted by the sync and an unknown maintainer withholds admin demotion (authorization semantics). Base S/M for additive reconcile logic, bumped +1 under the 'affects authentication or authorization' red flag. Closest M example (epmcdme-10203) is a plain endpoint with no authz aspect, so it does not cover this." },
+    { "dimension": "file_change_estimate", "reason": "diffstat 17 files (7 source/doc, 10 test/baseline) maps to 16+ = XXL, although the change is only 530 insertions and 12 deletions." }
+  ],
+  "red_flags_applied": ["Technical Risk bumped +1 (M to L): affects authorization (maintainer never demoted by the sync)"],
+  "split_recommendation": null
+}

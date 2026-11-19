@@ -922,6 +922,7 @@ class InfoResponse(BaseResponse):
     version: str
     description: str
     file_datasource_max_upload_count: int
+    idp_managed_enabled: bool = False
 
 
 class DeploymentVersionItem(ConfiguredModel):

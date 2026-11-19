@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-11-12T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 29,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "29 files changed per diffstat, but ~21 are whole-file deletions (src/idp_sync_job, tests/idp_sync_job); only ~8 files are edited or removed outside those packages. Count-based mapping gives XXL." },
+    { "dimension": "component_scope", "reason": "Removes the sync job package, its Dockerfile, the Helm CronJob template and values, and rewrites operator docs; self-contained removal with one touched keycloak client test." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

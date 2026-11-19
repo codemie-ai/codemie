@@ -111,6 +111,21 @@ async def test_list_deployment_versions_returns_camel_case_items(override_auth):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("flag", [True, False])
+async def test_app_info_reports_the_configured_idp_managed_flag(flag):
+    """GET /v1/info exposes idpManagedEnabled (camelCase) with the configured value, not just the default."""
+    with patch("codemie.rest_api.routers.common.config") as mock_config:
+        mock_config.APP_VERSION = "test-version"
+        mock_config.FILE_DATASOURCE_MAX_UPLOAD_COUNT = 5
+        mock_config.IDP_MANAGED_ENABLED = flag
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/v1/info")
+
+    assert resp.status_code == 200
+    assert resp.json()["idpManagedEnabled"] is flag
+
+
+@pytest.mark.anyio
 async def test_list_deployment_versions_requires_auth():
     """Without credentials, authenticate raises ExtendedHTTPException → 401."""
     app.dependency_overrides.pop(authenticate, None)

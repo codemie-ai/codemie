@@ -22,6 +22,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from codemie.clients.postgres import get_session
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.rest_api.security.idp_lock import require_no_idp_lock
 from codemie.core.models import Application
 from codemie.rest_api.models.project import (
     BulkAssignmentRequest,
@@ -59,6 +60,7 @@ def assign_user_to_project(
     payload: ProjectAssignmentRequest,
     project_name: str = Path(alias="projectName"),
     authorized_project: Application = Depends(_authorize_project_access),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Assign a user to project if requester is project admin or super admin."""
     from codemie.service.project.project_assignment_service import project_assignment_service
@@ -87,6 +89,7 @@ def update_user_project_assignment(
     project_name: str = Path(alias="projectName"),
     user_id: str = Path(alias="userId"),
     authorized_project: Application = Depends(_authorize_project_access),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Update user's project-admin flag for a visible project."""
     from codemie.service.project.project_assignment_service import project_assignment_service
@@ -112,6 +115,7 @@ def remove_user_from_project(
     project_name: str = Path(alias="projectName"),
     user_id: str = Path(alias="userId"),
     authorized_project: Application = Depends(_authorize_project_access),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Remove user from project if requester is project admin or super admin."""
     from codemie.service.project.project_assignment_service import project_assignment_service
@@ -138,6 +142,7 @@ def bulk_assign_users_to_project(
     payload: BulkAssignmentRequest,
     project_name: str = Path(alias="projectName"),
     authorized_project: Application = Depends(_authorize_project_access),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Bulk assign/upsert users to a project.
 
@@ -172,6 +177,7 @@ def validate_users_from_csv(
     file: UploadFile,
     project_name: str = Path(alias="projectName"),
     authorized_project: Application = Depends(_authorize_project_access),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Dry-run validation of a CSV file for user import.
 
@@ -203,6 +209,7 @@ def import_users_from_csv(
     file: UploadFile,
     project_name: str = Path(alias="projectName"),
     authorized_project: Application = Depends(_authorize_project_access),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Assign users to a project from a CSV file upload.
 
@@ -258,6 +265,7 @@ def bulk_remove_users_from_project(
     ),
     project_name: str = Path(alias="projectName"),
     authorized_project: Application = Depends(_authorize_project_access),
+    __: None = Depends(require_no_idp_lock),
 ):
     """Bulk remove users from a project.
 

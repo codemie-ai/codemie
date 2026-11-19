@@ -88,6 +88,67 @@ def _route_table(app: Any) -> list[dict[str, Any]]:
     ]
 
 
+def _depends_on(dependant: Any, target: Any) -> bool:
+    return any(sub.call is target or _depends_on(sub, target) for sub in dependant.dependencies)
+
+
+def _idp_sync_guard_report(app: Any) -> dict[str, Any]:
+    """Which routes escape the IdP-sync identity rule (EPMCDME-16895, AC4).
+
+    The rule runs inside ``authenticate``, so ``authenticate`` itself is not replaced: the user provider is.
+    ``not_refused``: routes that depend on ``authenticate`` outside ``/v1/idp-sync/`` and did not answer 403 to
+    the configured account. Routes that call ``authenticate`` inside the handler have no static dependency and
+    are covered by the unit tests of ``enforce_idp_sync_scope``.
+    """
+    import re
+    from unittest.mock import MagicMock
+
+    from fastapi.routing import APIRoute
+    from fastapi.testclient import TestClient
+
+    from codemie.configs import config
+    from codemie.rest_api.security import authentication, idp_sync_access
+    from codemie.rest_api.security.user import User
+
+    account_id = "idp-sync-probe-account"
+    account = User(
+        id=account_id,
+        username=account_id,
+        name=account_id,
+        email="probe@example.com",
+        user_type="regular",
+        project_names=[],
+        admin_project_names=[],
+        knowledge_bases=[],
+    )
+
+    class _Provider:
+        async def authenticate_and_load_user(self, *_args: Any, **_kwargs: Any) -> User:
+            return account
+
+    not_refused: list[str] = []
+    authenticated = 0
+    with (
+        patch.object(config, "IDP_SYNC_SERVICE_ACCOUNT_USERNAME", account_id),
+        patch.object(authentication, "get_user_provider", return_value=_Provider()),
+        patch.object(authentication.IdpFactory, "create", return_value=MagicMock()),
+        patch.object(authentication, "enforce_provisioning_scope"),
+    ):
+        client = TestClient(app, raise_server_exceptions=False)
+        for route in app.routes:
+            if not isinstance(route, APIRoute) or idp_sync_access._is_idp_sync_path(route.path):
+                continue
+            if not _depends_on(route.dependant, authentication.authenticate):
+                continue
+            authenticated += 1
+            url = re.sub(r"\{[^}]+\}", "x", route.path)
+            for method in sorted(route.methods):
+                status = client.request(method, url).status_code
+                if status != 403:
+                    not_refused.append(f"{method} {route.path} -> {status}")
+    return {"not_refused": not_refused, "authenticated_routes": authenticated}
+
+
 def main(output_path: str) -> None:
     _stub_missing_native_packages()
     from fastapi.encoders import jsonable_encoder
@@ -96,6 +157,7 @@ def main(output_path: str) -> None:
     dump = {
         "openapi": jsonable_encoder(app.openapi()),
         "routes": _route_table(app),
+        "idp_sync_guard": _idp_sync_guard_report(app),
         "contacts_attempted": contacts_attempted,
     }
     Path(output_path).write_text(json.dumps(dump), encoding="utf-8")

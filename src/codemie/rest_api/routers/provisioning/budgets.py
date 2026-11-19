@@ -115,7 +115,9 @@ _WRITE_RESPONSES: dict[int | str, dict[str, Any]] = {
             "The caller is not a registered provisioning client holding provisioning:manage-budgets, "
             "or the call would create the project or carries a project block naming a cost center or admins "
             "and the client lacks provisioning:manage-projects, or the project is a personal one, "
-            "or cost centers are disabled and the call would create or link a cost center."
+            "or cost centers are disabled and the call would create or link a cost center, "
+            "or the identity provider owns projects (IDP_MANAGED_ENABLED) and the call would create the project "
+            "or assign project admins."
         ),
     },
     409: {"model": ErrorResponse, "description": "The project or the named cost center is deleted."},
