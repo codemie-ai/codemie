@@ -283,6 +283,83 @@ class TestQueries:
 
         assert parsing.parse_request_classification(buckets, {}, "cli") == {}
 
+    def test_tool_and_session_evidence_users_use_breadth_first_collection(self):
+        tools = queries.tools_body(S, E, None, 100, 10)
+        sessions = queries.sessions_body(S, E, ".*", None, 100, 10)
+        for body in (tools, sessions):
+            users_terms = body["aggs"]["users"]["terms"]
+            assert users_terms["collect_mode"] == "breadth_first"
+            assert "order" not in users_terms
+            assert "collect_mode" not in body["aggs"]["users"]["aggs"]["repos"]["terms"]
+
+    def test_tool_evidence_wildcard_filters_are_unchanged_leading_wildcard_substring_match(self):
+        body = queries.tools_body(S, E, None, 100, 10)
+        sub = body["aggs"]["users"]["aggs"]["repos"]["aggs"]
+
+        from codemie.service.usage_attribution.constants import (
+            EDIT_TOOL_PATTERNS,
+            MR_TOOL_PATTERNS,
+            WORK_TRACKING_PATTERNS,
+        )
+
+        expected = {
+            "edit": EDIT_TOOL_PATTERNS,
+            "work": WORK_TRACKING_PATTERNS,
+            "mr": MR_TOOL_PATTERNS,
+        }
+        for key, patterns in expected.items():
+            clause = sub[key]["filter"]
+            assert clause == queries.any_wildcard(queries.F_TOOL_NAMES, patterns)
+            clauses = clause["bool"]["should"]
+            assert clause["bool"]["minimum_should_match"] == 1
+            assert {c["wildcard"][queries.F_TOOL_NAMES]["value"] for c in clauses} == set(patterns)
+            assert all(c["wildcard"][queries.F_TOOL_NAMES]["case_insensitive"] is True for c in clauses)
+
+        def wildcard_match(pattern: str, value: str) -> bool:
+            assert pattern.startswith("*") and pattern.endswith("*")
+            return pattern[1:-1].lower() in value.lower()
+
+        examples_edit_match = {
+            "Edit",
+            "Write",
+            "edit",
+            "write",
+            "write_stdin",
+            "mcp__serena__replace_content",
+            "todowrite",
+        }
+        examples_work_match = {"mcp__jira__jira_get_issue", "mcp__jira__jira_get_comments"}
+
+        for name in examples_edit_match:
+            assert any(wildcard_match(p, name) for p in EDIT_TOOL_PATTERNS), name
+        for name in examples_work_match:
+            assert any(wildcard_match(p, name) for p in WORK_TRACKING_PATTERNS), name
+
+    def test_persons_body_users_keeps_depth_first_because_it_orders_by_spend(self):
+        body = queries.persons_body(S, E, [], None, 500, 10)
+        users_terms = body["aggs"]["users"]["terms"]
+        assert users_terms["order"] == {"spend": "desc"}
+        assert "collect_mode" not in users_terms
+
+    def test_web_funding_aggs_users_use_breadth_first_collection(self):
+        fplan = {"projects": ["proj-a", "proj-b"], "groups": [["proj-a", ["u1"], [[0, 1000]]]]}
+        aggs = queries.web_funding_aggs(fplan)
+
+        u_terms = aggs["fp"]["aggs"]["p"]["aggs"]["u"]["terms"]
+        assert u_terms["collect_mode"] == "breadth_first"
+        assert "order" not in u_terms
+
+        fg_u_terms = aggs["fg"]["aggs"]["g"]["aggs"]["u"]["terms"]
+        assert fg_u_terms["collect_mode"] == "breadth_first"
+        assert "order" not in fg_u_terms
+
+        assert "collect_mode" not in aggs["fp"]["aggs"]["p"]["terms"]
+
+    def test_web_funding_aggs_without_groups_has_no_fg_branch(self):
+        fplan = {"projects": ["proj-a"], "groups": []}
+        aggs = queries.web_funding_aggs(fplan)
+        assert "fg" not in aggs
+
     def test_parse_totals(self):
         aggs = {
             "source": {
@@ -354,16 +431,19 @@ class TestFetcher:
         with pytest.raises(FetchError, match="boom"):
             fetcher.execute([self.spec()])
 
-    def test_too_many_buckets_retries(self):
-        class TooMany(FakeClient):
+    @pytest.mark.parametrize("error_type", ["too_many_buckets_exception", "circuit_breaking_exception"])
+    def test_overload_without_a_structured_body_still_retries(self, monkeypatch, error_type):
+        monkeypatch.setattr(fetch_module.time, "sleep", lambda _s: None)
+
+        class Overloaded(FakeClient):
             def search(self, index, body, request_timeout, filter_path):
                 part = body["aggs"]["users"]["terms"].get("include", {"num_partitions": 1})
                 if part["num_partitions"] < 2:
                     self.calls.append(body)
-                    raise RuntimeError("too_many_buckets_exception")
+                    raise RuntimeError(error_type)
                 return super().search(index, body, request_timeout, filter_path)
 
-        fetcher = Fetcher(TooMany(0), "idx", 2, 0.6, 65536, 30)
+        fetcher = Fetcher(Overloaded(0), "idx", 2, 0.6, 65536, 30)
         sp = self.spec()
         fetcher.execute([sp])
         assert sp.parts == 2 and len(sp.result) == 2
@@ -429,25 +509,24 @@ class TestFetcher:
 
     def test_is_transient(self):
         assert fetch_module.is_transient(ApiError("unavailable", meta=SimpleNamespace(status=503), body={}))
-        # Refused under load (a circuit breaker): sending it again would only add load.
         assert not fetch_module.is_transient(ApiError("circuit", meta=SimpleNamespace(status=429), body={}))
         assert not fetch_module.is_transient(ApiError("bad request", meta=SimpleNamespace(status=400), body={}))
         assert not fetch_module.is_transient(RuntimeError("too_many_buckets_exception"))
 
-    def test_too_many_buckets_in_a_real_error_body(self, monkeypatch):
-        """Elasticsearch reports it as search_phase_execution_exception, with the type in the root causes."""
+    @pytest.mark.parametrize("error_type", ["too_many_buckets_exception", "circuit_breaking_exception"])
+    def test_overload_in_a_real_error_body_retries_with_more_partitions(self, monkeypatch, error_type):
         monkeypatch.setattr(fetch_module.time, "sleep", lambda _s: None)
         error_body = {
             "error": {
-                "root_cause": [{"type": "too_many_buckets_exception", "reason": "Trying to create too many buckets"}],
+                "root_cause": [{"type": error_type, "reason": "overloaded"}],
                 "type": "search_phase_execution_exception",
                 "reason": "all shards failed",
-                "caused_by": {"type": "too_many_buckets_exception"},
+                "caused_by": {"type": error_type},
             },
             "status": 400,
         }
 
-        class TooMany(FakeClient):
+        class Overloaded(FakeClient):
             def search(self, index, body, request_timeout, filter_path):
                 part = body["aggs"]["users"]["terms"].get("include", {"num_partitions": 1})
                 if part["num_partitions"] < 2:
@@ -457,25 +536,50 @@ class TestFetcher:
                     )
                 return super().search(index, body, request_timeout, filter_path)
 
-        client = TooMany(0)
+        client = Overloaded(0)
         sp = self.spec()
         Fetcher(client, "idx", 2, 0.6, 65536, 30).execute([sp])
         assert sp.parts == 2 and len(sp.result) == 2
-        assert len(client.calls) == 3  # one refused request (not retried as transient), then two partitions
+        assert len(client.calls) == 3
 
-    def test_too_many_buckets_in_failed_shards(self):
+    @pytest.mark.parametrize("error_type", ["too_many_buckets_exception", "circuit_breaking_exception"])
+    def test_overload_in_failed_shards_retries_with_more_partitions(self, monkeypatch, error_type):
+        monkeypatch.setattr(fetch_module.time, "sleep", lambda _s: None)
+
         class PartlyFailed(FakeClient):
             def search(self, index, body, request_timeout, filter_path):
                 part = body["aggs"]["users"]["terms"].get("include", {"num_partitions": 1})
                 if part["num_partitions"] < 2:
                     self.calls.append(body)
-                    reason = {"type": "too_many_buckets_exception", "reason": "Trying to create too many buckets"}
+                    reason = {"type": error_type, "reason": "overloaded"}
                     return {"took": 1, "_shards": {"failed": 1, "failures": [{"reason": reason}]}, "aggregations": {}}
                 return super().search(index, body, request_timeout, filter_path)
 
         sp = self.spec()
         Fetcher(PartlyFailed(0), "idx", 2, 0.6, 65536, 30).execute([sp])
         assert sp.parts == 2 and len(sp.result) == 2
+
+    def test_circuit_breaking_waits_before_the_next_round_but_too_many_buckets_does_not(self, monkeypatch):
+        paused: list[float] = []
+        monkeypatch.setattr(fetch_module.time, "sleep", lambda s: paused.append(s))
+
+        class Overloaded(FakeClient):
+            def __init__(self, error_type: str):
+                super().__init__(0)
+                self.error_type = error_type
+
+            def search(self, index, body, request_timeout, filter_path):
+                part = body["aggs"]["users"]["terms"].get("include", {"num_partitions": 1})
+                if part["num_partitions"] < 2:
+                    self.calls.append(body)
+                    raise RuntimeError(self.error_type)
+                return super().search(index, body, request_timeout, filter_path)
+
+        Fetcher(Overloaded("too_many_buckets_exception"), "idx", 2, 0.6, 65536, 30).execute([self.spec()])
+        assert paused == []
+
+        Fetcher(Overloaded("circuit_breaking_exception"), "idx", 2, 0.6, 65536, 30).execute([self.spec()])
+        assert paused == [fetch_module._RETRY_PAUSE_S]
 
     def test_error_types(self):
         assert fetch_module.error_types(None) == set()

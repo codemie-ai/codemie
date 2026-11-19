@@ -483,6 +483,18 @@ class TestSettingsChecks:
     def test_framework_regex_from_real_config_matches_stlc(self, name):
         assert re.fullmatch(h.framework_regex(), name)
 
+    def test_framework_regex_drops_rule_with_unbalanced_regex(self):
+        rules = {"rules": [{"regex": "^sdlc-factory:"}, {"regex": "^(unterminated"}, {"regex": "^bmad-"}]}
+        with patch("codemie.configs.customer_config.CustomerConfig.get_feature_setting", return_value=rules):
+            regex = h.framework_regex()
+        assert regex == "(sdlc-factory:|bmad-).*"
+        assert re.fullmatch(regex, "sdlc-factory:x")
+
+    def test_framework_regex_falls_back_when_every_rule_is_malformed(self):
+        rules = {"rules": [{"regex": "^(unterminated"}, {"regex": "^another[unterminated"}]}
+        with patch("codemie.configs.customer_config.CustomerConfig.get_feature_setting", return_value=rules):
+            assert h.framework_regex() == DEFAULT_FRAMEWORK_SKILL_REGEX
+
 
 class TestWebWhoPaysClassification:
     """The Web Platform's per-request classification: fallback, funded, shared project, personal project."""
@@ -673,6 +685,59 @@ class TestClassifyRequests:
         with patch.object(h, "_classify_requests", AsyncMock(return_value={"r": ("cli", "personal")})) as real:
             assert await FakeWhoPaysSpend.classify(self.WINDOW, "cli") == {"r": ("cli", "personal")}
         real.assert_awaited_once_with(self.WINDOW, ["p"], "cli", h.funding.plan({}, rng.start, rng.end))
+
+    async def classify_with_failures(self, channel, ids, fail_codes):
+        calls = {"n": -1}
+
+        async def answer(body):
+            if "cardinality" in json.dumps(body):
+                return {"aggregations": {"requests": {"value": len(ids)}}}
+            calls["n"] += 1
+            if calls["n"] < len(fail_codes):
+                raise ExtendedHTTPException(code=fail_codes[calls["n"]], message="x", details="y")
+            return classified(channel, **ids)
+
+        repo = MagicMock()
+        repo.execute_aggregation_query = AsyncMock(side_effect=answer)
+        fplan = h.funding.plan({}, self.WINDOW.start, self.WINDOW.end)
+        with (
+            patch("codemie.repository.metrics_elastic_repository.MetricsElasticRepository", return_value=repo),
+            patch.object(h.asyncio, "sleep", AsyncMock()) as sleep,
+        ):
+            out = await h._classify_requests(self.WINDOW, ["p"], channel, fplan)
+        return out, sleep
+
+    async def test_an_overloaded_partition_is_retried_with_more_partitions_and_succeeds(self):
+        ids = {"a": "cb", "b": "sh", "c": "pr", "d": "nc"}
+        out, sleep = await self.classify_with_failures("cli", ids, fail_codes=[400])
+        assert out == {"a": ("cli", "charged_back"), "b": ("cli", "shared_no_budget"), "c": ("cli", "personal"),
+                        "d": ("cli", "no_customer")}  # fmt: skip
+        sleep.assert_awaited_once()
+
+    async def test_a_different_error_code_is_not_retried_and_propagates(self):
+        ids = {"a": "cb"}
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await self.classify_with_failures("cli", ids, fail_codes=[503, 503, 503, 503])
+        assert exc_info.value.code == 503
+
+    async def test_a_connection_error_is_not_retried_and_propagates(self):
+        async def answer(body):
+            if "cardinality" in json.dumps(body):
+                return {"aggregations": {"requests": {"value": 1}}}
+            raise ConnectionError("boom")
+
+        repo = MagicMock()
+        repo.execute_aggregation_query = AsyncMock(side_effect=answer)
+        fplan = h.funding.plan({}, self.WINDOW.start, self.WINDOW.end)
+        with patch("codemie.repository.metrics_elastic_repository.MetricsElasticRepository", return_value=repo):
+            with pytest.raises(ConnectionError):
+                await h._classify_requests(self.WINDOW, ["p"], "cli", fplan)
+
+    async def test_retries_are_bounded_and_eventually_raise(self):
+        ids = {"a": "cb"}
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await self.classify_with_failures("cli", ids, fail_codes=[400, 400, 400, 400, 400, 400])
+        assert exc_info.value.code == 400
 
 
 SUMMARY = {

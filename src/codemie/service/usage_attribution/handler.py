@@ -24,11 +24,15 @@ import asyncio
 import json
 import math
 import logging
+import random
+import re
 import time
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from typing import Any
+
+from fastapi import status
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.usage_attribution import app_db, funding, parsing, queries, spend_widgets
@@ -154,22 +158,53 @@ def load_defaults() -> DefaultSettings:
     return _defaults_cache["value"]
 
 
+def _parses_as_regex(pattern: str) -> bool:
+    """Whether ``pattern`` is at least syntactically well-formed (balanced groups/classes, valid escapes).
+
+    Python's ``re`` grammar isn't identical to Lucene's automaton ``regexp`` grammar, but both build on the
+    same grouping/character-class/escaping syntax, so a pattern Python's parser rejects as malformed is not
+    one we can trust Elasticsearch to accept either.
+    """
+    try:
+        re.compile(pattern)
+    except re.error:
+        return False
+    return True
+
+
+def _usable_rule_body(rule: Any) -> str | None:
+    """The rule's regex, Lucene-portable and well-formed, with its leading ``^`` stripped; else ``None``."""
+    regex = rule.get("regex") if isinstance(rule, dict) else None
+    if not isinstance(regex, str) or not regex:
+        return None
+    body = regex[1:] if regex.startswith("^") else regex
+    if any(token in body for token in ("(?", "\\d", "\\w", "\\s", "$", "\\b")):
+        return None  # not portable to Lucene regexp
+    if not _parses_as_regex(body):
+        logger.warning(
+            "Usage attribution framework_regex(): dropping malformed cliAnalytics.deliveryFramework rule"
+            " regex=%r label=%r",
+            regex,
+            rule.get("label"),
+        )
+        return None
+    return body
+
+
 def framework_regex() -> str:
     """The delivery-framework skills as one Lucene regexp, from features:cliAnalytics.deliveryFramework."""
     from codemie.configs.customer_config import customer_config
 
     raw = customer_config.get_feature_setting("cliAnalytics", "deliveryFramework", default=None)
     rules = (raw or {}).get("rules") if isinstance(raw, dict) else None
-    parts = []
-    for rule in rules or []:
-        regex = rule.get("regex") if isinstance(rule, dict) else None
-        if not isinstance(regex, str) or not regex:
-            continue
-        body = regex[1:] if regex.startswith("^") else regex
-        if any(token in body for token in ("(?", "\\d", "\\w", "\\s", "$", "\\b")):
-            continue  # not portable to Lucene regexp
-        parts.append(body)
-    return f"({'|'.join(parts)}).*" if parts else DEFAULT_FRAMEWORK_SKILL_REGEX
+    parts = [body for rule in rules or [] if (body := _usable_rule_body(rule)) is not None]
+    combined = f"({'|'.join(parts)}).*" if parts else DEFAULT_FRAMEWORK_SKILL_REGEX
+    if _parses_as_regex(combined):
+        return combined
+    logger.warning(
+        "Usage attribution framework_regex(): combined regex=%r is malformed, falling back to the default", combined
+    )
+    return DEFAULT_FRAMEWORK_SKILL_REGEX
 
 
 def user_enrichment_enabled() -> bool:
@@ -1155,6 +1190,9 @@ _QUERY_FAILED = "Usage data could not be read from Elasticsearch. Try again in a
 #: buckets one response holds to five times it, under Elasticsearch's search.max_buckets.
 _REQUESTS_PER_PARTITION = 10_000
 
+_CLASSIFY_MAX_ROUNDS = 4
+_CLASSIFY_RETRY_PAUSE_S = 1.0
+
 
 def _who_pays_bars(split: spend_widgets.WhoPaysSplit) -> dict[str, float | None]:
     return {
@@ -1163,6 +1201,35 @@ def _who_pays_bars(split: spend_widgets.WhoPaysSplit) -> dict[str, float | None]
         PERSONAL: split.personal,
         UNCLASSIFIED: split.unclassified,
     }
+
+
+async def _classify_requests_round(
+    repo: Any, query_args: tuple[Any, list[str], str, dict[str, Any]], parts: int, size: int
+) -> dict[str, tuple[str, str]]:
+    """One full pass over every partition; raises ``ExtendedHTTPException`` if any partition's query fails."""
+    window, shared, channel, fplan = query_args
+    out: dict[str, tuple[str, str]] = {}
+    for index in range(parts):
+        part = (index, parts) if parts > 1 else None
+        body = queries.request_classification_body(window, shared, channel, (part, size), fplan)
+        resp = await _query(repo, body)
+        buckets = ((resp.get("aggregations") or {}).get("requests") or {}).get("buckets") or []
+        parsing.parse_request_classification(buckets, out, channel)
+    return out
+
+
+async def _retry_pause(channel: str, round_idx: int, parts: int) -> None:
+    """Growing, jittered backoff before retrying ``_classify_requests`` with more partitions."""
+    pause = _CLASSIFY_RETRY_PAUSE_S * 2**round_idx * (1 + random.random() / 2)  # noqa: S311 - jitter
+    logger.warning(
+        "usage attribution classify_requests(%s): query too expensive, retry %d of %d with %d partitions in %.1f s",
+        channel,
+        round_idx + 1,
+        _CLASSIFY_MAX_ROUNDS,
+        parts,
+        pause,
+    )
+    await asyncio.sleep(pause)
 
 
 async def _classify_requests(
@@ -1175,15 +1242,17 @@ async def _classify_requests(
     count_resp = await _query(repo, queries.request_count_body(window.start, window.end, channel))
     count = int(parsing.num(count_resp.get("aggregations") or {}, "requests"))
     parts = max(1, math.ceil(count * 1.1 / _REQUESTS_PER_PARTITION))
-    size = min(MAX_BUCKETS_DEFAULT, math.ceil(count * 1.1 / parts) + 1)
-    out: dict[str, tuple[str, str]] = {}
-    for index in range(parts):
-        part = (index, parts) if parts > 1 else None
-        body = queries.request_classification_body(window, shared, channel, (part, size), fplan)
-        resp = await _query(repo, body)
-        buckets = ((resp.get("aggregations") or {}).get("requests") or {}).get("buckets") or []
-        parsing.parse_request_classification(buckets, out, channel)
-    return out
+    query_args = (window, shared, channel, fplan)
+    for round_idx in range(_CLASSIFY_MAX_ROUNDS):
+        size = min(MAX_BUCKETS_DEFAULT, math.ceil(count * 1.1 / parts) + 1)
+        try:
+            return await _classify_requests_round(repo, query_args, parts, size)
+        except ExtendedHTTPException as exc:
+            if exc.code != status.HTTP_400_BAD_REQUEST or round_idx >= _CLASSIFY_MAX_ROUNDS - 1:
+                raise
+            parts *= 2
+            await _retry_pause(channel, round_idx, parts)
+    raise AssertionError("unreachable: the loop above always returns or raises")
 
 
 async def _query(repo: Any, body: dict[str, Any]) -> dict[str, Any]:

@@ -28,7 +28,7 @@ All requests are read-only aggregations (``size: 0``). Who pays is decided per r
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from codemie.service.spend.coverage import TimeRange
 from codemie.service.usage_attribution.constants import (
@@ -128,13 +128,14 @@ def card(field: str, precision: int | None = None) -> dict:
     return {"cardinality": body}
 
 
-def terms(
+def terms(  # noqa: PLR0913 - collect_mode joins a signature that was already over the limit
     field: str,
     size: int,
     part: Part = None,
     order: str | None = "spend",
     include: Any = None,
     missing: str | None = None,
+    collect_mode: Literal["breadth_first", "depth_first"] | None = None,
 ) -> dict:
     t: dict[str, Any] = {"field": field, "size": max(1, int(size))}
     if missing is not None:
@@ -145,6 +146,8 @@ def terms(
         t["include"] = {"partition": part[0], "num_partitions": part[1]}
     if include is not None:
         t["include"] = include
+    if collect_mode:
+        t["collect_mode"] = collect_mode
     return t
 
 
@@ -349,7 +352,12 @@ def web_funding_aggs(fplan: dict[str, Any]) -> dict:
             "aggs": {
                 "p": {
                     "terms": terms(F_PROJECT, len(projects), order=None),
-                    "aggs": {"u": {"terms": terms(F_USER_ID, FUNDED_MEMBERS_MAX, order=None), "aggs": money()}},
+                    "aggs": {
+                        "u": {
+                            "terms": terms(F_USER_ID, FUNDED_MEMBERS_MAX, order=None, collect_mode="breadth_first"),
+                            "aggs": money(),
+                        }
+                    },
                 }
             },
         }
@@ -382,7 +390,12 @@ def web_funding_aggs(fplan: dict[str, Any]) -> dict:
             "aggs": {
                 "g": {
                     "filters": {"filters": filters},
-                    "aggs": {"u": {"terms": terms(F_USER_ID, size, order=None), "aggs": money()}},
+                    "aggs": {
+                        "u": {
+                            "terms": terms(F_USER_ID, size, order=None, collect_mode="breadth_first"),
+                            "aggs": money(),
+                        }
+                    },
                 }
             },
         }
@@ -455,7 +468,7 @@ def tools_body(start: datetime, end: datetime, part: Part, size: int, repos: int
     }
     body["aggs"] = {
         "users": {
-            "terms": terms(F_USER_ID, size, part, order=None),
+            "terms": terms(F_USER_ID, size, part, order=None, collect_mode="breadth_first"),
             "aggs": {"repos": {"terms": terms(F_REPOSITORY, repos, order=None), "aggs": sub}},
         }
     }
@@ -475,7 +488,7 @@ def sessions_body(start: datetime, end: datetime, framework_regex: str, part: Pa
         "query": base(start, end, q_metric(METRIC_CLI_SESSION)),
         "aggs": {
             "users": {
-                "terms": terms(F_USER_ID, size, part, order=None),
+                "terms": terms(F_USER_ID, size, part, order=None, collect_mode="breadth_first"),
                 "aggs": {"repos": {"terms": terms(F_REPOSITORY, repos, order=None), "aggs": sub}},
             }
         },

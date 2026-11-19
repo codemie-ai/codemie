@@ -16,14 +16,21 @@
 
 ``terms`` aggregations over people, repository values and projects use ``include.partition`` so that each response
 stays under ``search.max_buckets``; the number of partitions comes from the cardinalities of A0. When a partition
-overflows (``sum_other_doc_count`` > 0) or Elasticsearch answers ``too_many_buckets``, that query is retried with
-twice as many partitions. Each response is parsed into the compact inputs as soon as it arrives and dropped.
-Responses leave out document counts: the analysis never reads them, and every bucket and filter carries one.
+overflows (``sum_other_doc_count`` > 0) or Elasticsearch answers ``too_many_buckets_exception`` or
+``circuit_breaking_exception``, that query is retried with twice as many partitions. Each response is parsed into
+the compact inputs as soon as it arrives and dropped. Responses leave out document counts: the analysis never reads
+them, and every bucket and filter carries one.
 
 A request that fails for a transient reason (connection reset, 502/503/504, failed shards) is retried a few times
-with a growing pause. A request that timed out is not, nor one Elasticsearch refused under load (429, such as a
-circuit breaker): sending it again only adds load. ``too_many_buckets_exception`` is recognised in the error body and
-in the reasons of failed shards, wherever Elasticsearch reports it.
+with a growing pause. A request that timed out is not retried as transient, nor a generic 429: sending the same
+request again would only add load. Two specific overload signals are the exception, because the retry is not the
+same request sent again, but a smaller one that actually fits: ``too_many_buckets_exception`` and
+``circuit_breaking_exception`` are both recognised in the error body and in the reasons of failed shards, wherever
+Elasticsearch reports them, and handled as a partition overflow (``_retry_with_more_partitions``). A
+``too_many_buckets_exception`` is a deterministic, cheap rejection (the request has more buckets than
+``search.max_buckets`` allows) and costs the cluster nothing, so the smaller retry goes out immediately; a
+``circuit_breaking_exception`` can also mean the node is generally low on memory from unrelated load, so that round
+waits a growing pause first, the same way a transient error does.
 """
 
 from __future__ import annotations
@@ -57,6 +64,8 @@ _TRANSIENT_RETRIES = 3
 _RETRY_PAUSE_S = 1.0
 _TRANSIENT_STATUS = frozenset({502, 503, 504})
 _TOO_MANY_BUCKETS = "too_many_buckets_exception"
+_CIRCUIT_BREAKING = "circuit_breaking_exception"
+_OVERLOAD_TYPES = (_TOO_MANY_BUCKETS, _CIRCUIT_BREAKING)
 
 
 class FetchError(RuntimeError):
@@ -80,6 +89,12 @@ def error_types(node: Any) -> set[str]:
         elif isinstance(item, list):
             stack.extend(item)
     return found
+
+
+def _overload_type(node: Any) -> str | None:
+    """Which of ``_OVERLOAD_TYPES`` (if any) is present among ``node``'s error types, in a fixed preference order."""
+    found = error_types(node)
+    return next((t for t in _OVERLOAD_TYPES if t in found), None)
 
 
 def is_transient(exc: Exception) -> bool:
@@ -156,8 +171,9 @@ class Fetcher:
             return data, "timed out"
         shards = data.get("_shards") or {}
         if shards.get("failed"):
-            if _TOO_MANY_BUCKETS in error_types(shards.get("failures")):
-                return data, _TOO_MANY_BUCKETS
+            overload = _overload_type(shards.get("failures"))
+            if overload:
+                return data, overload
             raise _ShardsFailedError(f"{shards['failed']} shard(s) failed")
         return data, None
 
@@ -169,8 +185,9 @@ class Fetcher:
                 data, error = self._search_once(body)
                 break
             except Exception as exc:  # noqa: BLE001 - every transport/API error is reported per request
-                if _TOO_MANY_BUCKETS in error_types(getattr(exc, "body", None)):
-                    data, error = None, _TOO_MANY_BUCKETS  # answered by more partitions, not by a retry
+                overload = _overload_type(getattr(exc, "body", None))
+                if overload:
+                    data, error = None, overload  # answered by more partitions, not by a plain retry
                     break
                 if attempt < _TRANSIENT_RETRIES and is_transient(exc):
                     attempt += 1
@@ -194,9 +211,11 @@ class Fetcher:
         for round_idx in range(_MAX_ROUNDS):
             batch, locks = self._build_round_batch(pending)
             overflow, errors = self._run_batch(batch, locks)
-            pending = self._settle_round(pending, overflow, errors, round_idx)
+            pending, circuit_broken = self._settle_round(pending, overflow, errors, round_idx)
             if not pending:
                 break
+            if circuit_broken:
+                time.sleep(_RETRY_PAUSE_S * 2**round_idx)
 
     def _build_round_batch(self, pending: list[Spec]) -> tuple[list[tuple[Spec, dict]], dict[int, threading.Lock]]:
         """One round's requests: every spec starts a fresh accumulator and contributes one request per partition."""
@@ -269,15 +288,18 @@ class Fetcher:
 
     def _settle_round(
         self, pending: list[Spec], overflow: dict[int, float], errors: dict[int, list[str]], round_idx: int
-    ) -> list[Spec]:
-        """Decides, for each spec in this round, whether to retry with more partitions, fail, or accept the result."""
+    ) -> tuple[list[Spec], bool]:
+        """Decides, for each spec in this round, whether to retry with more partitions, fail, or accept the result.
+        Also reports whether a circuit breaker triggered any of this round's retries (see ``execute``)."""
         retry = []
+        circuit_broken = False
         for sp in pending:
             if self._retry_with_more_partitions(sp, overflow, errors, round_idx):
                 retry.append(sp)
+                circuit_broken = circuit_broken or any(_CIRCUIT_BREAKING in e for e in errors.get(id(sp), []))
                 continue
             self._raise_if_failed(sp, overflow, errors)
-        return retry
+        return retry, circuit_broken
 
     @staticmethod
     def _retry_with_more_partitions(
@@ -286,14 +308,14 @@ class Fetcher:
         if not sp.partitioned or round_idx >= _MAX_ROUNDS - 1:
             return False
         errs = errors.get(id(sp), [])
-        too_many = any("too_many_buckets" in e for e in errs)
-        if not (too_many or overflow.get(id(sp))):
+        overloaded = next((t for t in _OVERLOAD_TYPES if any(t in e for e in errs)), None)
+        if not (overloaded or overflow.get(id(sp))):
             return False
         sp.parts *= 2
         logger.warning(
             "usage attribution %s: %s; retrying with %d partitions",
             sp.label,
-            "too many buckets" if too_many else f"{int(overflow[id(sp)])} records beyond the terms size",
+            overloaded or f"{int(overflow[id(sp)])} records beyond the terms size",
             sp.parts,
         )
         return True
