@@ -31,6 +31,7 @@ from codemie.rest_api.middleware.security_headers import SecurityHeadersMiddlewa
 from codemie.rest_api.routers import files
 from codemie.rest_api.security.user import User
 from codemie.rest_api.routers.files import router
+from codemie_tools.base.file_object import FileObject
 from codemie.service.file_service.mermaid_service import (
     MermaidDiagramGenerationError,
     MermaidNotConfiguredError,
@@ -99,6 +100,58 @@ async def test_read_file_success(mocker, authenticated_user):
 
     assert response.status_code == status.HTTP_200_OK
     assert response.content == mock_file_content
+
+
+@pytest.mark.anyio
+async def test_read_file_download_name_is_last_path_segment(mocker, authenticated_user):
+    mock_file_object = mocker.Mock()
+    mock_file_object.content = b"xlsx bytes"
+    mock_file_object.mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    mock_file_object.name = "artifacts/turn1/report.xlsx"
+
+    mock_fs_repo = mocker.Mock()
+    mock_fs_repo.read_file.return_value = mock_file_object
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository",
+        return_value=mock_fs_repo,
+    )
+    mock_fo = mocker.Mock()
+    mock_fo.owner = authenticated_user.id
+    mock_fo.name = "artifacts/turn1/report.xlsx"
+    mock_fo.mime_type = mock_file_object.mime_type
+    mocker.patch("codemie.rest_api.routers.files.FileObject.from_encoded_url", return_value=mock_fo)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/whatever")
+
+    assert response.status_code == status.HTTP_200_OK
+    assert 'filename="report.xlsx"' in response.headers["content-disposition"]
+
+
+@pytest.mark.anyio
+async def test_read_file_token_containing_slash_is_served(mocker, authenticated_user):
+    """A non-Latin name encodes to a token with '/'; the real encoder is used so the route and token stay in step."""
+    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    name = "artifacts/turn1/план.xlsx"
+    token = FileObject(name=name, mime_type=mime, owner=authenticated_user.id).to_encoded_url()
+    assert "/" in token
+
+    stored = mocker.Mock(content=b"xlsx bytes", mime_type=mime, name=name)
+    stored.name = name
+    mock_fs_repo = mocker.Mock()
+    mock_fs_repo.read_file.return_value = stored
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository",
+        return_value=mock_fs_repo,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get(f"/v1/files/{token}")
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.content == b"xlsx bytes"
 
 
 @pytest.mark.anyio
@@ -1537,6 +1590,23 @@ def test_get_shared_conversation_returns_empty_map_without_files(mocker):
     assert result["shared_file_urls"] == {}
 
 
+def test_get_shared_conversation_ignores_thought_only_tokens(mocker):
+    """A link that survives only in a persisted thought is not scanned, so it gets no grant."""
+    from codemie.chains.base import Thought
+    from codemie.core.models import ChatRole
+    from codemie.rest_api.models.conversation import GeneratedMessage
+    from codemie.service.share_conversation_service import ShareConversationService
+
+    thought = Thought(id="t1", message="[Download](sandbox:/v1/files/enc-token-3)")
+    message = GeneratedMessage(role=ChatRole.ASSISTANT, message="done", thoughts=[thought])
+    mock_conv = _shared_conversation_with_history(mocker, [message])
+    _share_service_mocks(mocker, mock_conv)
+
+    result = ShareConversationService.get_shared_conversation("tok-abc", User(id="viewer"))
+
+    assert result["shared_file_urls"] == {}
+
+
 def test_find_by_blob_scopes_the_query_to_workspace_owner_and_name(mocker):
     """The three mandatory predicates must be in the statement: they are Rule E's whole scoping."""
     from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
@@ -1894,6 +1964,69 @@ async def test_read_file_share_grant_via_find_by_blob_reference_written(mocker, 
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         response = await ac.get("/v1/files/some_token?share_token=my-share-tok")
     assert response.status_code == status.HTTP_200_OK
+
+
+async def _share_recipient_download(mocker, file_token, thought):
+    """GET a blob as a share recipient whose only reference to it is carried by `thought`."""
+    from codemie.core.models import ChatRole
+    from codemie.rest_api.models.conversation import GeneratedMessage
+
+    mock_fo = mocker.Mock()
+    mock_fo.owner = "alice_user_id"
+    mock_fo.name = "report.csv"
+    mock_fo.mime_type = "text/csv"
+    mocker.patch("codemie.rest_api.routers.files.FileObject.from_encoded_url", return_value=mock_fo)
+
+    mock_conv = mocker.Mock()
+    mock_conv.history = [GeneratedMessage(role=ChatRole.ASSISTANT, message="done", thoughts=[thought])]
+    mock_shared = mocker.Mock()
+    mock_shared.conversation_id = "conv-1"
+    mock_shared.shared_by_user_id = "alice_user_id"
+    mocker.patch(
+        "codemie.service.file_service.download_rules.SharedConversation.get_by_fields", return_value=mock_shared
+    )
+    mocker.patch("codemie.service.file_service.download_rules.Conversation.find_by_id", return_value=mock_conv)
+    mocker.patch("codemie.rest_api.routers.files._workspace_repo.get_by_id_for_user", return_value=None)
+    mocker.patch("codemie.rest_api.routers.files._workspace_repo.get_by_conversation_for_user", return_value=None)
+    mocker.patch("codemie.rest_api.routers.files._workspace_repo.find_by_blob", return_value=None)
+
+    mock_file_result = mocker.Mock()
+    mock_file_result.content = b"a,b"
+    mock_file_result.mime_type = "text/csv"
+    mock_file_result.name = "report.csv"
+    mock_repo = mocker.Mock()
+    mock_repo.read_file.return_value = mock_file_result
+    mocker.patch("codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository", return_value=mock_repo)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        return await ac.get(f"/v1/files/{file_token}?share_token=my-share-tok")
+
+
+# Test #9b: 404 — thoughts are not scanned, so a link that exists only in a persisted thought has no grant
+@pytest.mark.anyio
+async def test_read_file_share_denied_for_thought_message_only(mocker, authenticated_user):
+    from codemie.chains.base import Thought
+
+    token = "thought_only_token"
+    thought = Thought(id="t1", message=f"[Download](sandbox:/v1/files/{token})")
+
+    response = await _share_recipient_download(mocker, token, thought)
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+# Test #9c: 404 — a token only in a thought's input_text is not a link the recipient was shown
+@pytest.mark.anyio
+async def test_read_file_share_denied_for_thought_input_text_only(mocker, authenticated_user):
+    from codemie.chains.base import Thought
+
+    token = "input_only_token"
+    thought = Thought(id="t1", input_text=f"sandbox:/v1/files/{token}", message="ok")
+
+    response = await _share_recipient_download(mocker, token, thought)
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 # Test #11: 200 — workspace blob where Rule D misses but Rule E hits

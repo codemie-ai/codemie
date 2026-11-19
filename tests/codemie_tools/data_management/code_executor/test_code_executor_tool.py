@@ -301,3 +301,20 @@ class TestCodeExecutorToolPodManifest(unittest.TestCase):
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+def test_exported_bytes_go_through_the_injected_publisher_and_context():
+    """The tool hands its publisher and context to the export service (nothing in the chain is mocked)."""
+    from codemie_tools.base.artifact_publishing import PublishContext, PublishResult
+
+    publisher = MagicMock()
+    publisher.publish.return_value = PublishResult(link="sandbox:/v1/files/abc", name="out.csv")
+    context = PublishContext(user_id="u1", conversation_id="c1", turn_id="t1")
+    tool = CodeExecutorTool(
+        file_repository=MagicMock(), user_id="u1", artifact_publisher=publisher, publish_context=context
+    )
+
+    lines = tool._store_exported_bytes({"out.csv": b"a,b\n"})
+
+    assert lines == [" File 'out.csv', URL `sandbox:/v1/files/abc`"]
+    assert publisher.publish.call_args.args[0] is context

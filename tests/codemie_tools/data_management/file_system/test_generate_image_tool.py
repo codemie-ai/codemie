@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 from langchain_core.messages import AIMessage
 
 from codemie.configs import config
+from codemie_tools.base.artifact_publishing import PublishContext, PublishResult
 from codemie_tools.data_management.file_system.image_generator import (
     ChatModelImageGenerator,
     LiteLLMImageConfig,
@@ -38,6 +39,7 @@ _CONFIG = LiteLLMImageConfig(
 _IMAGE_URL = "https://example.com/image.png"
 _B64_DATA = base64.b64encode(b"fake-png-bytes").decode()
 _DATA_URL = f"data:image/png;base64,{_B64_DATA}"
+_CTX = PublishContext(user_id="user-1", conversation_id="conv-1", turn_id="turn-1")
 
 
 class TestGenerateImageToolNoConfig(unittest.TestCase):
@@ -213,26 +215,33 @@ class TestGenerateImageToolResolveOutput(unittest.TestCase):
         tool = self._tool_with_generator(url=_IMAGE_URL)
         self.assertEqual(tool.execute(**GenerateImagesToolInput(image_description="test").model_dump()), _IMAGE_URL)
 
-    def test_raises_when_b64_and_no_file_repository(self):
+    def test_raises_when_b64_and_no_publisher(self):
         tool = self._tool_with_generator(b64=_B64_DATA)
         with self.assertRaises(ValueError) as ctx:
             tool.execute(image_description="test")
-        self.assertIn("no file repository is configured", str(ctx.exception))
+        self.assertIn("not delivered: storage not configured", str(ctx.exception))
 
-    def test_stores_b64_with_file_repository(self):
-        mock_stored = MagicMock()
-        mock_stored.to_encoded_url.return_value = "encoded-file-id"
-        mock_repo = MagicMock()
-        mock_repo.write_file.return_value = mock_stored
+    def test_publishes_b64_through_publisher(self):
+        publisher = MagicMock()
+        publisher.publish.return_value = PublishResult(link="sandbox:/v1/files/encoded-file-id", name="image.png")
 
-        tool = self._tool_with_generator(b64=_B64_DATA, file_repository=mock_repo, user_id="user-1")
+        tool = self._tool_with_generator(b64=_B64_DATA, artifact_publisher=publisher, publish_context=_CTX)
         result = tool.execute(image_description="test")
 
         self.assertEqual(result, "sandbox:/v1/files/encoded-file-id")
-        call_kwargs = mock_repo.write_file.call_args.kwargs
-        self.assertEqual(call_kwargs["mime_type"], "image/png")
-        self.assertEqual(call_kwargs["content"], base64.b64decode(_B64_DATA))
-        self.assertEqual(call_kwargs["owner"], "user-1")
+        publisher.publish.assert_called_once_with(
+            _CTX, "image.png", content=_B64_DATA, mime="image/png", base64_content=True
+        )
+
+    def test_publisher_reason_is_raised(self):
+        publisher = MagicMock()
+        publisher.publish.return_value = PublishResult(name="image.png", reason="`image.png` was not saved: empty")
+
+        tool = self._tool_with_generator(b64=_B64_DATA, artifact_publisher=publisher, publish_context=_CTX)
+        with self.assertRaises(ValueError) as ctx:
+            tool.execute(image_description="test")
+
+        self.assertIn("`image.png` was not saved: empty", str(ctx.exception))
 
     def test_raises_when_no_image_data(self):
         tool = self._tool_with_generator()

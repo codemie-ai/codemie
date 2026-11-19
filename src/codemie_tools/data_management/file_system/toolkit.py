@@ -18,6 +18,7 @@ from typing import List, Optional, Any, Dict
 
 from langchain_core.language_models import BaseChatModel
 
+from codemie_tools.base.artifact_publishing import ArtifactPublisher, PublishContext
 from codemie_tools.base.base_toolkit import BaseToolkit
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.base.models import ToolKit, ToolSet, Tool
@@ -66,6 +67,8 @@ class FileSystemToolkit(BaseToolkit):
     activate_command: Optional[str] = ""
     user_id: Optional[str] = ""
     file_repository: Optional[Any] = None
+    artifact_publisher: ArtifactPublisher | None = None
+    publish_context: PublishContext | None = None
     image_generator: Optional[Any] = None
     chat_model: Optional[Any] = None
     code_isolation: bool = False
@@ -137,8 +140,8 @@ class FileSystemToolkit(BaseToolkit):
         tools = [
             GenerateImageTool(
                 image_generator=self.image_generator,
-                file_repository=self.file_repository,
-                user_id=self.user_id or "",
+                artifact_publisher=self.artifact_publisher,
+                publish_context=self.publish_context,
             ),
         ]
 
@@ -148,6 +151,8 @@ class FileSystemToolkit(BaseToolkit):
                     file_repository=self.file_repository,
                     user_id=self.user_id,
                     input_files=self.input_files,
+                    artifact_publisher=self.artifact_publisher,
+                    publish_context=self.publish_context,
                 )
             )
 
@@ -166,13 +171,15 @@ class FileSystemToolkit(BaseToolkit):
         return tools
 
     @classmethod
-    def get_toolkit(
+    def get_toolkit(  # noqa: PLR0913 - toolkit dependencies injected by the caller
         cls,
         configs: Dict[str, Any],
         file_repository: Optional[Any] = None,
         chat_model: Optional[BaseChatModel] = None,
         image_generator: Optional[Any] = None,
         input_files: Optional[List[FileObject]] = None,
+        artifact_publisher: ArtifactPublisher | None = None,
+        publish_context: PublishContext | None = None,
     ):
         root_directory = configs.get("root_directory", ".")
         activate_command = configs.get("activate_command", "")
@@ -183,6 +190,8 @@ class FileSystemToolkit(BaseToolkit):
             activate_command=activate_command,
             file_repository=file_repository,
             user_id=user_id,
+            artifact_publisher=artifact_publisher,
+            publish_context=publish_context,
             image_generator=image_generator,
             chat_model=chat_model,
             input_files=input_files,

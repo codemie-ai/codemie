@@ -14,6 +14,7 @@
 
 from typing import Any, List, Optional
 
+from codemie_tools.base.artifact_publishing import PublishContext
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.base.models import ToolKit, ToolSet
 from codemie_tools.data_management.file_system.toolkit import FileSystemToolkit
@@ -31,6 +32,7 @@ from codemie.rest_api.models.assistant import Assistant, ContextType
 from codemie.rest_api.models.index import CodeIndexInfo
 from codemie.rest_api.security.user import User
 from codemie.service.llm_service.llm_service import llm_service
+from codemie.service.artifact_publisher import ArtifactPublisherService
 
 
 class ToolkitSettingService:
@@ -198,7 +200,7 @@ class ToolkitSettingService:
         return tools
 
     @classmethod
-    def get_file_system_toolkit(
+    def get_file_system_toolkit(  # noqa: PLR0913 - request-scoped dependencies of the toolkit
         cls,
         assistant: Assistant,
         project_name: str,
@@ -207,6 +209,7 @@ class ToolkitSettingService:
         request_uuid: str,
         tools_config: Optional[List[ToolConfig]] = None,
         input_files: Optional[List[FileObject]] = None,
+        conversation_id: str | None = None,
     ):
         from codemie.service.settings.settings import SettingsService
 
@@ -233,12 +236,15 @@ class ToolkitSettingService:
             configs["root_directory"] = file_config.root_directory
             configs["activate_command"] = file_config.activate_command
         chat_model = get_llm_by_credentials(llm_model=llm_model, request_id=request_uuid, fallback_to_default=True)
+        file_repository = FileRepositoryFactory.get_current_repository()
         return FileSystemToolkit.get_toolkit(
             configs=configs,
-            file_repository=FileRepositoryFactory.get_current_repository(),
+            file_repository=file_repository,
             chat_model=chat_model,
             image_generator=image_generator,
             input_files=input_files,
+            artifact_publisher=ArtifactPublisherService(file_repository),
+            publish_context=PublishContext.for_turn(user.id, conversation_id, request_uuid),
         ).get_tools()
 
     @classmethod

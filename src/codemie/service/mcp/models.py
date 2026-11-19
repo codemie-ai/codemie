@@ -23,11 +23,16 @@ All models in this module are based on Pydantic's BaseModel for automatic valida
 and serialization/deserialization of data.
 """
 
+import contextlib
 import json
+import mimetypes
 import os
 from enum import Enum
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
+from codemie_tools.base.artifact_publishing import strip_unsafe_name_chars
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from codemie.configs.mcp_commands_config import mcp_commands_config
@@ -114,7 +119,14 @@ class MCPExecutionContext(BaseModel):
         None,
         exclude=True,
         repr=False,
-        description="Local-only assistant conversation identifier for auth recovery retry scoping.",
+        description="Assistant conversation identifier: scopes auth recovery retries, and is sent to MCP-Connect "
+        "by to_request_fields() to scope the export folder (EPMCDME-14735). Excluded from model_dump.",
+    )
+    request_uuid: str | None = Field(
+        None,
+        exclude=True,
+        repr=False,
+        description="Local-only turn identifier; MCP artifacts are published under artifacts/<request_uuid>/.",
     )
     oauth2_token_data: Any | None = Field(
         None,
@@ -183,7 +195,7 @@ class MCPExecutionContext(BaseModel):
         A ``user_context=None`` key is dropped before the wire by ``exclude_none=True``
         in MCPConnectClient.
         """
-        return self.model_dump(
+        fields = self.model_dump(
             exclude={
                 "auth_headers": True,
                 "conversation_id": True,
@@ -193,6 +205,14 @@ class MCPExecutionContext(BaseModel):
                 "user_context": {"extra_attributes"},
             }
         )
+        # EPMCDME-14735: MCP-Connect keys the caller's export folder on user_id; self.user_id is
+        # the credential owner (a global assistant's or workflow's creator), so send the initiator.
+        if self.user_context is not None and self.user_context.id:
+            fields["user_id"] = self.user_context.id
+        # MCP-Connect scopes the caller's export folder per conversation; needs an MCP-Connect that accepts it
+        if self.conversation_id:
+            fields["conversation_id"] = self.conversation_id
+        return fields
 
 
 _ALLOWED_MCP_COMMANDS: frozenset[str] = mcp_commands_config.allowed_commands
@@ -409,6 +429,15 @@ class MCPListToolsResponse(BaseModel):
     )
 
 
+class MCPResourceContents(BaseModel):
+    """Embedded resource payload of a spec-shaped MCP content item (`blob` is base64, `text` is plain)."""
+
+    uri: str | None = Field(None, description="Resource URI")
+    mimeType: str | None = Field(None, description="Resource MIME type")
+    blob: str | None = Field(None, description="Base64-encoded binary content")
+    text: str | None = Field(None, description="Text content")
+
+
 class MCPToolContentItem(BaseModel):
     """
     An item in the content array of an MCP tool invocation response.
@@ -422,6 +451,9 @@ class MCPToolContentItem(BaseModel):
         data (Optional[str]): Binary or structured data content
         image_url (Optional[dict[str, str]]): Image URL information
         mimeType (Optional[str]): Content MIME type for proper handling
+        resource (Optional[MCPResourceContents]): Embedded resource (`type: resource`)
+        uri (Optional[str]): Resource URI (`type: resource_link`)
+        name (Optional[str]): Resource name (`type: resource_link`)
     """
 
     type: str = Field(default="text", description="Type of content (e.g., 'text', 'error')")
@@ -429,6 +461,9 @@ class MCPToolContentItem(BaseModel):
     data: str | None = Field(None, description="The content data")
     image_url: dict[str, str] | None = Field(None, description="The URL of the image content")
     mimeType: str | None = Field(None, description="The content MIME type")
+    resource: MCPResourceContents | None = Field(None, description="Embedded resource of a 'resource' item")
+    uri: str | None = Field(None, description="Resource URI of a 'resource_link' item")
+    name: str | None = Field(None, description="Resource name of a 'resource_link' item")
 
     def __str__(self) -> str:
         """
@@ -447,6 +482,8 @@ class MCPToolContentItem(BaseModel):
                 return f"![Screenshot](data:{self.mimeType};base64,{self.data})"
             case "image_url":
                 return f"![Screenshot]({self.image_url.get("url", "<No image URL available>")})"
+            case "resource_url":
+                return self.text or "<Resource artifact unavailable>"
             case _:
                 return self.text if self.text else "<No text content available>"
 
@@ -461,6 +498,21 @@ class MCPToolContentItem(BaseModel):
             bool: True if content is an image type, False otherwise
         """
         return self.type in ("image", "image_url")
+
+    def file_name(self) -> str:
+        """Percent-decoded last URI segment, else `name`, else 'artifact'; MIME extension added when missing."""
+        uri = (self.resource.uri if self.resource else None) or self.uri
+        # decode before splitting so an encoded "%2F" cannot smuggle a path in
+        segment = ""
+        if uri:
+            # a malformed server-supplied URI (e.g. "http://[bad") must not abort the whole result
+            with contextlib.suppress(ValueError):
+                segment = unquote(urlsplit(uri).path).rsplit("/", 1)[-1]
+        name = strip_unsafe_name_chars(segment or self.name or "").strip() or "artifact"
+        mime = (self.resource.mimeType if self.resource else None) or self.mimeType
+        if mime and not Path(name).suffix:
+            name += mimetypes.guess_extension(mime.split(";")[0].strip()) or ""
+        return name
 
     def is_text(self) -> bool:
         """
@@ -529,6 +581,9 @@ class MCPToolInvocationRequest(BaseModel):
     assistant_id: str | None = Field(None, description="Identifier for the assistant making the request")
     project_name: str | None = Field(None, description="The project name the request is associated with")
     workflow_execution_id: str | None = Field(None, description="Identifier for the workflow execution")
+    conversation_id: str | None = Field(
+        None, description="Conversation of the call; MCP-Connect scopes the export folder by it (EPMCDME-14735)"
+    )
     request_headers: dict[str, str] | None = Field(
         None, description="Custom HTTP headers from the original request to propagate to MCP servers"
     )

@@ -20,17 +20,18 @@ for integration with the CodeMie tool system.
 """
 
 import asyncio
-import base64
 import hashlib
 import json
-import uuid
+import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import suppress
 from typing import Any, Type, override
+from urllib.parse import quote, urlsplit
 
 from cachetools import TTLCache
 from pydantic import BaseModel, create_model
 
+from codemie_tools.base.artifact_publishing import PublishContext
 from codemie_tools.base.base_toolkit import BaseToolkit
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.errors import TruncatedOutputError
@@ -41,8 +42,9 @@ from codemie.configs.config import config
 from codemie.configs.logger import logger
 from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.core.constants import TOOL_TYPE, ToolType
-from codemie.repository.repository_factory import FileRepositoryFactory, MCP_IMAGES_SUBDIR
+from codemie.repository.repository_factory import FileRepositoryFactory
 from codemie.core.json_schema_utils import json_schema_to_model
+from codemie.service.artifact_publisher import ArtifactPublisherService
 from codemie.service.mcp.client import MCPConnectClient
 from codemie.service.mcp.models import (
     MCPListToolsResponse,
@@ -168,7 +170,7 @@ class MCPTool(CodeMieTool):
 
             # Check for errors in response
             if response.isError:
-                error_messages = [item.text for item in response.content]
+                error_messages = [item.text for item in response.content if item.text]  # a link/resource has none
                 error_text = "\n".join(error_messages) if error_messages else "Unknown error"
                 raise MCPToolExecutionError(f"MCP tool execution failed: {error_text}")
 
@@ -310,16 +312,8 @@ class MCPTool(CodeMieTool):
         if isinstance(mcp_tool_output, MCPToolInvocationResponse) and (
             mcp_tool_output.content or mcp_tool_output.structuredContent is not None
         ):
-            # Own the screenshot by the authenticated initiator of the request, taken from
-            # `user_context`. `execution_context.user_id` is the credential-resolution id, which for
-            # a global assistant or workflow is the *creator* (workflows/nodes/agent_node.py sets it
-            # from workflow_config.created_by), so using it would attribute the blob to someone who
-            # is not present and 404 it for the user who produced it. A plain MCPTool has no context
-            # at all; then there is no initiator to attribute to and the shared namespace is used.
             execution_context = getattr(self, "_execution_context", None)
-            user_context = getattr(execution_context, "user_context", None)
-            owner = getattr(user_context, "id", None)
-            return _convert_mcp_response_to_tool_message(mcp_tool_output, owner)
+            return _convert_mcp_response_to_tool_message(mcp_tool_output, _publish_context(execution_context))
         return super()._post_process_output_content(mcp_tool_output, *args, **kwargs)
 
 
@@ -368,90 +362,145 @@ class ContextAwareMCPTool(MCPTool):
         return self.execute_with_context(execution_context=self._execution_context, **kwargs)
 
 
-def _save_screenshot_to_storage(image_data: str, mime_type: str, owner: str | None = None) -> str:
+# One result may fill the user's workspace (artifacts are immutable): same limits as MCP-Connect's explicit export.
+MAX_ARTIFACTS_PER_RESULT = 20
+MAX_ARTIFACT_BYTES_PER_RESULT = 50 * 1024 * 1024
+
+
+def _publish_context(execution_context: MCPExecutionContext | None) -> PublishContext:
+    """Publish context of an MCP call, owned by the authenticated initiator.
+
+    `execution_context.user_id` is the credential-resolution id, which for a global assistant or
+    workflow is the *creator*; owning the file by it would 404 it for the user who produced it. No
+    context (a plain MCPTool) gives an empty user, so the publisher stores nothing.
     """
-    Save screenshot to file storage and return encoded URL.
-
-    Args:
-        image_data: Base64 encoded image data
-        mime_type: MIME type of the image
-        owner: Blob owner, normally the id of the user whose request produced the screenshot.
-            Owning the blob makes it retrievable through GET /v1/files/{file_name} by that user
-            alone (EPMCDME-12708). Falls back to the shared MCP_IMAGES_SUBDIR namespace only when
-            no user is known, e.g. an invocation with no execution context.
-
-    Returns:
-        Encoded file URL for accessing the saved screenshot
-
-    Raises:
-        Exception: If saving fails
-    """
-    file_repo = FileRepositoryFactory().get_current_repository()
-
-    if not owner:
-        # No invoking user is known, so the blob cannot be attributed to anyone. It lands in the
-        # shared namespace, which GET /v1/files/{file_name} serves to any authenticated user, so
-        # log it: this path is not expected to fire from the agent runtime, where tools are wrapped
-        # as ContextAwareMCPTool with the requesting user's id.
-        logger.warning("MCP screenshot has no invoking user; storing it under the shared namespace")
-        owner = MCP_IMAGES_SUBDIR
-
-    # Generate filename with appropriate extension
-    extension = MIME_TO_EXTENSION.get(mime_type.lower(), ".png")
-    file_name = f"{uuid.uuid4().hex}{extension}"
-
-    # Decode and save
-    image_bytes = base64.b64decode(image_data)
-    file_obj = file_repo.write_file(name=file_name, mime_type=mime_type, owner=owner, content=image_bytes)
-
-    logger.info(f"Saved MCP screenshot: {file_name} ({len(image_bytes)} bytes) to {owner}")
-    return file_obj.to_encoded_url()
+    user_context = getattr(execution_context, "user_context", None)
+    # workflow callers pass no turn id (B6 out of scope); for_turn gives one call its own folder
+    return PublishContext.for_turn(
+        getattr(user_context, "id", None) or "",
+        getattr(execution_context, "conversation_id", None),
+        getattr(execution_context, "request_uuid", None),
+    )
 
 
-def _convert_image_to_url(item: MCPToolContentItem, owner: str | None = None) -> None:
-    """
-    Convert image item to image_url with file reference.
-
-    Saves image to storage and replaces base64 data with file URL
-
-    Args:
-        item: Content item to process (modified in place)
-    """
+def _convert_image_to_url(item: MCPToolContentItem, publisher: ArtifactPublisherService, ctx: PublishContext) -> None:
+    """Publish an image item as `image.<ext>`; on failure the item becomes the reason text (never a data: URL)."""
     if not item.data:
         return
-
-    try:
-        # Save to storage and get file URL
-        url = _save_screenshot_to_storage(item.data, item.mimeType or "image/png", owner)
-        item.type = 'image_url'
-        item.image_url = {"url": f"sandbox:/v1/files/{url}", "detail": "high"}
-        item.data = None
-        item.mimeType = None
-
-    except (IOError, OSError, ValueError, base64.binascii.Error) as e:
-        # Fallback to base64 on error (will cause context overflow but prevents crash)
-        logger.error(f"Failed to save MCP screenshot: {e}", exc_info=True)
-        item.type = 'image_url'
-        item.image_url = {"url": f"data:{item.mimeType};base64,{item.data}", "detail": "high"}
-        item.data = None
-        item.mimeType = None
+    mime = item.mimeType or "image/png"
+    result = publisher.publish(
+        ctx, f"image{MIME_TO_EXTENSION.get(mime.lower(), '.png')}", content=item.data, mime=mime, base64_content=True
+    )
+    if result.ok:
+        item.type = "image_url"
+        item.image_url = {"url": result.link, "detail": "high"}
+    else:
+        item.type = "text"
+        item.text = result.reason
+    item.data = None
+    item.mimeType = None
 
 
-def _post_process_tool_result(
-    tool_result: MCPToolInvocationResponse, owner: str | None = None
-) -> MCPToolInvocationResponse:
-    """
-    Process MCP tool result and save images to storage.
+def _convert_resource_to_url(
+    item: MCPToolContentItem, publisher: ArtifactPublisherService, ctx: PublishContext
+) -> None:
+    """Publish an embedded resource with `blob` or `text`; pass an http(s) link on; the rest stays on the server."""
+    name = item.file_name()
+    resource = item.resource
+    if resource and resource.blob is not None:  # blob="" is an empty file: let the publisher say so
+        result = publisher.publish(ctx, name, content=resource.blob, mime=resource.mimeType, base64_content=True)
+    elif resource and resource.text is not None:
+        result = publisher.publish(ctx, name, content=resource.text, mime=resource.mimeType)
+    else:
+        result = None
+    web_link = _web_link(item) if result is None else None
+    item.type = "resource_url"
+    if web_link:
+        item.text = web_link
+    elif result is None:
+        item.text = f"`{name}` stays on the MCP server and was not delivered"
+    elif result.ok:
+        item.text = f"[{_md_label(result.name)}]({result.link})"
+    else:
+        item.text = result.reason
+    item.data = item.resource = item.mimeType = None
 
-    Args:
-        tool_result: MCP tool execution response
 
-    Returns:
-        Processed response with images saved to storage
-    """
+def _md_label(text: str) -> str:
+    """A markdown link label: `[`, `]` and `\\` are escaped so a file name cannot end or splice the link."""
+    return re.sub(r"([\\\[\]])", r"\\\1", " ".join(text.split()))
+
+
+def _web_link(item: MCPToolContentItem) -> str | None:
+    """A `resource_link` to an http(s) URL is already reachable by the user: pass it on as a plain markdown link."""
+    if item.type != "resource_link" or not item.uri:
+        return None
+    with suppress(ValueError):  # a malformed server-supplied URI is not a link
+        if urlsplit(item.uri).scheme.lower() in ("http", "https"):
+            label = _md_label(item.name or "") or _md_label(item.file_name())
+            # parentheses and whitespace would end the markdown link target early
+            return f"[{label}]({quote(item.uri, safe=":/?#[]@!$&'*+,;=%~")})"
+    return None
+
+
+def _payload_size(item: MCPToolContentItem) -> int | None:
+    """Bytes the item would store (decoded size for base64), or None when it stores nothing."""
+    resource = item.resource
+    if item.type == "image":
+        return len(item.data) * 3 // 4 if item.data else None
+    if resource and resource.blob is not None:
+        return len(resource.blob) * 3 // 4
+    if resource and resource.text is not None:
+        return len(resource.text.encode())
+    return None
+
+
+def _replace_with_text(item: MCPToolContentItem, item_type: str, text: str) -> None:
+    """Turn an item that was not stored into a plain text note, dropping its payload."""
+    item.type, item.text = item_type, text
+    item.data = item.resource = item.mimeType = None
+
+
+def _within_caps(size: int, stored_files: int, stored_bytes: int) -> bool:
+    return stored_files < MAX_ARTIFACTS_PER_RESULT and stored_bytes + size <= MAX_ARTIFACT_BYTES_PER_RESULT
+
+
+def _refuse_over_cap(item: MCPToolContentItem) -> None:
+    name = "image" if item.type == "image" else item.file_name()
+    reason = (
+        f"`{name}` was not saved: a result may carry at most {MAX_ARTIFACTS_PER_RESULT} files "
+        f"and {MAX_ARTIFACT_BYTES_PER_RESULT // (1024 * 1024)} MiB"
+    )
+    _replace_with_text(item, "text" if item.type == "image" else "resource_url", reason)
+
+
+def _refuse_storage_error(item: MCPToolContentItem) -> None:
+    name = "image" if item.type == "image" else item.file_name()
+    _replace_with_text(item, "resource_url", f"`{name}` could not be saved because of a storage error")
+
+
+def _post_process_tool_result(tool_result: MCPToolInvocationResponse, ctx: PublishContext) -> MCPToolInvocationResponse:
+    """Publish images and resources of an MCP result into the conversation workspace (items change in place)."""
+    publisher = None
+    stored_files = stored_bytes = 0
     for item in tool_result.content:
-        if item.type == 'image':
-            _convert_image_to_url(item, owner)
+        if item.type not in ("image", "resource", "resource_link"):
+            continue
+        size = _payload_size(item)
+        if size is not None:
+            if not _within_caps(size, stored_files, stored_bytes):
+                _refuse_over_cap(item)
+                continue
+            stored_files, stored_bytes = stored_files + 1, stored_bytes + size
+        try:
+            publisher = publisher or ArtifactPublisherService(FileRepositoryFactory.get_current_repository())
+        except Exception:
+            # publish() never raises; its setup must not lose the rest of the result either
+            logger.exception("Could not set up the artifact publisher for an MCP result")
+            _refuse_storage_error(item)
+            continue
+        convert = _convert_image_to_url if item.type == "image" else _convert_resource_to_url
+        convert(item, publisher, ctx)
     return tool_result
 
 
@@ -477,25 +526,29 @@ def _format_content_item(item: MCPToolContentItem) -> str | None:
             return f"Screenshot captured. URL: {url}\n\n![Screenshot]({url})"
         return None
 
+    if item.type == "resource_url":
+        return item.text
+
     # Other content types - serialize as JSON
     item_model = {k: v for k, v in item.model_dump().items() if v is not None}
     return json.dumps(item_model, ensure_ascii=False)
 
 
-def _convert_mcp_response_to_tool_message(tool_result: MCPToolInvocationResponse, owner: str | None = None) -> str:
+def _convert_mcp_response_to_tool_message(tool_result: MCPToolInvocationResponse, ctx: PublishContext) -> str:
     """
     Convert MCP tool response to text format for LLM.
 
-    Images are saved to storage (preventing context overflow) and replaced with
-    file URLs in sandbox:// format for UI rendering.
+    Images and embedded resources are published to the conversation workspace (preventing context
+    overflow) and replaced with sandbox:// links for UI rendering.
 
     Args:
         tool_result: MCP tool execution response
+        ctx: Who owns the published files, in which conversation and turn
 
     Returns:
         Formatted text for LLM consumption
     """
-    tool_result = _post_process_tool_result(tool_result, owner)
+    tool_result = _post_process_tool_result(tool_result, ctx)
 
     text_parts = []
     for item in tool_result.content:

@@ -1881,3 +1881,51 @@ def test_upsert_chat_history_falls_back_to_merged_routing_when_llm_runs_empty(
     call_kwargs = mock_send_routing_metric.call_args.kwargs
     assert call_kwargs["routing"] is routing
     assert call_kwargs.get("llm_run_id") is None
+
+
+def _generated_files_params(request_id, conversation_id="conv-1"):
+    return MagicMock(request_id=request_id, request=MagicMock(conversation_id=conversation_id), user=MagicMock(id="u1"))
+
+
+def test_turn_generated_file_names_asks_the_workspace_for_the_turns_files():
+    workspace = MagicMock()
+    workspace.turn_artifact_tokens.return_value = ["tok"]
+
+    assert ConversationService._turn_generated_file_names(workspace, _generated_files_params("req-1")) == ["tok"]
+    workspace.turn_artifact_tokens.assert_called_once_with("conv-1", "u1", "req-1")
+
+
+def test_turn_generated_file_names_is_empty_without_a_request_id():
+    workspace = MagicMock()
+
+    assert ConversationService._turn_generated_file_names(workspace, _generated_files_params(None)) == []
+    workspace.turn_artifact_tokens.assert_not_called()
+
+
+def test_a_failed_file_lookup_does_not_lose_the_turn():
+    workspace = MagicMock()
+    workspace.turn_artifact_tokens.side_effect = RuntimeError("db down")
+
+    assert ConversationService._turn_generated_file_names(workspace, _generated_files_params("req-1")) == []
+
+
+def test_the_conversation_files_endpoint_lists_uploads_not_published_files():
+    from codemie.core.constants import ChatRole
+    from codemie.rest_api.routers.conversation.retrieval import get_conversation_files
+
+    conversation = Conversation(
+        id="c",
+        conversation_id="c",
+        user_id="u1",
+        history=[
+            GeneratedMessage(role=ChatRole.USER, message="q", file_names=["upload"]),
+            GeneratedMessage(role=ChatRole.ASSISTANT, message="a", file_names=["artifact"]),
+        ],
+    )
+    with (
+        patch("codemie.rest_api.models.conversation.Conversation.get_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.retrieval.Ability") as ability,
+    ):
+        ability.return_value.can.return_value = True
+
+        assert set(get_conversation_files("c", MagicMock())) == {"upload"}

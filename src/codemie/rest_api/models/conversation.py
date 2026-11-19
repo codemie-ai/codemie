@@ -80,6 +80,9 @@ class ChatTurnData:
     a2ui_data_model: Optional[dict] = None
     in_progress: bool = False
     status: ConversationStatus = ConversationStatus.SUCCESS
+    #: Encoded tokens of the files published during this turn (the assistant message's `file_names`;
+    #: the user's `file_names` are the uploads).
+    generated_file_names: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -550,6 +553,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             date=assistant_responded_at,
             role=ChatRole.ASSISTANT,
             message=turn.assistant_response,
+            file_names=turn.generated_file_names,
             input_tokens=turn.input_tokens,
             output_tokens=turn.output_tokens,
             money_spent=turn.money_spent,

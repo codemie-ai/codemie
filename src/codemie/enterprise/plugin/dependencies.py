@@ -17,12 +17,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List, Optional
 
 from langchain_core.tools import BaseTool
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from codemie.configs import config, logger
 from codemie.core.constants import TOOL_TYPE, ToolType
 from codemie.enterprise.loader import HAS_PLUGIN
 from codemie.rest_api.models.settings import SettingsBase
+from codemie_tools.base.artifact_publishing import PublishContext
 from codemie_tools.base.models import Tool, ToolKit, ToolMetadata, ToolSet
 
 if TYPE_CHECKING:
@@ -294,12 +295,27 @@ def get_plugin_toolkit_ui_info():
     return PluginToolkitUI()
 
 
-def get_plugin_tools_for_assistant(
+def convert_mcp_response(enterprise_response: BaseModel, ctx: PublishContext) -> str:
+    """Convert an enterprise MCP response to tool-message text, publishing files under `ctx`.
+
+    Takes the enterprise package's MCPToolInvocationResponse, re-validates it as core's model (zero
+    coupling between the packages) and delegates to the core converter.
+    """
+    from codemie.service.mcp.models import MCPToolInvocationResponse as CoreMCPToolInvocationResponse
+    from codemie.service.mcp.toolkit import _convert_mcp_response_to_tool_message
+
+    core_response = CoreMCPToolInvocationResponse(**enterprise_response.model_dump())
+    return _convert_mcp_response_to_tool_message(core_response, ctx)
+
+
+def get_plugin_tools_for_assistant(  # noqa: PLR0913 - request-scoped ids are threaded through, not a data object
     user_id: str,
     project_name: str,
     assistant_id: Optional[str] = None,
     session_id: str | None = None,
     tool_config: dict | None = None,
+    conversation_id: str | None = None,
+    request_uuid: str | None = None,
 ) -> list["BaseTool"]:
     """
     Get plugin tools for an assistant, wrapped as LangChain BaseTool instances.
@@ -317,6 +333,8 @@ def get_plugin_tools_for_assistant(
         assistant_id: Assistant ID
         session_id: Optional session ID filter
         tool_config: Optional tool configuration
+        conversation_id: Conversation that receives files the tools produce
+        request_uuid: Turn id for those files; a fresh one per tool call when omitted
 
     Returns:
         List of LangChain BaseTool instances, or empty list if not available
@@ -360,33 +378,11 @@ def get_plugin_tools_for_assistant(
         # Import MCP converter from core and create adapter for model mapping
         from codemie_enterprise.plugin.mcp_models import MCPToolInvocationResponse
 
-        from codemie.service.mcp.models import (
-            MCPToolInvocationResponse as CoreMCPToolInvocationResponse,
-        )
-        from codemie.service.mcp.toolkit import _convert_mcp_response_to_tool_message
-
         def mcp_converter_adapter(enterprise_mcp_response: MCPToolInvocationResponse):
-            """Adapter that converts enterprise MCP models to core MCP models.
-
-            This adapter bridges the gap between enterprise and core packages by:
-            1. Taking enterprise's MCPToolInvocationResponse (from codemie_enterprise.plugin.mcp_models)
-            2. Converting it to core's MCPToolInvocationResponse (from codemie.service.mcp.models)
-            3. Calling the core converter function
-            4. Returning the final string result
-
-            This maintains zero-coupling while enabling proper MCP conversion.
-
-            Args:
-                enterprise_mcp_response: MCPToolInvocationResponse from enterprise package
-
-            Returns:
-                Converted string from core's _convert_mcp_response_to_tool_message
-            """
-            enterprise_data = enterprise_mcp_response.model_dump()
-            core_mcp_response = CoreMCPToolInvocationResponse(**enterprise_data)
-
-            # Call core converter function with core model (matches original pattern)
-            return _convert_mcp_response_to_tool_message(core_mcp_response)
+            """Adapter that publishes the response's files for `user_id` (the initiator), then converts it."""
+            return convert_mcp_response(
+                enterprise_mcp_response, PublishContext.for_turn(user_id, conversation_id, request_uuid)
+            )
 
         # Create PluginToolkit to get ToolConsumer instances with MCP converter adapter
         from codemie_enterprise.plugin import PluginToolkit

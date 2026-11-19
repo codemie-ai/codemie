@@ -25,12 +25,13 @@ import logging
 import mimetypes
 import os
 import tempfile
-import uuid
 from pathlib import Path
 from typing import List, Optional, Any
 
 from llm_sandbox import SandboxSession
 
+from codemie_tools.base.artifact_publishing import ArtifactPublisher, PublishContext
+from codemie_tools.base.artifact_storage import publish_artifact
 from codemie_tools.base.file_object import FileObject
 
 logger = logging.getLogger(__name__)
@@ -40,25 +41,32 @@ class FileExportService:
     """
     Service for exporting files from sandbox environments.
 
-    Handles file downloads from sandbox and storage in file repository.
+    Handles file downloads from sandbox and publishing through the artifact publisher.
     """
 
-    def __init__(self, file_repository: Optional[Any] = None, user_id: str = ""):
+    def __init__(
+        self,
+        user_id: str = "",
+        publisher: ArtifactPublisher | None = None,
+        publish_context: PublishContext | None = None,
+    ):
         """
         Initialize file export service.
 
         Args:
-            file_repository: Repository for storing exported files
-            user_id: User ID for file ownership
+            user_id: User ID for file ownership of collected files
+            publisher: `ArtifactPublisher` that stores exported files
+            publish_context: `PublishContext` the exported files are published under
         """
-        self.file_repository = file_repository
         self.user_id = user_id
+        self.publisher = publisher
+        self.publish_context = publish_context
 
     def export_files_from_execution(
         self, session: SandboxSession, file_paths: Optional[List[str]], workdir: str
     ) -> List[str]:
         """
-        Export files from the execution environment and store them using file_repository.
+        Export files from the execution environment and publish them through `publisher`.
 
         Args:
             session: The active execution session
@@ -68,10 +76,6 @@ class FileExportService:
         Returns:
             List of URLs for the stored files
         """
-        if not self.file_repository:
-            logger.warning("Cannot export files: file_repository not available")
-            return []
-
         if file_paths is None:
             return []
 
@@ -101,28 +105,20 @@ class FileExportService:
         return collected_files
 
     def store_exported_bytes(self, filename: str, content: bytes) -> Optional[str]:
-        """Store already-pulled bytes in the repository and return the sandbox URL.
+        """Publish already-pulled bytes and return the result line for the model.
 
         Shared kernel for any execution backend that delivers file bytes itself
         (e.g. sandbox-jobs exec-tar), bypassing the SandboxSession copy_from_runtime path.
+        A refused file returns its reason, so it reaches the user instead of vanishing into the log.
         """
-        if not self.file_repository:
-            logger.warning("Cannot store exported file: file_repository not available")
-            return None
-        try:
-            extension = Path(filename).suffix.lower().lstrip(".")
-            mime_type = self._determine_mime_type(extension)
-            unique_filename = f"{uuid.uuid4()}_{os.path.basename(filename)}"
-            stored_file = self.file_repository.write_file(
-                name=unique_filename,
-                mime_type=mime_type,
-                content=content,
-                owner=self.user_id,
-            )
-            return f" File '{os.path.basename(filename)}', URL `sandbox:/v1/files/{stored_file.to_encoded_url()}`"
-        except Exception as e:
-            logger.error(f"Failed to store exported file {filename}: {e}")
-            return None
+        return self._publish_line(filename, content=content)
+
+    def _publish_line(self, filename: str, **payload: Any) -> str | None:
+        result = publish_artifact(self.publisher, self.publish_context, filename, **payload)
+        if not result.ok:
+            logger.error(f"Failed to store exported file {filename}: {result.reason}")
+            return f" File '{result.name}' was not stored: {result.reason}"
+        return f" File '{result.name}', URL `{result.link}`"
 
     def _export_single_file(
         self, session: SandboxSession, src_path: str, workdir: str, temp_dir: str, index: int
@@ -146,10 +142,8 @@ class FileExportService:
 
             session.copy_from_runtime(f"{workdir}/{src_path}", temp_file_path)
 
-            with open(temp_file_path, "rb") as f:
-                content = f.read()
-
-            return self.store_exported_bytes(filename, content)
+            # Published by path: the publisher checks the on-disk size before reading the file.
+            return self._publish_line(filename, path=temp_file_path)
 
         except Exception as e:
             logger.error(f"Failed to export file {src_path}: {e}")
@@ -163,6 +157,9 @@ class FileExportService:
         temp_dir: str,
         index: int,
     ) -> FileObject | None:
+        if not self.user_id:
+            logger.warning("Cannot collect file %s: no owner to record it under", src_path)
+            return None
         try:
             normalized_path = Path(src_path).as_posix()
             filename = os.path.basename(normalized_path) or f"file_{index}"

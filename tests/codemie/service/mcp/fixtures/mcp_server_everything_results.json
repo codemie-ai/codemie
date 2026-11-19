@@ -1,0 +1,68 @@
+{
+  "_provenance": "Captured 2026-11-10 from the local codemie-mcp-connect-service (POST /bridge, method tools/call, EPMCDME-14735_capture-generated-files 01ffd7c) running '@modelcontextprotocol/server-everything@2025.12.18' over stdio: getResourceReference {resourceId: 1} (embedded_text), getResourceReference {resourceId: 2} (embedded_blob), getResourceLinks {count: 2} (resource_link). Responses are stored unmodified. Not hand-written.",
+  "embedded_text": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Returning resource reference for Resource 1:"
+      },
+      {
+        "type": "resource",
+        "resource": {
+          "uri": "test://static/resource/1",
+          "mimeType": "text/plain",
+          "text": "Resource 1: This is a plaintext resource"
+        }
+      },
+      {
+        "type": "text",
+        "text": "You can access this resource using the URI: test://static/resource/1"
+      }
+    ],
+    "isError": false
+  },
+  "embedded_blob": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Returning resource reference for Resource 2:"
+      },
+      {
+        "type": "resource",
+        "resource": {
+          "uri": "test://static/resource/2",
+          "mimeType": "application/octet-stream",
+          "blob": "UmVzb3VyY2UgMjogVGhpcyBpcyBhIGJhc2U2NCBibG9i"
+        }
+      },
+      {
+        "type": "text",
+        "text": "You can access this resource using the URI: test://static/resource/2"
+      }
+    ],
+    "isError": false
+  },
+  "resource_link": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Here are 2 resource links to resources available in this server (see full output in tool response if your client does not support resource_link yet):"
+      },
+      {
+        "name": "Resource 1",
+        "uri": "test://static/resource/1",
+        "description": "Resource 1: plaintext resource",
+        "mimeType": "text/plain",
+        "type": "resource_link"
+      },
+      {
+        "name": "Resource 2",
+        "uri": "test://static/resource/2",
+        "description": "Resource 2: binary blob resource",
+        "mimeType": "application/octet-stream",
+        "type": "resource_link"
+      }
+    ],
+    "isError": false
+  }
+}

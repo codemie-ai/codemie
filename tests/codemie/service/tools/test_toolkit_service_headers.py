@@ -136,6 +136,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         call_kwargs = mock_get_mcp_tools.call_args[1]
         assert 'request_headers' in call_kwargs
         assert call_kwargs['request_headers'] == test_headers
+        assert call_kwargs['request_uuid'] == 'req-123'
 
     @patch('codemie.service.tools.toolkit_service.ToolkitLookupService')
     @patch('codemie.service.tools.toolkit_service.ToolkitService._process_final_tools_traditional')

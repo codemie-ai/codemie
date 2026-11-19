@@ -25,6 +25,7 @@ from typing import Any, NamedTuple
 from sqlalchemy.exc import IntegrityError
 
 from codemie.configs import logger
+from codemie.core.constants import ChatRole
 from codemie.core.exceptions import ValidationException
 from codemie.core.models import UserEntity
 from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
@@ -43,7 +44,9 @@ from codemie.rest_api.models.agent_workspace import (
 from codemie.rest_api.security.user import User
 from codemie.service.file_service.blob_ref_rules import is_safe_blob_ref, is_source_owned_blob_ref
 from codemie.service.file_service.download_rules import can_download
+from codemie.service.file_service.sandbox_links import SANDBOX_FILE_PREFIX
 from codemie.service.file_service.workspace_path_rules import (
+    is_artifact_path,
     MAX_WORKSPACE_PATH_LENGTH,
     is_reserved_workspace_path,
     validate_relative_path,
@@ -55,6 +58,7 @@ from codemie.service.script_tool_calls.observer import ScriptRunObserver
 from codemie.service.script_tool_calls.outcome_metrics import ScriptCallMetricsListener
 from codemie.service.workspace_script_bridge import resolve_tool_calling_settings
 from codemie.service.workspace_archive import WorkspaceArchive, build_workspace_archive
+from codemie_tools.base.artifact_publishing import PublishContext
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.base.execution_timing import SandboxRunReport, report_sandbox_run
 from codemie_tools.data_management.code_executor.run_observer import SandboxRunObserver
@@ -67,7 +71,6 @@ MULTIPLE_OLD_STRING_ERROR = (
     "Multiple old_string are found. Please adjust old_string to be unique or set replace_all to True "
     "if all such occurences should be replaced"
 )
-SANDBOX_FILE_PREFIX = "sandbox:/v1/files/"
 MAX_GLOB_MATCH_PATH_LENGTH = 1024
 
 
@@ -118,6 +121,7 @@ class AgentWorkspaceService:
         content: bytes,
         user: User,
     ) -> WorkspaceFileItemResponse:
+        self._refuse_artifact(file_path)
         workspace = self.get_workspace(workspace_id, user)
         resolved_workspace_id = workspace.id
         if resolved_workspace_id is None:
@@ -129,7 +133,11 @@ class AgentWorkspaceService:
         workspace = self.get_workspace(workspace_id, user)
         if workspace.id is None:
             raise ValidationException(f"Workspace '{workspace_id}' not found")
-        workspace_file = self._get_workspace_file_or_raise(workspace, file_path)
+        return self._sandbox_link(self._get_workspace_file_or_raise(workspace, file_path))
+
+    @staticmethod
+    def _sandbox_link(workspace_file: AgentWorkspaceFile) -> str:
+        """The one place a workspace file's sandbox download link is built."""
         file_object = FileObject(
             name=workspace_file.blob_name,
             mime_type=workspace_file.mime_type,
@@ -137,6 +145,25 @@ class AgentWorkspaceService:
             path=workspace_file.path,
         )
         return f"{SANDBOX_FILE_PREFIX}{file_object.to_encoded_url()}"
+
+    def publish_artifact_file(
+        self, conversation_id: str, user: User | UserEntity, path: str, content: bytes, mime: str
+    ) -> str:
+        """The publisher's only write into ``artifacts/``; returns the blob link. Skips the immutability guard."""
+        workspace = self._get_or_create_workspace(conversation_id, user)
+        return self._sandbox_link(self._upsert_workspace_file_content(workspace.id, path, content, mime))
+
+    def turn_artifact_tokens(self, conversation_id: str, user_id: str, turn_id: str) -> list[str]:
+        """Encoded tokens of the files published under ``artifacts/<turn_id>/`` in the user's workspace."""
+        workspace = self.repository.get_by_conversation_for_user(conversation_id, user_id)
+        if workspace is None:
+            return []
+        folder = f"artifacts/{turn_id}/"
+        return [
+            self._sandbox_link(file)[len(SANDBOX_FILE_PREFIX) :]
+            for file in self.repository.list_files(workspace.id)
+            if file.path.startswith(folder)
+        ]
 
     def create_workspace(self, request: CreateAgentWorkspaceRequest, user: User | UserEntity) -> AgentWorkspaceResponse:
         user_id = self._user_id(user)
@@ -191,10 +218,12 @@ class AgentWorkspaceService:
         synced_files: list[WorkspaceFileItemResponse] = []
         for file_url in file_urls:
             file_object = self._decode_workspace_file_url(file_url)
-            if not file_object:
-                continue
-            if not self._is_registrable_blob_ref(file_object):
-                logger.warning("Skipping unsafe file reference while syncing uploaded files to workspace")
+            # _user_can_open logs the skip; it also refuses unsafe refs, so it runs before the source-owned check
+            if (
+                not file_object
+                or not self._user_can_open(file_object, file_url, user)
+                or not self._is_registrable_blob_ref(file_object)
+            ):
                 continue
 
             blob_key = self._blob_identity_key(file_object.owner, file_object.name, file_object.mime_type)
@@ -203,7 +232,7 @@ class AgentWorkspaceService:
                 continue
             if blob_key in known_blob_keys or workspace_path in known_paths:
                 continue
-            if self._skip_reserved(workspace_path):
+            if self._skip_reserved(workspace_path) or self._skip_artifact(workspace_path):
                 continue
 
             workspace_file = self._upsert_workspace_file_reference(workspace.id, workspace_path, file_object)
@@ -248,6 +277,14 @@ class AgentWorkspaceService:
         if not is_safe_blob_ref(file_object) or is_source_owned_blob_ref(file_object):
             raise ValidationException(f"File '{file_object.name}' is not available to this user")
         return file_object
+
+    def _user_can_open(self, file_object: FileObject, file_url: str, user: User | UserEntity) -> bool:
+        """A row grants its blob (workspace reads, share rule E), so only a blob the user may already open gets one."""
+        requester = User(id=self._user_id(user))
+        if can_download(file_object, requester, None, self._normalize_file_url(file_url), self.repository):
+            return True
+        logger.warning("Skipping a file reference the user may not open")
+        return False
 
     @staticmethod
     def _is_registrable_blob_ref(file_object: FileObject) -> bool:
@@ -307,13 +344,17 @@ class AgentWorkspaceService:
         for generated_file_url in generated_file_urls:
             file_object = self._decode_workspace_file_url(generated_file_url)
             workspace_path = self._generated_file_path(file_object) if file_object else None
-            if file_object is None or workspace_path is None:
+            if (
+                file_object is None
+                or workspace_path is None
+                or not self._user_can_open(file_object, generated_file_url, user)
+            ):
                 continue
 
             blob_key = self._blob_identity_key(file_object.owner, file_object.name, file_object.mime_type)
             if blob_key in request_blob_keys or blob_key in conversation_blob_keys or blob_key in known_blob_keys:
                 continue
-            if self._skip_reserved(workspace_path):
+            if self._skip_reserved(workspace_path) or self._skip_artifact(workspace_path):
                 continue
 
             workspace_file = self._upsert_workspace_file_reference(workspace.id, workspace_path, file_object)
@@ -366,6 +407,7 @@ class AgentWorkspaceService:
     def upsert_text_file(
         self, workspace_id: str, file_path: str, content: str, user: User
     ) -> WorkspaceFileItemResponse:
+        self._refuse_artifact(file_path)
         workspace = self.get_workspace(workspace_id, user)
         saved_file = self._upsert_workspace_file_content(workspace.id, file_path, content)
         return WorkspaceFileItemResponse.from_model(saved_file)
@@ -465,6 +507,7 @@ class AgentWorkspaceService:
         replace_all: bool,
         user: User,
     ) -> WorkspaceEditFileResponse:
+        self._refuse_artifact(file_path)
         file_content = self.get_file_content(workspace_id, file_path, user)
         if file_content.is_binary:
             return WorkspaceEditFileResponse(
@@ -498,6 +541,7 @@ class AgentWorkspaceService:
         )
 
     def delete_file(self, workspace_id: str, file_path: str, user: User) -> WorkspaceDeleteFileResponse:
+        self._refuse_artifact(file_path)
         workspace = self.get_workspace(workspace_id, user)
         normalized_path = self._normalize_write_path(file_path)
         deleted = self.repository.soft_delete_file(workspace.id, normalized_path)
@@ -638,6 +682,8 @@ class AgentWorkspaceService:
                     on_settled=fan_out(run_observer, ScriptCallMetricsListener(run_observer)),
                 )
             )
+            from codemie.service.artifact_publisher import ArtifactPublisherService  # imports this module
+
             executor = WorkspaceScriptRunner(
                 file_repository=self.file_repository,
                 user_id=user.id,
@@ -645,6 +691,9 @@ class AgentWorkspaceService:
                 conversation_id=workspace.conversation_id,
                 bridge=bridge,
                 sandbox_run=sandbox_run,
+                artifact_publisher=ArtifactPublisherService(self.file_repository, self),
+                # A script run has no chat turn of its own: each run publishes into its own artifacts folder.
+                publish_context=PublishContext.for_turn(user.id, workspace.conversation_id, None),
             )
             output = executor.execute_script(script_path=script_path, export_files=export_files)
             synced_files = self._sync_execution_files(workspace.id, executor.last_execution_files)
@@ -689,7 +738,8 @@ class AgentWorkspaceService:
 
         for execution_file in execution_files:
             try:
-                if self._skip_reserved(self._normalize_path(execution_file.name)):
+                normalized_name = self._normalize_path(execution_file.name)
+                if self._skip_reserved(normalized_name) or self._skip_artifact(normalized_name):
                     continue
             except ValidationException as exc:
                 logger.warning(f"Skipping execution file with an invalid workspace name: {exc}")
@@ -702,12 +752,12 @@ class AgentWorkspaceService:
         return synced_files
 
     def _upsert_workspace_file_content(
-        self, workspace_id: str, file_path: str, content: str | bytes
+        self, workspace_id: str, file_path: str, content: str | bytes, mime_type: str | None = None
     ) -> AgentWorkspaceFile:
         normalized_path = self._normalize_write_path(file_path)
         binary_content = content.encode("utf-8") if isinstance(content, str) else content
         checksum = hashlib.sha256(binary_content).hexdigest()
-        mime_type = self._guess_mime_type(normalized_path)
+        mime_type = mime_type or self._guess_mime_type(normalized_path)
         blob_owner = self._get_blob_owner(workspace_id)
 
         self.file_repository.write_file(
@@ -842,7 +892,8 @@ class AgentWorkspaceService:
 
         file_urls: list[str] = []
         for message in conversation.history or []:
-            file_urls.extend(message.file_names or [])
+            if message.role == ChatRole.USER:  # an assistant message's file_names are files it published
+                file_urls.extend(message.file_names or [])
         return file_urls
 
     def _get_or_create_workspace(self, conversation_id: str, user: User | UserEntity) -> AgentWorkspace:
@@ -912,6 +963,19 @@ class AgentWorkspaceService:
         if is_reserved_workspace_path(normalized):
             raise ValidationException(f"file_path is reserved: {normalized!r} is used by the script runtime")
         return normalized
+
+    @classmethod
+    def _refuse_artifact(cls, file_path: str) -> None:
+        if is_artifact_path(cls._normalize_path(file_path)):
+            raise ValidationException("file_path is a published artifact and cannot be changed")
+
+    @staticmethod
+    def _skip_artifact(normalized_path: str) -> bool:
+        """Script output never overwrites a published artifact."""
+        if is_artifact_path(normalized_path):
+            logger.warning(f"Skipping published artifact path {normalized_path!r}")
+            return True
+        return False
 
     @staticmethod
     def _skip_reserved(normalized_path: str) -> bool:

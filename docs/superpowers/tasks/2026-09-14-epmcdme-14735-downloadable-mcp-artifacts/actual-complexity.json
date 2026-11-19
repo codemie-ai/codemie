@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-10-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 83,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New ArtifactPublisherService abstraction plus publishing/storage contracts in codemie_tools.base, wired into several subsystems: file-system toolkit tools (attach file, generate image), code executor file export, workspace script runner, MCP toolkit post-processing, plugin tools delegate, toolkit settings, the files download router, download_rules ownership checks and share_conversation_service. Out-of-repo mcp-mock and mcp-proxy were also touched (tasks 11-12) but are test infrastructure, not scored as separate repos." },
+    { "dimension": "technical_risk", "reason": "Security-sensitive: download authorization (ownership rules, workspace-owner prefix, sandbox link token collection), share grants bound to the sharer's files, zip-container validation, base64 decode, path-segment sanitization of names. No exact prior publisher existed. A process-local publish lock is a known shortcut for concurrent publishes. Auth red flag applied." },
+    { "dimension": "file_change_estimate", "reason": "Diffstat reports 83 files, 5718 insertions. That is branch-wide (git diff main...HEAD) and includes about 34 planning docs from this run and three earlier runs. The code alone is 25 src and 24 test files, which is still XXL (16+)." },
+    { "dimension": "affected_layers", "reason": "API (files router), Service (publisher, workspace, share, toolkit services), DB-Persistence (file and workspace repositories; no schema migration), External (MCP tool results). Four layers including persistence, no migration, so L." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: affects download authorization and share-grant authorization"
+  ],
+  "split_recommendation": null
+}

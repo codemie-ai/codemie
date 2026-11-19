@@ -127,6 +127,57 @@ def test_explicit_integration_override_resolves_by_id():
     assert server_config.env["BASE"] == "1"
 
 
+# --- MCP-Connect export switch is admin-only ------------------------------------------------
+
+
+def test_tool_creds_cannot_switch_export_on():
+    server_config = MCPServerConfig(command="npx", args=[], env={"BASE": "1"})
+    tool_config = ToolConfig(
+        name=f"{MCP_TOOL_CONFIG_PREFIX}srv", tool_creds={"CODEMIE_EXPORT_FILES": "true", "TOKEN": "t"}
+    )
+
+    MCPToolkitService._apply_tool_config_to_mcp_server(server_config, tool_config, "user", "proj")
+
+    assert "CODEMIE_EXPORT_FILES" not in server_config.env
+    assert server_config.env == {"BASE": "1", "TOKEN": "t"}
+
+
+def test_integration_env_cannot_switch_export_on():
+    server_config = MCPServerConfig(command="npx", args=[], env={"BASE": "1"})
+    tool_config = _slot("srv", "uuid-1")
+
+    with (
+        patch.object(MCPToolkitService, "_current_user_can_use_integration", return_value=True),
+        patch.object(
+            MCPToolkitService,
+            "_resolve_credentials_by_id",
+            return_value={"CODEMIE_EXPORT_FILES": "true", "TOKEN": "t"},
+        ),
+    ):
+        MCPToolkitService._apply_tool_config_to_mcp_server(server_config, tool_config, "user", "proj")
+
+    assert "CODEMIE_EXPORT_FILES" not in server_config.env
+    assert server_config.env == {"BASE": "1", "TOKEN": "t"}
+
+
+@pytest.mark.parametrize("base_export", [None, "true"])
+def test_resolved_credentials_cannot_switch_export_on(base_export):
+    # Covers alias, pinned and inline resolution: they all merge through _build_mcp_server_config.
+    base_env = {"BASE": "1"} | ({"CODEMIE_EXPORT_FILES": base_export} if base_export else {})
+    server = MCPServerDetails(name="srv", config=MCPServerConfig(command="npx", args=[], env=base_env))
+
+    with patch.object(
+        MCPToolkitService,
+        "_resolve_credentials_with_priority",
+        return_value={"CODEMIE_EXPORT_FILES": "false" if base_export else "true", "TOKEN": "t"},
+    ):
+        config = MCPToolkitService._build_mcp_server_config(server, "user", "proj")
+
+    # The server config's own value stands; the credential's value is ignored.
+    assert config.env.get("CODEMIE_EXPORT_FILES") == base_export
+    assert config.env["TOKEN"] == "t"
+
+
 # --- allow_user_context precedence -----------------------------------------------------------
 
 

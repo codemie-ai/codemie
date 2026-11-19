@@ -16,7 +16,6 @@
 This module provides base agent abstraction.
 """
 
-import re
 from time import time
 from typing import Any
 
@@ -31,9 +30,7 @@ from codemie.core.errors import ErrorResponse, InternalError
 from codemie.core.thread import ThreadedGenerator
 from codemie.enterprise.litellm.proxy_router import handle_agent_exception
 from codemie.service.agent_workspace_service import AgentWorkspaceService
-
-
-SANDBOX_FILE_RE = re.compile(r"sandbox:/v1/files/[^\s)\]>\"']+")
+from codemie.service.file_service.sandbox_links import SANDBOX_FILE_RE
 
 
 class AbstractAgent:

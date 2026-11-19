@@ -28,6 +28,7 @@ from llm_sandbox.exceptions import SandboxTimeoutError
 from llm_sandbox.security import SecurityPolicy
 from pydantic import BaseModel, Field
 
+from codemie_tools.base.artifact_publishing import ArtifactPublisher, PublishContext
 from codemie_tools.base.execution_timing import SandboxRunReport, report_sandbox_run
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_object import FileObject
@@ -216,15 +217,19 @@ class CodeExecutorTool(CodeMieTool):
     file_repository: Optional[Any] = None
     user_id: Optional[str] = ""
     input_files: Optional[List[FileObject]] = Field(default=None, exclude=True)
+    artifact_publisher: ArtifactPublisher | None = Field(default=None, exclude=True)
+    publish_context: PublishContext | None = Field(default=None, exclude=True)
     security_policy: SecurityPolicy = None
     _custom_pod_manifest: Optional[dict] = None
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - tool dependencies injected by the toolkit
         self,
         file_repository: FileRepository,
         user_id: Optional[str] = "",
         input_files: Optional[List[FileObject]] = None,
         execution_mode: Optional[ExecutionMode] = None,
+        artifact_publisher: ArtifactPublisher | None = None,
+        publish_context: PublishContext | None = None,
     ):
         """
         Initialize the CodeExecutorTool.
@@ -244,6 +249,8 @@ class CodeExecutorTool(CodeMieTool):
             input_files: Optional list of FileObject instances to upload to sandbox before execution
             execution_mode: Execution mode (ExecutionMode.SANDBOX only).
                            If provided, takes highest precedence over environment configuration.
+            artifact_publisher: `ArtifactPublisher` that stores exported files
+            publish_context: `PublishContext` the exported files are published under
         """
         super().__init__()
         base_config = CodeExecutorConfig.from_env()
@@ -261,6 +268,8 @@ class CodeExecutorTool(CodeMieTool):
         self.file_repository = file_repository
         self.user_id = user_id
         self.input_files = input_files or []
+        self.artifact_publisher = artifact_publisher
+        self.publish_context = publish_context
 
         if self.input_files:
             logger.debug(f"Input files: {len(self.input_files)}")
@@ -889,8 +898,11 @@ class CodeExecutorTool(CodeMieTool):
         Returns:
             List of URLs for the stored files
         """
-        export_service = FileExportService(self.file_repository, self.user_id)
+        export_service = self._export_service()
         return export_service.export_files_from_execution(session, file_paths, workdir)
+
+    def _export_service(self) -> FileExportService:
+        return FileExportService(self.user_id, self.artifact_publisher, self.publish_context)
 
     def _read_input_file_bytes(self, file_objects: Optional[List[FileObject]]) -> dict[str, bytes]:
         """Read input FileObject bytes from the repository for sandbox-jobs upload."""
@@ -919,7 +931,7 @@ class CodeExecutorTool(CodeMieTool):
         """Persist already-pulled file bytes via FileExportService, return sandbox URLs."""
         if not exported:
             return []
-        export_service = FileExportService(self.file_repository, self.user_id)
+        export_service = self._export_service()
         urls: List[str] = []
         for rel_path, content in exported.items():
             url = export_service.store_exported_bytes(rel_path, content)

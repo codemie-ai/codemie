@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
-
 from typing import Optional, Dict, Any
 from datetime import datetime
 from urllib.parse import quote
@@ -24,32 +22,8 @@ from codemie.rest_api.models.conversation import Conversation, AssistantDetails
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.security.user import User
 from codemie.configs import logger
+from codemie.service.file_service.sandbox_links import collect_message_file_tokens
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
-
-
-SANDBOX_FILE_PREFIX = "sandbox:/v1/files/"
-
-# Mirrors SANDBOX_FILE_RE in codemie.agents.tools.agent: matches a whole sandbox file URL
-# so the share token can be appended to it without disturbing surrounding markdown.
-_SANDBOX_FILE_RE = re.compile(r"sandbox:/v1/files/[^\s)\]>\"']+")
-
-
-def collect_message_file_tokens(message: Any) -> list[str]:
-    """Return every encoded file token one history message refers to.
-
-    Two carriers: `file_names`, which holds bare encoded tokens, and inline
-    `sandbox:/v1/files/<token>` URLs inside the message text. The share endpoint issues a grant for
-    each token this returns and the file endpoint authorizes against the same set, so both sides
-    must derive it from this one function — a substring match on the message text would instead
-    grant a token that merely prefixes a longer one.
-    """
-    tokens = list(getattr(message, "file_names", None) or [])
-
-    text = getattr(message, "message", None)
-    if isinstance(text, str) and SANDBOX_FILE_PREFIX in text:
-        tokens.extend(match[len(SANDBOX_FILE_PREFIX) :] for match in _SANDBOX_FILE_RE.findall(text))
-
-    return tokens
 
 
 class ShareConversationService:
@@ -190,8 +164,4 @@ class ShareConversationService:
         if not isinstance(history, list):
             return {}
 
-        return {
-            token: cls._append_share_token(token, share_token)
-            for message in history
-            for token in collect_message_file_tokens(message)
-        }
+        return {token: cls._append_share_token(token, share_token) for token in collect_message_file_tokens(history)}

@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "task": "Introduce a single artifact publisher across MCP content, enterprise plugin adapter, file producers, workspace registration and share/download authorization (EPMCDME-14735 back-end follow-ups).",
+  "generated": "2026-10-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 27,
+  "size": "XL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "No publisher exists today; five modules (WriteFileTool, AttachFileTool, FileExportService, image tool, MCP toolkit) each call store_artifact/write_file themselves. A new shared abstraction must cross the codemie_tools/codemie package boundary, the enterprise plugin adapter (external codemie_enterprise MCPToolInvocationResponse contract), the workspace service, post-turn registration and download_rules/share_conversation_service. Shared contracts and architectural boundaries put this at XXL." },
+    { "dimension": "requirements_clarity", "reason": "Story has AC groups and decisions D1-D5, but design-critical facts are unestablished: how conversation id / request_uuid reach each producer and MCPTool, enterprise model wire shape, /v1/files filename derivation, where the publisher lives without a layering violation, artifacts/ immutability across workspace mutation paths." },
+    { "dimension": "technical_risk", "reason": "Closest precedent is GenerateWorkspaceImageToolV2 (upsert_binary_file + get_file_sandbox_url), which covers publishing but not the security aspects: Rule E/_conversation_refers_to_file has no ownership bound, so tightening can break working shared links; Rule C legacy mcp_images must stay readable; strict base64/size-before-decode and zip validation have partial test templates only. Authorization change plus enumerated edge cases (oversize, zip, duplicate names, no-conversation fallback) bumped risk to XL. Plugin-path owner propagation across an unreadable external package adds unknowns." },
+    { "dimension": "file_change_estimate", "reason": "Roughly 12-16 source files modified (mcp models/toolkit, plugin dependencies, artifact_storage, file_system tools/attach, file_export_service, generate_image tools, agent_workspace_service, agent.py, download_rules, share_conversation_service, routers), 1-3 new (publisher module and similar), across several subsystems, plus comparable test churn." },
+    { "dimension": "dependencies", "reason": "No new packages; the only dependency exposure is the external codemie_enterprise model and MCP-Connect wire shape, which is a contract risk captured elsewhere." },
+    { "dimension": "affected_layers", "reason": "API (REST download naming), Service (MCP, workspace, share, download rules), Persistence (file storage and workspace blob rows, no schema migration), Tool layer, plus External integration (MCP-Connect, enterprise plugin). Ownership and authorization are cross-cutting across several of these." }
+  ],
+  "red_flags_applied": [
+    "Component Scope set to XXL: touches shared contracts (enterprise plugin model) and the codemie_tools/codemie architectural boundary, and affects multiple producers/agents",
+    "Technical Risk at XL: affects authorization (download/share rules) and security-relevant validation (base64, size, zip) with no CI re-check",
+    "Borderline 26/27 resolved upward: Component Scope at XL or higher and Technical Risk at XL, existing patterns cover well under half of the work"
+  ],
+  "split_recommendation": {
+    "strategy": "by-dependency",
+    "secondary_strategy": null,
+    "ordering_note": "Single repo (codemie), so no per-repo cut: publisher core first, then adopters that call it, then share/download authorization that relies on workspace registration covering the links.",
+    "slices": [
+      {
+        "title": "Artifact publisher core",
+        "slice_slug": "publisher-core",
+        "component": "codemie",
+        "feature": "artifact-publishing",
+        "scope": "Single publisher that validates (size before decode, zip structure), names (artifacts/<turn-id>/<name>, duplicate suffix) and registers artifacts in the conversation workspace with an explicit logged per-user fallback, plus last-segment download naming. Includes resolving how conversation id and request id reach tools.",
+        "depends_on": null
+      },
+      {
+        "title": "Adopt publisher in MCP and file producers",
+        "slice_slug": "producer-adoption",
+        "component": "codemie",
+        "feature": "artifact-publishing",
+        "scope": "Move MCP content handling (embedded resources and resource links, flat shape dropped), the enterprise plugin adapter with owner and conversation propagation, and WriteFileTool, AttachFileTool, FileExportService and image tools onto the publisher; write_file stops publishing; new MCP writes stop using the shared mcp_images namespace.",
+        "depends_on": "Artifact publisher core"
+      },
+      {
+        "title": "Share and download authorization",
+        "slice_slug": "share-authz",
+        "component": "codemie",
+        "feature": "artifact-publishing",
+        "scope": "Bound the share-grant rule to the sharer's or conversation's workspace, keep legacy mcp_images and old uuid_ links readable, consolidate the duplicated sandbox link pattern without a circular import, and remove thought scanning.",
+        "depends_on": "Adopt publisher in MCP and file producers"
+      }
+    ]
+  }
+}

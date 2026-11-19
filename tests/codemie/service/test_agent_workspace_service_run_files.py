@@ -242,6 +242,32 @@ def test_sync_uploaded_files_skips_unsafe_token_and_registers_safe_one(
     assert len(synced) == 1
 
 
+def _foreign_tokens() -> list[str]:
+    """Another user's upload and a file of another user's workspace, as the reviewer reproduced them."""
+    return [_token("victim", "1b4e28ba_salaries.xlsx"), _token("workspace-ws-victim", "out/salaries.xlsx")]
+
+
+def test_sync_uploaded_files_skips_blobs_the_user_may_not_open(
+    service: AgentWorkspaceService, repository: _FakeRepository
+) -> None:
+    repository.get_by_id_for_user = MagicMock(return_value=None)  # type: ignore[method-assign]
+
+    service.sync_uploaded_files("conv-1", [*_foreign_tokens(), _token(USER_ID, "ok.pdf")], _user())
+
+    assert [f.blob_name for f in repository.files] == ["ok.pdf"]
+
+
+def test_register_generated_files_skips_blobs_the_user_may_not_open(
+    service: AgentWorkspaceService, repository: _FakeRepository
+) -> None:
+    repository.get_by_id_for_user = MagicMock(return_value=None)  # type: ignore[method-assign]
+    reply_links = [f"sandbox:/v1/files/{token}" for token in [*_foreign_tokens(), _token(USER_ID, "ok.pdf")]]
+
+    service.register_generated_files("conv-1", reply_links, _user())
+
+    assert [f.blob_name for f in repository.files] == ["ok.pdf"]
+
+
 def test_validate_run_files_rejects_a_source_owned_token(
     service: AgentWorkspaceService, repository: _FakeRepository
 ) -> None:

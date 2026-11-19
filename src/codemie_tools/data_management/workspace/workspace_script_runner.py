@@ -28,6 +28,7 @@ from typing import Any, Optional
 from langchain_core.tools import ToolException
 from pydantic import Field
 
+from codemie_tools.base.artifact_publishing import ArtifactPublisher, PublishContext
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.data_management.code_executor.batch_job_runner import BatchJobRunner
 from codemie_tools.data_management.code_executor.run_observer import SandboxRunObserver
@@ -53,7 +54,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
     #: Learns whether the run had to wait for executor capacity or was refused for the lack of it.
     sandbox_run: SandboxRunObserver | None = Field(default=None, exclude=True)
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - tool dependencies injected by the toolkit
         self,
         file_repository,
         user_id: str | None = "",
@@ -62,12 +63,16 @@ class WorkspaceScriptRunner(CodeExecutorTool):
         conversation_id: str | None = None,
         bridge: JobBridgeOptions | None = None,
         sandbox_run: SandboxRunObserver | None = None,
+        artifact_publisher: ArtifactPublisher | None = None,
+        publish_context: PublishContext | None = None,
     ):
         super().__init__(
             file_repository=file_repository,
             user_id=user_id,
             input_files=input_files,
             execution_mode=execution_mode,
+            artifact_publisher=artifact_publisher,
+            publish_context=publish_context,
         )
         self.conversation_id = conversation_id
         self.bridge = bridge
@@ -150,7 +155,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
         if not changed_paths:
             return []
 
-        export_service = FileExportService(self.file_repository, self.user_id)
+        export_service = FileExportService(self.user_id)
         return export_service.collect_files_from_execution(session, changed_paths, workdir)
 
     def _get_sandbox_file_snapshot(self, session: Any, workdir: str) -> dict[str, str]:

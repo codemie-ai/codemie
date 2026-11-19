@@ -521,6 +521,20 @@ class ConversationService:
                 params.request_id,
             )
 
+    @staticmethod
+    def _turn_generated_file_names(
+        workspace_service: AgentWorkspaceService, params: UpsertChatHistoryParams
+    ) -> list[str]:
+        """Files the turn's tools published into the workspace; a lookup failure must not lose the turn."""
+        conversation_id = params.request.conversation_id
+        if not (conversation_id and params.request_id):
+            return []
+        try:
+            return workspace_service.turn_artifact_tokens(conversation_id, params.user.id, params.request_id)
+        except Exception:
+            logger.exception(f"Could not list the files published in turn {params.request_id}")
+            return []
+
     @classmethod
     def upsert_chat_history(
         cls,
@@ -552,6 +566,7 @@ class ConversationService:
 
         replace_latest_variant = request.has_persisted_history_variant()
         status = cls._resolve_turn_status(conversation, params.status, in_progress)
+        workspace_service = AgentWorkspaceService()
 
         conversation.update_chat_history(
             ChatTurnData(
@@ -581,6 +596,7 @@ class ConversationService:
                 a2ui_data_model=getattr(request, "a2ui_data_model", None),
                 in_progress=in_progress,
                 status=status,
+                generated_file_names=cls._turn_generated_file_names(workspace_service, params),
             ),
             project=assistant.project,
             replace_latest_variant=replace_latest_variant,
@@ -592,7 +608,7 @@ class ConversationService:
         else:
             conversation.update()
 
-        AgentWorkspaceService().sync_uploaded_files(
+        workspace_service.sync_uploaded_files(
             conversation_id=request.conversation_id,
             file_urls=request.file_names or [],
             user=user,

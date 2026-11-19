@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, status, Query
 
 from codemie.configs import logger
 from codemie.core.ability import Ability, Action
+from codemie.core.constants import ChatRole
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.assistant import Assistant
 from codemie.core.workflow_models import WorkflowConfig
@@ -301,6 +302,12 @@ def get_conversation_files(conversation_id: str, user: User = Depends(authentica
 
     files = []
     if conversation.history:
-        files = set().union(*(message.file_names or [] for message in conversation.history if message.file_names))
+        files = set().union(
+            *(
+                message.file_names
+                for message in conversation.history
+                if message.role == ChatRole.USER and message.file_names
+            )
+        )
 
     return files

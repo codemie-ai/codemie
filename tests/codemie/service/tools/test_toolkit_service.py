@@ -1762,6 +1762,7 @@ class TestGetPluginToolsDelegate:
         """Create a mock request."""
         request = Mock(spec=AssistantChatRequest)
         request.tools_config = None
+        request.conversation_id = "test-conversation-id"
         request.enable_web_search = None
         request.enable_code_interpreter = None
         return request
@@ -1785,6 +1786,7 @@ class TestGetPluginToolsDelegate:
             assistant=mock_assistant,
             user=mock_user,
             request=mock_request,
+            request_uuid="req-1",
         )
 
         # Assert
@@ -1794,6 +1796,8 @@ class TestGetPluginToolsDelegate:
             project_name="test-project",
             assistant_id="test-assistant-id",
             tool_config=None,
+            conversation_id="test-conversation-id",
+            request_uuid="req-1",
         )
 
     @patch('codemie.service.tools.plugin_tools_delegate.is_plugin_enabled')

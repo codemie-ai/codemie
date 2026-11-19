@@ -496,3 +496,24 @@ class TestMCPExecutionContextIntegration:
         execution_context = mock_process_single_server.call_args[1]['execution_context']
 
         assert execution_context.user_context is None
+
+    @patch('codemie.service.mcp.toolkit_service.MCPToolkitService._process_single_mcp_server')
+    @patch('codemie.service.mcp.toolkit_service.MCPToolkitService.get_instance')
+    @patch('codemie.service.mcp.toolkit_service.get_current_user', return_value=None)
+    def test_get_mcp_server_tools_propagates_request_uuid(
+        self,
+        _mock_get_current_user,
+        _mock_get_instance,
+        mock_process_single_server,
+        sample_mcp_server_details,
+        sample_execution_context,
+        sample_mcp_tool,
+    ):
+        """The turn id travels in the execution context so MCP artifacts land in artifacts/<turn>/."""
+        mock_process_single_server.return_value = [ContextAwareMCPTool(sample_mcp_tool, sample_execution_context)]
+
+        MCPToolkitService.get_mcp_server_tools(
+            mcp_servers=[sample_mcp_server_details], user_id="user-123", request_uuid="turn-1"
+        )
+
+        assert mock_process_single_server.call_args[1]['execution_context'].request_uuid == "turn-1"

@@ -16,6 +16,7 @@ import contextlib
 import hashlib
 import mimetypes
 import re
+from pathlib import PurePosixPath
 
 from urllib.parse import quote
 
@@ -233,7 +234,8 @@ def _authorize_file_access(
 
 
 @router.get(
-    "/files/{file_name}",
+    # `:path`: the base64 token can contain '/', which non-Latin file names produce; without it the route 404s.
+    "/files/{file_name:path}",
     dependencies=[Depends(authenticate)],
     responses={
         status.HTTP_400_BAD_REQUEST: {"description": "Malformed file token"},
@@ -271,7 +273,7 @@ def read_file(
     try:
         file_object = FileService.load_content(file_object)
 
-        display_name = _strip_uuid_prefix(file_object.name) or file_object.name
+        display_name = PurePosixPath(_strip_uuid_prefix(file_object.name) or file_object.name).name
         normalised = normalise_mime(file_object.mime_type)
         handler = READ_FILE_MIME_TYPE_HANDLERS.get(normalised)
 

@@ -188,7 +188,7 @@ class ToolkitService:
         """
         return {
             ToolSet.PLUGIN: lambda assistant, user, llm_model, request_uuid, request: cls._get_plugin_tools_delegate(
-                assistant, user, request
+                assistant, user, request, request_uuid
             ),
             ToolSet.RESEARCH: lambda assistant, user, llm_model, request_uuid, request: ResearchToolkit.get_toolkit(
                 configs=ResearchConfig(
@@ -209,6 +209,7 @@ class ToolkitService:
                     request_uuid,
                     request.tools_config if request else None,
                     cls._get_file_objects_from_request(request),
+                    conversation_id=request.conversation_id if request else None,
                 )
             ),
             AGENT_WORKSPACE_TOOLKIT: lambda assistant, user, llm_model, request_uuid, request: (
@@ -400,6 +401,7 @@ class ToolkitService:
         assistant: Assistant,
         user: User,
         request: Optional[AssistantChatRequest],
+        request_uuid: str | None = None,
     ) -> list[BaseTool]:
         """Delegate plugin tools retrieval to PluginToolsDelegate.
 
@@ -411,7 +413,7 @@ class ToolkitService:
         Returns:
             List of plugin tools (LangChain BaseTool instances)
         """
-        return PluginToolsDelegate.get_plugin_tools(assistant, user, request)
+        return PluginToolsDelegate.get_plugin_tools(assistant, user, request, request_uuid)
 
     @classmethod
     def _merge_skill_toolkits(cls, assistant: Assistant) -> list[ToolKitDetails]:
@@ -1108,6 +1110,7 @@ class ToolkitService:
                 workflow_execution_id=getattr(request, 'workflow_execution_id', None),
                 request_headers=request_headers,
                 marketplace_scope=bool(assistant.is_global),
+                request_uuid=request_uuid,
             )
             tools.extend(mcp_result.tools)
             mcp_instructions = mcp_result.mcp_instructions

@@ -214,3 +214,18 @@ def test_a_cancelled_run_is_reported_as_an_error_too(
         _run(service, run_context=_context())
 
     assert run_metrics.call_args.kwargs["sandbox_run"].outcome.value == "error"
+
+
+def test_the_runner_publishes_into_the_workspace_conversation(
+    service: AgentWorkspaceService, runner_class: MagicMock, estimate: MagicMock
+) -> None:
+    from codemie.service.artifact_publisher import ArtifactPublisherService
+
+    _run(service, run_context=_context())
+
+    kwargs = runner_class.call_args.kwargs
+    assert isinstance(kwargs["artifact_publisher"], ArtifactPublisherService)
+    assert kwargs["artifact_publisher"].workspace_service is service
+    ctx = kwargs["publish_context"]
+    assert (ctx.user_id, ctx.conversation_id) == ("u1", "conv-1")
+    assert ctx.turn_id

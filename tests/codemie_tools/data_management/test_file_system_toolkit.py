@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import MagicMock
+
 import pytest
 
+from codemie_tools.base.artifact_publishing import PublishContext
 from codemie_tools.data_management.code_executor.code_executor_tool import CodeExecutorTool
 from codemie_tools.data_management.code_executor.tools_vars import CODE_EXECUTOR_TOOL
 from codemie_tools.data_management.file_system.generate_image_tool import GenerateImageTool
@@ -28,6 +31,14 @@ from codemie_tools.data_management.file_system.tools import (
 )
 
 
+@pytest.fixture
+def publisher():
+    return MagicMock()
+
+
+PUBLISH_CONTEXT = PublishContext(user_id="user-1", conversation_id="conv-1", turn_id="turn-1")
+
+
 class TestFileSystemToolkit:
     @pytest.fixture(autouse=True)
     def default_gating_env(self, monkeypatch):
@@ -39,8 +50,18 @@ class TestFileSystemToolkit:
     def toolkit(self):
         return FileSystemToolkit.get_toolkit(configs={})
 
-    def test_get_tools_ui_info_admin_without_env_var(self, toolkit):
+    @pytest.fixture
+    def toolkit_with_publisher(self, publisher):
+        return FileSystemToolkit.get_toolkit(
+            configs={"user_id": "user-1"},
+            file_repository=MagicMock(),
+            artifact_publisher=publisher,
+            publish_context=PUBLISH_CONTEXT,
+        )
+
+    def test_get_tools_ui_info_admin_without_env_var(self, toolkit, monkeypatch):
         # Admin without env vars should only see the safe tool (GenerateImage) in UI
+        monkeypatch.setenv("FILE_SYSTEM_TOOLS_ENABLED", "false")
         result = toolkit.get_tools_ui_info(is_admin=True)
         assert 'tools' in result, "UI info does not contain 'tools'"
         assert len(result['tools']) == 1, "Admin without env vars should see only 1 tool in UI"
@@ -51,6 +72,7 @@ class TestFileSystemToolkit:
         result = toolkit.get_tools_ui_info(is_admin=True)
         assert 'tools' in result, "UI info does not contain 'tools'"
         assert len(result['tools']) == 7, "Admin with env var should see 7 tools in UI (executor gated off)"
+        assert "attach_file_to_conversation" not in [tool['name'] for tool in result['tools']]
 
     def test_get_tools_ui_info_non_admin(self, toolkit):
         # Non-admin should only see the safe tool in UI
@@ -65,8 +87,9 @@ class TestFileSystemToolkit:
         assert 'tools' in result, "UI info does not contain 'tools'"
         assert len(result['tools']) == 1, "Non-admin should see only 1 tool in UI even with env var"
 
-    def test_get_tools_non_admin(self, toolkit):
+    def test_get_tools_non_admin(self, toolkit, monkeypatch):
         # Non-admin users should only get the safe tool (executor gated off by default)
+        monkeypatch.setenv("FILE_SYSTEM_TOOLS_ENABLED", "false")
         tools = toolkit.get_tools()
         assert len(tools) == 1, "Non-admin should only get 1 safe tool"
         assert any(isinstance(tool, GenerateImageTool) for tool in tools), "GenerateImageTool missing"
@@ -81,8 +104,9 @@ class TestFileSystemToolkit:
         ), "DiffUpdateFileTool should not be present"
         assert not any(isinstance(tool, ReplaceStringTool) for tool in tools), "ReplaceStringTool should not be present"
 
-    def test_get_tools_without_env_var(self):
+    def test_get_tools_without_env_var(self, monkeypatch):
         # Without env vars should only get the safe tool
+        monkeypatch.setenv("FILE_SYSTEM_TOOLS_ENABLED", "false")
         toolkit = FileSystemToolkit.get_toolkit(configs={})
         tools = toolkit.get_tools()
         assert len(tools) == 1, "Without env vars should only get 1 safe tool"
@@ -152,3 +176,19 @@ class TestFileSystemToolkit:
         monkeypatch.setenv("FILE_SYSTEM_TOOLS_ENABLED", "true")
         result = toolkit.get_tools_ui_info(is_admin=True)
         assert CODE_EXECUTOR_TOOL.name not in [t['name'] for t in result['tools']]
+
+    def test_image_and_executor_tools_receive_publisher_write_tool_does_not(
+        self, toolkit_with_publisher, publisher, monkeypatch
+    ):
+        # Publishing goes through the injected publisher; WriteFileTool only writes and gets none
+        monkeypatch.setenv("FILE_SYSTEM_TOOLS_ENABLED", "true")
+        monkeypatch.setenv("CODE_EXECUTOR_ENABLED", "true")
+        tools = toolkit_with_publisher.get_tools()
+
+        write_tool = next(tool for tool in tools if isinstance(tool, WriteFileTool))
+        for tool_type in (GenerateImageTool, CodeExecutorTool):
+            tool = next(tool for tool in tools if isinstance(tool, tool_type))
+            assert tool.artifact_publisher is publisher
+            assert tool.publish_context == PUBLISH_CONTEXT
+        assert not hasattr(write_tool, "artifact_publisher")
+        assert not hasattr(write_tool, "file_repository")

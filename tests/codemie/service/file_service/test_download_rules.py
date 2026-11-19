@@ -55,23 +55,57 @@ def test_accepts_own_workspace() -> None:
     repo.get_by_id_for_user.assert_called_once_with("ws1", "user-1")
 
 
-def test_accepts_share_grant(mocker) -> None:
-    shared = MagicMock(conversation_id="conv-1", shared_by_user_id="sharer")
+def _share(mocker, tokens: set[str]) -> None:
+    """A conversation shared by `sharer` whose history carries exactly `tokens`."""
     mocker.patch(
         "codemie.service.file_service.download_rules.SharedConversation.get_by_fields",
-        return_value=shared,
+        return_value=MagicMock(conversation_id="conv-1", shared_by_user_id="sharer"),
     )
-    conversation = MagicMock(history=[MagicMock()])
     mocker.patch(
         "codemie.service.file_service.download_rules.Conversation.find_by_id",
-        return_value=conversation,
+        return_value=MagicMock(history=[MagicMock()]),
     )
     mocker.patch(
         "codemie.service.file_service.download_rules.collect_message_file_tokens",
-        return_value={"tok"},
+        return_value=tokens,
     )
 
-    assert can_download(_file("someone-else"), _user(), "share-token", "tok", _repo()) is True
+
+def test_share_grants_sharers_own_token_in_history(mocker) -> None:
+    _share(mocker, {"tok"})
+
+    assert can_download(_file("sharer", "abc_doc.pdf"), _user(), "share-token", "tok", _repo()) is True
+
+
+def test_share_refuses_foreign_user_token_pasted_into_history(mocker) -> None:
+    _share(mocker, {"tok"})
+
+    assert can_download(_file("someone-else"), _user(), "share-token", "tok", _repo()) is False
+
+
+def test_share_refuses_foreign_workspace_token_pasted_into_history(mocker) -> None:
+    _share(mocker, {"tok"})
+    repo = _repo()
+    repo.get_by_conversation_for_user.return_value = MagicMock(id="ws-sharer")
+
+    assert can_download(_file("workspace-other", "artifacts/t1/x.xlsx"), _user(), "share-token", "tok", repo) is False
+    repo.find_by_blob.assert_called_once_with("ws-sharer", "workspace-other", "artifacts/t1/x.xlsx", "application/pdf")
+
+
+def test_share_grants_artifact_registered_in_sharers_workspace(mocker) -> None:
+    _share(mocker, set())
+    repo = _repo()
+    repo.get_by_conversation_for_user.return_value = MagicMock(id="conv-1")
+    repo.find_by_blob.return_value = MagicMock()
+
+    assert can_download(_file("workspace-conv-1", "artifacts/t1/x.xlsx"), _user(), "share-token", "tok", repo) is True
+    repo.get_by_conversation_for_user.assert_called_once_with("conv-1", "sharer")
+
+
+def test_share_keeps_legacy_mcp_images_links(mocker) -> None:
+    _share(mocker, set())
+
+    assert can_download(_file("mcp_images", "abc.png"), _user(), "share-token", "tok", _repo()) is True
 
 
 def test_rejects_foreign_owner() -> None:

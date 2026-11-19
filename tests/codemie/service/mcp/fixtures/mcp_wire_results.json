@@ -1,0 +1,81 @@
+{
+  "_provenance": "Hand-authored negative and edge cases that no real MCP server emits on request (fake xlsx bytes, invalid base64, empty and legacy flat resources), each shaped like the MCP spec's CallToolResult. The happy-path embedded text/blob and resource_link shapes are captured in mcp_server_everything_results.json.",
+  "fake_xlsx_embedded_blob": {
+    "content": [
+      {
+        "type": "resource",
+        "resource": {
+          "uri": "file:///reports/closed%20positions/report.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "blob": "UEsDBAoAAAAA"
+        }
+      }
+    ]
+  },
+  "empty_resource": {
+    "content": [
+      {
+        "type": "resource",
+        "resource": {
+          "uri": "file:///x/data.csv",
+          "mimeType": "text/csv"
+        }
+      }
+    ]
+  },
+  "legacy_flat_resource": {
+    "content": [
+      {
+        "type": "resource",
+        "mimeType": "text/csv",
+        "data": "YSxi"
+      }
+    ]
+  },
+  "image_jpeg": {
+    "content": [
+      {
+        "type": "image",
+        "mimeType": "image/jpeg",
+        "data": "iVBORy1ieXRlcw=="
+      }
+    ]
+  },
+  "image_png": {
+    "content": [
+      {
+        "type": "image",
+        "mimeType": "image/png",
+        "data": "iVBORy1ieXRlcw=="
+      }
+    ]
+  },
+  "image_invalid_base64": {
+    "content": [
+      {
+        "type": "image",
+        "mimeType": "image/png",
+        "data": "not base64!!"
+      }
+    ]
+  },
+  "fake_xlsx_blob_without_mime": {
+    "content": [
+      {
+        "type": "resource",
+        "resource": {
+          "uri": "file:///r/fake.xlsx",
+          "blob": "YWJj"
+        }
+      }
+    ]
+  },
+  "text": {
+    "content": [
+      {
+        "type": "text",
+        "text": "hello"
+      }
+    ]
+  }
+}

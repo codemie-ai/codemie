@@ -31,7 +31,7 @@ from codemie.rest_api.models.conversation import Conversation
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.security.user import User
 from codemie.service.file_service.blob_ref_rules import is_safe_blob_ref, is_source_owned_blob_ref
-from codemie.service.share_conversation_service import collect_message_file_tokens
+from codemie.service.file_service.sandbox_links import collect_message_file_tokens
 from codemie.service.workflow_icon_service import WorkflowIconService
 
 _WORKFLOW_SCHEMA_PREFIX = "workflows/"
@@ -161,7 +161,7 @@ def _conversation_refers_to_file(conversation: Conversation, file_name_param: st
     the set the recipient was handed URLs for cannot drift apart. That covers both carriers:
     `file_names` entries and inline `sandbox:/v1/files/<token>` references in message text.
     """
-    return any(file_name_param in collect_message_file_tokens(message) for message in (conversation.history or []))
+    return file_name_param in collect_message_file_tokens(conversation.history or [])
 
 
 def _has_share_grant(
@@ -172,10 +172,11 @@ def _has_share_grant(
 ) -> bool:
     """Rule E: the file belongs to a conversation shared with the holder of this token.
 
-    Two carriers are accepted: the token appears in a message's `file_names`, or the blob is
-    registered in the sharer's workspace. The second covers files referenced only by an inline
-    `sandbox:/v1/files/...` URL, including blobs registered by reference under their original
-    owner rather than under the workspace.
+    Two carriers are accepted, both bound to the sharer: the token appears in the conversation's
+    messages AND the blob is owned by the sharer's own user id (legacy `<uuid>_` links), or the
+    blob is registered in the sharer's workspace for the shared conversation (published artifacts,
+    and blobs registered by reference under their original owner). A foreign `workspace-<other>`
+    or foreign user's token pasted into history matches neither.
     """
     if not share_token:
         return False
@@ -188,7 +189,7 @@ def _has_share_grant(
     if not conversation:
         return False
 
-    if _conversation_refers_to_file(conversation, file_name_param):
+    if file_object.owner == shared.shared_by_user_id and _conversation_refers_to_file(conversation, file_name_param):
         return True
 
     workspace = workspace_repo.get_by_conversation_for_user(shared.conversation_id, shared.shared_by_user_id)

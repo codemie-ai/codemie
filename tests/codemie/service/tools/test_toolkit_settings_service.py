@@ -318,6 +318,55 @@ class TestGetFileSystemToolkit:
     @patch('codemie.service.tools.toolkit_settings_service.get_llm_by_credentials')
     @patch('codemie.service.tools.toolkit_settings_service.FileSystemToolkit')
     @patch('codemie.service.tools.toolkit_settings_service.FileRepositoryFactory')
+    def test_get_file_system_toolkit_injects_publisher_bound_to_turn(
+        self, mock_file_repo_factory, mock_fs_toolkit, mock_get_llm, mock_settings, mock_assistant, mock_user
+    ):
+        from codemie.service.artifact_publisher import ArtifactPublisherService
+        from codemie_tools.base.artifact_publishing import PublishContext
+
+        mock_settings.get_file_system_config.return_value = None
+
+        ToolkitSettingService.get_file_system_toolkit(
+            assistant=mock_assistant,
+            project_name="test-project",
+            user=mock_user,
+            llm_model=MagicMock(),
+            request_uuid="turn-uuid",
+            conversation_id="conv-1",
+        )
+
+        kwargs = mock_fs_toolkit.get_toolkit.call_args.kwargs
+        publisher = kwargs["artifact_publisher"]
+        assert isinstance(publisher, ArtifactPublisherService)
+        assert publisher.file_repository is mock_file_repo_factory.get_current_repository.return_value
+        assert kwargs["publish_context"] == PublishContext(mock_user.id, "conv-1", "turn-uuid")
+
+    @patch('codemie.service.settings.settings.SettingsService')
+    @patch('codemie.service.tools.toolkit_settings_service.get_llm_by_credentials')
+    @patch('codemie.service.tools.toolkit_settings_service.FileSystemToolkit')
+    @patch('codemie.service.tools.toolkit_settings_service.FileRepositoryFactory')
+    def test_get_file_system_toolkit_without_request_uuid_gets_its_own_turn(
+        self, mock_file_repo_factory, mock_fs_toolkit, mock_get_llm, mock_settings, mock_assistant, mock_user
+    ):
+        """The workflow path passes request_uuid='': artifacts must not land in artifacts//."""
+        mock_settings.get_file_system_config.return_value = None
+
+        ToolkitSettingService.get_file_system_toolkit(
+            assistant=mock_assistant,
+            project_name="test-project",
+            user=mock_user,
+            llm_model=MagicMock(),
+            request_uuid="",
+            conversation_id="exec-1",
+        )
+
+        turn_id = mock_fs_toolkit.get_toolkit.call_args.kwargs["publish_context"].turn_id
+        assert turn_id.strip()
+
+    @patch('codemie.service.settings.settings.SettingsService')
+    @patch('codemie.service.tools.toolkit_settings_service.get_llm_by_credentials')
+    @patch('codemie.service.tools.toolkit_settings_service.FileSystemToolkit')
+    @patch('codemie.service.tools.toolkit_settings_service.FileRepositoryFactory')
     @patch('codemie.service.tools.toolkit_settings_service.ToolkitSettingService._find_code_index')
     def test_get_file_system_toolkit_with_code_context(
         self,

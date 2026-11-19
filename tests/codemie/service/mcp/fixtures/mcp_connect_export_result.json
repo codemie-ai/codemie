@@ -1,0 +1,48 @@
+{
+  "_provenance": "Captured 2026-11-06 by running codemie-mcp-connect-service MR !314 (cbcdbf3) export.apply over a temp dir with: 'closed positions.csv', report.xlsx (real zip), data.json, empty.txt (0 bytes) and a missing file. Not hand-written.",
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "done"
+      },
+      {
+        "type": "resource",
+        "resource": {
+          "uri": "file:///closed%20positions.csv",
+          "mimeType": "text/csv",
+          "blob": "YSxiCjEsMgo="
+        }
+      },
+      {
+        "type": "resource",
+        "resource": {
+          "uri": "file:///report.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "blob": "UEsDBBQAAAAAAAN2Zl3HHBc8CAAAAAgAAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbDxUeXBlcy8+UEsBAhQDFAAAAAAAA3ZmXcccFzwIAAAACAAAABMAAAAAAAAAAAAAAIABAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwUGAAAAAAEAAQBBAAAAOQAAAAAA"
+        }
+      },
+      {
+        "type": "resource",
+        "resource": {
+          "uri": "file:///data.json",
+          "mimeType": "application/json",
+          "blob": "eyJrIjogMX0="
+        }
+      },
+      {
+        "type": "resource",
+        "resource": {
+          "uri": "file:///empty.txt",
+          "mimeType": "text/plain",
+          "blob": ""
+        }
+      },
+      {
+        "type": "text",
+        "text": "Files not exported:\nmissing.pdf: file not found"
+      }
+    ],
+    "isError": false
+  }
+}

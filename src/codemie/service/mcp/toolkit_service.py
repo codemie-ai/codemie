@@ -69,6 +69,8 @@ from codemie.service.settings.base_settings import SearchFields
 
 # MCP configuration constants
 MCP_TOOL_CONFIG_PREFIX = "MCP:"
+# MCP-Connect reads this from the server env to opt a stdio server into file export (MCP-Connect MR !314).
+MCP_EXPORT_FILES_ENV = "CODEMIE_EXPORT_FILES"
 
 # Cache logging messages
 CACHE_HIT_MSG = "Cache hit for MCP toolkit service instance with base URL: {}"
@@ -205,6 +207,7 @@ class MCPToolkitService:
         request_headers: dict[str, str] | None = None,
         marketplace_scope: bool = False,
         allow_inline_credentials: bool = False,
+        request_uuid: str | None = None,
     ) -> list[MCPTool]:
         """Get MCP tools from a list of MCP servers. See get_mcp_server_tools_with_instructions."""
         return cls.get_mcp_server_tools_with_instructions(
@@ -220,6 +223,7 @@ class MCPToolkitService:
             request_headers=request_headers,
             marketplace_scope=marketplace_scope,
             allow_inline_credentials=allow_inline_credentials,
+            request_uuid=request_uuid,
         ).tools
 
     @classmethod
@@ -237,6 +241,7 @@ class MCPToolkitService:
         request_headers: dict[str, str] | None = None,
         marketplace_scope: bool = False,
         allow_inline_credentials: bool = False,
+        request_uuid: str | None = None,
     ) -> MCPToolsResult:
         """
         Get MCP tools and the instructions their servers declared at handshake.
@@ -259,6 +264,7 @@ class MCPToolkitService:
                 per-user integration access to any PROJECT integration (USER stays owner-only)
             allow_inline_credentials: When True, a server whose ``settings`` has no id uses its inline
                 ``credential_values`` as env (test and tool-fetch paths only)
+            request_uuid: Optional turn id; MCP artifacts are published under artifacts/<request_uuid>/
 
         Returns:
             MCPToolsResult: Tools from all successfully processed servers, and one instruction
@@ -283,6 +289,7 @@ class MCPToolkitService:
             marketplace_scope=marketplace_scope,
             workflow_execution_id=workflow_execution_id,
             conversation_id=conversation_id,
+            request_uuid=request_uuid,
             session_binding_hash=cls._get_current_session_binding_hash(),
             request_headers=request_headers,
             user_context=UserContext.from_user(current_user) if current_user else None,
@@ -1691,7 +1698,8 @@ class MCPToolkitService:
             ignore_integration_alias=ignore_integration_alias,
             allow_inline_credentials=allow_inline_credentials,
         )
-        env_vars.update(resolved_env_vars)
+        # Alias, pinned and inline credentials are user-scoped: only the server config's own env may enable export.
+        env_vars.update(cls._without_export_switch(resolved_env_vars))
         if allow_inline_credentials:
             cls._check_required_env_vars(mcp_server, env_vars)
 
@@ -2071,6 +2079,13 @@ class MCPToolkitService:
         setting = search_settings_by_id(integration_id)
         return user_can_access_setting(setting, current_user, project_name, marketplace=marketplace_scope)
 
+    @staticmethod
+    def _without_export_switch(env: dict) -> dict:
+        """Drop the MCP-Connect export switch: only the server config's own env may turn export on."""
+        if MCP_EXPORT_FILES_ENV in env:
+            logger.warning(f"Ignoring {MCP_EXPORT_FILES_ENV} from user-supplied MCP credentials")
+        return {k: v for k, v in env.items() if k != MCP_EXPORT_FILES_ENV}
+
     @classmethod
     def _apply_tool_config_to_mcp_server(
         cls,
@@ -2096,7 +2111,7 @@ class MCPToolkitService:
             if tool_config.tool_creds:
                 logger.debug("Applying direct credentials to MCP server config")
                 if isinstance(tool_config.tool_creds, dict):
-                    server_config.env.update(tool_config.tool_creds)
+                    server_config.env.update(cls._without_export_switch(tool_config.tool_creds))
                 else:
                     logger.warning(f"Invalid tool_creds format: expected dict, got {type(tool_config.tool_creds)}")
                 return
@@ -2120,7 +2135,7 @@ class MCPToolkitService:
                     integration_id=tool_config.integration_id, user_id=user_id
                 )
                 if resolved_env_vars:
-                    server_config.env.update(resolved_env_vars)
+                    server_config.env.update(cls._without_export_switch(resolved_env_vars))
                     logger.debug(f"Applied {len(resolved_env_vars)} environment variables from integration")
 
         except Exception as e:

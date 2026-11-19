@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import base64
-import uuid
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from codemie_tools.base.artifact_publishing import ArtifactPublisher, PublishContext
+from codemie_tools.base.artifact_storage import publish_artifact
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.data_management.file_system.image_generator import ImageGenerator
 from codemie_tools.data_management.file_system.tools_vars import GENERATE_IMAGE_TOOL
@@ -34,8 +34,8 @@ class GenerateImageTool(CodeMieTool):
     description: str = GENERATE_IMAGE_TOOL.description or ""
     args_schema: Any = GenerateImagesToolInput
     image_generator: Optional[Any] = Field(exclude=True, default=None)
-    file_repository: Optional[Any] = Field(exclude=True, default=None)
-    user_id: str = ""
+    artifact_publisher: ArtifactPublisher | None = Field(exclude=True, default=None)
+    publish_context: PublishContext | None = Field(exclude=True, default=None)
 
     def execute(self, image_description: str, *args, **kwargs) -> Any:
         if not self.image_generator:
@@ -53,13 +53,14 @@ class GenerateImageTool(CodeMieTool):
         return url
 
     def _store_b64_image(self, b64_data: str) -> str:
-        if not self.file_repository:
-            raise ValueError("Image generation returned base64 data but no file repository is configured.")
-        filename = f"{uuid.uuid4()}.png"
-        stored_file = self.file_repository.write_file(
-            name=filename,
-            mime_type="image/png",
-            content=base64.b64decode(b64_data),
-            owner=self.user_id,
+        result = publish_artifact(
+            self.artifact_publisher,
+            self.publish_context,
+            "image.png",
+            content=b64_data,
+            mime="image/png",
+            base64_content=True,
         )
-        return f"sandbox:/v1/files/{stored_file.to_encoded_url()}"
+        if not result.ok:
+            raise ValueError(result.reason)
+        return result.link

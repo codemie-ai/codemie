@@ -24,6 +24,7 @@ from codemie_tools.data_management.code_executor.reserved_paths import is_reserv
 
 MAX_WORKSPACE_PATH_LENGTH = 1024
 SKILL_FOLDER_PREFIX = "skills/"
+ARTIFACT_FOLDER_PREFIX = "artifacts/"
 MAX_SKILL_NAME_LENGTH = 64
 SKILL_FOLDER_ID_LENGTH = 8
 # A bundle path lands at skills/<name>-<id>/<path>; reserve room for the longest skill name, "-<id>" and the separator.
@@ -78,3 +79,9 @@ def validate_relative_path(path: str, max_length: int) -> str:
 def is_reserved_workspace_path(normalized_path: str) -> bool:
     """True for paths the script runtime owns; the rule itself lives in ``reserved_paths``."""
     return is_reserved_path(normalized_path)
+
+
+def is_artifact_path(normalized_path: str) -> bool:
+    """True for published artifacts (``artifacts/<turn>/<name>``): immutable once the publisher wrote them."""
+    # a file named exactly "artifacts" would take the folder's name in blob storage and block every publish
+    return normalized_path == ARTIFACT_FOLDER_PREFIX.rstrip("/") or normalized_path.startswith(ARTIFACT_FOLDER_PREFIX)

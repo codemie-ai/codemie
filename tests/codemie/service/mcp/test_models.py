@@ -105,13 +105,14 @@ class TestMCPExecutionContext:
             "workflow_execution_id": "workflow-789",
             "request_headers": None,
             "user_context": None,
+            "conversation_id": "conversation-123",
         }
         assert fields == expected
         assert fields["user_context"] is None
         assert "extra_attributes" not in fields
 
-    def test_conversation_id_is_local_only_retry_context(self):
-        """conversation_id remains local-only and never enters MCP-Connect request fields."""
+    def test_conversation_id_is_sent_to_mcp_connect(self):
+        """EPMCDME-14735: MCP-Connect scopes the export folder by conversation; the field stays out of model_dump."""
         context = MCPExecutionContext(
             user_id="user-123",
             assistant_id="assistant-456",
@@ -121,7 +122,7 @@ class TestMCPExecutionContext:
         )
 
         assert context.conversation_id == "conversation-123"
-        assert "conversation_id" not in context.to_request_fields()
+        assert context.to_request_fields()["conversation_id"] == "conversation-123"
         assert "conversation_id" not in context.model_dump()
         assert "auth_headers" not in context.to_request_fields()
         assert "auth_headers" not in context.model_dump()
@@ -208,6 +209,24 @@ class TestMCPExecutionContext:
         }
         # The field also remains accessible on the context object itself
         assert context.user_context is user_ctx
+
+    def test_to_request_fields_sends_the_initiator_as_user_id(self):
+        """EPMCDME-14735: MCP-Connect keys the export folder on user_id, so a global workflow's
+        runner must not be sent as its creator (the credential owner kept in self.user_id)."""
+        context = MCPExecutionContext(user_id="creator", user_context=UserContext(id="runner"))
+
+        assert context.to_request_fields()["user_id"] == "runner"
+        assert context.user_id == "creator"  # credential resolution is unchanged
+
+    def test_to_request_fields_omits_absent_conversation_id(self):
+        assert "conversation_id" not in MCPExecutionContext(user_id="u").to_request_fields()
+
+    def test_invocation_request_carries_conversation_id(self):
+        req = MCPToolInvocationRequest(serverPath="x", args=[], params={}, conversation_id="c1")
+        assert req.model_dump(exclude_none=True)["conversation_id"] == "c1"
+
+    def test_to_request_fields_keeps_user_id_without_initiator_id(self):
+        assert MCPExecutionContext(user_id="u", user_context=UserContext()).to_request_fields()["user_id"] == "u"
 
     def test_to_request_fields_excludes_extra_attributes_from_user_context(self):
         """extra_attributes is deliberately dropped from the MCP wire (EPMCDME-13260).

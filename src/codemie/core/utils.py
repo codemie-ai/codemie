@@ -31,6 +31,7 @@ import pathspec
 import hashlib
 
 from codemie_tools.base.utils import get_encoding
+from codemie.core.constants import ChatRole
 from codemie_tools.base.file_object import FileObject
 
 from codemie.configs import logger, config
@@ -595,9 +596,10 @@ def _collect_files_from_conversation(conversation_id: str, history_index: int | 
     # This ensures edited messages with removed files don't leave old file references accessible
     unique_messages = _get_unique_messages_from_history(history, history_index)
 
-    # Collect files only from the latest version of each message
+    # Collect files only from the latest version of each user message: an assistant message's
+    # `file_names` are files it published, not uploads to hand back to the model.
     for message in unique_messages.values():
-        if message.file_names:
+        if message.role == ChatRole.USER and message.file_names:
             _process_file_names_to_objects(message.file_names, unique_files_dict)
 
 

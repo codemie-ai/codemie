@@ -35,6 +35,7 @@ from codemie.rest_api.models.agent_workspace import (
 from codemie.rest_api.security.user import User
 from codemie.service.script_tool_calls.context import ScriptScopeKind, ScriptToolRegistry
 from codemie.service.script_tool_calls.observer import ScriptRunObserver
+from codemie_tools.base.artifact_publishing import PublishContext, PublishResult
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.data_management.code_executor.models import (
     CodeExecutorConfig,
@@ -554,3 +555,24 @@ class TestScriptToolTokenEstimate(unittest.TestCase):
             tool.execute("run.py")
 
         self.assertEqual(emit.call_args.kwargs["written_tokens"], count_tokens(_ARGS_TEXT, None))
+
+
+class TestRunnerForwardsArtifactPublisher(unittest.TestCase):
+    """Script exports reach the publisher only through the runner's constructor kwargs."""
+
+    def test_exported_bytes_are_published_under_the_runner_context(self):
+        publisher = MagicMock()
+        publisher.publish.return_value = PublishResult(link="sandbox:/v1/files/artifacts/t1/out.csv", name="out.csv")
+        ctx = PublishContext(user_id="u1", conversation_id="c1", turn_id="t1")
+        runner = WorkspaceScriptRunner(
+            file_repository=MagicMock(),
+            user_id="u1",
+            conversation_id="c1",
+            artifact_publisher=publisher,
+            publish_context=ctx,
+        )
+
+        line = runner._export_service().store_exported_bytes("out.csv", b"a,b")
+
+        self.assertIs(publisher.publish.call_args.args[0], ctx)
+        self.assertIn("sandbox:/v1/files/artifacts/t1/out.csv", line)

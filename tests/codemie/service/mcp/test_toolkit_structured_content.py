@@ -25,6 +25,7 @@ from pydantic import create_model
 from codemie.service.mcp.client import MCPConnectClient
 from codemie.service.mcp.models import MCPServerConfig, MCPToolContentItem, MCPToolInvocationResponse
 from codemie.service.mcp.toolkit import MCPTool, _convert_mcp_response_to_tool_message
+from codemie_tools.base.artifact_publishing import PublishContext
 
 AIRTABLE_LIST_BASES_RESPONSE = {
     "content": [],
@@ -69,13 +70,16 @@ def test_structured_content_only_is_passed_to_llm(tool):
     assert json.loads(result) == AIRTABLE_LIST_BASES_RESPONSE["structuredContent"]
 
 
+_CTX = PublishContext(user_id="user-1", conversation_id="conv-1", turn_id="turn-1")
+
+
 def test_text_content_takes_precedence_over_structured_content():
     response = MCPToolInvocationResponse(
         content=[MCPToolContentItem(type="text", text='{"bases": []}')],
         structuredContent={"bases": []},
     )
 
-    assert _convert_mcp_response_to_tool_message(response) == '{"bases": []}'
+    assert _convert_mcp_response_to_tool_message(response, _CTX) == '{"bases": []}'
 
 
 def test_token_limit_counts_structured_content(tool):

@@ -102,6 +102,7 @@ class PluginToolsDelegate:
         assistant: Assistant,
         user: User,
         request: Optional[AssistantChatRequest],
+        request_uuid: str | None = None,
     ) -> list[BaseTool]:
         """Retrieve plugin tools from enterprise system with filtering.
 
@@ -112,6 +113,7 @@ class PluginToolsDelegate:
             assistant: The assistant to get plugin tools for
             user: The user making the request
             request: The assistant chat request
+            request_uuid: Turn id under which tool-produced files are published
 
         Returns:
             List of plugin tools (LangChain BaseTool instances)
@@ -134,6 +136,8 @@ class PluginToolsDelegate:
                 project_name=assistant.project,
                 assistant_id=assistant.id,
                 tool_config=tool_config,
+                conversation_id=request.conversation_id if request else None,
+                request_uuid=request_uuid,
             )
 
             # Check if assistant has 'Plugin' tool enabled (all plugins enabled)

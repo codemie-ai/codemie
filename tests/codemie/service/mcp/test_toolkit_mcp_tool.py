@@ -113,6 +113,24 @@ class TestMCPTool(unittest.TestCase):
         self.assertIn("test_tool", str(ctx.exception))
         self.assertIn("MCP_CLIENT_TIMEOUT", str(ctx.exception))
 
+    def test_error_result_with_a_resource_item_keeps_the_servers_error_text(self):
+        """A `resource_link` in an isError result has no text; it must not replace the server's message."""
+        self.mock_client.invoke_tool = AsyncMock(
+            return_value=MCPToolInvocationResponse(
+                isError=True,
+                content=[
+                    MCPToolContentItem(type="text", text="disk is full"),
+                    MCPToolContentItem(type="resource_link", uri="file:///home/codemie/out.csv", name="out.csv"),
+                ],
+            )
+        )
+
+        with self.assertRaises(MCPToolExecutionError) as ctx:
+            asyncio.run(self.tool._aexecute_with_context(test_param="value"))
+
+        self.assertIn("disk is full", str(ctx.exception))
+        self.assertNotIn("TypeError", str(ctx.exception))
+
     @patch("codemie.service.mcp.toolkit.ThreadPoolExecutor")
     def test_execute_with_running_loop(self, mock_executor_class):
         """Test execution from within an existing asyncio loop."""
@@ -760,8 +778,8 @@ class TestContextAwareMCPTool(unittest.TestCase):
         self.assertIsNone(empty_context_tool._execution_context.workflow_execution_id)
 
 
-class TestScreenshotBlobOwnership(unittest.TestCase):
-    """EPMCDME-12708: MCP screenshots must be owned by the invoking user, not a shared namespace."""
+class TestArtifactPublishContext(unittest.TestCase):
+    """The publish context comes from the request initiator, the conversation and the turn."""
 
     def setUp(self):
         self.mock_client = MagicMock(spec=MCPConnectClient)
@@ -775,56 +793,48 @@ class TestScreenshotBlobOwnership(unittest.TestCase):
             args_schema=self.args_schema,
         )
 
-    @staticmethod
-    def _image_response():
-        return MCPToolInvocationResponse(
-            content=[MCPToolContentItem(type="image", data="aGVsbG8=", mimeType="image/png")],
-            isError=False,
+    @patch("codemie.service.mcp.toolkit._convert_mcp_response_to_tool_message", return_value="converted")
+    def _ctx_used_for(self, tool, mock_convert):
+        response = MCPToolInvocationResponse(content=[MCPToolContentItem(type="text", text="x")])
+        self.assertEqual(tool._post_process_output_content(response), "converted")
+        return mock_convert.call_args.args[1]
+
+    def test_ctx_is_the_initiator_conversation_and_turn(self):
+        """For a global assistant or workflow, user_id is the creator; the artifact belongs to the initiator."""
+        from codemie.rest_api.security.user import UserContext
+
+        context = MCPExecutionContext(
+            user_id="workflow-creator",
+            user_context=UserContext(id="running-user"),
+            conversation_id="conv-1",
+            request_uuid="turn-1",
         )
+        ctx = self._ctx_used_for(ContextAwareMCPTool(original_tool=self.tool, context=context))
 
-    @patch("codemie.service.mcp.toolkit.FileRepositoryFactory")
-    def _owner_used_for(self, tool, mock_factory):
-        mock_repo = MagicMock()
-        mock_factory.return_value.get_current_repository.return_value = mock_repo
-        mock_repo.write_file.return_value.to_encoded_url.return_value = "encoded-url"
+        self.assertEqual((ctx.user_id, ctx.conversation_id, ctx.turn_id), ("running-user", "conv-1", "turn-1"))
 
-        tool._post_process_output_content(self._image_response())
+    def test_creator_id_never_owns_the_artifact(self):
+        """With no initiator known, the credential/creator id must not stand in: the empty user stores nothing."""
+        context = MCPExecutionContext(user_id="workflow-creator", user_context=None, conversation_id="conv-1")
+        ctx = self._ctx_used_for(ContextAwareMCPTool(original_tool=self.tool, context=context))
 
-        return mock_repo.write_file.call_args.kwargs["owner"]
+        self.assertEqual(ctx.user_id, "")
 
-    def test_owner_is_the_request_initiator(self):
-        """The blob is owned by the authenticated initiator carried in user_context."""
+    def test_request_uuid_is_not_serialized(self):
+        context = MCPExecutionContext(user_id="u", request_uuid="turn-1", conversation_id="c")
+        self.assertNotIn("request_uuid", context.model_dump())
+
+    def test_missing_turn_gets_a_fresh_turn_id(self):
         from codemie.rest_api.security.user import UserContext
 
-        context = MCPExecutionContext(user_id="user-42", user_context=UserContext(id="user-42"))
-        context_aware_tool = ContextAwareMCPTool(original_tool=self.tool, context=context)
+        context = MCPExecutionContext(user_context=UserContext(id="u"), conversation_id="conv-1")
+        ctx = self._ctx_used_for(ContextAwareMCPTool(original_tool=self.tool, context=context))
 
-        self.assertEqual(self._owner_used_for(context_aware_tool), "user-42")
+        self.assertTrue(ctx.turn_id)
 
-    def test_owner_is_the_initiator_not_the_credential_owner(self):
-        """For a global assistant or workflow, user_id is the creator — the blob must not be theirs.
+    def test_no_execution_context_means_no_user(self):
+        """A plain MCPTool has no initiator; the publisher then stores nothing and returns a reason."""
+        ctx = self._ctx_used_for(self.tool)
 
-        Attributing it to the creator would 404 the screenshot for the user who actually produced
-        it, since Rule A compares the blob owner against the requester.
-        """
-        from codemie.rest_api.security.user import UserContext
-
-        context = MCPExecutionContext(user_id="workflow-creator", user_context=UserContext(id="running-user"))
-        context_aware_tool = ContextAwareMCPTool(original_tool=self.tool, context=context)
-
-        self.assertEqual(self._owner_used_for(context_aware_tool), "running-user")
-
-    def test_owner_falls_back_to_shared_namespace_without_execution_context(self):
-        """A plain MCPTool has no context; the screenshot keeps the legacy shared owner."""
-        from codemie.repository.repository_factory import MCP_IMAGES_SUBDIR
-
-        self.assertEqual(self._owner_used_for(self.tool), MCP_IMAGES_SUBDIR)
-
-    def test_owner_falls_back_when_no_initiator_is_known(self):
-        """No user_context means no initiator to attribute to; the shared namespace is used."""
-        from codemie.repository.repository_factory import MCP_IMAGES_SUBDIR
-
-        context = MCPExecutionContext(user_id="workflow-creator", user_context=None)
-        context_aware_tool = ContextAwareMCPTool(original_tool=self.tool, context=context)
-
-        self.assertEqual(self._owner_used_for(context_aware_tool), MCP_IMAGES_SUBDIR)
+        self.assertEqual(ctx.user_id, "")
+        self.assertIsNone(ctx.conversation_id)
