@@ -82,6 +82,7 @@ class TestTheEnumsAndComposersHaveNotDrifted:
         `_project_customer_id` is a private staticmethod on `LiteLLMService`
         (`codemie_enterprise/litellm/service.py:440`), so it is reached through the class.
         """
+        pytest.importorskip("codemie_enterprise.litellm.service")
         from codemie_enterprise.litellm.service import LiteLLMService
 
         user_id = str(uuid.uuid4())

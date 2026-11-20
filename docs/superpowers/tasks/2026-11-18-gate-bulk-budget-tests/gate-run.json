@@ -1,0 +1,66 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-17403-gate-bulk-budget-tests",
+ "head": "043cc460230c7e4ba066637e31236d8eadc76a16",
+ "runner": "poetry",
+ "started_at": "2026-11-18T00:00:00Z",
+ "completed_at": "2026-11-18T00:05:00Z",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "ruff",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 1000,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 3000,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license-check",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 1000,
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "test",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 220000,
+   "command": "make test",
+   "exit_code": 2,
+   "notes": "15 failed, 36055 passed; failures in files untouched by this change (hosted_applications TLS/proxy, oauth redis, marketplace llm assessment, ruff_staged_hook); sandbox denied network egress"
+  },
+  {
+   "id": "gitleaks",
+   "source": "guide",
+   "status": "SKIPPED",
+   "duration_ms": 0,
+   "command": "make gitleaks",
+   "exit_code": null,
+   "notes": "Docker unavailable (docker info exit 1)"
+  },
+  {
+   "id": "sonar-local",
+   "source": "guide",
+   "status": "SKIPPED",
+   "duration_ms": 0,
+   "command": "make sonar-local",
+   "exit_code": 0,
+   "notes": "Not run: Sonar credentials/network unavailable; pre-push hook runs it; CI-less repo"
+  }
+ ],
+ "failures": {
+  "test": "E           File \"<frozen os>\", line 215, in makedirs\nE           File \"<frozen os>\", line 215, in makedirs\nE           File \"<frozen os>\", line 225, in makedirs\nE         PermissionError: [Errno 1] Operation not permitted: '/tmp/.azure-devops'\nE         \nE       assert 'APP_IMPORT_OK' in ''\nE        +  where '' = CompletedProcess(args=['/Users/sergey_grigorash/Library/Caches/pypoetry/virtualenvs/codemie-M4OpyWxA-py3.12/bin/python...le \"<frozen os>\", line 225, in makedirs\\nPermissionError: [Errno 1] Operation not permitted: \\'/tmp/.azure-devops\\'\\n').stdout\nE       codemie.core.exceptions.ModelNotAllowedException\nE       AssertionError: assert 'http://srt.d...7.0.0.1:51865' == 'http://proxy.internal:3128'\nE         \nE         - http://proxy.internal:3128\nE         + http://srt.dG9vbHVfYmRya18wMU1kb2lQQUpnWDlMRmlmY3ZtWXZtV1U%3D:e3f7667616397a2448610dbb1374ad58@127.0.0.1:51865\nE       AssertionError: Helper aborted despite staged file being clean.\nE         stdout:\nE         [pre-commit] Checking staged Python content against Ruff...\nE         \nE         stderr:\nE         mktemp: mkdtemp failed on /var/folders/nb/hcqknyjd2599t_v_wzb040s80000gn/T/tmp.jTubyoyKzv: Operation not permitted\nE         \nE       assert 1 == 0\nE        +  where 1 = CompletedProcess(args=['bash', '/Users/sergey_grigorash/dev/codemie-dev/codemie/scripts/git-hooks/_ruff_staged.sh'], r...'mktemp: mkdtemp failed on /var/folders/nb/hcqknyjd2599t_v_wzb040s80000gn/T/tmp.jTubyoyKzv: Operation not permitted\\n').returncode\nE       AssertionError: assert 'bad.py' in '[pre-commit] Checking staged Python content against Ruff...\\n'\nE        +  where '[pre-commit] Checking staged Python content against Ruff...\\n' = CompletedProcess(args=['bash', '/Users/sergey_grigorash/dev/codemie-dev/codemie/scripts/git-hooks/_ruff_staged.sh'], r...'mktemp: mkdtemp failed on /var/folders/nb/hcqknyjd2599t_v_wzb040s80000gn/T/tmp.AVOoI0SMJd: Operation not permitted\\n').stdout\nE       AssertionError: assert 'no_newline.py' in '[pre-commit] Checking staged Python content against Ruff...\\n'\nE        +  where '[pre-commit] Checking staged Python content against Ruff...\\n' = CompletedProcess(args=['bash', '/Users/sergey_grigorash/dev/codemie-dev/codemie/scripts/git-hooks/_ruff_staged.sh'], r...'mktemp: mkdtemp failed on /var/folders/nb/hcqknyjd2599t_v_wzb040s80000gn/T/tmp.ISrdyefBSY: Operation not permitted\\n').stdout\nE       AssertionError: assert 'broken.py' in '[pre-commit] Checking staged Python content against Ruff...\\nmktemp: mkdtemp failed on /var/folders/nb/hcqknyjd2599t_v_wzb040s80000gn/T/tmp.ZxXpYNWx05: Operation not permitted\\n'\nE       AssertionError: Helper aborted despite staged content being clean (partial-stage bug).\nE         stdout:\nE         [pre-commit] Checking staged Python content against Ruff...\nE         \nE         stderr:\nE         mktemp: mkdtemp failed on /var/folders/nb/hcqknyjd2599t_v_wzb040s80000gn/T/tmp.gBBQvoaauj: Operation not permitted\nE         \nE       assert 1 == 0\nE        +  where 1 = CompletedProcess(args=['bash', '/Users/sergey_grigorash/dev/codemie-dev/codemie/scripts/git-hooks/_ruff_staged.sh'], r...'mktemp: mkdtemp failed on /var/folders/nb/hcqknyjd2599t_v_wzb040s80000gn/T/tmp.gBBQvoaauj: Operation not permitted\\n').returncode\nFAILED tests/codemie/core/hosted_applications/test_validator_server.py::test_tls_probe_verifies_the_loopback_listener_against_the_certificate_name[names0]\nFAILED tests/codemie/core/hosted_applications/test_validator_server.py::test_tls_probe_verifies_the_loopback_listener_against_the_certificate_name[names1]\nFAILED tests/codemie/core/hosted_applications/test_validator_server.py::test_tls_probe_verifies_the_loopback_listener_against_the_certificate_name[names2]\nFAILED tests/codemie/core/hosted_applications/test_validator_server.py::test_tls_probe_fails_closed_when_the_certificate_names_no_usable_host[names0]\nFAILED tests/codemie/core/hosted_applications/test_validator_server.py::test_tls_probe_fails_closed_when_the_certificate_names_no_usable_host[names1]\nFAILED tests/codemie/core/hosted_applications/test_validator_server.py::test_tls_probe_fails_closed_when_the_certificate_names_no_usable_host[names2]\nFAILED tests/codemie/core/hosted_applications/test_validator_server.py::test_tls_probe_fails_when_the_listener_presents_another_certificate\nFAILED tests/codemie/rest_api/routers/test_oauth_redis_lazy_init.py::test_app_starts_without_redis_package_when_pkce_disabled\nFAILED tests/codemie/service/marketplace_management/test_llm_assessment_service.py::test_model_options_respect_what_the_model_declares\nFAILED tests/codemie/service/hosted_applications/test_storage_contract.py::test_presigned_requests_use_the_environment_proxy_and_ca_bundle\nFAILED tests/scripts/test_ruff_staged_hook.py::test_clean_staged_plus_unstaged_garbage_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_ruff_reformats_staged_file_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_missing_trailing_newline_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_syntax_error_in_staged_file_reports_clearly\nFAILED tests/scripts/test_ruff_staged_hook.py::test_partial_staging_clean_hunk_dirty_unstaged_exits_zero\n"
+ }
+}

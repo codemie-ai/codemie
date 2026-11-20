@@ -1365,7 +1365,8 @@ def send_bulk_request():
 
     def send(body: dict, user: User | None = None):
         app.dependency_overrides[authenticate] = lambda: user or maintainer_user()
-        return client.post(_BULK_PATH, json=body)
+        with patch.object(CustomerConfig, "is_feature_enabled", return_value=True):
+            return client.post(_BULK_PATH, json=body)
 
     return send
 
