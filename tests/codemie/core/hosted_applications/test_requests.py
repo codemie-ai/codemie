@@ -91,3 +91,25 @@ def test_a_null_metadata_field_in_a_patch_is_a_validation_error(field):
     """CR-010: ``"description": null`` must answer 422, never escape the validator as a TypeError (5xx)."""
     with pytest.raises(ValidationError):
         AppPatch.model_validate({field: None})
+
+
+def test_create_categories_default_to_empty_and_reject_four_ids_or_duplicates():
+    assert AppCreate(name="n", description="d", project="p").categories == []
+    assert AppCreate(name="n", description="d", project="p", categories=["a", "b"]).categories == ["a", "b"]
+    with pytest.raises(ValidationError):
+        AppCreate(name="n", description="d", project="p", categories=["a", "b", "c", "d"])
+    with pytest.raises(ValidationError):
+        AppCreate(name="n", description="d", project="p", categories=["a", "a"])
+
+
+def test_patch_categories_is_optional_and_a_lone_categories_change_is_enough():
+    patch = AppPatch(name="Renamed")
+    assert patch.categories is None and "categories" not in patch.model_fields_set
+    only_categories = AppPatch(categories=["a", "b"])
+    assert only_categories.categories == ["a", "b"]
+
+
+def test_patch_rejects_an_explicit_null_categories_like_other_metadata_fields():
+    """CR-010 parity: ``"categories": null`` must be a validation error, not a silent no-op."""
+    with pytest.raises(ValidationError):
+        AppPatch.model_validate({"categories": None})

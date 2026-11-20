@@ -30,12 +30,19 @@ def can_manage(app, user, grants=None) -> bool:
     return Action.WRITE in Ability(user, grants=grants).list(app)
 
 
-def app_projection(app, user, *, grants=None, publisher=None, artifact_kind=None, has_cover=False):
-    """The app as ``user`` (a ``platform_user`` copy) sees it; clients derive capabilities from ``user_abilities``."""
+def app_projection(  # noqa: PLR0913 - categories join a signature that was already over the limit
+    app, user, *, grants=None, publisher=None, artifact_kind=None, has_cover=False, category_names=None
+):
+    """The app as ``user`` (a ``platform_user`` copy) sees it; clients derive capabilities from ``user_abilities``.
+
+    ``category_names`` is the ``{id: name}`` map the caller already resolved (``categories_by_id``); it may cover
+    more ids than this app carries (a page-wide batch), and any of this app's own ids missing from it are skipped.
+    """
     abilities = Ability(user, grants=grants).list(app)
     manager = Action.WRITE in abilities
     created_by = app.created_by
     working_kind = app.artifact_kind if manager else None
+    names = category_names or {}
     result = {
         "id": str(app.id),
         "name": app.name,
@@ -59,6 +66,7 @@ def app_projection(app, user, *, grants=None, publisher=None, artifact_kind=None
         "has_active_version": app.active_version_id is not None,
         # The manager uploaded a card cover; the image itself is served by the thumbnail endpoint.
         "has_cover": has_cover,
+        "categories": [{"id": i, "name": names[i]} for i in app.categories if i in names],
     }
     if manager:
         result.update(

@@ -1650,6 +1650,16 @@
       "AppCreate": {
         "additionalProperties": false,
         "properties": {
+          "categories": {
+            "default": [],
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
           "description": {
             "title": "Description",
             "type": "string"
@@ -1679,6 +1689,22 @@
       "AppPatch": {
         "additionalProperties": false,
         "properties": {
+          "categories": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categories"
+          },
           "description": {
             "anyOf": [
               {
@@ -25770,6 +25796,24 @@
           "error"
         ],
         "title": "ProvisioningValidationErrorResponse",
+        "type": "object"
+      },
+      "PublishRequest": {
+        "additionalProperties": false,
+        "description": "1-3 category ids to go live with; a publish with none, or with an unknown id, is rejected.",
+        "properties": {
+          "categories": {
+            "default": [],
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          }
+        },
+        "title": "PublishRequest",
         "type": "object"
       },
       "PublishToMarketplaceResponse": {
@@ -69895,6 +69939,27 @@
             }
           },
           {
+            "description": "Category ids, any of them (repeat for several)",
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Category ids, any of them (repeat for several)",
+              "title": "Category"
+            }
+          },
+          {
             "description": "Creator display name, as in skills",
             "in": "query",
             "name": "created_by",
@@ -70852,7 +70917,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RequestModel"
+                "$ref": "#/components/schemas/PublishRequest"
               }
             }
           },

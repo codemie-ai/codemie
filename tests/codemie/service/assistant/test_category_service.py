@@ -319,7 +319,13 @@ class TestDeleteCategory:
         mock_count_result.one.return_value = 0  # No assistants
 
         # Configure session.exec to return different results for different calls
-        mock_session.exec.side_effect = [mock_category_result, mock_count_result, mock_count_result]
+        # (count queries for assistants, workflows, hosted applications - all zero)
+        mock_session.exec.side_effect = [
+            mock_category_result,
+            mock_count_result,
+            mock_count_result,
+            mock_count_result,
+        ]
 
         category_service.delete_category("engineering")
 
@@ -364,7 +370,15 @@ class TestDeleteCategory:
         mock_names_result.all.return_value = ["A1", "A2"]
         mock_no_workflows = MagicMock()
         mock_no_workflows.one.return_value = 0
-        mock_session.exec.side_effect = [mock_category_result, mock_count_result, mock_names_result, mock_no_workflows]
+        mock_no_hosted_apps = MagicMock()
+        mock_no_hosted_apps.one.return_value = 0
+        mock_session.exec.side_effect = [
+            mock_category_result,
+            mock_count_result,
+            mock_names_result,
+            mock_no_workflows,
+            mock_no_hosted_apps,
+        ]
 
         with pytest.raises(ExtendedHTTPException) as exc:
             category_service.delete_category("engineering")
@@ -378,11 +392,12 @@ class TestDeleteCategory:
         """A category used only by workflows is rejected, with count and names."""
         mock_session = MagicMock()
         mock_session_cls.return_value.__enter__.return_value = mock_session
-        results = [MagicMock() for _ in range(4)]
+        results = [MagicMock() for _ in range(5)]
         results[0].first.return_value = Category(id="engineering", name="Engineering", description="Test")
         results[1].one.return_value = 0  # assistants
         results[2].one.return_value = 12  # workflows
         results[3].all.return_value = [f"WF{i}" for i in range(10)]
+        results[4].one.return_value = 0  # hosted applications
         mock_session.exec.side_effect = results
 
         with pytest.raises(ExtendedHTTPException) as exc:
@@ -392,8 +407,36 @@ class TestDeleteCategory:
         assert "12 assigned workflows (WF0, WF1" in exc.value.details
         assert "WF9)" in exc.value.details
         assert "assistants" not in exc.value.details
+        assert "hosted applications" not in exc.value.details
         # the names query is capped at 10 per type
         assert "LIMIT" in str(mock_session.exec.call_args_list[3].args[0]).upper()
+        mock_session.delete.assert_not_called()
+
+    @patch('codemie.service.assistant.category_service.Session')
+    def test_delete_category_used_only_by_hosted_app(self, mock_session_cls, category_service):
+        """A category used only by a live hosted application is rejected, with count and name."""
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        results = [MagicMock() for _ in range(5)]
+        results[0].first.return_value = Category(id="engineering", name="Engineering", description="Test")
+        results[1].one.return_value = 0  # assistants
+        results[2].one.return_value = 0  # workflows
+        results[3].one.return_value = 1  # hosted applications
+        results[4].all.return_value = ["My App"]
+        mock_session.exec.side_effect = results
+
+        with pytest.raises(ExtendedHTTPException) as exc:
+            category_service.delete_category("engineering")
+
+        assert exc.value.code == status.HTTP_409_CONFLICT
+        assert "1 assigned hosted applications (My App)" in exc.value.details
+        assert "assistants" not in exc.value.details
+        assert "workflows" not in exc.value.details
+        # the hosted-application queries exclude soft-deleted apps
+        count_stmt = str(mock_session.exec.call_args_list[3].args[0]).upper()
+        names_stmt = str(mock_session.exec.call_args_list[4].args[0]).upper()
+        assert "DELETED_AT IS NULL" in count_stmt
+        assert "DELETED_AT IS NULL" in names_stmt
         mock_session.delete.assert_not_called()
 
 

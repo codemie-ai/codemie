@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-11-18T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 30,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Ten-plus non-test source files changed: REST models (category.py, hosted_application.py, hosted_application_requests.py), the router (hosted_applications.py), four hosted_applications service modules (catalog.py, projections.py, publication.py, and a brand-new categories.py async lookup), and the unrelated-subsystem assistant/category_service.py (extended delete-block logic to also check hosted applications). New abstraction (categories.py) plus multiple subsystems touched." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 30 files changed, 1400 insertions(+), 126 deletions(-) — includes 19 test files, one new alembic migration, and the OpenAPI baseline refresh. Per the actual-mode file-count mapping (16+ files -> XXL) this scores XXL even though the non-test implementation footprint is moderate." },
+    { "dimension": "affected_layers", "reason": "Touches API (router + request/response models), Service (catalog/categories/projections/publication/category_service), and DB-Persistence (new `categories` JSONB column + GIN index added via src/external/alembic/versions/2394f0863c6a_add_hosted_application_categories.py) — 3 layers including a schema migration, matching the L band definition exactly ('3-4 layers including persistence — schema change or migration')." },
+    { "dimension": "technical_risk", "reason": "The new column/index mirrors the existing, already-proven workflows categories JSONB+GIN shape (migration docstring: 'same default and GIN index shape the workflows table uses'); category validation reuses the existing require_existing/categories_by_id pattern. Additive, backward-compatible, with a short lock_timeout safeguard and extensive new/updated test coverage (test_categories.py, test_schema_parity.py, test_query_plans.py, etc.), so risk stays at M rather than being bumped to the schema-change floor." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

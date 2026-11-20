@@ -21,7 +21,8 @@ import pytest
 from codemie.core.hosted_applications import policy
 from codemie.core.hosted_applications.errors import HostedApplicationError
 from codemie.core.hosted_applications.policy import POLICY_VERSION
-from codemie.rest_api.models.hosted_application_requests import VersionSelection
+from codemie.rest_api.models.hosted_application_requests import PublishRequest, VersionSelection
+from tests.codemie.service.hosted_applications.conftest import CATEGORY_A
 from tests.codemie.service.hosted_applications.test_worker import queued
 
 
@@ -35,7 +36,7 @@ async def test_withdrawn_policy_version_can_no_longer_be_viewed(launch, identity
     active = await service.activate_version(
         identity(), app['id'], VersionSelection(version_id=version_id), latest['etag'], str(uuid4())
     )
-    await service.publish(identity(), app['id'], active['etag'], str(uuid4()))
+    await service.publish(identity(), app['id'], PublishRequest(categories=[CATEGORY_A]), active['etag'], str(uuid4()))
     ticket = await handoff.issue(identity('viewer'), app['id'], purpose='published_view')
     cookie, _ = await handoff.consume(ticket['ticket'], handoff.host(version_id))
     monkeypatch.delitem(policy.PERMITTED_POLICIES, POLICY_VERSION)

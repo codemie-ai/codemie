@@ -145,6 +145,7 @@ erDiagram
         uuid active_version_id
         bool shared
         bool is_global
+        jsonb categories
         text lifecycle_state
         text security_state
         bigint access_revision
@@ -185,7 +186,7 @@ erDiagram
 | Table | What it holds |
 |---|---|
 | `hosted_application_user_state` | One row per user who used the feature: quota limit and usage (`stored_bytes`, `reserved_bytes`) and the durable logout cutoff. The row of an application's creator is the quota holder for everything stored under it, whoever uploads. A mutation locks that row first (see Lock order), which serializes the mutations of one creator's applications. |
-| `hosted_applications` | Metadata, `project` (indexed), `created_by` (NOT NULL; an expression index on `created_by->>'id'` with `updated_at DESC, id DESC` serves "mine"), the version selected for the managers' preview, the live version, `shared` (project members may open it), `is_global` (listed in the marketplace for every eligible internal user), lifecycle (`active`, `purging`, `purged`) and `security_state` (`clear` or `suspended`). `access_revision` changes only when the application is deleted or purged and invalidates open viewing sessions; every other change in access (sharing, unpublishing, suspension, membership) is read from the database on the next content request. |
+| `hosted_applications` | Metadata, `project` (indexed), `created_by` (NOT NULL; an expression index on `created_by->>'id'` with `updated_at DESC, id DESC` serves "mine"), the version selected for the managers' preview, the live version, `shared` (project members may open it), `is_global` (listed in the marketplace for every eligible internal user), `categories` (0–3 shared-platform category ids, same ids as assistants/workflows; JSONB NOT NULL, default `[]`, GIN index `ix_hosted_applications_categories`; existing rows were not backfilled and a stale id is never stripped from a stored row), lifecycle (`active`, `purging`, `purged`) and `security_state` (`clear` or `suspended`). `access_revision` changes only when the application is deleted or purged and invalidates open viewing sessions; every other change in access (sharing, unpublishing, suspension, membership) is read from the database on the next content request. |
 | `hosted_application_versions` | One row per uploaded version: upload state, validation state, accepted manifest (key and SHA-256), entry page and routing mode. Accepted versions never change. |
 | `hosted_application_storage_attempts` | A ledger entry for every storage prefix written, with the byte reservations, `quota_principal_id` (the quota holder, always the application's creator), writer fencing tokens and deletion proof. Quota is released only after the files are proven gone. |
 | `hosted_application_jobs` | Durable queue for validation, cleanup, retention and purge, with leases and deadlines. |
@@ -552,7 +553,13 @@ did not exist.
 |---|---|---|
 | `shared` | `PATCH` by any manager | Project members may open the live version. Needs a project the caller may use. |
 | `is_global` | `POST /marketplace/publish` and `POST /marketplace/unpublish` by a manager | Listed in the marketplace; every eligible internal user may open it. Publishing needs no active version; opening does (`NO_ACTIVE_VERSION`, 409). |
+| `categories` | 0–3 shared-platform category ids on `POST`/`PATCH`; replaced wholesale (1–3 ids) by `POST /marketplace/publish`; left untouched by unpublish | An unknown id, on any of the three, answers 422 `INVALID_CATEGORIES`. A `PATCH` of a published app that would leave it with no existing category — including one that never names `categories` while every stored id has since vanished — answers 422 `INVALID_CATEGORIES` "A published application needs at least one category". Publish's idempotency digest covers the categories as sent, so the same key with a different list or order is `IDEMPOTENCY_CONFLICT` (409). Every reply (including an app created without categories) carries `categories` as `[{"id","name"}]` in stored order; an id that no longer resolves is skipped, not an error. |
 | `security_state` | Platform administrators only | `suspended` removes the viewer term. Managers keep access. |
+
+Deleting a platform category (`CategoryService.delete_category`, `service/assistant/category_service.py`) is
+refused 409 "Cannot delete category" while a live (non-deleted) hosted application still carries it, the same
+guard already applied to assistants and workflows; a soft-deleted hosted application does not count. The check
+takes no row lock.
 
 `POST /{id}/activate` makes an accepted version live (`activate(tx, app, version)` in `publication.py`, which
 also moves the working version). A suspended application refuses `activate`, `publish`, turning `shared` on and
@@ -563,7 +570,12 @@ it as `suspension_refuses` (the refused actions while suspended, else empty).
 Lists take a `scope`: `mine` (created by the caller), `project` (applications of the caller's projects; for a
 platform administrator or maintainer, every project's applications, private ones included, as for skills),
 `marketplace` (`is_global`) and `shared` (applications the caller holds a live grant on and did not create). Each
-is filtered by `readable`, so a scope can never return more than the access rule allows. Opening by id uses
+is filtered by `readable`, so a scope can never return more than the access rule allows. Every scope also takes a
+repeatable `category` filter (any-of, up to 50 ids, each at most 256 characters), combined with `project`; an
+uncategorized application is excluded once any category is selected, and an unknown id answers 422
+`INVALID_FILTER`. The selection joins the page cursor's scope only when non-empty, so a cursor minted before the
+filter existed still works; a cursor from one category selection is refused `INVALID_CURSOR` under another.
+Opening by id uses
 `manageable` for managers and `readable` for everyone else. There is no moderation list: platform administrators
 suspend, reinstate and revoke a share link from the application's own actions, and find any application in the
 Project tab or open it by its URL.

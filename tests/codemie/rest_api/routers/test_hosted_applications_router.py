@@ -222,6 +222,43 @@ def test_create_accepts_shared_and_passes_it_to_the_catalog(client, signed_in, b
     assert request.shared is shared
 
 
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        ({}, "At least one category is required"),
+        ({"categories": ["a", "b", "c", "d"]}, "Maximum 3 categories allowed"),
+    ],
+)
+def test_publish_body_requires_one_to_three_categories(client, signed_in, body, message):
+    publish = AsyncMock(return_value={"id": "never"})
+    APP.state.hosted_applications = runtime(catalog=SimpleNamespace(publish=publish))
+    response = client.post(
+        f"/v1/hosted-applications/{uuid4()}/marketplace/publish",
+        json=body,
+        headers={"Authorization": "Bearer token", "Idempotency-Key": str(uuid4())},
+    )
+    assert response.status_code == 422
+    details = hosted(response)
+    assert details["code"] == "INVALID_REQUEST"
+    assert any(
+        field["location"] == ["body", "categories"] and message in field["message"] for field in details["fields"]
+    )
+    publish.assert_not_awaited()
+
+
+def test_publish_passes_the_categories_to_the_catalog(client, signed_in):
+    publish = AsyncMock(return_value={"id": "app-1"})
+    APP.state.hosted_applications = runtime(catalog=SimpleNamespace(publish=publish))
+    response = client.post(
+        f"/v1/hosted-applications/{uuid4()}/marketplace/publish",
+        json={"categories": ["category-a"]},
+        headers={"Authorization": "Bearer token", "Idempotency-Key": str(uuid4())},
+    )
+    assert response.status_code == 200, response.text
+    request = publish.await_args.args[2]
+    assert request.categories == ["category-a"]
+
+
 def test_catalog_folders_are_not_an_api_surface(client, signed_in):
     paths = {route.path for route in APP.routes}
     assert not {path for path in paths if "application-folders" in path}
@@ -738,6 +775,28 @@ def test_the_list_passes_project_creator_sharing_and_status_to_the_catalog(clien
     kwargs = list_apps.await_args.kwargs
     assert kwargs["project"] is None and kwargs["created_by"] is None
     assert kwargs["shared"] is None and kwargs["status"] is None
+
+
+def test_the_list_passes_the_category_filter_to_the_catalog(client, signed_in):
+    list_apps = AsyncMock(return_value={"items": [], "next_cursor": None})
+    APP.state.hosted_applications = runtime(catalog=SimpleNamespace(list_apps=list_apps))
+    response = client.get("/v1/hosted-applications?category=category-a&category=category-b")
+    assert response.status_code == 200
+    assert list_apps.await_args.kwargs["category"] == ["category-a", "category-b"]
+    client.get("/v1/hosted-applications")
+    assert list_apps.await_args.kwargs["category"] is None
+
+
+def test_the_category_filter_count_and_length_are_the_catalogs_rule_as_for_project(client, signed_in):
+    """Both repeated filters reach the catalog as sent; it answers ``INVALID_FILTER`` for 51 ids or a long one."""
+    list_apps = AsyncMock(return_value={"items": [], "next_cursor": None})
+    APP.state.hosted_applications = runtime(catalog=SimpleNamespace(list_apps=list_apps))
+    for name in ("category", "project"):
+        too_many = "&".join(f"{name}=v{index}" for index in range(51))
+        assert client.get("/v1/hosted-applications?" + too_many).status_code == 200
+        assert len(list_apps.await_args.kwargs[name]) == 51
+        assert client.get(f"/v1/hosted-applications?{name}=" + "x" * 257).status_code == 200
+        assert list_apps.await_args.kwargs[name] == ["x" * 257]
 
 
 def test_the_list_no_longer_takes_a_security_state_filter(client, signed_in):

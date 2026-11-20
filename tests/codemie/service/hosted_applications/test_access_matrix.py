@@ -45,6 +45,7 @@ from codemie.core.hosted_applications.identity import VerifiedIdentityContext
 from codemie.core.hosted_applications.protocol import etag
 from codemie.core.hosted_applications.settings import HostedSettings, IdentityAuthority
 from codemie.repository.hosted_applications.repository import as_uuid, not_found
+from codemie.rest_api.models.category import Category
 from codemie.rest_api.models.hosted_application import (
     HostedApplicationOperations as Operation,
     HostedApplicationVersions as Version,
@@ -53,7 +54,7 @@ from codemie.rest_api.models.hosted_application import (
     HostedApplicationViewSessions as Credential,
     HostedApplications as App,
 )
-from codemie.rest_api.models.hosted_application_requests import AppPatch, VersionSelection
+from codemie.rest_api.models.hosted_application_requests import AppPatch, PublishRequest, VersionSelection
 from codemie.rest_api.models.permission import Permission, PrincipalType, ResourceType
 from codemie.rest_api.models.user_management import UserDB, UserProject
 from codemie.rest_api.security.hosted_applications import HostedActor
@@ -80,11 +81,15 @@ PERSONAS = {
 
 PLATFORM_ADMINS = ("platform_admin", "maintainer")
 
+# A category seeded into the local sqlite engine below, for the one case that patches a live is_global=True app
+# without touching categories (task 4's "a published application needs at least one category" rule).
+CATEGORY_A = "category-a"
+
 # case -> (initial shared / is_global, transitions applied one after another)
 CASES = {
     "initial": ({"shared": True, "is_global": True}, []),
     "shared_toggle": ({"shared": True, "is_global": False}, ["shared_off", "shared_on"]),
-    "shared_on": ({"shared": False, "is_global": True}, ["shared_on"]),
+    "shared_on": ({"shared": False, "is_global": True, "categories": [CATEGORY_A]}, ["shared_on"]),
     "publish": ({"shared": True, "is_global": False}, ["publish"]),
     "unpublish": ({"shared": True, "is_global": True}, ["unpublish"]),
     "suspend": ({"shared": True, "is_global": True}, ["suspend"]),
@@ -182,9 +187,13 @@ async def engine():
     for table in (State, App, Version, Attempt, Credential, Operation, Permission):
         bare_copy(table.__table__, metadata)
     async with engine.begin() as connection:
-        for table in (UserDB.__table__, UserProject.__table__):
+        for table in (UserDB.__table__, UserProject.__table__, Category.__table__):
             await connection.run_sync(table.create)
         await connection.run_sync(metadata.create_all)
+        now = utcnow().replace(tzinfo=None)
+        await connection.execute(
+            Category.__table__.insert().values(id=CATEGORY_A, name="Category A", date=now, update_date=now)
+        )
     yield engine
     await engine.dispose()
 
@@ -264,7 +273,7 @@ async def actor(engine, persona):
     return HostedActor(user, sign_in)
 
 
-async def seed_app(engine, author, *, shared, is_global, active=True):
+async def seed_app(engine, author, *, shared, is_global, active=True, categories=()):
     app_id, version_id, attempt_id, now = uuid4(), uuid4(), uuid4(), utcnow()
     author_id = PERSONAS[author][0]
     async with engine.begin() as connection:
@@ -278,6 +287,7 @@ async def seed_app(engine, author, *, shared, is_global, active=True):
                 search_text="delivery map",
                 shared=shared,
                 is_global=is_global,
+                categories=list(categories),
                 artifact_kind="html",
                 selected_version_id=version_id,
                 active_version_id=version_id if active else None,
@@ -417,7 +427,7 @@ async def transition(world, app_id, step):
     elif step == "move":
         await catalog.patch_app(admin, app_id, AppPatch(project=OTHER), match, str(uuid4()))
     elif step == "publish":
-        await catalog.publish(admin, app_id, match, str(uuid4()))
+        await catalog.publish(admin, app_id, PublishRequest(categories=[CATEGORY_A]), match, str(uuid4()))
     elif step == "unpublish":
         await catalog.unpublish(admin, app_id, match, str(uuid4()))
     elif step == "suspend":

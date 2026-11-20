@@ -1,0 +1,272 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "deterministic",
+    "rationale": "check round: CR-001 resolved, no blockers, high confidence"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "deterministic",
+      "rationale": "CR-001 major: unannotated session param in categories_by_id/require_existing (code-quality.md)"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "deterministic",
+      "rationale": "check round: CR-001 resolved, no blockers, high confidence"
+    }
+  ],
+  "reviewed_head": "cd799615e6b4111619663641073dec463d15ac03",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "CR-001 is resolved: both categories_by_id and require_existing now annotate session as AsyncSession with the import added, confirmed in current source. No other blocking findings existed; the deferred DF-001 was not re-checked.",
+  "confidence": "high",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/hosted_applications/categories.py",
+      "line": 33,
+      "title": "Unannotated session parameter in category lookups",
+      "problem": "The new public functions categories_by_id and require_existing take an unannotated `session` parameter. code-quality.md (Types And Imports) requires explicit parameter types in new code and forbids leaving a duck-typed parameter unannotated.",
+      "impact": "A documented, blocking code-quality standard is violated by a new module; the type is already established in service/hosted_applications/runtime.py (AsyncSession).",
+      "recommendation": "Annotate `session` as AsyncSession (from sqlalchemy.ext.asyncio) in both categories_by_id and require_existing.",
+      "status": "resolved",
+      "check_notes": "categories.py now annotates session: AsyncSession in categories_by_id and require_existing and imports AsyncSession from sqlalchemy.ext.asyncio.",
+      "fix": {
+        "change": "Annotated session as AsyncSession in categories_by_id and require_existing",
+        "test": "n/a (annotation only; tests/codemie/service/hosted_applications/test_categories.py still green)"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "tests/codemie/service/hosted_applications/conftest.py",
+      "line": 166,
+      "title": "Hosted PostgreSQL tests skip under make test",
+      "problem": "Category filter semantics, publish idempotency payload conflict and migration parity/downgrade tests run only on the DB fixture, which skips when HOSTED_TEST_DATABASE_URL is unset.",
+      "preexisting": "The env-gated hosted DB fixture and Makefile predate this change; DB run is Stage 7 scope (AC12)."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Storage: categories JSONB NOT NULL DEFAULT '[]', GIN index, new Alembic revision",
+      "status": "pass",
+      "notes": "migration 2394f0863c6a plus model column and index"
+    },
+    {
+      "kind": "spec",
+      "item": "Shared CategoryId/CategoryIds/RequiredCategoryIds types in rest_api/models/category.py",
+      "status": "pass",
+      "notes": "category.py; tests/codemie/rest_api/models/test_category_ids.py"
+    },
+    {
+      "kind": "spec",
+      "item": "AppCreate/AppPatch gain categories; PATCH optional, [] clears",
+      "status": "pass",
+      "notes": "hosted_application_requests.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Create idempotency payload omits categories only when empty",
+      "status": "pass",
+      "notes": "catalog.py create_app"
+    },
+    {
+      "kind": "spec",
+      "item": "PublishRequest with required 1-3 categories replaces empty body",
+      "status": "pass",
+      "notes": "hosted_application_requests.py; router"
+    },
+    {
+      "kind": "spec",
+      "item": "Enforcement table: shape rules INVALID_REQUEST; unknown id / published-with-none INVALID_CATEGORIES",
+      "status": "pass",
+      "notes": "categories.py, catalog.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Existence check on create/patch/publish for sent ids, after replay check",
+      "status": "pass",
+      "notes": "require_existing"
+    },
+    {
+      "kind": "spec",
+      "item": "Published needs one: PATCH of is_global app refused when no category remains",
+      "status": "pass",
+      "notes": "catalog.py patch_app"
+    },
+    {
+      "kind": "spec",
+      "item": "Publish sets categories; re-publish replaces; payload carries categories",
+      "status": "pass",
+      "notes": "publication.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Reply projection adds categories [{id,name}] in stored order; missing ids skipped",
+      "status": "pass",
+      "notes": "projections.py; catalog.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Catalog category filter: any-of, INVALID_FILTER on unknown, bound into cursor scope",
+      "status": "pass",
+      "notes": "catalog.py list_filters/list_apps"
+    },
+    {
+      "kind": "spec",
+      "item": "Deletion guard counts hosted apps with deleted_at IS NULL; 409 format unchanged",
+      "status": "pass",
+      "notes": "category_service.py delete_category"
+    },
+    {
+      "kind": "spec",
+      "item": "Docs and OpenAPI baseline updated",
+      "status": "pass",
+      "notes": "architecture.md; openapi.json"
+    },
+    {
+      "kind": "spec",
+      "item": "HOSTED_MIGRATION, parity and head tests; hosted fixture creates categories table",
+      "status": "pass",
+      "notes": "conftest.py; test_schema_parity.py"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1: create/patch with 0-3 existing distinct ids accepted; reply lists {id,name}",
+      "status": "pass",
+      "notes": "covered by catalog tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: publish with 1-3 existing ids publishes with exactly those categories",
+      "status": "pass",
+      "notes": "publication.py"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: >3, repeated or unknown id, or publish without categories, refused; app unchanged",
+      "status": "pass",
+      "notes": "validators plus require_existing"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: PATCH leaving a published app (legacy included) with none refused",
+      "status": "pass",
+      "notes": "catalog.py patch_app; matches spec decision on every PATCH"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: unpublish keeps the categories",
+      "status": "pass",
+      "notes": "unpublish unchanged"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: publish retry same key different categories -> IDEMPOTENCY_CONFLICT",
+      "status": "pass",
+      "notes": "payload includes categories"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: category filter any-of in every scope, combines with other filters",
+      "status": "pass",
+      "notes": "list_filters"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8: cursor bound to the category selection",
+      "status": "pass",
+      "notes": "cursor_scope['category']"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9: unknown category in filter -> INVALID_FILTER",
+      "status": "pass",
+      "notes": "list_apps existence check"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC10: deleting a category in use by a non-deleted hosted app refused (409)",
+      "status": "pass",
+      "notes": "category_service.py"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC11: unfiltered listing still shows published uncategorized apps",
+      "status": "pass",
+      "notes": "filter term only when non-empty"
+    },
+    {
+      "kind": "spec",
+      "item": "AC12: model/migration schema-parity test passes with the new revision",
+      "status": "pending-stage-7",
+      "notes": "needs HOSTED_TEST_DATABASE_URL run in Stage 7"
+    },
+    {
+      "kind": "spec",
+      "item": "AC13: each enforcement-table rule returns its code and message",
+      "status": "pass",
+      "notes": "router and model tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC14: PATCH without categories judged on stored categories; never 'Invalid category IDs' for unsent id",
+      "status": "pass",
+      "notes": "require_existing only when sent"
+    },
+    {
+      "kind": "spec",
+      "item": "AC15: create body without categories keeps the same idempotency digest",
+      "status": "pass",
+      "notes": "payload.pop when empty"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All commit subjects in the review range match the documented EPMCDME-####: Description format."
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "New categories.py functions categories_by_id and require_existing leave the session parameter unannotated; code-quality.md requires explicit parameter types in new code."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Category ids reach SQL only as bound parameters; filter input is size-bounded and validated; no auth bypass or secret logging seen."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "One blocking standards finding (unannotated session parameter in new categories.py). 1 deferred (hosted PostgreSQL tests skip under make test; see code-review-deferred.local.md); 16 candidates dismissed as noise or accepted-by-spec (publish/PATCH behaviour, no-lock delete race, unrelated CLI config commit, nits).",
+    "confidence": "high",
+    "risk_flags": []
+  }
+}

@@ -17,7 +17,7 @@
 import hashlib
 import importlib.util
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -26,11 +26,14 @@ import pytest
 import pytest_asyncio
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from codemie.core.hosted_applications.identity import VerifiedIdentityContext
 from codemie.core.hosted_applications.validation import inspect_bundle
+from codemie.rest_api.models.category import Category
+from codemie.rest_api.models.permission import Permission
 from codemie.rest_api.models.user_management import UserDB, UserProject
 from codemie.rest_api.security.hosted_applications import HostedActor
 from codemie.rest_api.security.user import User
@@ -102,7 +105,14 @@ MIGRATIONS = Path(__file__).parents[4] / "src/external/alembic/versions"
 HOSTED_MIGRATION = (
     "e3b7c1a95d42_add_hosted_applications.py",
     "f8d24a6c0b17_platform_sharing_grants_and_links.py",
+    "2394f0863c6a_add_hosted_application_categories.py",
 )
+
+# Two shared-platform categories seeded for every test; later tasks that exercise hosted application categories
+# use these ids directly instead of inventing their own.
+CATEGORY_A = "category-a"
+CATEGORY_B = "category-b"
+SEEDED_CATEGORIES = {CATEGORY_A: "Category A", CATEGORY_B: "Category B"}
 
 
 RESOURCE_TYPE_ENUM = """
@@ -123,6 +133,35 @@ def load_migration(name):
     return module
 
 
+@contextmanager
+def sync_migration_connection(url, schema):
+    """A sync, search-pathed connection for installing or stepping the hosted migrations.
+
+    Alembic's raw, unsplit multi-statement DDL (``f8d24a6c0b17``'s ``SHARE_LINKS_DDL``, the permissions ``DO $$``
+    block) cannot run through asyncpg: PostgreSQL's extended query protocol, which SQLAlchemy's asyncpg dialect
+    always uses, rejects a PREPARE containing more than one statement ("cannot insert multiple commands into a
+    prepared statement"). psycopg2 uses the simple protocol and has no such limit, so migrations run against a
+    plain sync engine on the same schema; the async engine is only for the tests' own ORM-level reads and writes.
+    """
+    engine = create_engine(
+        url.replace("+asyncpg", "+psycopg2"), connect_args={"options": f"-c search_path={schema},public"}
+    )
+    try:
+        with engine.connect() as connection:
+            yield connection
+    finally:
+        engine.dispose()
+
+
+def install_migrations(connection, migrations):
+    """Run every migration's ``upgrade()`` against ``connection``, inside one MigrationContext-owned transaction."""
+    context = MigrationContext.configure(connection)
+    with context.begin_transaction():
+        for migration in migrations:
+            migration.op = Operations(context)
+            migration.upgrade()
+
+
 @pytest_asyncio.fixture
 async def database():
     url = os.environ.get("HOSTED_TEST_DATABASE_URL")
@@ -135,20 +174,46 @@ async def database():
         # ``share_links.resource_type`` is the platform's ``codemie.resourcetype`` (as on ``permissions``); a bare
         # test database gets it here, a migrated platform database already has it.
         await connection.execute(text(RESOURCE_TYPE_ENUM))
+    # Installed here, into ``public`` (the admin connection's default search_path), so it is visible from every
+    # per-test schema. Left unqualified, ``e3b7c1a95d42``'s own ``CREATE EXTENSION IF NOT EXISTS pg_trgm`` would
+    # install it into the test's random schema instead, which a parity test's own separate ``hosted_model_*``
+    # schema (also ``{schema},public``) cannot see, and which the fixture's teardown (``DROP SCHEMA ... CASCADE``)
+    # would destroy anyway. In its own transaction so a concurrent (e.g. xdist) peer's identical, equally
+    # unqualified create cannot abort the schema/enum work above; "IF NOT EXISTS" does not fully guard against
+    # that race (both sides can see "not yet created" before either commits), so a losing side's duplicate-key
+    # error is swallowed once the extension is confirmed to exist.
+    try:
+        async with admin.begin() as connection:
+            await connection.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+    except IntegrityError:
+        async with admin.connect() as connection:
+            exists = (await connection.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'"))).first()
+        if exists is None:
+            raise
+    migrations = [load_migration(name) for name in HOSTED_MIGRATION]
+    with sync_migration_connection(url, schema) as connection:
+        install_migrations(connection, migrations)
     engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema + ",public"}})
     try:
-        migrations = [load_migration(name) for name in HOSTED_MIGRATION]
-        async with engine.begin() as connection:
-
-            def install(sync):
-                for migration in migrations:
-                    migration.op = Operations(MigrationContext.configure(sync))
-                    migration.upgrade()
-
-            await connection.run_sync(install)
-            # The access rules read the platform's ``users`` and ``user_projects`` tables.
-            for table in (UserDB.__table__, UserProject.__table__):
-                await connection.run_sync(table.create)
+        async with engine.connect() as connection:
+            # The access rules read the platform's ``users`` and ``user_projects`` tables; category checks read
+            # the shared ``categories`` table; named-grant reads (``catalog``'s ``_grants``/``apreload``) hit
+            # ``permissions`` on every app projection, grant or no grant.
+            #
+            # ``permissions`` is created from the model, not a migration, and only now, after
+            # ``f8d24a6c0b17`` already ran: that migration's own ``ALTER TABLE permissions ADD COLUMN
+            # grant_source, ADD COLUMN source_link_id`` is guarded by ``to_regclass('permissions') IS NOT
+            # NULL`` and is a no-op while the table doesn't exist yet. The model already declares
+            # ``grant_source``/``source_link_id`` plus their CHECK and FK (the columns a migrated platform
+            # database has after that migration), so creating it here yields that same final shape directly
+            # without the migration's ALTER ever running against it — avoiding a duplicate-column error from
+            # doing both. ``grant_world`` (test_access_matrix.py) creates the same table with
+            # ``checkfirst=True`` and keeps working: it finds the table already here and no-ops.
+            for table in (UserDB.__table__, UserProject.__table__, Category.__table__, Permission.__table__):
+                # ``checkfirst``: ``Permission.resource_type`` is ``codemie.resourcetype``, which the admin
+                # connection above already created; without it this unconditionally re-issues ``CREATE TYPE``
+                # and collides with that existing type.
+                await connection.run_sync(table.create, checkfirst=True)
             for principal in PRINCIPALS:
                 await connection.execute(
                     UserDB.__table__.insert().values(
@@ -173,6 +238,13 @@ async def database():
                         is_default=False,
                     )
                 )
+            # ``Category.date``/``update_date`` are plain (timezone-naive) ``timestamp`` columns.
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            for category_id, name in SEEDED_CATEGORIES.items():
+                await connection.execute(
+                    Category.__table__.insert().values(id=category_id, name=name, date=now, update_date=now)
+                )
+            await connection.commit()
         yield engine, migrations[0]
     finally:
         await engine.dispose()

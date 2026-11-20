@@ -17,9 +17,9 @@ Category models for assistant categorization.
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, StrictStr
 from sqlmodel import Field as SQLField
 
 from codemie.rest_api.models.base import BaseModelWithSQLSupport, CommonBaseModel
@@ -40,6 +40,38 @@ class Category(BaseModelWithSQLSupport, CategoryBase, table=True):
     """SQLModel version of Category for PostgreSQL storage with auto-generated human-readable IDs"""
 
     __tablename__ = "categories"
+
+
+# ============================================================================
+# Category Selection Types
+# ============================================================================
+
+CATEGORY_ID_MAX_LENGTH = 256
+MAX_CATEGORIES = 3
+TOO_MANY_CATEGORIES = "Maximum 3 categories allowed"
+DUPLICATE_CATEGORIES = "category IDs must be unique"
+CATEGORY_REQUIRED = "At least one category is required"
+
+
+CategoryId = Annotated[StrictStr, Field(min_length=1, max_length=CATEGORY_ID_MAX_LENGTH)]
+
+
+def _selection(ids: list[str]) -> list[str]:
+    if len(ids) > MAX_CATEGORIES:
+        raise ValueError(TOO_MANY_CATEGORIES)
+    if len(set(ids)) != len(ids):
+        raise ValueError(DUPLICATE_CATEGORIES)
+    return ids
+
+
+def _required(ids: list[str]) -> list[str]:
+    if not ids:
+        raise ValueError(CATEGORY_REQUIRED)
+    return _selection(ids)
+
+
+CategoryIds = Annotated[list[CategoryId], AfterValidator(_selection)]
+RequiredCategoryIds = Annotated[list[CategoryId], AfterValidator(_required)]
 
 
 # ============================================================================

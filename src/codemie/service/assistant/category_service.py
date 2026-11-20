@@ -237,12 +237,11 @@ class DatabaseCategoryService:
 
     def delete_category(self, category_id: str) -> None:
         """
-        Delete category if no assistants or workflows are assigned.
+        Delete category if no assistants, workflows or hosted applications are assigned.
 
-        Uses a single atomic transaction with row-level locking on both the category
-        and all assistants using it to prevent race conditions where:
-        1. A category could be assigned between check and deletion
-        2. An assistant could be created/updated with this category during deletion
+        Checks assistants, workflows and hosted applications within a single transaction,
+        so a category only disappears once nothing still references it. Soft-deleted hosted
+        applications are excluded: they no longer count as a live usage.
 
         Args:
             category_id: ID of category to delete
@@ -253,6 +252,7 @@ class DatabaseCategoryService:
         # Import here to avoid circular dependency
         from codemie.core.workflow_models import WorkflowConfig
         from codemie.rest_api.models.assistant import Assistant
+        from codemie.rest_api.models.hosted_application import HostedApplications
 
         # Start transaction - all operations must complete atomically
         with Session(Category.get_engine()) as session:
@@ -267,8 +267,14 @@ class DatabaseCategoryService:
                 )
 
             usages = []
-            for label, model in (("assistants", Assistant), ("workflows", WorkflowConfig)):
+            for label, model, live in (
+                ("assistants", Assistant, None),
+                ("workflows", WorkflowConfig, None),
+                ("hosted applications", HostedApplications, HostedApplications.deleted_at.is_(None)),
+            ):
                 used = cast(model.categories, JSONB).contains([category_id])
+                if live is not None:
+                    used = used & live
                 count = session.exec(select(func.count()).where(used)).one()
                 if count > 0:
                     names = session.exec(select(model.name).where(used).order_by(model.name).limit(_MAX_NAMES)).all()

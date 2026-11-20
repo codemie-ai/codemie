@@ -124,6 +124,26 @@ def test_manager_response_carries_the_suspend_state_only_as_suspended():
     assert result["suspended"] is True and "security_state" not in result
 
 
+def test_categories_are_resolved_in_stored_order_skipping_missing_ids_for_a_viewer():
+    app = make_app(shared=True)
+    app.categories = ["cat-b", "cat-gone", "cat-a"]
+    names = {"cat-a": "Category A", "cat-b": "Category B"}
+    result = project(app, make_user("member"), category_names=names)
+    assert result["categories"] == [{"id": "cat-b", "name": "Category B"}, {"id": "cat-a", "name": "Category A"}]
+
+
+def test_categories_are_resolved_for_a_manager_too():
+    app = make_app(shared=True)
+    app.categories = ["cat-a"]
+    result = project(app, make_user("creator"), category_names={"cat-a": "Category A"})
+    assert result["categories"] == [{"id": "cat-a", "name": "Category A"}]
+
+
+def test_categories_default_to_empty_without_category_names():
+    app = make_app(shared=True)
+    assert project(app, make_user("member"))["categories"] == []
+
+
 @pytest.mark.parametrize("state, expected", [("clear", []), ("suspended", ["activate", "move", "publish", "share_on"])])
 def test_suspension_refuses_projects_the_backend_refusal_list(state, expected):
     """UI AR-8 / AR-12: clients read the refused actions from the server, from the one access-module constant."""

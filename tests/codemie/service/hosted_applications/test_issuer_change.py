@@ -22,9 +22,9 @@ import pytest
 
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.rest_api.models.hosted_application_requests import VersionSelection
+from codemie.rest_api.models.hosted_application_requests import PublishRequest, VersionSelection
 from codemie.rest_api.models.user_management import UserDB, UserProject
-from tests.codemie.service.hosted_applications.conftest import PROJECT
+from tests.codemie.service.hosted_applications.conftest import CATEGORY_A, PROJECT
 from codemie.rest_api.security.user_providers.persistent import PersistentUserProvider
 from codemie.service.jwt_service import JwtLocalService
 from tests.codemie.service.hosted_applications.test_covers import usage
@@ -121,7 +121,9 @@ async def test_changed_issuer_keeps_the_user_and_everything_they_own(processing,
     activated = await service.activate_version(
         owner, app["id"], VersionSelection(version_id=UUID(staged["version_id"])), current["etag"], str(uuid4())
     )
-    published = await service.publish(owner, app["id"], activated["etag"], str(uuid4()))
+    published = await service.publish(
+        owner, app["id"], PublishRequest(categories=[CATEGORY_A]), activated["etag"], str(uuid4())
+    )
     before = {
         "versions": (await service.list_versions(owner, app["id"]))["items"],
         "access": (published["project"], published["shared"], published["is_global"]),

@@ -113,6 +113,7 @@ class HostedApplications(SQLModel, ability.Owned, table=True):
             postgresql_using='gin',
             postgresql_ops={'search_text': 'gin_trgm_ops'},
         ),
+        Index('ix_hosted_applications_categories', 'categories', postgresql_using='gin'),
     )
 
     id: UUID = Field(sa_column=Column(PGUUID(as_uuid=True), nullable=False, primary_key=True))
@@ -134,6 +135,12 @@ class HostedApplications(SQLModel, ability.Owned, table=True):
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     deleted_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     purged_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    # 0-3 shared-platform category ids (codemie.rest_api.models.category); same JSONB/GIN shape as workflows.
+    # No explicit ``::jsonb`` cast: PostgreSQL normalizes the stored default to ``'[]'::jsonb`` regardless (so
+    # parity with the migration still holds), while the plain literal also compiles on SQLite-backed unit tests.
+    categories: list[str] = Field(
+        default_factory=list, sa_column=Column(JSONB, nullable=False, server_default=text("'[]'"))
+    )
 
     def is_owned_by(self, user) -> bool:
         return access.is_owned_by(self.created_by.id if self.created_by else None, user)

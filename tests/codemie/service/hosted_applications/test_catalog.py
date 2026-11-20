@@ -34,7 +34,14 @@ from sqlalchemy.pool import StaticPool
 
 from codemie.core.hosted_applications.access import manageable
 from codemie.core.hosted_applications.errors import HostedApplicationError
-from codemie.repository.hosted_applications.repository import HostedTransaction, as_uuid, not_found
+from codemie.core.hosted_applications.protocol import decode_cursor
+from codemie.repository.hosted_applications.repository import (
+    HostedApplicationRepository,
+    HostedTransaction,
+    as_uuid,
+    not_found,
+)
+from codemie.rest_api.models.category import Category
 from codemie.rest_api.models.hosted_application import (
     HostedApplicationJobs as Job,
     HostedApplicationStorageAttempts as Attempt,
@@ -48,12 +55,24 @@ from codemie.rest_api.security.hosted_applications import HostedActor
 from codemie.rest_api.security.user import User
 from codemie.service.hosted_applications import catalog as catalog_module
 from codemie.service.hosted_applications import runtime as runtime_module
-from codemie.service.hosted_applications.catalog import HostedApplicationCatalog, list_scope
+from codemie.service.hosted_applications.catalog import (
+    MAX_CATEGORY_FILTERS,
+    HostedApplicationCatalog,
+    list_scope,
+)
+from codemie.service.hosted_applications.categories import INVALID_CATEGORIES, PUBLISHED_NEEDS_ONE
 from codemie.service.hosted_applications.grant_descriptor import MANAGERS_ONLY
 from codemie.service.permission import named_grant_service, share_link_service
+from tests.codemie.service.hosted_applications.conftest import PROJECT
 
 TEAM = "team-a"
 OTHER = "team-b"
+
+# Two shared-platform categories seeded into the local sqlite engine below, mirroring the real-database
+# conftest's ``SEEDED_CATEGORIES`` (a different, postgres-only fixture this module does not use).
+CATEGORY_A = "category-a"
+CATEGORY_B = "category-b"
+SEEDED_CATEGORIES = {CATEGORY_A: "Category A", CATEGORY_B: "Category B"}
 
 
 @compiles(JSONB, "sqlite")
@@ -75,6 +94,7 @@ class FakeTx:
 
     async def operation(self, action, target, payload, key=None, *, app_id=None):
         self.repository.events.append(("operation", action))
+        self.repository.last_payload = payload
         stored = self.repository.replays.get((action, str(target), key))
         if stored is not None:
             return stored, stored["body"]
@@ -145,9 +165,14 @@ async def engine():
     for table in (Job.__table__, Attempt.__table__, Permission.__table__, ShareLink.__table__):
         sa.Table(table.name, metadata, *[column._copy() for column in table.columns])
     async with engine.begin() as connection:
-        for table in (UserDB.__table__, UserProject.__table__, App.__table__):
+        for table in (UserDB.__table__, UserProject.__table__, App.__table__, Category.__table__):
             await connection.run_sync(table.create)
         await connection.run_sync(metadata.create_all)
+        now = datetime.now(timezone.utc)
+        for category_id, name in SEEDED_CATEGORIES.items():
+            await connection.execute(
+                Category.__table__.insert().values(id=category_id, name=name, date=now, update_date=now)
+            )
     yield engine
     await engine.dispose()
 
@@ -329,6 +354,54 @@ async def test_application_count_is_capped_per_creator(catalog, people, monkeypa
         await create(catalog, people["creator"])
     assert (error.value.code, error.value.status) == ("APPLICATION_LIMIT", 409)
     await create(catalog, people["padmin"])
+
+
+# ---- categories (create) ----
+
+
+@pytest.mark.asyncio
+async def test_create_without_categories_defaults_to_an_empty_list(catalog, people):
+    created = await create(catalog, people["creator"])
+    assert created["categories"] == []
+
+
+@pytest.mark.asyncio
+async def test_create_with_existing_categories_stores_and_replies_with_their_names_in_sent_order(
+    catalog, people, engine
+):
+    created = await create(catalog, people["creator"], categories=[CATEGORY_B, CATEGORY_A])
+    assert created["categories"] == [
+        {"id": CATEGORY_B, "name": "Category B"},
+        {"id": CATEGORY_A, "name": "Category A"},
+    ]
+    async with AsyncSession(engine) as session:
+        row = await session.get(App, as_uuid(created["id"]))
+    assert row.categories == [CATEGORY_B, CATEGORY_A]
+
+
+@pytest.mark.asyncio
+async def test_create_with_an_unknown_category_fails_and_creates_no_app_row(catalog, people, engine):
+    with pytest.raises(HostedApplicationError) as error:
+        await create(catalog, people["creator"], categories=[CATEGORY_A, "missing"])
+    assert (error.value.code, error.value.status) == (INVALID_CATEGORIES, 422)
+    async with AsyncSession(engine) as session:
+        count = await session.scalar(sa.select(sa.func.count()).select_from(App.__table__))
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_create_without_categories_keeps_the_operation_payload_free_of_a_categories_key(
+    catalog, people, repository
+):
+    """Old clients that never send ``categories`` must not get a new idempotency digest for the same body."""
+    await create(catalog, people["creator"])
+    assert "categories" not in repository.last_payload
+
+
+@pytest.mark.asyncio
+async def test_create_with_categories_keeps_them_in_the_operation_payload(catalog, people, repository):
+    await create(catalog, people["creator"], categories=[CATEGORY_A])
+    assert repository.last_payload["categories"] == [CATEGORY_A]
 
 
 @pytest.mark.asyncio
@@ -601,6 +674,188 @@ async def test_creators_are_those_of_the_apps_the_caller_may_list(catalog, peopl
     assert error.value.code == "INVALID_FILTER"
 
 
+# ---- category filter ----
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "category",
+    [
+        [f"c{index}" for index in range(MAX_CATEGORY_FILTERS + 1)],
+        ["x" * 257],
+        [1],
+    ],
+)
+async def test_list_rejects_malformed_category_filters(catalog, people, category):
+    with pytest.raises(HostedApplicationError) as error:
+        await catalog.list_apps(people["creator"], category=category)
+    assert error.value.code == "INVALID_FILTER"
+
+
+# The behaviour of the filter itself runs on real PostgreSQL: SQLite has no JSONB ``@>`` containment.
+
+
+@pytest_asyncio.fixture
+async def live(database, grants_on):
+    """A real-PostgreSQL catalog over the directory ``conftest.py``'s ``database`` fixture.
+
+    The ``catalog`` fixture above runs the list SQL on in-memory SQLite, which has no JSONB containment, so the
+    category filter's own behaviour is exercised here. ``grants_on`` comes along because the ``shared`` scope
+    reads named grants; the seeded principals and categories are the directory conftest's.
+    """
+    engine, _ = database
+
+    @asynccontextmanager
+    async def sessions():
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            yield session
+
+    repository = HostedApplicationRepository(sessions, secret=b"s" * 48, quota_bytes=2 * 1024**3)
+    return HostedApplicationCatalog(repository, directory=None), engine
+
+
+async def live_app(service, actor, name, **changes):
+    request = AppCreate(name=name, description="A useful visual", project=PROJECT, **changes)
+    return await service.create_app(actor, request, str(uuid4()))
+
+
+async def listed(service, actor, **filters):
+    """Names of the listed applications, sorted: these tests assert membership, not the sort order."""
+    return sorted(item["name"] for item in (await service.list_apps(actor, **filters))["items"])
+
+
+CATEGORISED = (
+    ("Both", [CATEGORY_A, CATEGORY_B]),
+    ("Only A", [CATEGORY_A]),
+    ("Only B", [CATEGORY_B]),
+    ("Uncategorized", []),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["mine", "project", "marketplace", "shared"])
+async def test_the_category_filter_keeps_any_of_the_named_ids_in_every_scope(live, identity, scope):
+    service, engine = live
+    viewer = identity("owner")
+    creator = viewer if scope == "mine" else identity("other-owner")
+    for name, categories in CATEGORISED:
+        app = await live_app(service, creator, name, categories=categories)
+        if scope == "project":
+            await set_app(engine, app["id"], shared=True)
+        elif scope == "marketplace":
+            await set_app(engine, app["id"], is_global=True)
+        elif scope == "shared":
+            await grant_row(engine, app["id"], viewer.user.id)
+    assert await listed(service, viewer, scope=scope) == ["Both", "Only A", "Only B", "Uncategorized"]
+    assert await listed(service, viewer, scope=scope, category=[CATEGORY_A]) == ["Both", "Only A"]
+    assert await listed(service, viewer, scope=scope, category=[CATEGORY_B]) == ["Both", "Only B"]
+    # Any-of, never all-of; an application carrying no category is out under any selection.
+    assert await listed(service, viewer, scope=scope, category=[CATEGORY_A, CATEGORY_B]) == [
+        "Both",
+        "Only A",
+        "Only B",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_category_filter_combines_with_the_project_filter(live, identity):
+    service, engine = live
+    owner = identity("owner")
+    here = await live_app(service, owner, "Here", categories=[CATEGORY_A])
+    elsewhere = await live_app(service, owner, "Elsewhere", categories=[CATEGORY_A])
+    await set_app(engine, here["id"], is_global=True)
+    await set_app(engine, elsewhere["id"], is_global=True, project=OTHER)
+    viewer = identity("viewer")
+    assert await listed(service, viewer, scope="marketplace", category=[CATEGORY_A]) == ["Elsewhere", "Here"]
+    assert await listed(service, viewer, scope="marketplace", category=[CATEGORY_A], project=[PROJECT]) == ["Here"]
+    assert await listed(service, viewer, scope="marketplace", category=[CATEGORY_B], project=[PROJECT]) == []
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_category_id_is_refused_even_when_a_cursor_is_sent(live, identity):
+    """The ids are checked against ``categories`` before the cursor is opened, so the filter's error wins."""
+    service, _ = live
+    owner = identity("owner")
+    for name in ("One", "Two"):
+        await live_app(service, owner, name, categories=[CATEGORY_A])
+    page = await service.list_apps(owner, limit=1, category=[CATEGORY_A])
+    assert page["next_cursor"]
+    for category in ([CATEGORY_A, "missing"], ["missing"]):
+        with pytest.raises(HostedApplicationError) as error:
+            await service.list_apps(owner, limit=1, category=category, cursor=page["next_cursor"])
+        assert error.value.code == "INVALID_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_is_bound_to_the_category_selection(live, identity):
+    service, _ = live
+    owner = identity("owner")
+    for name in ("One", "Two"):
+        await live_app(service, owner, name, categories=[CATEGORY_A, CATEGORY_B])
+    page = await service.list_apps(owner, limit=1, category=[CATEGORY_A])
+    assert page["next_cursor"]
+    same = await service.list_apps(owner, limit=1, category=[CATEGORY_A], cursor=page["next_cursor"])
+    assert len(same["items"]) == 1
+    with pytest.raises(HostedApplicationError) as error:
+        await service.list_apps(owner, limit=1, category=[CATEGORY_A, CATEGORY_B], cursor=page["next_cursor"])
+    assert error.value.code == "INVALID_CURSOR"
+
+
+@pytest.mark.asyncio
+async def test_paging_one_category_selection_repeats_and_skips_nothing(live, identity):
+    service, _ = live
+    owner = identity("owner")
+    wanted = set()
+    for index in range(5):
+        wanted.add((await live_app(service, owner, f"Wanted {index}", categories=[CATEGORY_A]))["id"])
+        await live_app(service, owner, f"Other {index}", categories=[CATEGORY_B])
+    seen, cursor = [], None
+    for _ in range(len(wanted) + 1):
+        page = await service.list_apps(owner, limit=2, category=[CATEGORY_A], cursor=cursor)
+        seen += [item["id"] for item in page["items"]]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert cursor is None and len(seen) == len(set(seen)) and set(seen) == wanted
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_minted_without_a_category_filter_carries_no_category_key(live, identity):
+    """Cursors issued before this filter existed keep working: the key joins the scope only when one is sent."""
+    service, _ = live
+    owner = identity("owner")
+    for name in ("One", "Two"):
+        await live_app(service, owner, name)
+    page = await service.list_apps(owner, limit=1)
+    legacy = {
+        "actor": "owner",
+        "scope": "mine",
+        "q": "",
+        "artifact": None,
+        "version_state": None,
+        "project": [],
+        "created_by": None,
+        "shared": None,
+        "status": None,
+        "sort": "updated_desc",
+    }
+    assert decode_cursor(page["next_cursor"], legacy, service.repository.secret)["id"]
+    for category in (None, []):
+        second = await service.list_apps(owner, limit=1, category=category, cursor=page["next_cursor"])
+        assert len(second["items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_unfiltered_marketplace_still_lists_a_published_app_without_categories(live, identity):
+    """Applications published before this feature carry ``[]``; only a category filter may hide them."""
+    service, engine = live
+    legacy = await live_app(service, identity("owner"), "Legacy")
+    await set_app(engine, legacy["id"], is_global=True)
+    viewer = identity("viewer")
+    assert await listed(service, viewer, scope="marketplace") == ["Legacy"]
+    assert await listed(service, viewer, scope="marketplace", category=[CATEGORY_A]) == []
+
+
 # ---- no moderation scope (S-28, supersedes S-20) ----
 
 
@@ -713,6 +968,80 @@ def test_patch_request_accepts_project_and_shared_and_rejects_nulls():
             AppPatch(**bad)
     with pytest.raises(ValueError):
         AppCreate(name="n", description="d")
+
+
+# ---- categories (patch) ----
+
+
+@pytest.mark.asyncio
+async def test_patch_stores_sent_categories_and_replies_with_their_names_in_sent_order(catalog, people):
+    app = await create(catalog, people["creator"])
+    patched = await catalog.patch_app(
+        people["creator"], app["id"], AppPatch(categories=[CATEGORY_B, CATEGORY_A]), app["etag"], str(uuid4())
+    )
+    assert patched["categories"] == [
+        {"id": CATEGORY_B, "name": "Category B"},
+        {"id": CATEGORY_A, "name": "Category A"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_patch_with_an_unknown_category_fails_and_leaves_the_stored_row_unchanged(catalog, people, engine):
+    app = await create(catalog, people["creator"], categories=[CATEGORY_A])
+    with pytest.raises(HostedApplicationError) as error:
+        await catalog.patch_app(
+            people["creator"], app["id"], AppPatch(categories=[CATEGORY_B, "missing"]), app["etag"], str(uuid4())
+        )
+    assert (error.value.code, error.value.status) == (INVALID_CATEGORIES, 422)
+    async with AsyncSession(engine) as session:
+        row = await session.get(App, as_uuid(app["id"]))
+    assert row.categories == [CATEGORY_A] and row.revision == 1
+
+
+@pytest.mark.asyncio
+async def test_patch_clearing_categories_on_a_published_app_is_refused(catalog, people, engine):
+    app = await create(catalog, people["creator"], categories=[CATEGORY_A])
+    await set_app(engine, app["id"], is_global=True)
+    with pytest.raises(HostedApplicationError) as error:
+        await catalog.patch_app(people["creator"], app["id"], AppPatch(categories=[]), app["etag"], str(uuid4()))
+    assert (error.value.code, error.value.message) == (INVALID_CATEGORIES, PUBLISHED_NEEDS_ONE)
+    async with AsyncSession(engine) as session:
+        row = await session.get(App, as_uuid(app["id"]))
+    assert row.categories == [CATEGORY_A] and row.revision == 1
+
+
+@pytest.mark.asyncio
+async def test_patch_not_touching_categories_on_a_published_app_with_only_stale_stored_ids_is_refused(
+    catalog, people, engine
+):
+    app = await create(catalog, people["creator"])
+    await set_app(engine, app["id"], is_global=True, categories=["stale"])
+    with pytest.raises(HostedApplicationError) as error:
+        await catalog.patch_app(people["creator"], app["id"], AppPatch(name="Renamed"), app["etag"], str(uuid4()))
+    assert (error.value.code, error.value.message) == (INVALID_CATEGORIES, PUBLISHED_NEEDS_ONE)
+
+
+@pytest.mark.asyncio
+async def test_patch_not_touching_categories_on_a_published_app_with_legacy_empty_categories_is_refused(
+    catalog, people, engine
+):
+    app = await create(catalog, people["creator"])
+    await set_app(engine, app["id"], is_global=True)
+    with pytest.raises(HostedApplicationError) as error:
+        await catalog.patch_app(people["creator"], app["id"], AppPatch(name="Renamed"), app["etag"], str(uuid4()))
+    assert (error.value.code, error.value.message) == (INVALID_CATEGORIES, PUBLISHED_NEEDS_ONE)
+
+
+@pytest.mark.asyncio
+async def test_patch_not_touching_categories_succeeds_when_one_stored_id_still_exists_stale_ids_never_checked(
+    catalog, people, engine
+):
+    app = await create(catalog, people["creator"])
+    await set_app(engine, app["id"], is_global=True, categories=[CATEGORY_A, "stale"])
+    patched = await catalog.patch_app(people["creator"], app["id"], AppPatch(name="Renamed"), app["etag"], str(uuid4()))
+    assert patched["name"] == "Renamed"
+    # The stale id is read back (resolved by ``_project``'s own ``categories_by_id``) but never rejected.
+    assert patched["categories"] == [{"id": CATEGORY_A, "name": "Category A"}]
 
 
 # ---- named view-only grants ----

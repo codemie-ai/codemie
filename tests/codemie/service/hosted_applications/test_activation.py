@@ -27,7 +27,8 @@ from codemie.rest_api.models.hosted_application import (
     HostedApplicationOperations as Operation,
     HostedApplicationVersions as Version,
 )
-from codemie.rest_api.models.hosted_application_requests import VersionSelection
+from codemie.rest_api.models.hosted_application_requests import PublishRequest, VersionSelection
+from tests.codemie.service.hosted_applications.conftest import CATEGORY_A
 from tests.codemie.service.hosted_applications.test_retention import add_version
 from tests.codemie.service.hosted_applications.test_worker import queued
 
@@ -43,7 +44,9 @@ async def published_versions(launch, identity):
     activated = await service.activate_version(
         owner, app['id'], VersionSelection(version_id=old_id), current['etag'], str(uuid4())
     )
-    shared = await service.publish(owner, app['id'], activated['etag'], str(uuid4()))
+    shared = await service.publish(
+        owner, app['id'], PublishRequest(categories=[CATEGORY_A]), activated['etag'], str(uuid4())
+    )
     return handoff, service, app, shared, old_id, new_id
 
 

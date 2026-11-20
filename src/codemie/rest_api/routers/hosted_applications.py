@@ -45,6 +45,7 @@ from codemie.rest_api.models.hosted_application_requests import (
     UploadReset,
     VersionConfiguration,
     VersionSelection,
+    PublishRequest,
     RequestModel,
     SecurityReason,
     ShareLinkOpenRequest,
@@ -181,14 +182,17 @@ async def revoke(
 
 
 @router.get("/hosted-applications")
-async def catalog(
-    identity: HostedActor = Depends(hosted_actor),
+async def catalog(  # noqa: PLR0913 - the category filter joins a query signature that was already long
+    identity: HostedActor = Depends(hosted_actor),  # NOSONAR - S107 is reported on the parameter list
     value: HostedApplicationsRuntime = Depends(runtime),
     scope: str = Query("mine", description="mine, project, marketplace or shared"),
     q: str = Query("", max_length=200),
     artifact_kind: str | None = None,
     version_state: str | None = None,
     project: list[str] | None = Query(None, description="Project names (repeat the parameter for several)"),
+    category: list[str] | None = Query(  # noqa: B008 - FastAPI query parameter, as for project above
+        None, description="Category ids, any of them (repeat for several)"
+    ),
     created_by: str | None = Query(None, max_length=200, description="Creator display name, as in skills"),
     shared: str | None = Query(None, description="mine scope only: private, people or project"),
     status: str | None = Query(None, description="mine scope only: draft, published or unpublished"),
@@ -204,6 +208,7 @@ async def catalog(
             artifact_kind=artifact_kind,
             version_state=version_state,
             project=project,
+            category=category,
             created_by=created_by,
             shared=shared,
             status=status,
@@ -516,13 +521,13 @@ async def activate(
 @router.post("/hosted-applications/{app_id}/marketplace/publish")
 async def publish(
     app_id: UUID,
-    body: RequestModel,
+    body: PublishRequest,
     identity: HostedActor = Depends(hosted_actor),
     value: HostedApplicationsRuntime = Depends(mutation),
     match: str | None = Header(None, alias="If-Match"),
     key: str = Header(..., alias="Idempotency-Key"),
 ) -> JSONResponse:
-    return reply(await value.catalog.publish(identity, app_id, match, key))
+    return reply(await value.catalog.publish(identity, app_id, body, match, key))
 
 
 @router.post("/hosted-applications/{app_id}/marketplace/unpublish")

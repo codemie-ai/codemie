@@ -27,11 +27,12 @@ from uuid import UUID
 from codemie.core.hosted_applications.access import suspend_refuses
 from codemie.core.hosted_applications.errors import HostedApplicationError
 from codemie.core.hosted_applications.protocol import check_etag
+from codemie.service.hosted_applications.categories import require_existing
 
 if TYPE_CHECKING:
     from codemie.repository.hosted_applications.repository import HostedTransaction
     from codemie.rest_api.models.hosted_application import HostedApplicationVersions, HostedApplications
-    from codemie.rest_api.models.hosted_application_requests import VersionSelection
+    from codemie.rest_api.models.hosted_application_requests import PublishRequest, VersionSelection
     from codemie.rest_api.security.hosted_applications import HostedActor
 
 Change = Callable[["HostedTransaction", "HostedApplications"], Awaitable[None]]
@@ -102,13 +103,17 @@ class PublicationServiceMixin:
         )
 
     async def publish(
-        self, identity: HostedActor, app_id: UUID | str, if_match: str | None, key: str
+        self, identity: HostedActor, app_id: UUID | str, request: PublishRequest, if_match: str | None, key: str
     ) -> dict[str, Any]:
         async def change(tx: HostedTransaction, app: HostedApplications) -> None:
             suspend_refuses(app, "publish")
+            await require_existing(tx.session, request.categories)
             app.is_global = True
+            app.categories = request.categories
 
-        return await self._mutate(identity, app_id, "app.publish", {}, if_match, key, change)
+        return await self._mutate(
+            identity, app_id, "app.publish", {"categories": request.categories}, if_match, key, change
+        )
 
     async def unpublish(
         self, identity: HostedActor, app_id: UUID | str, if_match: str | None, key: str

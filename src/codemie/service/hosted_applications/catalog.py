@@ -23,6 +23,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import Text, and_, bindparam, func, not_, or_, select, tuple_
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import aliased
 
@@ -34,6 +35,7 @@ from codemie.core.hosted_applications.policy import permits
 from codemie.core.hosted_applications.protocol import canonical_json, check_etag, decode_cursor, encode_cursor
 from codemie.core.models import CreatedByUser
 from codemie.repository.hosted_applications.repository import HostedTransaction, as_uuid, is_lock_timeout, not_found
+from codemie.rest_api.models.category import CATEGORY_ID_MAX_LENGTH
 from codemie.rest_api.models.permission import Action, Permission, ResourceType, ShareLink
 from codemie.rest_api.security.hosted_applications import HostedActor, account_not_supported
 from codemie.rest_api.models.hosted_application import (
@@ -47,6 +49,12 @@ from codemie.service.hosted_applications.receiving import ReceivingServiceMixin
 from codemie.service.hosted_applications.versions import VersionServiceMixin
 from codemie.service.hosted_applications.publication import PublicationServiceMixin
 from codemie.service.hosted_applications.uploads import UploadServiceMixin
+from codemie.service.hosted_applications.categories import (
+    INVALID_CATEGORIES,
+    PUBLISHED_NEEDS_ONE,
+    categories_by_id,
+    require_existing,
+)
 from codemie.service.hosted_applications.projections import app_projection, can_manage
 from codemie.service.hosted_applications import grant_descriptor
 from codemie.service.permission import named_grant_service, share_link_service
@@ -65,7 +73,9 @@ STATUS_FILTERS = ("draft", "published", "unpublished")
 # on one app row hold pool connections, and waiting as long as a checkout would let them starve every other app.
 SHARE_LINK_OPEN_LOCK_TIMEOUT_MS = 400
 MAX_PROJECT_FILTERS = 50
+MAX_CATEGORY_FILTERS = 50
 MAX_FILTER_TEXT = 200
+INVALID_FILTERS_MESSAGE = "Invalid application filters"
 
 UserPayload = dict[str, str | None]
 SharedWith = dict[str, list[UserPayload]]
@@ -101,25 +111,43 @@ def list_scope(apps, scope, user):
     return and_(active, apps.c.is_global.is_(True), allowed)
 
 
-def normalize_projects(project):
-    """The ``project`` filter as a sorted list of distinct names, or ``None`` when it is malformed."""
-    if project is None:
+def normalize_values(value, max_items, max_text):
+    """A repeated filter as a sorted list of distinct values, or ``None`` when it is malformed.
+
+    One filter is one string or a list of them; blanks are dropped, and anything over ``max_items`` values or
+    carrying a value longer than ``max_text`` is malformed, which the caller answers with ``INVALID_FILTER``.
+    """
+    if value is None:
         return []
-    if isinstance(project, str):
-        project = [project]
-    if not isinstance(project, (list, tuple)) or not all(isinstance(name, str) for name in project):
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
         return None
-    names = sorted({name.strip() for name in project if name and name.strip()})
-    if len(names) > MAX_PROJECT_FILTERS or any(len(name) > MAX_FILTER_TEXT for name in names):
+    values = sorted({item.strip() for item in value if item and item.strip()})
+    if len(values) > max_items or any(len(item) > max_text for item in values):
         return None
-    return names
+    return values
 
 
-def list_filters(apps, *, project=(), created_by=None, shared=None, status=None):
+def list_filters(  # noqa: PLR0913 - categories join a signature that was already over the limit
+    apps, *, project=(), categories=(), created_by=None, shared=None, status=None
+):
     """Terms the list adds on top of ``list_scope``; each only narrows the rows the scope already allows."""
     terms = []
     if project:
         terms.append(apps.c.project.in_(list(project)))
+    if categories:
+        # Any of the selected ids, one JSONB containment each, as ``compose_json_array_filter`` composes the
+        # same filter for workflows. Each id is a bound JSONB array rather than inlined text, so the GIN index
+        # on ``categories`` serves every ``@>`` term.
+        terms.append(
+            or_(
+                *(
+                    apps.c.categories.contains(bindparam(f"category_{position}", [value], type_=JSONB))
+                    for position, value in enumerate(categories)
+                )
+            )
+        )
     if created_by:
         # The creator's display name, as the skills catalog filters (``created_by.name``).
         terms.append(apps.c.created_by["name"].as_string() == created_by)
@@ -176,12 +204,16 @@ VERSION_STATES = (
 )
 
 
-def _valid_list_filters(
-    *, scope, q, artifact_kind, version_state, projects, created_by, shared, status, sort, limit
+def _valid_list_filters(  # noqa: PLR0913 - categories join a signature that was already over the limit
+    *, scope, q, artifact_kind, version_state, projects, categories, created_by, shared, status, sort, limit
 ) -> bool:
-    """Whether the list filters are well formed; mine-only filters are refused on any other scope."""
+    """Whether the list filters are well formed; mine-only filters are refused on any other scope.
+
+    The category filter is not one of those: every scope takes it, like ``project``.
+    """
     return not (
         projects is None
+        or categories is None
         or (created_by is not None and len(created_by) > MAX_FILTER_TEXT)
         or shared not in (None, *SHARING_FILTERS)
         or status not in (None, *STATUS_FILTERS)
@@ -367,6 +399,9 @@ class HostedApplicationCatalog(
             else await self._eligible_version(tx, app, target)
         )
         covered = tx.covered if hasattr(tx, "covered") else await self._covered(tx, [app])
+        category_names = (
+            tx.category_names if hasattr(tx, "category_names") else await categories_by_id(tx.session, app.categories)
+        )
         created_by = app.created_by
         return app_projection(
             app,
@@ -375,6 +410,7 @@ class HostedApplicationCatalog(
             publisher=(created_by.name or created_by.username) if created_by else None,
             artifact_kind=eligible.artifact_kind if eligible else None,
             has_cover=app.id in covered,
+            category_names=category_names,
         )
 
     async def create_app(self, identity, request, key):
@@ -386,7 +422,11 @@ class HostedApplicationCatalog(
             require_project_access(platform, request.project)
             # Locked before the app count and the idempotency lookup, so concurrent creates cannot overshoot.
             await tx.lock_quota(identity.principal_id)
-            op, replay = await tx.operation("app.create", "catalog", request.model_dump(mode="json"), key)
+            payload = request.model_dump(mode="json")
+            if not payload.get("categories"):
+                # Old clients never sent this field; dropping it when empty keeps their idempotency digest stable.
+                payload.pop("categories", None)
+            op, replay = await tx.operation("app.create", "catalog", payload, key)
             if replay is not None:
                 await tx.managed_app(replay["id"], user)
                 return replay
@@ -403,6 +443,7 @@ class HostedApplicationCatalog(
                     "delete applications you no longer need",
                     409,
                 )
+            await require_existing(tx.session, request.categories)
             app = App(
                 id=uuid4(),
                 project=request.project,
@@ -418,6 +459,7 @@ class HostedApplicationCatalog(
                 access_revision=1,
                 created_at=tx.now,
                 updated_at=tx.now,
+                categories=request.categories,
             )
             tx.session.add(app)
             await tx.session.flush()
@@ -450,6 +492,12 @@ class HostedApplicationCatalog(
                 return replay
             check_etag(if_match, "app", app.id, app.revision)
             changes = request.model_fields_set
+            if "categories" in changes:
+                await require_existing(tx.session, request.categories)
+            if app.is_global:
+                post_categories = request.categories if "categories" in changes else app.categories
+                if not await categories_by_id(tx.session, post_categories):
+                    raise HostedApplicationError(INVALID_CATEGORIES, PUBLISHED_NEEDS_ONE, 422)
             moved = "project" in changes and request.project != app.project
             if moved:
                 require_project_access(await self._platform_user(tx, identity.user), request.project)
@@ -463,7 +511,7 @@ class HostedApplicationCatalog(
             app.updated_at = tx.now
             return await tx.finish(op, await self._project(tx, app, identity.user))
 
-    async def list_apps(
+    async def list_apps(  # noqa: PLR0913 - categories join a signature that was already over the limit
         self,
         identity,
         *,
@@ -472,6 +520,7 @@ class HostedApplicationCatalog(
         artifact_kind=None,
         version_state=None,
         project=None,
+        category=None,
         created_by=None,
         shared=None,
         status=None,
@@ -479,7 +528,8 @@ class HostedApplicationCatalog(
         cursor=None,
         limit=24,
     ):
-        projects = normalize_projects(project)
+        projects = normalize_values(project, MAX_PROJECT_FILTERS, MAX_FILTER_TEXT)
+        categories = normalize_values(category, MAX_CATEGORY_FILTERS, CATEGORY_ID_MAX_LENGTH)
         created_by = (created_by or "").strip() or None
         if not _valid_list_filters(
             scope=scope,
@@ -487,13 +537,14 @@ class HostedApplicationCatalog(
             artifact_kind=artifact_kind,
             version_state=version_state,
             projects=projects,
+            categories=categories,
             created_by=created_by,
             shared=shared,
             status=status,
             sort=sort,
             limit=limit,
         ):
-            raise HostedApplicationError("INVALID_FILTER", "Invalid application filters")
+            raise HostedApplicationError("INVALID_FILTER", INVALID_FILTERS_MESSAGE)
         q = q.strip().casefold()
         cursor_scope = {
             "actor": identity.principal_id,
@@ -507,11 +558,18 @@ class HostedApplicationCatalog(
             "status": status,
             "sort": sort,
         }
+        if categories:
+            # Added only when something is selected, so cursors minted before this filter existed still match.
+            cursor_scope["category"] = categories
         async with self.repository.transaction(*identity) as tx:
             user = await self._platform_user(tx, identity.user)
+            if categories and len(await categories_by_id(tx.session, categories)) != len(categories):
+                # An id that no longer exists is a malformed filter, answered before the cursor is opened.
+                raise HostedApplicationError("INVALID_FILTER", INVALID_FILTERS_MESSAGE)
             filters = list_filters(
                 App.__table__,
                 project=projects,
+                categories=categories,
                 created_by=created_by,
                 shared=shared,
                 status=status,
@@ -541,7 +599,7 @@ class HostedApplicationCatalog(
     async def list_creators(self, identity, *, scope=None):
         """Creators of the apps the caller may list (one scope, or all), for the "Created by" filter options."""
         if scope is not None and scope not in SCOPES:
-            raise HostedApplicationError("INVALID_FILTER", "Invalid application filters")
+            raise HostedApplicationError("INVALID_FILTER", INVALID_FILTERS_MESSAGE)
         async with self.repository.transaction(*identity) as tx:
             user = await self._platform_user(tx, identity.user)
             rows = (await tx.session.execute(creators_query(App.__table__, user, scope))).all()
@@ -557,6 +615,7 @@ class HostedApplicationCatalog(
             [(app, app.selected_version_id if app.id in managed else app.active_version_id) for app in apps],
         )
         tx.covered = await self._covered(tx, apps)
+        tx.category_names = await categories_by_id(tx.session, [i for app in apps for i in app.categories])
         return [await self._project(tx, app, user) for app in apps]
 
     async def _sharing_app(

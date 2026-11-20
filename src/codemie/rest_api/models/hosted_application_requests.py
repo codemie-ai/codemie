@@ -24,6 +24,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
 from codemie.core.hosted_applications.paths import canonical_artifact_path, normalize_name
+from codemie.rest_api.models.category import CategoryIds, RequiredCategoryIds
 
 
 class RequestModel(BaseModel):
@@ -60,6 +61,8 @@ class AppCreate(RequestModel):
     project: StrictStr
     # Shared with every member of ``project``; creating needs project access, so nothing more is checked here.
     shared: StrictBool = False
+    # 0-3 shared-platform category ids; existence against ``categories`` is checked by the service, not here.
+    categories: CategoryIds = []
 
     @field_validator("project")
     @classmethod
@@ -92,12 +95,13 @@ class AppPatch(AppCreate):
     description: StrictStr | None = None
     project: StrictStr | None = None
     shared: StrictBool | None = None
+    categories: CategoryIds | None = None
 
     @model_validator(mode="after")
     def has_changes(self):
         if not self.model_fields_set or any(
             getattr(self, key) is None
-            for key in ("name", "description", "project", "shared")
+            for key in ("name", "description", "project", "shared", "categories")
             if key in self.model_fields_set
         ):
             raise ValueError("At least one metadata change is required")
@@ -161,6 +165,16 @@ class VersionConfiguration(RequestModel):
 
 class VersionSelection(RequestModel):
     version_id: UUID
+
+
+class PublishRequest(RequestModel):
+    """1-3 category ids to go live with; a publish with none, or with an unknown id, is rejected."""
+
+    # ``validate_default=True`` so an omitted field still runs ``RequiredCategoryIds``' validator and fails with
+    # "At least one category is required", instead of silently defaulting to no categories.
+    model_config = ConfigDict(validate_default=True)
+
+    categories: RequiredCategoryIds = []
 
 
 class SecurityReason(RequestModel):

@@ -21,7 +21,8 @@ from codemie.rest_api.models.hosted_application import (
     HostedApplicationVersions,
     HostedApplicationStorageAttempts,
 )
-from codemie.rest_api.models.hosted_application_requests import VersionSelection
+from codemie.rest_api.models.hosted_application_requests import PublishRequest, VersionSelection
+from tests.codemie.service.hosted_applications.conftest import CATEGORY_A
 from tests.codemie.service.hosted_applications.test_worker import launchable, queued
 
 
@@ -36,7 +37,7 @@ async def test_serving_requires_complete_current_attestation(processing, identit
     activated = await service.activate_version(
         context, app["id"], VersionSelection(version_id=UUID(staged["version_id"])), latest["etag"], str(uuid4())
     )
-    await service.publish(context, app["id"], activated["etag"], str(uuid4()))
+    await service.publish(context, app["id"], PublishRequest(categories=[CATEGORY_A]), activated["etag"], str(uuid4()))
     assert (await service.list_apps(identity("viewer"), scope="marketplace"))["items"]
     async with repo.sessions() as session, session.begin():
         version = await session.get(HostedApplicationVersions, UUID(staged["version_id"]))

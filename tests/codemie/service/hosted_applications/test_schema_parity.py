@@ -26,7 +26,11 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from codemie.rest_api.models.hosted_application import HOSTED_APP_MODELS
 from codemie.rest_api.models.permission import ShareLink
 from codemie.rest_api.models.hosted_application_cover import HostedApplicationCovers
-from tests.codemie.service.hosted_applications.conftest import HOSTED_MIGRATION, load_migration
+from tests.codemie.service.hosted_applications.conftest import (
+    HOSTED_MIGRATION,
+    load_migration,
+    sync_migration_connection,
+)
 
 # Every hosted entity, including covers kept in their own module, against the hosted migration.
 MODELS = (*HOSTED_APP_MODELS, HostedApplicationCovers, ShareLink)
@@ -109,10 +113,25 @@ async def test_models_match_the_migrated_schema_exactly(database):
         await admin.dispose()
 
 
+HOSTED_CATEGORIES_REVISION = "2394f0863c6a"
+CATEGORIES_COLUMN = "categories"
+CATEGORIES_INDEX = "ix_hosted_applications_categories"
+
+
+def _migrations_by_revision():
+    """Every hosted migration module, keyed by its own ``revision`` id rather than by load order."""
+    return {module.revision: module for module in (load_migration(name) for name in HOSTED_MIGRATION)}
+
+
 def test_hosted_migrations_follow_the_platform_head():
-    hosted, sharing = (load_migration(name) for name in HOSTED_MIGRATION)
+    migrations = _migrations_by_revision()
+    hosted = migrations["e3b7c1a95d42"]
+    sharing = migrations["f8d24a6c0b17"]
+    categories = migrations[HOSTED_CATEGORIES_REVISION]
     assert (hosted.revision, hosted.down_revision) == ("e3b7c1a95d42", "0ba28b31fa53")
     assert (sharing.revision, sharing.down_revision) == ("f8d24a6c0b17", "e3b7c1a95d42")
+    # Pinned to the platform's actual current head, not a guess: `alembic heads` in src/external/alembic.
+    assert (categories.revision, categories.down_revision) == (HOSTED_CATEGORIES_REVISION, "64825fe31931")
 
 
 @pytest.mark.asyncio
@@ -141,46 +160,62 @@ async def test_migrated_schema_has_no_tenant_keys_folders_or_trash(database):
     ) in foreign_keys
 
 
-PROVIDER_CHECK = "hosted_application_storage_attempts_provider_check"
-
-
 @pytest.mark.asyncio
 async def test_hosted_migrations_downgrade_and_upgrade_again(database):
     engine, _ = database
-    base, providers, share_links = (load_migration(name) for name in HOSTED_MIGRATION)
+    async with engine.connect() as connection:
+        schema = (await connection.execute(text("SELECT current_schema()"))).scalar_one()
 
-    def run(migration, step):
-        def apply(sync):
-            migration.op = Operations(MigrationContext.configure(sync))
-            step()
+    migrations = _migrations_by_revision()
+    base = migrations["e3b7c1a95d42"]
+    share_links = migrations["f8d24a6c0b17"]
+    categories = migrations[HOSTED_CATEGORIES_REVISION]
 
-        return apply
-
-    async def provider_check(connection):
+    def column_exists(sync):
         return (
-            await connection.execute(
-                text("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = :name"),
-                {"name": PROVIDER_CHECK},
-            )
-        ).scalar_one()
+            sync.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'hosted_applications' "
+                    "AND column_name = :column"
+                ),
+                {"column": CATEGORIES_COLUMN},
+            ).first()
+            is not None
+        )
 
-    async with engine.begin() as connection:
-        assert "aws" in await provider_check(connection)
-        await connection.run_sync(run(share_links, share_links.downgrade))
-        await connection.run_sync(run(share_links, share_links.upgrade))
-        await connection.run_sync(run(providers, providers.downgrade))
-        restored = await provider_check(connection)
-        assert "filesystem" in restored and "aws" not in restored and "gcp" not in restored
-        await connection.run_sync(run(providers, providers.upgrade))
-        widened = await provider_check(connection)
-        assert "aws" in widened and "gcp" in widened
+    def index_exists(sync):
+        return sync.execute(text(f"SELECT to_regclass('{CATEGORIES_INDEX}')::text")).scalar_one() is not None
 
-        await connection.run_sync(run(share_links, share_links.downgrade))
-        await connection.run_sync(run(providers, providers.downgrade))
-        await connection.run_sync(run(base, base.downgrade))
-        for table in TABLES:
-            assert (await connection.execute(text(f"SELECT to_regclass('{table}')::text"))).scalar_one() is None
-        await connection.run_sync(run(base, base.upgrade))
-        await connection.run_sync(run(providers, providers.upgrade))
-        await connection.run_sync(run(share_links, share_links.upgrade))
-        assert (await connection.execute(text("SELECT to_regclass('hosted_application_covers')::text"))).scalar_one()
+    # A sync (psycopg2) connection, not the fixture's asyncpg one: ``f8d24a6c0b17``'s unsplit multi-statement DDL
+    # cannot run through asyncpg's extended protocol (see ``sync_migration_connection``'s docstring).
+    with sync_migration_connection(os.environ["HOSTED_TEST_DATABASE_URL"], schema) as sync:
+        context = MigrationContext.configure(sync)
+        for migration in (base, share_links, categories):
+            migration.op = Operations(context)
+
+        with context.begin_transaction():
+            assert column_exists(sync)
+            assert index_exists(sync)
+
+            categories.downgrade()
+            assert not column_exists(sync)
+            assert not index_exists(sync)
+            categories.upgrade()
+            assert column_exists(sync)
+            assert index_exists(sync)
+
+            categories.downgrade()
+            share_links.downgrade()
+            share_links.upgrade()
+            categories.upgrade()
+
+            categories.downgrade()
+            share_links.downgrade()
+            base.downgrade()
+            for table in TABLES:
+                assert sync.execute(text(f"SELECT to_regclass('{table}')::text")).scalar_one() is None
+            base.upgrade()
+            share_links.upgrade()
+            categories.upgrade()
+            assert sync.execute(text("SELECT to_regclass('hosted_application_covers')::text")).scalar_one()

@@ -23,12 +23,14 @@ from codemie.core.hosted_applications.errors import HostedApplicationError
 from codemie.rest_api.models.hosted_application_requests import (
     AppCreate,
     AppPatch,
+    PublishRequest,
     VersionCreate,
     VersionSelection,
     UploadComplete,
 )
 from codemie.rest_api.models.user_management import UserDB
 from codemie.service.hosted_applications.thumbnails import HostedThumbnailService
+from tests.codemie.service.hosted_applications.conftest import CATEGORY_A
 
 
 async def activate(service, owner, app, version_id):
@@ -47,7 +49,9 @@ async def share_with_project(service, owner, app, version_id):
 async def publish_to_marketplace(service, owner, app, version_id):
     """Activate ``version_id`` and list the application in the marketplace."""
     activated = await activate(service, owner, app, version_id)
-    return await service.publish(owner, app['id'], activated['etag'], str(uuid4()))
+    return await service.publish(
+        owner, app['id'], PublishRequest(categories=[CATEGORY_A]), activated['etag'], str(uuid4())
+    )
 
 
 def png(width=320, height=180):

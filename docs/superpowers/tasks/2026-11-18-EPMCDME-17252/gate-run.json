@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "branch": "feature/EPMCDME-17252",
+  "head": "38ee2451e8205a096c66a8cc2b9c3a8d40e9f7f0",
+  "runner": "poetry",
+  "started_at": "2026-11-18T15:08:52Z",
+  "completed_at": "2026-11-18T15:12:43Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2266,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "3799 files unchanged; no working-tree changes after format/fix."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7466,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2229,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "3472 files, 0 missing headers"
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 4598,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "From pre-push hook. src/external/alembic 220 files OK, alembic_cli_analytics 14 OK."
+    },
+    {
+      "id": "affected-tests",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 85823,
+      "command": "HOSTED_TEST_DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/hosted_test poetry run pytest tests/codemie/service/hosted_applications tests/codemie/core/hosted_applications tests/codemie/rest_api/routers/test_hosted_applications_router.py tests/codemie/rest_api/models/test_category_ids.py tests/codemie/service/assistant/test_category_service.py tests/codemie/rest_api/router_guards -W ignore::DeprecationWarning",
+      "exit_code": 1,
+      "notes": "Run 1 (log test.local.rerun3.log, default pytest.ini xdist): 3 failed, 1857 passed, 37 skipped. Known pre-existing (fail on base 06aabf5ffa, not counted): test_purge.py::test_a_locked_managed_app_moved_to_purging_after_the_unlocked_read_answers_not_found and test_runtime_isolation.py::test_failed_link_insert_leaves_the_token_out_of_logs_and_exception_text, same tests as previous run. Blocking per caller rule: test_uploads.py::test_upload_writer_gets_claim_lease_and_renewals failed (test_uploads.py:380 assert storage.renewed == beats; 'Right contains one more item'). It was flaky in previous run 2 as well; neither test_uploads.py nor receiving.py changed vs merge base; it passed when run alone and in run 2 (log test.local.rerun4.log: 2 failed = only the known pre-existing ones, 1858 passed, 37 skipped, 66s). Caller decides whether to treat it as flake. test_schema_parity.py passed under default xdist in both full runs (fixed by 38ee2451e8), and alone with test_uploads.py (29 passed)."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test",
+      "exit_code": null,
+      "notes": "User policy: MR targets main, CI covers this gate; skipped locally."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "User policy: MR targets main, CI covers this gate; skipped locally. Pre-commit codemie-gitleaks only scans the staged diff."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "User policy: MR targets main, CI covers this gate; skipped locally."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Needs full docker stack and superadmin fixtures; MR-description evidence is a separate caller step."
+    }
+  ],
+  "failures": {
+    "affected-tests": "        async def slow():\n            await asyncio.sleep(0.15)\n            yield original\n    \n        await service.transfer(context, app[\"id\"], version[\"version_id\"], 1, version[\"upload_etag\"], slow())\n        assert storage.opened_lease == claims[0][\"lease\"]\n        assert claims[0][\"lease\"].received_at in issued\n        assert len(beats) >= 3, \"the post-lock check and at least two loop heartbeats\"\n>       assert storage.renewed == beats\nE       assert [WriterLease(...=1006.0), ...] == [WriterLease(...=1006.0), ...]\nE         \nE         Right contains one more item: WriterLease(until=datetime.datetime(2026, 11, 18, 15, 10, 39, 678746, tzinfo=datetime.timezone.utc), database_now=datetime.datetime(2026, 11, 18, 15, 10, 9, 678746, tzinfo=datetime.timezone.utc), received_at=1008.0)\nE         Use -v to get more diff\n\ntests/codemie/service/hosted_applications/test_uploads.py:380: AssertionError\nFAILED tests/codemie/service/hosted_applications/test_runtime_isolation.py::test_failed_link_insert_leaves_the_token_out_of_logs_and_exception_text\nFAILED tests/codemie/service/hosted_applications/test_purge.py::test_a_locked_managed_app_moved_to_purging_after_the_unlocked_read_answers_not_found\nFAILED tests/codemie/service/hosted_applications/test_uploads.py::test_upload_writer_gets_claim_lease_and_renewals\n====== 3 failed, 1857 passed, 37 skipped, 7 warnings in 78.78s (0:01:18) ======="
+  }
+}
