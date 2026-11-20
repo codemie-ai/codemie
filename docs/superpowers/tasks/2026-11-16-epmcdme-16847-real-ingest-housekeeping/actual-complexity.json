@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "generated": "2026-11-17T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 4,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Shared real_work_sql filter (_log_filter, _span_filter, _no_model_request) feeds every session reader and the rollup; rollups.py fallback-end merge gains an idle-compaction repair. Core shared utility touched." },
+    { "dimension": "technical_risk", "reason": "New correlated EXISTS subqueries on log_events inside hot reader filters (performance), plus a repair of persisted ended_at/duration_ms guarded by the purged-tail check. No exact precedent for evidence-based shrinking of a monotonic merge. Covered by live-Postgres tests of edge cases (manual vs idle, provisional summary, purged head, interaction span)." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared SQL filter used by multiple readers and rollups"
+  ],
+  "split_recommendation": null,
+  "follow_up_assessment": {
+    "date": "2026-11-18",
+    "reviewed_head": "b9790186cd06ae659f18c63862dfc344c09b11f1",
+    "method": "Incremental assessment using the prior skill's six dimensions against the complete remediation delta.",
+    "files_changed": 4,
+    "total": 16,
+    "size": "M",
+    "reason": "The same two shared SQL modules, live-ingest test module and storage guide are affected. LLM span classification, NULL context and historical repair expand boundaries inside the existing persistence risk. No new dependencies or affected layers."
+  }
+}

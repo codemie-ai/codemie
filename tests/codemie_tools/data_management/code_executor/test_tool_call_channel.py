@@ -1075,10 +1075,11 @@ class ExecSerialityRunner:
 
 
 class ConcurrencyProbe:
-    """A handler that sleeps and records how many calls ran at the same time."""
+    """A handler that records concurrency while holding calls with a sleep or barrier."""
 
-    def __init__(self, hold: float = 0.15) -> None:
+    def __init__(self, hold: float = 0.15, barrier: threading.Barrier | None = None) -> None:
         self.hold: float = hold
+        self.barrier = barrier
         self.running: int = 0
         self.peak: int = 0
         self.seen: list[object] = []
@@ -1089,7 +1090,10 @@ class ConcurrencyProbe:
             self.running += 1
             self.peak = max(self.peak, self.running)
             self.seen.append(payload["name"])
-        time.sleep(self.hold)
+        if self.barrier is None:
+            time.sleep(self.hold)
+        else:
+            self.barrier.wait(timeout=10.0)
         with self._lock:
             self.running -= 1
         return {"result": payload["name"]}
@@ -1102,7 +1106,7 @@ def _batch(sdk: ModuleType, names: Sequence[str], timeout: float = 30.0) -> list
 class TestParallelCalls:
     def test_calls_of_a_batch_run_at_the_same_time_up_to_the_limit(self, workspace: Path, sdk: ModuleType) -> None:
         exchange_dir = _prepare(workspace, sdk)
-        probe = ConcurrencyProbe()
+        probe = ConcurrencyProbe(barrier=threading.Barrier(3))
         channel = _channel(
             LocalExecRunner(workspace), exchange_dir, handlers={"tool.call": probe}, max_parallel_calls=3
         )
@@ -1539,35 +1543,53 @@ class TestWithdrawnCalls:
     """A script that stops waiting removes its request file; the backend must stop spending effort on that call."""
 
     def test_a_queued_call_the_script_gave_up_on_never_starts_and_is_settled_as_withdrawn(
-        self, workspace: Path, sdk: ModuleType
+        self, workspace: Path, sdk: ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         exchange_dir = _prepare(workspace, sdk)
         entered = threading.Event()
         release = threading.Event()
+        withdrawn = threading.Event()
+        finished = threading.Event()
         started: list[object] = []
         settled: list[object] = []
+        withdrawn_ids: set[str] = set()
 
         def handler(payload: Mapping[str, object]) -> object:
             started.append(payload["name"])
             entered.set()
-            release.wait(timeout=20.0)
+            release.wait(timeout=30.0)
             return {"result": 1}
+
+        def on_settled(outcome: CallOutcome) -> None:
+            settled.append(outcome)
+            if len(settled) == 2:
+                finished.set()
 
         channel = _channel(
             LocalExecRunner(workspace),
             exchange_dir,
             handlers={"tool.call": handler},
             max_parallel_calls=1,
-            on_settled=settled.append,
+            on_settled=on_settled,
         )
+        original_withdraw = channel._withdraw
+
+        def observe_withdraw(call_ids: frozenset[str]) -> None:
+            original_withdraw(call_ids)
+            withdrawn_ids.update(call_ids)
+            if len(withdrawn_ids) == 2:
+                withdrawn.set()
+
+        # Preserve the actual withdrawal; observe its completion before freeing the worker.
+        monkeypatch.setattr(channel, "_withdraw", observe_withdraw)
         channel.start()
         try:
-            results = sdk.call_tools([{"name": "first"}, {"name": "second"}], timeout=1.0)
+            results = sdk.call_tools([{"name": "first"}, {"name": "second"}], timeout=10.0)
             assert [r.code for r in results] == ["timeout", "timeout"]
             assert entered.wait(timeout=5.0)
-            time.sleep(0.3)  # the channel notices the removed request files on its next polls
+            assert withdrawn.wait(timeout=5.0), "both removed requests must be observed before the worker is released"
             release.set()
-            time.sleep(0.4)
+            assert finished.wait(timeout=5.0), "both outcomes must settle before stopping the channel"
         finally:
             release.set()
             channel.stop()
@@ -1577,28 +1599,44 @@ class TestWithdrawnCalls:
         assert all(o.delivered is False and o.withdrawn is True for o in settled)  # type: ignore[attr-defined]
         assert list((workspace / exchange_dir).glob(f"{RESP_PREFIX}*")) == [], "no answer is written to nobody"
 
-    def test_the_answer_of_a_call_withdrawn_while_it_ran_is_dropped(self, workspace: Path, sdk: ModuleType) -> None:
+    def test_the_answer_of_a_call_withdrawn_while_it_ran_is_dropped(
+        self, workspace: Path, sdk: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         exchange_dir = _prepare(workspace, sdk)
         entered = threading.Event()
         release = threading.Event()
+        withdrawn = threading.Event()
+        finished = threading.Event()
         settled: list[object] = []
 
         def handler(payload: Mapping[str, object]) -> object:
             entered.set()
-            release.wait(timeout=20.0)
+            release.wait(timeout=30.0)
             return {"result": 1}
 
+        def on_settled(outcome: CallOutcome) -> None:
+            settled.append(outcome)
+            finished.set()
+
         channel = _channel(
-            LocalExecRunner(workspace), exchange_dir, handlers={"tool.call": handler}, on_settled=settled.append
+            LocalExecRunner(workspace), exchange_dir, handlers={"tool.call": handler}, on_settled=on_settled
         )
+        original_withdraw = channel._withdraw
+
+        def observe_withdraw(call_ids: frozenset[str]) -> None:
+            original_withdraw(call_ids)
+            if call_ids:
+                withdrawn.set()
+
+        monkeypatch.setattr(channel, "_withdraw", observe_withdraw)
         channel.start()
         try:
-            result = sdk.call_tools([{"name": "slow"}], timeout=0.6)[0]
+            result = sdk.call_tools([{"name": "slow"}], timeout=10.0)[0]
             assert result.code == "timeout"
             assert entered.wait(timeout=5.0)
-            time.sleep(0.3)
+            assert withdrawn.wait(timeout=5.0), "the removed request must be observed before the answer is released"
             release.set()
-            time.sleep(0.4)
+            assert finished.wait(timeout=5.0)
         finally:
             release.set()
             channel.stop()

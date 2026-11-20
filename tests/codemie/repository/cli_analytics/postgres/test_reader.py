@@ -318,11 +318,25 @@ def _unscoped_fact_branches(sql: str) -> list[str]:
             scoped = any(
                 f"(#{i})" in branch and text in _SCOPE_SUBQUERIES for i, text in enumerate(nested)
             ) or re.search(r"\b(?:FROM|JOIN)\s+selp?\b", branch)
-            declared = {name for match in _DECLARED.finditer(branch) for name in match.groups() if name}
+            # FROM in PostgreSQL's NULL-safe comparison does not introduce a table alias.
+            declarations = re.sub(r"\bIS\s+(?:NOT\s+)?DISTINCT\s+FROM\b", "NULL_SAFE_COMPARISON", branch)
+            declared = {name for match in _DECLARED.finditer(declarations) for name in match.groups() if name}
             correlated = any(alias not in declared for alias in _QUALIFIED.findall(branch))
             if not (scoped or correlated):
                 unscoped.append(" ".join(branch.split()))
     return unscoped
+
+
+@pytest.mark.parametrize("comparison", ["IS DISTINCT FROM", "IS NOT DISTINCT FROM"])
+def test_fact_scope_recognizes_null_safe_correlations(comparison):
+    correlated = (
+        "SELECT 1 FROM log_events cm WHERE cm.session_id = r.session_id " f"AND cm.span_id {comparison} r.span_id"
+    )
+    unscoped = (
+        "SELECT 1 FROM log_events cm WHERE cm.session_id = cm.session_id " f"AND cm.span_id {comparison} cm.span_id"
+    )
+    assert _unscoped_fact_branches(correlated) == []
+    assert _unscoped_fact_branches(unscoped) == [unscoped]
 
 
 class _SqlRecorder:

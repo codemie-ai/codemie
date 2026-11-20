@@ -44,7 +44,7 @@ def text_array(values: tuple[str, ...]) -> str:
 # A local command (`/cost`, `/status`, `/exit`) is typed into a client and answered by the client itself: a prompt
 # record naming a command that has no model request on its span is not a turn, the rule `_REAL_TURN` of the rollup
 # applies. The record and the request are linked by the span id and sit within an hour of each other.
-_LINK_WINDOW = "interval '1 hour'"
+_LINK_WINDOW = "interval '3600 seconds'"
 _REQUEST_KINDS = f"{int(EventKind.API_REQUEST)}, {int(EventKind.API_ERROR)}"
 
 
@@ -56,10 +56,52 @@ def _near_span_log(alias: str, row: str) -> str:
     )
 
 
+def _manual_compaction(a: str, *, span: bool = False) -> str:
+    # A request span has its own id, while its API log and the compaction marker
+    # name the parent turn. NULL-safe equality preserves clients without trace context.
+    span_id = f"{a}.parent_span_id" if span else f"{a}.span_id"
+    return (
+        f"EXISTS (SELECT 1 FROM log_events cm WHERE cm.session_id = {a}.session_id "  # noqa: S608
+        f"AND cm.span_id IS NOT DISTINCT FROM {span_id} "
+        f"AND cm.trace_id IS NOT DISTINCT FROM nullif({a}.trace_id, ''::bytea) "
+        f"AND cm.ts >= {a}.ts AND cm.ts <= {a}.ts + {_LINK_WINDOW} "
+        "AND cm.event_name = 'compaction' AND cm.attrs->>'trigger' = 'manual')"
+    )
+
+
+def real_model_request(a: str) -> str:
+    """The model-request evidence shared by activity filters and turn counting."""
+    manual = _manual_compaction(a)
+    return f"({a}.event_kind IN ({_REQUEST_KINDS}) AND ({a}.query_source IS DISTINCT FROM 'compact' OR {manual}))"
+
+
+def _compact_span(a: str) -> str:
+    return (
+        f"({a}.span_kind = {int(SpanKind.LLM_REQUEST)} "
+        f"AND coalesce({a}.attrs->>'query_source_safe', {a}.attrs->>'query_source') = 'compact')"
+    )
+
+
+def idle_compaction_at(session_id: str, timestamp: str) -> str:
+    """Retained raw evidence that the exact stored end is an excluded compact log or span."""
+    log = (
+        "EXISTS (SELECT 1 FROM log_events ic "  # noqa: S608
+        f"WHERE ic.session_id = {session_id} AND ic.ts = {timestamp} "
+        f"AND ic.event_kind IN ({_REQUEST_KINDS}) AND ic.query_source = 'compact' "
+        f"AND NOT {real_model_request('ic')})"
+    )
+    span = (
+        "EXISTS (SELECT 1 FROM spans cs "  # noqa: S608
+        f"WHERE cs.session_id = {session_id} AND cs.ts = {timestamp} "
+        f"AND {_compact_span('cs')} AND NOT {_manual_compaction('cs', span=True)})"
+    )
+    return f"({log} OR {span})"
+
+
 def _no_model_request(row: str) -> str:
     return (
         f"NOT EXISTS (SELECT 1 FROM log_events rq WHERE {_near_span_log('rq', row)} "  # noqa: S608 - code constants
-        f"AND rq.event_kind IN ({_REQUEST_KINDS}))"
+        f"AND {real_model_request('rq')})"
     )
 
 
@@ -71,6 +113,7 @@ def _log_filter(a: str) -> str:
     return (
         f" AND {a}.event_kind <> {int(EventKind.OTHER)}"
         f" AND coalesce({a}.command_name, '') <> ALL({text_array(BUILTIN_COMMAND_NAMES)})"
+        f" AND ({a}.event_kind NOT IN ({_REQUEST_KINDS}) OR {real_model_request(a)})"
         f" AND NOT ({_is_command_prompt(a)} AND {_no_model_request(a)})"
     )
 
@@ -82,15 +125,16 @@ def _typed_prompt(alias: str) -> str:
 def _span_filter(a: str) -> str:
     """Spans of any kind but OTHER. An interaction span is a turn only on evidence stored on its own span (a model
     request or a typed prompt): a local command has neither, and a span exported before its records, or whose command
-    record carries no span id, has no evidence yet. Evidence stored later is real work by itself, and the stored end
-    never goes back, so a span must not count on a guess."""
+    record carries no span id, has no evidence yet. A compact LLM request is activity only on a manual marker
+    matching its parent turn; ordinary LLM request spans keep their existing behavior without a log."""
     evidence = (
         f"EXISTS (SELECT 1 FROM log_events ev WHERE {_near_span_log('ev', a)} "  # noqa: S608 - code constants
-        f"AND (ev.event_kind IN ({_REQUEST_KINDS}) OR {_typed_prompt('ev')}))"
+        f"AND ({real_model_request('ev')} OR {_typed_prompt('ev')}))"
     )
     return (
         f" AND {a}.span_kind <> {int(SpanKind.OTHER)}"
         f" AND ({a}.span_kind <> {int(SpanKind.INTERACTION)} OR {evidence})"
+        f" AND (NOT coalesce({_compact_span(a)}, false) OR {_manual_compaction(a, span=True)})"
     )
 
 

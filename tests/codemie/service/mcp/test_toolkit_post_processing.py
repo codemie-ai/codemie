@@ -82,6 +82,7 @@ def test_embedded_blob_becomes_workspace_link(storage):
         ("bundle.zip", "application/zip", _xlsx_bytes()),
         ("summary.pdf", "application/pdf", b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"),
     ],
+    ids=("zip", "pdf"),
 )
 def test_zip_and_pdf_blobs_round_trip(storage, file_name, mime, data):
     workspace, _ = storage

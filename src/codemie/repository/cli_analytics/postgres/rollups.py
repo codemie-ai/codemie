@@ -60,7 +60,11 @@ from codemie.repository.cli_analytics.postgres.dirty import (
 from codemie.repository.cli_analytics.postgres.engine import CLIENT_TIMEOUT_MARGIN_S, AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.maintenance import TODAY_UTC_SQL
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES, MAX_PATH_BYTES
-from codemie.repository.cli_analytics.postgres.real_work_sql import real_work_filter
+from codemie.repository.cli_analytics.postgres.real_work_sql import (
+    idle_compaction_at,
+    real_model_request,
+    real_work_filter,
+)
 from codemie.repository.cli_analytics.postgres.route_identity import group_model, routed_model_name
 from codemie.repository.cli_analytics.postgres.session_activity import derive_session_activity
 from codemie.repository.cli_analytics.postgres.session_derived import update_session_derived
@@ -1432,6 +1436,15 @@ _SUMMARY_ONLY_COUNTERS = ("tool_calls", "tool_errors", "tools")
 _STORED_FROM_SUMMARY = "(sd.attrs->>'tool_counters' = 'summary_only')"
 
 
+# Normally preserve the stored tail after raw retention. Shrink it only when
+# current raw data identifies the exact old end as a late compaction request.
+_FALLBACK_END = (
+    f"CASE WHEN EXCLUDED.ended_at < sd.ended_at AND NOT {_PURGED_TAIL} "
+    f"AND {idle_compaction_at('sd.session_id', 'sd.ended_at')} THEN EXCLUDED.ended_at "
+    "ELSE greatest(sd.ended_at, EXCLUDED.ended_at) END"
+)
+
+
 def _counter_set(column: str) -> str | None:
     """The merge of a counter column, or None for a column that is not one."""
     written = f"coalesce(EXCLUDED.{column}, sd.{column})"
@@ -1450,11 +1463,9 @@ def _counter_set(column: str) -> str | None:
     fallback = {
         # The tail rule: the earlier start, the later end; without a purged tail these are the new values.
         "activity_started_at": "least(sd.activity_started_at, EXCLUDED.activity_started_at)",
-        "ended_at": "greatest(sd.ended_at, EXCLUDED.ended_at)",
+        "ended_at": _FALLBACK_END,
         "duration_ms": "coalesce("
-        + _ms_between(
-            "greatest(sd.ended_at, EXCLUDED.ended_at)", "least(sd.activity_started_at, EXCLUDED.activity_started_at)"
-        )
+        + _ms_between(_FALLBACK_END, "least(sd.activity_started_at, EXCLUDED.activity_started_at)")
         + ", sd.duration_ms)",
         # Accumulating: the stored versions plus the one found, if new.
         "client_versions": "CASE WHEN EXCLUDED.client_versions IS NULL "
@@ -1815,7 +1826,7 @@ def _near_span(alias: str) -> str:
 _SPAN_PROMPT = f"AND l.span_id = s.span_id AND l.event_kind = {int(EventKind.USER_PROMPT)}"
 _NO_SPAN_REQUEST = (
     f"NOT EXISTS (SELECT 1 FROM log_events r WHERE {_near_span('r')} AND r.span_id = s.span_id "
-    f"AND r.event_kind IN ({int(EventKind.API_REQUEST)}, {int(EventKind.API_ERROR)}))"
+    f"AND {real_model_request('r')})"
 )
 _IS_PROMPT_HOOK = f"h.event_type = {_literal(_PROMPT_SUBMIT)}"
 _REAL_TURN = (

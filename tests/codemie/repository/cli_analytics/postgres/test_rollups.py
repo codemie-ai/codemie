@@ -1016,9 +1016,17 @@ def test_real_turn_excludes_auto_prompts_commands_and_injected_messages_without_
     # lookups (never a JOIN that could count a span twice), every one bounded by session and 1 h of the span's ts.
     w = "interval '3600 seconds'"
     near = "s.session_id AND {a}.ts >= s.ts - " + w + " AND {a}.ts <= s.ts + " + w
+    manual = (
+        "EXISTS (SELECT 1 FROM log_events cm WHERE cm.session_id = r.session_id "
+        "AND cm.span_id IS NOT DISTINCT FROM r.span_id "
+        "AND cm.trace_id IS NOT DISTINCT FROM nullif(r.trace_id, ''::bytea) "
+        f"AND cm.ts >= r.ts AND cm.ts <= r.ts + {w} "
+        "AND cm.event_name = 'compaction' AND cm.attrs->>'trigger' = 'manual')"
+    )
     no_request = (
         f"NOT EXISTS (SELECT 1 FROM log_events r WHERE r.session_id = {near.format(a='r')} "
-        "AND r.span_id = s.span_id AND r.event_kind IN (1, 6))"
+        "AND r.span_id = s.span_id AND (r.event_kind IN (1, 6) "
+        f"AND (r.query_source IS DISTINCT FROM 'compact' OR {manual})))"
     )
     expected = (
         # an auto prompt: the span's user_prompt has the prompt_id of a Claude Code agent.prompt.submit hook that

@@ -1,0 +1,44 @@
+{
+  "decision": "approve",
+  "rationale": "All four lenses and standards ran; acceptance criteria all pass and both prior findings (CR-001, CR-002) are covered by live tests. 16 lens candidates dismissed as speculative or unchanged-design edge cases (e.g. 1h manual-marker link window, NULL span ids, _PURGED_TAIL confirmed defined at rollups.py:1071); confidence medium because only a spot reachability check was done and the new tests need TEST_LOCAL_PG_URL.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "A late idle compact request does not extend the session", "status": "pass", "notes": "Covered across ingest, stale reader, refreshed rollup, list/detail, span-filter."},
+    {"kind": "spec", "item": "Manual compaction and real late calls remain activity", "status": "pass", "notes": "Manual marker within link window keeps activity; late API/tool case tested."},
+    {"kind": "spec", "item": "Historical correction requires evidence and unpurged tail", "status": "pass", "notes": "Repair only on exact excluded request, prior activity, NOT _PURGED_TAIL; tested."},
+    {"kind": "spec", "item": "Billing input is preserved", "status": "pass", "notes": "Only reader/rollup SQL filters and docs changed; compact api_request row remains."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "5 subjects in range all match EPMCDME-####: Description"},
+    {"kind": "code-quality", "status": "pass", "notes": "idle-compaction SQL helpers in real_work_sql.py; rollups.py gets small wiring change; typed signatures."},
+    {"kind": "security", "status": "pass", "notes": "SQL fragments built from code constants and aliases only; no user input interpolated."}
+  ],
+  "findings": [],
+  "deferred": [],
+  "follow_up_review": {
+    "date": "2026-11-18",
+    "method": "Scoped source and consumer review of reviewer remediation; prior full skill review retained above.",
+    "reviewed_head": "b9790186cd06ae659f18c63862dfc344c09b11f1",
+    "base": "2264ea12a6",
+    "decision": "approve",
+    "findings": [],
+    "reviewer_discussions": {
+      "3ebf2b51c93173a93d15d6c1d834486d96b50e62": "Confirmed on baseline; compact LLM spans now share manual-compaction eligibility with logs. Historical span ends are repairable.",
+      "393c13181ae3c2cb6760500ec7648c6fd02dca45": {
+        "a": "MR description updated to final behavior; follow-up commit records rationale. Previous harness evidence retained with its revision limitation.",
+        "b": "NULL-safe manual-marker matching verified through real ingest with and without trace context, including span-only reads.",
+        "c": "Turn rollup now uses the same real-model-request predicate; compact-only and ordinary-command controls pass.",
+        "d": "Repair no longer needs a previous request or reused span. Tests cover own-span compact requests after two hours and both stored log/span ends. Retention and summary limits documented.",
+        "e": "Periodic metric fixtures now use T+60 s, retention_sweep T+607 s."
+      }
+    },
+    "verification": {
+      "baseline": "2264ea12a6 compact LLM span reproduces 3260724 ms instead of 8700 ms.",
+      "live_and_sql": "25 cases verified across scoped runs: 23 passed; two historical-repair setups corrected and both passed on rerun.",
+      "sibling_coverage": "98 existing live reopen cases passed during remediation. Reused for unchanged behavior.",
+      "quality": "Ruff 0.5.7 format/check and git diff --check passed.",
+      "full_harness": "Not rerun for this follow-up."
+    }
+  }
+}
