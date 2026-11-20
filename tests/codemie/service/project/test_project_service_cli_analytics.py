@@ -145,6 +145,7 @@ def test_create_grants_creator_project_admin_on_the_request_user_without_global_
         patch.object(ProjectService, "ensure_chat_model_allowed"),
         patch("codemie.service.project.project_service.llm_service") as llm,
     ):
+        llm.assert_model_selectable = MagicMock()
         llm.get_allowed_chat_models.return_value = [MagicMock(deployment_name="gpt-x")]
         ProjectService.create_shared_project(user, "proj-name")
 

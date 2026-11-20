@@ -159,6 +159,11 @@ class ProjectService:
         ALLOWED_MODELS_UNAUTHORIZED="Only project admins and maintainers can update allowed models",
         DEFAULT_MODEL_REQUIRED_WITH_ALLOWED_MODELS="default_model is required when allowed_models is set",
         DEFAULT_MODEL_NOT_AVAILABLE="default_model is not an available chat model: {model}",
+        NO_AVAILABLE_DEFAULT_MODEL="No enabled web-available model exists to use as the project default",
+        ALLOWED_MODEL_DISABLED=(
+            "Model '{model}' is disabled and cannot be added to allowed_models; choose an available model"
+        ),
+        DEFAULT_MODEL_DISABLED="default_model '{model}' is disabled; choose an available default model",
     )
 
     @classmethod
@@ -266,7 +271,17 @@ class ProjectService:
         validated_models = cls.validate_allowed_models(deployment_names)
         cls.ensure_chat_model_allowed(validated_models)
         project.allowed_models = None
-        project.default_model = next(m.deployment_name for m in models if m.forbidden_for_web is not True)
+        default_model = next(
+            (
+                m.deployment_name
+                for m in models
+                if m.forbidden_for_web is not True and not cls._is_disabled_model(m.deployment_name)
+            ),
+            None,
+        )
+        if default_model is None:
+            raise ExtendedHTTPException(code=400, message=cls.ERRORS.NO_AVAILABLE_DEFAULT_MODEL)
+        project.default_model = default_model
 
         activity_event_repository.insert(
             ActivityEventCreate(
@@ -930,6 +945,44 @@ class ProjectService:
             )
 
     @classmethod
+    def _is_disabled_model(cls, model_name: str) -> bool:
+        """True when the model is Disabled; deprecated and unknown models are not."""
+        try:
+            llm_service.assert_model_selectable(model_name, allow_deprecated=True)
+        except ModelNotSelectableError:
+            return True
+        return False
+
+    @staticmethod
+    def _is_unchanged_default(model_name: str, stored_default: str | None) -> bool:
+        """True when model_name is the stored default, under either of its catalog names."""
+        if not stored_default:
+            return False
+        if model_name == stored_default:
+            return True
+        from codemie.service.llm.model_availability_service import model_aliases
+
+        return bool(model_aliases(model_name) & model_aliases(stored_default))
+
+    @classmethod
+    def _assert_new_models_not_disabled(
+        cls, validated_models: list[str] | None, stored_models: list[str] | None
+    ) -> None:
+        """Reject Disabled models newly added to the list; names already stored stay allowed."""
+        if not validated_models:
+            return
+        from codemie.service.llm.model_availability_service import model_aliases
+
+        stored_aliases: set[str] = set()
+        for stored in stored_models or []:
+            stored_aliases |= model_aliases(stored)
+        for name in validated_models:
+            if model_aliases(name) & stored_aliases:
+                continue
+            if cls._is_disabled_model(name):
+                raise ExtendedHTTPException(code=400, message=cls.ERRORS.ALLOWED_MODEL_DISABLED.format(model=name))
+
+    @classmethod
     def update_allowed_models(
         cls,
         user: User,
@@ -944,6 +997,7 @@ class ProjectService:
         with get_session() as session:
             project = cls._find_project(session, project_name)
             cls._check_allowed_models_authorization(project, user)
+            cls._assert_new_models_not_disabled(validated_models, project.allowed_models)
 
             effective_default_model = default_model if default_model is not None else project.default_model
             cls.validate_default_model(effective_default_model, validated_models)
@@ -953,9 +1007,15 @@ class ProjectService:
             if effective_default_model:
                 try:
                     llm_service.assert_model_selectable(
-                        effective_default_model, previous_model_name=project.default_model
+                        effective_default_model,
+                        allow_deprecated=cls._is_unchanged_default(effective_default_model, project.default_model),
                     )
                 except ModelNotSelectableError as exc:
+                    if cls._is_disabled_model(effective_default_model):
+                        raise ExtendedHTTPException(
+                            code=400,
+                            message=cls.ERRORS.DEFAULT_MODEL_DISABLED.format(model=effective_default_model),
+                        ) from exc
                     raise ExtendedHTTPException(code=400, message="Model not selectable", details=str(exc)) from exc
 
             if validated_models is not None and effective_default_model is None:

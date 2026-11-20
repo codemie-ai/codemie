@@ -359,6 +359,52 @@ class TestModelFilteringByProject:
         assert len(response) == 5
 
 
+class TestReenabledModelOnProjects:
+    """AC6: a model that goes Disabled -> Enabled reaches "all models" projects with no write,
+    and never joins an explicit allowed_models list."""
+
+    @staticmethod
+    def _models(status):
+        return [
+            LLMModel(base_name="stable", deployment_name="stable", enabled=True, label="Stable"),
+            LLMModel(base_name="flipped", deployment_name="flipped", enabled=True, label="Flipped", status=status),
+        ]
+
+    @staticmethod
+    def _visible(models):
+        from codemie.configs.llm_config import ModelStatus
+
+        return [m for m in models if m.enabled and m.status != ModelStatus.DISABLED]
+
+    def test_all_models_project_includes_reenabled_model_without_write(self, mock_project):
+        from codemie.configs.llm_config import ModelStatus
+        from codemie.service.llm_service.llm_service import llm_service
+
+        mock_project.allowed_models = None
+        models = self._models(ModelStatus.DISABLED)
+
+        before = llm_service._filter_models_by_project(self._visible(models), mock_project)
+        models[1].status = ModelStatus.ENABLED
+        after = llm_service._filter_models_by_project(self._visible(models), mock_project)
+
+        assert [m.base_name for m in before] == ["stable"]
+        assert [m.base_name for m in after] == ["stable", "flipped"]
+        assert mock_project.allowed_models is None
+
+    def test_explicit_list_project_does_not_gain_reenabled_model(self, mock_project):
+        from codemie.configs.llm_config import ModelStatus
+        from codemie.service.llm_service.llm_service import llm_service
+
+        mock_project.allowed_models = ["stable"]
+        mock_project.default_model = "stable"
+        models = self._models(ModelStatus.ENABLED)
+
+        result = llm_service._filter_models_by_project(self._visible(models), mock_project)
+
+        assert [m.base_name for m in result] == ["stable"]
+        assert mock_project.allowed_models == ["stable"]
+
+
 class TestModelRestrictionsInAssistantCreation:
     """Tests for model filtering in assistant creation flow."""
 

@@ -359,6 +359,7 @@ def real_create_service():
         patch("codemie.service.project.project_service.ProjectService.ensure_chat_model_allowed"),
     ):
         get_session.return_value.__enter__.return_value = MagicMock()
+        llm.assert_model_selectable = MagicMock()
         llm.get_allowed_chat_models.return_value = [MagicMock(deployment_name="gpt-x")]
         app_repo.get_by_name_case_insensitive.return_value = None
         app_repo.create.return_value = Application(

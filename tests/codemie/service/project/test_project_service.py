@@ -23,7 +23,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from codemie.configs import config
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
 from codemie.rest_api.security.user import User
 from codemie.service.activity.activity_models import ProjectManagementEvent
 from codemie.service.project.project_service import ProjectService
@@ -353,6 +353,7 @@ class TestCreateSharedProjectInSession:
         mock_application_repository.get_by_name_case_insensitive.return_value = None
         project = SimpleNamespace(name="epm-aimf")
         mock_application_repository.create.return_value = project
+        mock_llm_service.assert_model_selectable = MagicMock()
         mock_llm_service.get_allowed_chat_models.return_value = [
             SimpleNamespace(deployment_name=m, forbidden_for_web=m in cli_only) for m in models
         ]
@@ -479,6 +480,49 @@ class TestCreateSharedProjectInSession:
 
         assert project.allowed_models is None
         assert project.default_model == "gpt-4o"
+
+    def test_create_shared_project_default_skips_disabled_model(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
+        self._prepare(mock_application_repository, mock_llm_service, models=("disabled-m", "gpt-4o"))
+
+        def _selectable(name, **_kwargs):
+            if name == "disabled-m":
+                raise ModelNotSelectableError(name, "model is not available")
+
+        mock_llm_service.assert_model_selectable = MagicMock(side_effect=_selectable)
+
+        project = ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
+
+        assert project.default_model == "gpt-4o"
+        assert project.allowed_models is None
+
+    def test_create_shared_project_no_enabled_default_raises_400(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
+        self._prepare(mock_application_repository, mock_llm_service, models=("a", "b"))
+        mock_llm_service.assert_model_selectable = MagicMock(
+            side_effect=ModelNotSelectableError("x", "model is not available")
+        )
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
+
+        assert exc_info.value.code == 400
 
     def test_writes_project_created_activity_event(
         self,
@@ -1008,7 +1052,7 @@ class TestUpdateAllowedModelsNullListDefault:
 
     @pytest.fixture
     def harness(self):
-        project = SimpleNamespace(name="p", default_model="stored-default")
+        project = SimpleNamespace(name="p", default_model="stored-default", allowed_models=None)
         aliases = {
             "gpt-4o": {"gpt-4o", "gpt-4o-deployment"},
             "gpt-4o-deployment": {"gpt-4o", "gpt-4o-deployment"},
@@ -1075,6 +1119,136 @@ class TestUpdateAllowedModelsNullListDefault:
 
         ensure_default.assert_not_called()
         assert harness.persist.call_args.args[2:4] == (["gpt-4o-deployment"], "gpt-4o-deployment")
+
+
+class TestUpdateAllowedModelsDisabledModels:
+    ALIASES = {
+        "gpt-4o": {"gpt-4o", "gpt-4o-deployment"},
+        "gpt-4o-deployment": {"gpt-4o", "gpt-4o-deployment"},
+    }
+
+    @pytest.fixture
+    def harness(self):
+        state = SimpleNamespace(
+            project=SimpleNamespace(name="p", default_model="A", allowed_models=["A"]),
+            disabled=set(),
+            deprecated=set(),
+        )
+
+        def _selectable(name, *, previous_model_name=None, allow_deprecated=False):
+            if name in state.disabled:
+                raise ModelNotSelectableError(name, "model is not available")
+            if name in state.deprecated and not allow_deprecated:
+                raise ModelNotSelectableError(name, "model is deprecated")
+
+        with (
+            patch("codemie.service.project.project_service.get_session"),
+            patch.object(ProjectService, "_find_project", return_value=state.project),
+            patch.object(ProjectService, "_check_allowed_models_authorization"),
+            patch.object(ProjectService, "_persist_allowed_models") as persist,
+            patch.object(ProjectService, "ensure_chat_model_allowed"),
+            patch.object(ProjectService, "validate_allowed_models", side_effect=lambda m: m),
+            patch.object(ProjectService, "validate_default_model"),
+            patch.object(ProjectService, "ensure_default_model_available"),
+            patch("codemie.service.project.project_service.llm_service") as llm,
+            patch(
+                "codemie.service.llm.model_availability_service.model_aliases",
+                side_effect=lambda model: TestUpdateAllowedModelsDisabledModels.ALIASES.get(model, {model}),
+            ),
+        ):
+            llm.assert_model_selectable = MagicMock(side_effect=_selectable)
+            state.persist = persist
+            yield state
+
+    def test_update_allowed_models_rejects_newly_added_disabled_model(self, harness, regular_user):
+        harness.disabled = {"B"}
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.update_allowed_models(regular_user, "p", ["A", "B"], "A")
+
+        assert exc_info.value.code == 400
+        assert "B" in exc_info.value.message
+        harness.persist.assert_not_called()
+
+    def test_update_allowed_models_keeps_stored_disabled_name(self, harness, regular_user):
+        harness.project.allowed_models = ["A", "B"]
+        harness.disabled = {"B"}
+
+        ProjectService.update_allowed_models(regular_user, "p", ["A", "B", "C"], "A")
+
+        assert harness.persist.call_args.args[2] == ["A", "B", "C"]
+
+    def test_update_allowed_models_alias_form_not_treated_as_new(self, harness, regular_user):
+        harness.project.allowed_models = ["gpt-4o-deployment"]
+        harness.project.default_model = "A"
+        harness.disabled = {"gpt-4o"}
+
+        ProjectService.update_allowed_models(regular_user, "p", ["gpt-4o", "A"], "A")
+
+        harness.persist.assert_called_once()
+
+    def test_update_allowed_models_rejects_new_disabled_default(self, harness, regular_user):
+        harness.disabled = {"D"}
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.update_allowed_models(regular_user, "p", None, "D")
+
+        assert exc_info.value.code == 400
+        assert "D" in exc_info.value.message
+        assert "available" in exc_info.value.message
+        harness.persist.assert_not_called()
+
+    def test_update_allowed_models_rejects_stored_disabled_default_without_new_default(self, harness, regular_user):
+        harness.disabled = {"A"}
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.update_allowed_models(regular_user, "p", None, None)
+
+        assert exc_info.value.code == 400
+        assert "available" in exc_info.value.message
+        harness.persist.assert_not_called()
+
+    def test_update_allowed_models_stored_deprecated_default_still_saved(self, harness, regular_user):
+        harness.deprecated = {"A"}
+
+        ProjectService.update_allowed_models(regular_user, "p", None, None)
+
+        assert harness.persist.call_args.args[2:4] == (None, "A")
+
+    def test_update_allowed_models_stored_deprecated_default_saved_under_other_catalog_name(
+        self, harness, regular_user
+    ):
+        harness.project.default_model = "gpt-4o"
+        harness.deprecated = {"gpt-4o-deployment"}
+
+        ProjectService.update_allowed_models(regular_user, "p", None, "gpt-4o-deployment")
+
+        assert harness.persist.call_args.args[2:4] == (None, "gpt-4o-deployment")
+
+    def test_update_allowed_models_disabled_default_still_rejected_under_other_catalog_name(
+        self, harness, regular_user
+    ):
+        harness.project.default_model = "gpt-4o"
+        harness.disabled = {"gpt-4o-deployment"}
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.update_allowed_models(regular_user, "p", None, "gpt-4o-deployment")
+
+        assert "available" in exc_info.value.message
+        harness.persist.assert_not_called()
+
+    def test_update_allowed_models_new_deprecated_default_still_rejected(self, harness, regular_user):
+        harness.deprecated = {"N"}
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.update_allowed_models(regular_user, "p", None, "N")
+
+        assert exc_info.value.message == "Model not selectable"
+
+    def test_update_allowed_models_enabled_default_unchanged_behaviour(self, harness, regular_user):
+        ProjectService.update_allowed_models(regular_user, "p", ["A", "C"], "C")
+
+        assert harness.persist.call_args.args[2:4] == (["A", "C"], "C")
 
 
 class TestCheckAllowedModelsAuthorization:

@@ -1,0 +1,74 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-17444_reject-disabled-models-in-project-settings",
+ "head": "af53271a52542678228f874eed0da15591186c6c",
+ "runner": "poetry",
+ "started_at": "2026-11-18T20:20:00Z",
+ "completed_at": "2026-11-18T20:50:00Z",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 4616,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 14174,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license-check",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 3776,
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "gitleaks",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 50899,
+   "command": "MSYS_NO_PATHCONV=1 make gitleaks",
+   "exit_code": 0,
+   "notes": "no leaks found; needs MSYS_NO_PATHCONV=1 on Git Bash"
+  },
+  {
+   "id": "test-harness",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "make test-harness",
+   "exit_code": 0,
+   "notes": "Not re-run; PASSED earlier for this code: 189 passed, 4 skipped, 1 rerun, 0 failed. Log: test-harness.local.log"
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 632000,
+   "command": "docker: poetry run pytest tests/ -q -p no:cacheprovider -rfE --skip-enterprise (python:3.12-slim, git archive HEAD)",
+   "exit_code": 1,
+   "notes": "21 failed, 34925 passed, 2106 skipped, 5 xfailed, 1 error. 10 remaining are codemie_enterprise/mime env; 11 repo_hygiene are artifacts of no .git (pass on rerun). None in branch-touched code."
+  },
+  {
+   "id": "check-alembic",
+   "source": "hook",
+   "status": "PASS",
+   "duration_ms": 1231,
+   "command": "make check-alembic",
+   "exit_code": 0
+  }
+ ],
+ "failures": {
+  "unit": "FAILED tests/codemie/datasource/loader/test_git_loader.py (rar, woff, woff2 mime: 3 tests); test_svn_loader.py::test_rar_archive_is_unsupported\nFAILED tests/codemie/rest_api/routers/test_project_budget_router.py bulk tests (5; codemie_enterprise.litellm missing)\nFAILED tests/codemie/service/spend/test_attribution.py::TestTheEnumsAndComposersHaveNotDrifted::test_the_mirrored_project_composer_matches_its_source (codemie_enterprise)\nFAILED tests/codemie/test_repo_hygiene.py (11; no .git in git-archive copy; pass 11/11 when rerun with git init)\nERROR tests/enterprise/mcp_auth/test_discovery_cimd_disabled.py (collection; codemie_enterprise)\nFull output: unit-docker.local.log"
+ }
+}

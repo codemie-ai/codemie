@@ -1,0 +1,67 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved; no findings; one-line test fixture fix-up checked"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved; no findings"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved; no findings; one-line test fixture fix-up checked"
+    }
+  ],
+  "reviewed_head": "af53271a52542678228f874eed0da15591186c6c",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "Edge-case lens ran; no acceptance audit (no spec), so confidence is low. All 3 edge candidates were dismissed (1 pre-existing minor, 2 intended per task D4/AC5 and never-pick-disabled); see code-review-dismissed.local.md. 0 deferred, 0 advisory.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "2 subjects in range both match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new helpers in project_service.py are typed with modern unions; no new files so no license header concern; model validation is core to ProjectService so Module Cohesion rule is not broken"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no secrets, injection, or unsafe input handling in the change; new checks only tighten validation of model names with 400 responses"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "Edge-case lens ran; no acceptance audit (no spec), so confidence is low. All 3 edge candidates were dismissed (1 pre-existing minor, 2 intended per task D4/AC5 and never-pick-disabled); see code-review-dismissed.local.md. 0 deferred, 0 advisory.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}
