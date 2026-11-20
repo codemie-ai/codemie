@@ -541,7 +541,7 @@ class TestAllowedWithoutManageProjects:
 
         await _cancel(actor, client=_client(BUDGET_ONLY))
 
-        flow.service.delete_project_budget_group.assert_awaited_once_with(flow.session, group_id="g-1", actor_id="sa-1")
+        flow.service.delete_project_budget_group.assert_awaited_once_with(flow.session, group_id="g-1", actor=actor)
 
 
 @pytest.mark.anyio
@@ -576,7 +576,7 @@ class TestSetAndAdjust:
             600.0,
             "30d",
         )
-        assert flow.service.create_project_budget_group.call_args.kwargs == {"actor_id": "sa-1"}
+        assert flow.service.create_project_budget_group.call_args.kwargs == {"actor": actor}
         flow.service.get_project_budget_group.assert_awaited_once_with(flow.session, "g-new")
         assert result == ProvisioningBudgetResult(
             project_name="epm-aimf",
@@ -614,7 +614,7 @@ class TestSetAndAdjust:
         flow.service.create_project_budget_group.assert_not_awaited()
         update = flow.service.update_project_budget_group
         update.assert_awaited_once()
-        assert (update.call_args.kwargs["group_id"], update.call_args.kwargs["actor_id"]) == ("g-1", "sa-1")
+        assert (update.call_args.kwargs["group_id"], update.call_args.kwargs["actor"]) == ("g-1", actor)
         data = update.call_args.kwargs["data"]
         assert (data.name, data.budget_duration, data.description) == (None, None, None)
         assert data.total_amount == expected_total
@@ -712,7 +712,7 @@ class TestCancel:
 
         assert await _cancel(actor) is None
 
-        flow.service.delete_project_budget_group.assert_awaited_once_with(flow.session, group_id="g-1", actor_id="sa-1")
+        flow.service.delete_project_budget_group.assert_awaited_once_with(flow.session, group_id="g-1", actor=actor)
         flow.session.commit.assert_awaited_once()
         flow.sync.commit.assert_not_called()
 

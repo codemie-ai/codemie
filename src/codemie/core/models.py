@@ -55,8 +55,8 @@ from codemie.rest_api.models.base import (
     PydanticListType,
 )
 from codemie.rest_api.models.standard import PostResponse
-from sqlalchemy import Boolean, text, String as SQLString
-from sqlalchemy.dialects.postgresql import TIMESTAMP, ARRAY
+from sqlalchemy import Boolean, FetchedValue, text, String as SQLString, UniqueConstraint
+from sqlalchemy.dialects.postgresql import TIMESTAMP, ARRAY, UUID as PGUUID
 from sqlmodel import (
     SQLModel,
     Field as SQLField,
@@ -408,6 +408,10 @@ class Application(BaseModelWithSQLSupport, Owned, table=True):
         SHARED = "shared"
 
     name: str
+    project_instance_id: uuid.UUID = SQLField(
+        default_factory=uuid.uuid4,
+        sa_column=Column(PGUUID(as_uuid=True), nullable=False, server_default=FetchedValue()),
+    )
     display_name: Optional[str] = SQLField(default=None, max_length=150)
     description: Optional[str] = SQLField(default=None, max_length=500)  # Project description
     git_repos: list[GitRepo] = SQLField(default_factory=list, sa_column=Column(PydanticListType(GitRepo)))
@@ -426,6 +430,7 @@ class Application(BaseModelWithSQLSupport, Owned, table=True):
     # ix_applications_name_lower: UNIQUE functional index on LOWER(name)
     # for case-insensitive uniqueness (created by migration)
     __table_args__ = (
+        UniqueConstraint("project_instance_id", name="uq_applications_project_instance_id"),
         Index("ix_applications_name", "name", postgresql_using="gin", postgresql_ops={"name": "gin_trgm_ops"}),
         CheckConstraint("project_type IN ('personal', 'shared')", name="ck_applications_project_type"),
         CheckConstraint(

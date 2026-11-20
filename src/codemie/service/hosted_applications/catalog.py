@@ -803,13 +803,16 @@ class HostedApplicationCatalog(
         app.updated_at = tx.now
         # ``user`` is the platform ``User`` (``identity.user``); the link step only reads its id, username and name.
         # Revoking removes the link's grants with it; every remaining grant goes next, each removal audited.
-        await share_link_service.arevoke(tx.session, ResourceType.HOSTED_APPLICATION, app.id, user, app.project)
+        await share_link_service.arevoke(
+            tx.session, ResourceType.HOSTED_APPLICATION, app.id, user, app.project, label=app.name
+        )
         await named_grant_service.aremove_all_grants(
             actor=user,
             resource_type=ResourceType.HOSTED_APPLICATION,
             resource_id=app.id,
             project=app.project,
             session=tx.session,
+            label=app.name,
         )
         jobs = (
             (

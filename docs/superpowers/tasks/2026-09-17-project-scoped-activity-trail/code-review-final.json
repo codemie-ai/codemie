@@ -1,0 +1,99 @@
+{
+  "decision": "request-changes",
+  "rationale": "Three critical findings undermine the feature's core guarantee — scheduler-driven budget events (active_project_budget_restore_service.py, inactive_project_budget_stop_service.py, inactive_cost_center_budget_stop_service.py) and one project_budget_service.py update path silently stamp project_name=None despite the project being known, and customer_config_service.py's _audit() is the one remaining emit site with no actor_email/actor_display_name snapshot. Two major findings: an async authorization dependency runs a blocking sync DB call on every project-scoped request, and the new migration-safety test only mocks op-calls rather than verifying row values survive upgrade() against a real DB, leaving the spec's explicit no-mutation guarantee unverified end-to-end. 0 deferred; 9 findings across blind/edge-case/verification-gap lenses were reviewed and dismissed as noise, consistent pre-existing codebase conventions (e.g. request.state.user accessed without a None-guard, matching every other admin-check dependency in the file), or behavior the spec explicitly requires (ACTIVITY_EVENTS_ENABLED=false returning an empty page, not an error).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    { "kind": "spec", "item": "ActivityEvent gains project_name/actor_email/actor_display_name nullable columns + composite index", "status": "pass", "notes": "Columns and Index added and mirrored in the migration." },
+    { "kind": "spec", "item": "ActivityEventCreate mirrors the three fields as optional with null-means-absent validation", "status": "partial", "notes": "Fields added as Optional[str]=None but no validator rejects empty-string; low real-world risk since all call sites are internal." },
+    { "kind": "spec", "item": "New Alembic migration with down_revision resolved to the true current head", "status": "pass", "notes": "down_revision verified as true head at plan time." },
+    { "kind": "spec", "item": "Migration upgrade() only adds 3 nullable columns + 1 index, never touches protected columns on existing rows", "status": "pass", "notes": "upgrade() contains only add_column x3 + create_index; downgrade() reverses cleanly." },
+    { "kind": "spec", "item": "Migration-safety test asserting pre-existing row values are unchanged after upgrade", "status": "partial", "notes": "Test only mocks op-calls; never runs upgrade() against a real DB with real rows. See CR-005." },
+    { "kind": "spec", "item": "Write path: all ActivityEventCreate() emit sites get project_name + actor snapshot", "status": "fail", "notes": "customer_config_service.py's _audit() omits actor_email/actor_display_name; 3 scheduler sites and 1 project_budget_service path drop project_name. See CR-002/003/004." },
+    { "kind": "spec", "item": "personal_project_service.py site: project_name=None, actor snapshot set from actor", "status": "pass", "notes": "Confirmed at lines 613-615, covered by tests." },
+    { "kind": "spec", "item": "project_assignment_service.py's five sites pass project_name + actor snapshot, attributes unchanged", "status": "pass", "notes": "All 5 sites confirmed, covered by tests." },
+    { "kind": "spec", "item": "project_service.py's three sites pass the project's own name", "status": "pass", "notes": "create/update/delete all set project_name; delete correctly leaves actor snapshot None." },
+    { "kind": "spec", "item": "project_budget_service.py sites pass project_name from the owning assignment/group", "status": "partial", "notes": "Most sites correct, but update_project_budget's non-amount-change path drops project_name. See CR-003." },
+    { "kind": "spec", "item": "Scheduler sites with actor_id=None pass None for actor snapshot", "status": "pass", "notes": "Correct for actor fields, but project_name incorrectly also None. See CR-002." },
+    { "kind": "spec", "item": "User-management/auth/scheduler sites with no project context pass project_name=None", "status": "pass", "notes": "Confirmed consistent across authentication_service, registration_service, user_management_service." },
+    { "kind": "spec", "item": "No change to attributes JSON shape at any emit site", "status": "pass", "notes": "Only new kwargs added; attributes= untouched everywhere." },
+    { "kind": "spec", "item": "SQLActivityEventRepository gains find_by_project mirroring find_all's shape", "status": "pass", "notes": "Single conditions list reused for count and data queries, matching find_all." },
+    { "kind": "spec", "item": "find_by_project filters + orders with created_at DESC, id DESC tie-break", "status": "pass", "notes": "Confirmed at activity_repository.py:348-360; regression tests assert exact ORDER BY." },
+    { "kind": "spec", "item": "find_by_project selects snapshot actor fields, COALESCE to UserDB join for pre-migration rows", "status": "pass", "notes": "Confirmed func.coalesce over an outerjoin at lines 353-357." },
+    { "kind": "spec", "item": "find_all/global endpoint keep exact current behavior", "status": "pass", "notes": "find_all untouched; regression test asserts no project_name filter or id tie-break." },
+    { "kind": "spec", "item": "find_by_project gated by ACTIVITY_EVENTS_ENABLED, empty result when false", "status": "pass", "notes": "Confirmed: early return [] ,0 before any query, at lines 328-329." },
+    { "kind": "spec", "item": "ActivityEventService gains list_project_events mirroring list_events", "status": "pass", "notes": "Same session/PostgresClient orchestration shape confirmed." },
+    { "kind": "spec", "item": "New router GET /v1/projects/{project_name}/activity-events", "status": "pass", "notes": "Confirmed router prefix and authenticate dependency." },
+    { "kind": "spec", "item": "New authorization dependency: admin/maintainer or project-admin via is_admin, else 403", "status": "pass", "notes": "Confirmed logic correct, though implemented with a blocking sync call. See CR-001." },
+    { "kind": "spec", "item": "Denial returns no events/counts/existence info", "status": "pass", "notes": "403 raised before any query runs; generic message, no leakage." },
+    { "kind": "spec", "item": "Filters accepted: domain, event_type, actor_id, from/to, sort_dir, limit, offset", "status": "pass", "notes": "Confirmed query params match exactly; entity_type/entity_id absent." },
+    { "kind": "spec", "item": "Non-goal: no changes to existing global /v1/admin/activity-events endpoint", "status": "pass", "notes": "That router untouched; ActivityEventListItem gained an additive optional field only." },
+    { "kind": "spec", "item": "Non-goal: no backfill of pre-existing rows", "status": "pass", "notes": "Migration has no UPDATE/backfill statement." }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "pass", "notes": "All 13 commit subjects use the documented EPMCDME-14325: Description format." },
+    { "kind": "code-quality", "status": "pass", "notes": "Modern typing, future annotations, license headers, ORM-only queries; src/external/* Ruff-ignored appropriately." },
+    { "kind": "security", "status": "pass", "notes": "New endpoint gated by authenticate + new role helper; bound-parameter SQLModel queries; no credential/token logging found." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/security/authentication.py",
+      "line": 368,
+      "title": "Sync DB call blocks event loop",
+      "problem": "project_admin_or_admin_or_maintainer_access is declared `async def` but calls `with get_session() as session: user_project_repository.is_admin(session, user.id, project_name)` — a synchronous, blocking DB session/query — for every request to the new project-scoped activity endpoint made by a non-admin/non-maintainer caller (i.e. a project admin, the endpoint's primary intended user).",
+      "impact": "Blocks the async event loop for the duration of the DB round-trip on every project-admin request, degrading concurrency/throughput across the whole FastAPI process under load.",
+      "recommendation": "Use an async session/async is_admin lookup, or offload the sync call via asyncio.to_thread/run_in_executor."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/active_project_budget_restore_service.py",
+      "line": 99,
+      "title": "Scheduler budget events drop known project_name",
+      "problem": "ActiveProjectBudgetRestoreService._restore_project (line ~99), InactiveProjectBudgetStopService.run (inactive_project_budget_stop_service.py ~58), and InactiveCostCenterBudgetStopService.run (inactive_cost_center_budget_stop_service.py ~64) each emit PROJECT_BUDGET_RESTORED/PROJECT_BUDGET_STOPPED with `project_name=None`, even though the enclosing loop already holds the resolved `project_name` variable (or resolves it explicitly via aget_project_names_by_cost_center_name for the cost-center case).",
+      "impact": "These project-specific budget lifecycle events will never surface in that project's new activity trail, defeating the feature's purpose for the one budget domain where automatic, non-human-triggered actions are common.",
+      "recommendation": "Pass `project_name=project_name` (the already-resolved loop variable) instead of `project_name=None` at all three sites."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 1264,
+      "title": "project_name dropped on non-amount budget updates",
+      "problem": "update_project_budget only resolves `_assignment` (the source of project_name) inside the `if amounts_changed or data.models is not None:` branch; when only other fields such as budget_duration change, `_assignment` stays None and the emitted PROJECT_BUDGET_UPDATED event carries `project_name=None`, even though the budget row is a known PROJECT-type budget belonging to a specific project.",
+      "impact": "Project budget-duration-only updates are silently excluded from that project's activity trail — the same missing-attribution defect the spec called out for scheduler sites, now present in a manually-triggered path too.",
+      "recommendation": "Resolve the assignment/project_name unconditionally (e.g. via project_budget_assignment_repository.get_active_by_budget_id) rather than only inside the amounts/models sync branch."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/customer_config_service.py",
+      "line": 340,
+      "title": "Customer-config audit events miss actor snapshot",
+      "problem": "_audit() builds ActivityEventCreate with only actor_id=actor.id; it never sets project_name/actor_email/actor_display_name, even though the full `actor: User` object (with .email/.name) is already in scope at both call sites (settings update and reset).",
+      "impact": "CUSTOMER_CONFIG SETTING_UPDATED/SETTING_RESET events are the one domain left with a blank actor snapshot after this change, so their actor identity is lost once the acting user is deleted — the exact regression this feature exists to prevent.",
+      "recommendation": "Pass actor_email=actor.email, actor_display_name=actor.name into the ActivityEventCreate call in _audit (project_name=None is correct here, since these events are not project-scoped)."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/external/alembic/test_activity_events_project_actor_migration.py",
+      "title": "Migration safety test never touches a real DB",
+      "problem": "The migration-safety test only replays the module's op.add_column/create_index calls against a mock recorder and asserts no alter_column/execute call occurs; it never creates pre-existing rows, runs upgrade() against a database, and asserts that domain/event_type/entity_id/actor_id/created_at survive unchanged — the exact verification the spec called out as needing to close this gap.",
+      "impact": "The stated guarantee ('migration must not alter any existing row's protected column values') is checked only indirectly (no forbidden op call observed), not by an end-to-end assertion against real row data, leaving residual risk undetected if a future edit to this migration wraps a mutation differently.",
+      "recommendation": "Add an integration test that runs the migration against a test DB seeded with pre-existing activity_events rows and asserts their domain/event_type/entity_id/actor_id/created_at values are bit-for-bit unchanged after upgrade()."
+    }
+  ]
+}

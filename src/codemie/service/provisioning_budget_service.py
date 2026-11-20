@@ -495,7 +495,7 @@ class ProvisioningBudgetService:
         total, specs = _plan_amounts(amounts, compute_amounts, {})
         data = _create_request(call, project_name, total, specs)
         try:
-            created = await project_budget_service.create_project_budget_group(session, data, actor_id=call.actor.id)
+            created = await project_budget_service.create_project_budget_group(session, data, actor=call.actor)
         except (ExtendedHTTPException, IntegrityError) as conflict:
             if isinstance(conflict, ExtendedHTTPException) and conflict.code != 409:
                 raise
@@ -519,7 +519,7 @@ class ProvisioningBudgetService:
         current = await cls._read_budgets(session, group_id)
         total, specs = _plan_amounts(amounts, compute_amounts, current)
         await project_budget_service.update_project_budget_group(
-            session, group_id=group_id, data=_update_request(total, specs), actor_id=actor.id
+            session, group_id=group_id, data=_update_request(total, specs), actor=actor
         )
 
     @classmethod
@@ -550,7 +550,7 @@ class ProvisioningBudgetService:
             group = await project_budget_group_repository.get_active_by_project(session, project_name)
             if group is None:
                 return False
-            await project_budget_service.delete_project_budget_group(session, group_id=group.id, actor_id=actor.id)
+            await project_budget_service.delete_project_budget_group(session, group_id=group.id, actor=actor)
             await session.commit()
         return True
 

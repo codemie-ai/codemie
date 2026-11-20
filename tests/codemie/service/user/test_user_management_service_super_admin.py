@@ -33,6 +33,7 @@ import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.user_management import CodeMieUserDetail, UserDB
+from codemie.rest_api.security.user import User
 from codemie.service.user.user_management_service import UserManagementService
 
 
@@ -99,7 +100,7 @@ def test_self_revocation_blocked(mock_get_session, mock_repo, mock_logger, super
     with pytest.raises(ExtendedHTTPException) as exc_info:
         UserManagementService.update_user_fields(
             user_id="super-admin-1",
-            actor_user_id="super-admin-1",  # Same as target = self-revocation
+            actor_user=User(id="super-admin-1"),  # Same as target = self-revocation
             is_admin=False,
         )
 
@@ -136,7 +137,7 @@ def test_last_admin_status_revocation_blocked(mock_get_session, mock_repo, mock_
     with pytest.raises(ExtendedHTTPException) as exc_info:
         UserManagementService.update_user_fields(
             user_id="super-admin-1",
-            actor_user_id="other-admin",  # Different actor
+            actor_user=User(id="other-admin"),  # Different actor
             is_admin=False,
         )
 
@@ -170,7 +171,7 @@ def test_last_admin_deactivation_blocked(mock_get_session, mock_repo, mock_logge
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.deactivate_user_flow(user_id="super-admin-1", actor_user_id="system")
+        UserManagementService.deactivate_user_flow(user_id="super-admin-1", actor_user=User(id="system"))
 
     # Verify exception
     assert exc_info.value.code == 403
@@ -195,7 +196,7 @@ def test_deactivate_user_flow_schedules_cleanup_after_commit(
     mock_repo.get_by_id.return_value = regular_user
     mock_repo.deactivate.return_value = regular_user
 
-    result = UserManagementService.deactivate_user_flow(user_id="regular-1", actor_user_id="system")
+    result = UserManagementService.deactivate_user_flow(user_id="regular-1", actor_user=User(id="system"))
 
     assert result == {"message": "User deactivated successfully"}
     mock_session.commit.assert_called_once_with()
@@ -219,7 +220,7 @@ def test_deactivate_user_flow_does_not_schedule_cleanup_when_commit_fails(
     mock_repo.deactivate.return_value = regular_user
 
     with pytest.raises(RuntimeError, match="commit failed"):
-        UserManagementService.deactivate_user_flow(user_id="regular-1", actor_user_id="system")
+        UserManagementService.deactivate_user_flow(user_id="regular-1", actor_user=User(id="system"))
 
     mock_enqueue_cleanup.assert_not_called()
 
@@ -279,7 +280,7 @@ def test_symmetric_revocation_with_two_admins(mock_get_session, mock_repo, mock_
     # Act
     result = UserManagementService.update_user_fields(
         user_id="super-admin-2",
-        actor_user_id="super-admin-1",
+        actor_user=User(id="super-admin-1"),
         is_admin=False,  # Admin A revokes Admin B
     )
 
@@ -329,7 +330,7 @@ def test_revocation_succeeds_with_three_admins(mock_get_session, mock_repo, mock
 
     # Act
     result = UserManagementService.update_user_fields(
-        user_id="super-admin-1", actor_user_id="other-admin", is_admin=False
+        user_id="super-admin-1", actor_user=User(id="other-admin"), is_admin=False
     )
 
     # Assert
@@ -396,7 +397,7 @@ def test_promotion_to_super_admin_unrestricted(mock_get_session, mock_repo, mock
     # Act
     result = UserManagementService.update_user_fields(
         user_id="regular-1",
-        actor_user_id="super-admin-1",
+        actor_user=User(id="super-admin-1"),
         is_admin=True,
         is_maintainer=True,
     )
@@ -428,7 +429,7 @@ def test_self_revocation_blocked_even_with_multiple_admins(mock_get_session, moc
     with pytest.raises(ExtendedHTTPException) as exc_info:
         UserManagementService.update_user_fields(
             user_id="super-admin-1",
-            actor_user_id="super-admin-1",
+            actor_user=User(id="super-admin-1"),
             is_admin=False,  # Self-revocation
         )
 
@@ -457,7 +458,9 @@ def test_blocked_operations_are_logged(mock_get_session, mock_repo, mock_logger,
 
     # Test self-revocation logging
     with suppress(ExtendedHTTPException):
-        UserManagementService.update_user_fields(user_id="super-admin-1", actor_user_id="super-admin-1", is_admin=False)
+        UserManagementService.update_user_fields(
+            user_id="super-admin-1", actor_user=User(id="super-admin-1"), is_admin=False
+        )
 
     # Verify logging contains required fields
     log_call = mock_logger.warning.call_args[0][0]
@@ -486,7 +489,7 @@ def test_protection_applies_to_deactivation_endpoint(mock_get_session, mock_repo
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.deactivate_user_flow(user_id="super-admin-1", actor_user_id="system")
+        UserManagementService.deactivate_user_flow(user_id="super-admin-1", actor_user=User(id="system"))
 
     assert exc_info.value.code == 403
     assert "Cannot deactivate last admin" in exc_info.value.message
@@ -515,7 +518,9 @@ def test_protection_applies_to_update_endpoint(mock_get_session, mock_repo, supe
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="super-admin-1", actor_user_id="other-admin", is_admin=False)
+        UserManagementService.update_user_fields(
+            user_id="super-admin-1", actor_user=User(id="other-admin"), is_admin=False
+        )
 
     assert exc_info.value.code == 403
     assert "Only maintainers can modify admin or maintainer roles" in exc_info.value.details
@@ -575,7 +580,7 @@ def test_regular_user_to_false_is_noop(mock_get_session, mock_repo, mock_get_rel
 
     # Act - setting is_admin=false on a regular user
     result = UserManagementService.update_user_fields(
-        user_id="regular-1", actor_user_id="super-admin-1", is_admin=False
+        user_id="regular-1", actor_user=User(id="super-admin-1"), is_admin=False
     )
 
     # Assert
@@ -610,7 +615,9 @@ def test_user_not_found_returns_404(mock_get_session, mock_repo):
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="nonexistent", actor_user_id="super-admin-1", is_admin=False)
+        UserManagementService.update_user_fields(
+            user_id="nonexistent", actor_user=User(id="super-admin-1"), is_admin=False
+        )
 
     assert exc_info.value.code == 404
     assert "User not found" in exc_info.value.message
@@ -655,7 +662,7 @@ def test_other_fields_can_be_updated_without_triggering_protection(
 
     # Act
     result = UserManagementService.update_user_fields(
-        user_id="super-admin-1", actor_user_id="super-admin-1", name="New Name", email="newemail@example.com"
+        user_id="super-admin-1", actor_user=User(id="super-admin-1"), name="New Name", email="newemail@example.com"
     )
 
     # Assert

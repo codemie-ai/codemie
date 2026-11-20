@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from codemie.rest_api.security.user import User
 from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.service.budget.budget_enums import AllocationMode, SyncStatus
 from codemie.service.budget.project_budget_service import ProjectBudgetService
@@ -43,6 +44,7 @@ async def test_reset_project_budget_uses_provider_reset_when_provider_budget_ref
     service = ProjectBudgetService()
     session = AsyncMock()
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
@@ -90,7 +92,7 @@ async def test_reset_project_budget_uses_provider_reset_when_provider_budget_ref
         ) as mock_update_metadata,
         patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
     ):
-        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor=User(id="actor-1"))
 
     provider.reset_project_budget_spend.assert_awaited_once()
     reset_kwargs = provider.reset_project_budget_spend.await_args.kwargs
@@ -105,6 +107,7 @@ async def test_reset_project_budget_member_spend_failure_marks_sync_status_faile
     service = ProjectBudgetService()
     session = AsyncMock()
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
@@ -151,7 +154,7 @@ async def test_reset_project_budget_member_spend_failure_marks_sync_status_faile
         ) as mock_update_metadata,
         patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
     ):
-        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor=User(id="actor-1"))
 
     update_kwargs = mock_update_metadata.await_args.kwargs
     assert update_kwargs["sync_status"] == SyncStatus.FAILED
@@ -162,6 +165,7 @@ async def test_reset_project_budget_skips_spend_reset_when_no_provider_ref():
     service = ProjectBudgetService()
     session = AsyncMock()
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
@@ -208,7 +212,7 @@ async def test_reset_project_budget_skips_spend_reset_when_no_provider_ref():
         ),
         patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
     ):
-        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor=User(id="actor-1"))
 
     provider.reset_project_member_spending.assert_not_awaited()
 
@@ -218,6 +222,7 @@ async def test_reset_project_budget_persist_failure_continues_remaining_allocati
     service = ProjectBudgetService()
     session = AsyncMock()
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
@@ -273,7 +278,7 @@ async def test_reset_project_budget_persist_failure_continues_remaining_allocati
             new=AsyncMock(side_effect=[RuntimeError("db error"), None]),
         ),
     ):
-        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor=User(id="actor-1"))
 
     assert provider.sync_member_allocation.await_count == 2
     assert mock_update_metadata.await_count == 1
@@ -284,6 +289,7 @@ async def test_delete_project_budget_marks_deleted_and_clears_resolution_cache()
     service = ProjectBudgetService()
     session = AsyncMock()
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
@@ -342,7 +348,7 @@ async def test_delete_project_budget_marks_deleted_and_clears_resolution_cache()
             new=AsyncMock(),
         ) as mock_update_budget,
     ):
-        await service.delete_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+        await service.delete_project_budget(session=session, budget_id="proj-budget-1", actor=User(id="actor-1"))
 
     mock_soft_delete_allocations.assert_awaited_once_with(session, "proj-budget-1")
     mock_soft_delete_assignment.assert_awaited_once_with(session, "assignment-1")
@@ -361,6 +367,7 @@ async def test_delete_project_budget_shared_budget_failure_does_not_block_soft_d
     service = ProjectBudgetService()
     session = AsyncMock()
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
@@ -409,7 +416,7 @@ async def test_delete_project_budget_shared_budget_failure_does_not_block_soft_d
             new=AsyncMock(),
         ),
     ):
-        await service.delete_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+        await service.delete_project_budget(session=session, budget_id="proj-budget-1", actor=User(id="actor-1"))
 
     mock_soft_delete_allocations.assert_awaited_once_with(session, "proj-budget-1")
     mock_soft_delete_assignment.assert_awaited_once_with(session, "assignment-1")
@@ -437,7 +444,7 @@ async def test_override_member_allocation_raises_404_when_member_missing():
                 allocated_max_budget=5.0,
                 allocated_soft_budget=4.0,
                 override_reason=None,
-                actor_id="actor-1",
+                actor=User(id="actor-1"),
             )
 
     assert exc_info.value.code == 404
@@ -455,7 +462,9 @@ async def test_override_member_allocation_logs_on_success():
         shared_budget_id="proj-budget-1:shared",
         override_budget_id=None,
     )
-    budget = SimpleNamespace(budget_id="proj-budget-1", budget_type="project", budget_category="cli")
+    budget = SimpleNamespace(
+        budget_id="proj-budget-1", budget_type="project", budget_category="cli", name="Proj Budget One"
+    )
     assignment = SimpleNamespace(project_name="proj-a", budget_category="cli")
 
     with (
@@ -487,7 +496,7 @@ async def test_override_member_allocation_logs_on_success():
             allocated_max_budget=20.0,
             allocated_soft_budget=15.0,
             override_reason="manual",
-            actor_id="actor-1",
+            actor=User(id="actor-1"),
         )
 
     mock_logger.info.assert_called_once()
@@ -518,7 +527,7 @@ async def test_clear_member_override_raises_404_when_member_missing():
                 session=session,
                 budget_id="proj-budget-1",
                 user_id="missing-user",
-                actor_id="actor-1",
+                actor=User(id="actor-1"),
             )
 
     assert exc_info.value.code == 404
@@ -650,6 +659,7 @@ async def test_clear_member_override_syncs_litellm_with_shared_child_value(
     )
 
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
@@ -728,7 +738,7 @@ async def test_clear_member_override_syncs_litellm_with_shared_child_value(
             session=session,
             budget_id="proj-budget-1",
             user_id="user-a",
-            actor_id="actor-1",
+            actor=User(id="actor-1"),
         )
 
     mock_logger.info.assert_called_once()
@@ -784,6 +794,7 @@ async def test_clear_member_override_falls_back_to_allocation_value_when_no_shar
     )
 
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
@@ -848,7 +859,7 @@ async def test_clear_member_override_falls_back_to_allocation_value_when_no_shar
             session=session,
             budget_id="proj-budget-1",
             user_id="user-a",
-            actor_id="actor-1",
+            actor=User(id="actor-1"),
         )
 
     # Fallback: enforced members get allocation.allocated_max_budget when no shared child exists.
@@ -877,6 +888,7 @@ async def test_prepare_resync_member_builds_batch_item_for_equal_mode_members():
     )
 
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_duration="30d",
         budget_reset_at=None,
@@ -955,7 +967,7 @@ async def test_update_project_budget_group_logs_on_scalar_only_edit():
             session=session,
             group_id="group-1",
             data=data,
-            actor_id="actor-1",
+            actor=User(id="actor-1"),
         )
 
     mock_logger.info.assert_called_once()
@@ -979,6 +991,7 @@ def _stored_project_budget(sync_status: str = SyncStatus.OK.value, provider_budg
         provider_metadata["provider_budget_ref"] = provider_budget_ref
     return SimpleNamespace(
         budget_id="proj-budget-1",
+        name="Proj Budget One",
         budget_type="project",
         budget_category="cli",
         soft_budget=20.0,
@@ -1043,7 +1056,7 @@ async def _update_project_budget_with_stubs(budget, data, provider, allocations=
         patch.object(service, "_legacy_carry_alias", new=AsyncMock(return_value=None)),
         patch.object(service, "_resync_member_allocations", new=AsyncMock()) as resync_members,
     ):
-        await service.update_project_budget(AsyncMock(), budget.budget_id, data, actor_id="actor-1")
+        await service.update_project_budget(AsyncMock(), budget.budget_id, data, actor=User(id="actor-1"))
     return resync_members
 
 
@@ -1181,7 +1194,7 @@ async def test_group_update_with_stored_values_makes_no_provider_call():
             {"cli": SimpleNamespace(budget=budget)},
             eff_total=25.0,
             eff_duration="30d",
-            actor_id="actor-1",
+            actor=User(id="actor-1"),
         )
 
     provider.update_project_budget.assert_not_awaited()

@@ -189,6 +189,7 @@ class ProjectVisibilityService:
 
         return {
             "name": project.name,
+            "project_instance_id": project.project_instance_id,
             "display_name": project.display_name,
             "description": project.description,
             "project_type": project.project_type,

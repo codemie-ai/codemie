@@ -28,6 +28,7 @@ from codemie.configs.logger import logger
 from codemie.core.models import Application
 from codemie.repository.user_project_repository import user_project_repository
 from codemie.repository.application_repository import application_repository
+from codemie.rest_api.models.user_management import UserDB
 from codemie.rest_api.security.user import same_project_name
 from codemie.rest_api.security.user_type_validator import is_personal_project_excluded_account
 from codemie.service.activity.activity_models import (
@@ -81,6 +82,7 @@ class PersonalProjectService:
                 project_name = await PersonalProjectService._create_personal_project(
                     isolated_session, user_id, user_email
                 )
+                user_row = await isolated_session.get(UserDB, user_id)
 
                 await activity_event_repository.async_insert(
                     ActivityEventCreate(
@@ -88,7 +90,11 @@ class PersonalProjectService:
                         event_type=ProjectManagementEvent.PROJECT_CREATED,
                         entity_type=ActivityEntityType.PROJECT,
                         entity_id=project_name,
+                        entity_label=project_name,
                         actor_id=user_id,
+                        project_name=project_name,
+                        actor_email=user_email,
+                        actor_display_name=(user_row.name if user_row else None) or None,
                         attributes={"project_type": "personal"},
                     ),
                     isolated_session,

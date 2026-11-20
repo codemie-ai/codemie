@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from codemie.rest_api.security.user import User
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
 from codemie.service.budget.project_budget_service import ProjectBudgetService
@@ -866,6 +867,7 @@ async def test_reset_project_budget_persists_provider_budget_id_for_each_member(
     service = ProjectBudgetService()
     session = AsyncMock()
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
@@ -912,7 +914,7 @@ async def test_reset_project_budget_persists_provider_budget_id_for_each_member(
         ) as mock_update_metadata,
         patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
     ):
-        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor=User(id="actor-1"))
 
     provider.reset_project_budget_spend.assert_awaited_once()
     update_call = mock_update_metadata.await_args.kwargs
@@ -924,6 +926,7 @@ async def test_reset_project_budget_resets_member_spend_for_each_member():
     service = ProjectBudgetService()
     session = AsyncMock()
     budget = SimpleNamespace(
+        name="Proj Budget One",
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
@@ -975,7 +978,7 @@ async def test_reset_project_budget_resets_member_spend_for_each_member():
         ),
         patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
     ):
-        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor=User(id="actor-1"))
 
     assert provider.reset_project_member_spending.await_count == 2
     provider.reset_project_member_spending.assert_any_await(
@@ -1519,6 +1522,7 @@ async def _reset_project_and_capture_update_fields(sync_status):
     service = ProjectBudgetService()
     budget = SimpleNamespace(
         budget_id="proj-budget-1",
+        name="Proj Budget One",
         budget_type="project",
         budget_category="cli",
         budget_duration="30d",
@@ -1540,7 +1544,7 @@ async def _reset_project_and_capture_update_fields(sync_status):
         ) as mock_update,
         patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=True),
     ):
-        await service.reset_project_budget(session=AsyncMock(), budget_id="proj-budget-1", actor_id="actor-1")
+        await service.reset_project_budget(session=AsyncMock(), budget_id="proj-budget-1", actor=User(id="actor-1"))
 
     return mock_update.await_args.args[2]
 
@@ -1573,6 +1577,7 @@ async def test_reset_project_budget_syncs_member_with_effective_cap(allocation_m
     service = ProjectBudgetService()
     budget = SimpleNamespace(
         budget_id="proj-budget-1",
+        name="Proj Budget One",
         budget_type="project",
         budget_category="cli",
         budget_duration="30d",
@@ -1601,7 +1606,7 @@ async def test_reset_project_budget_syncs_member_with_effective_cap(allocation_m
         patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
         patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=enforce_limit),
     ):
-        await service.reset_project_budget(session=AsyncMock(), budget_id="proj-budget-1", actor_id="actor-1")
+        await service.reset_project_budget(session=AsyncMock(), budget_id="proj-budget-1", actor=User(id="actor-1"))
 
     provider.sync_member_allocation.assert_awaited_once_with(
         allocation=allocation, budget=budget, effective_max_budget=expected_max

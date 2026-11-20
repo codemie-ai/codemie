@@ -21,6 +21,7 @@ import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.user_management import UserDB
+from codemie.rest_api.security.user import User
 from codemie.service.user.user_management_service import UserManagementService
 
 _REPO = "codemie.service.user.user_management_service.user_repository"
@@ -44,6 +45,10 @@ def _user(user_id: str, **overrides) -> UserDB:
         "update_date": datetime.now(UTC),
     }
     return UserDB(**{**defaults, **overrides})
+
+
+def _actor() -> User:
+    return User(id="maintainer-1", username="maintainer-1", name="Maintainer", email="maintainer@example.com")
 
 
 class TestRejectIdpAdminChange:
@@ -119,7 +124,7 @@ class TestUpdateUserFieldsInIdpMode:
         self._wire(mock_get_session, repo, _user("target"))
 
         with pytest.raises(ExtendedHTTPException) as exc:
-            UserManagementService.update_user_fields(user_id="target", actor_user_id="maintainer-1", is_admin=True)
+            UserManagementService.update_user_fields(user_id="target", actor_user=_actor(), is_admin=True)
 
         assert exc.value.code == 403
         repo.update.assert_not_called()
@@ -129,7 +134,7 @@ class TestUpdateUserFieldsInIdpMode:
 
         with patch.object(UserManagementService, "get_user_with_relationships"):
             UserManagementService.update_user_fields(
-                user_id="target", actor_user_id="maintainer-1", is_maintainer=True, is_auditor=False
+                user_id="target", actor_user=_actor(), is_maintainer=True, is_auditor=False
             )
 
         updates = repo.update.call_args.kwargs
@@ -144,7 +149,7 @@ class TestUpdateUserFieldsInIdpMode:
         with patch.object(UserManagementService, "get_user_with_relationships"):
             UserManagementService.update_user_fields(
                 user_id="target",
-                actor_user_id="maintainer-1",
+                actor_user=_actor(),
                 is_admin=True,
                 is_maintainer=True,
                 is_auditor=False,
@@ -157,7 +162,7 @@ class TestUpdateUserFieldsInIdpMode:
         self._wire(mock_get_session, repo, _user("target"))
 
         with patch.object(UserManagementService, "get_user_with_relationships"):
-            UserManagementService.update_user_fields(user_id="target", actor_user_id="maintainer-1", is_auditor=True)
+            UserManagementService.update_user_fields(user_id="target", actor_user=_actor(), is_auditor=True)
 
         assert repo.update.call_args.kwargs["is_auditor"] is True
 
@@ -165,8 +170,6 @@ class TestUpdateUserFieldsInIdpMode:
         self._wire(mock_get_session, repo, _user("target"))
 
         with patch.object(UserManagementService, "get_user_with_relationships"):
-            UserManagementService.update_user_fields(
-                user_id="target", actor_user_id="maintainer-1", user_type="external"
-            )
+            UserManagementService.update_user_fields(user_id="target", actor_user=_actor(), user_type="external")
 
         assert repo.update.call_args.kwargs["user_type"] == "external"

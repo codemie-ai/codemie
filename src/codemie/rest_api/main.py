@@ -143,6 +143,7 @@ from codemie.rest_api.routers import user_profile_router
 from codemie.rest_api.routers import user_preferences_router
 from codemie.rest_api.routers import user_profile_settings_router
 from codemie.rest_api.routers import activity_events_router
+from codemie.rest_api.routers import project_activity_events_router
 from codemie.rest_api.utils.state_import import StateImportService
 from codemie.rest_api.utils.default_applications import create_default_applications
 from codemie.triggers.node_controller import NodeController
@@ -1612,6 +1613,7 @@ if config.ENABLE_USER_MANAGEMENT:
     if config.IDP_PROVIDER == "local":
         app.include_router(local_auth_router.router)
     app.include_router(activity_events_router.router)
+    app.include_router(project_activity_events_router.router)
 
 mount_provisioning_api(app)
 

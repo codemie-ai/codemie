@@ -110,6 +110,45 @@ class TestRejectIfCreator:
 class TestProjectAssignmentServiceSingleAssignment:
     """Test suite for ProjectAssignmentService - single user assignment"""
 
+    @patch("codemie.service.project.project_assignment_service.activity_event_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.logger")
+    def test_assign_user_success_emits_project_actor_snapshot(
+        self, mock_logger, mock_user_project_repo, mock_user_repo, mock_activity_repo
+    ):
+        """Test that assign_user_to_project emits project_name/actor snapshot on the activity event"""
+        # Arrange
+        mock_session = MagicMock()
+        project = Application(id=str(uuid4()), name="team-project", project_type="team")
+        user_id = str(uuid4())
+        project_name = "team-project"
+        requesting_user_id = str(uuid4())
+        actor = MagicMock(id=requesting_user_id, is_admin=False, email="actor@example.com")
+        actor.name = "Actor Name"
+
+        mock_user_repo.get_active_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
+        mock_user_project_repo.get_by_user_and_project.return_value = None
+
+        # Act
+        ProjectAssignmentService.assign_user_to_project(
+            session=mock_session,
+            project=project,
+            user_id=user_id,
+            project_name=project_name,
+            is_project_admin=True,
+            actor=actor,
+            action="POST /v1/projects/team-project/users/user-123",
+        )
+
+        # Assert
+        event = mock_activity_repo.insert.call_args[0][0]
+        assert event.project_name == project_name == event.attributes["project_name"]
+        assert event.actor_email == actor.email
+        assert event.actor_display_name == actor.name
+        assert event.attributes == {"project_name": project_name, "is_project_admin": True}
+        assert event.entity_label == "user"
+
     @patch("codemie.service.project.project_assignment_service.user_repository")
     @patch("codemie.service.project.project_assignment_service.user_project_repository")
     @patch("codemie.service.project.project_assignment_service.logger")
@@ -121,8 +160,10 @@ class TestProjectAssignmentServiceSingleAssignment:
         user_id = str(uuid4())
         project_name = "team-project"
         requesting_user_id = str(uuid4())
+        actor = MagicMock(id=requesting_user_id, is_admin=False, email="actor@example.com")
+        actor.name = "Actor Name"
 
-        mock_user_repo.get_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
+        mock_user_repo.get_active_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
         mock_user_project_repo.get_by_user_and_project.return_value = None
 
         # Act
@@ -132,7 +173,7 @@ class TestProjectAssignmentServiceSingleAssignment:
             user_id=user_id,
             project_name=project_name,
             is_project_admin=True,
-            actor=MagicMock(id=requesting_user_id, is_admin=False),
+            actor=actor,
             action="POST /v1/projects/team-project/users/user-123",
         )
 
@@ -234,6 +275,46 @@ class TestProjectAssignmentServiceSingleAssignment:
 class TestProjectAssignmentServiceRoleUpdate:
     """Test suite for ProjectAssignmentService - role update"""
 
+    @patch("codemie.service.project.project_assignment_service.activity_event_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.logger")
+    def test_update_role_success_emits_project_actor_snapshot(
+        self, mock_logger, mock_user_project_repo, mock_user_repo, mock_activity_repo
+    ):
+        """Test that update_user_project_role emits project_name/actor snapshot on the activity event"""
+        # Arrange
+        mock_session = MagicMock()
+        project = Application(id=str(uuid4()), name="team-project", project_type="team")
+        user_id = str(uuid4())
+        project_name = "team-project"
+        requesting_user_id = str(uuid4())
+        actor = MagicMock(id=requesting_user_id, is_admin=False, email="actor2@example.com")
+        actor.name = "Actor Two"
+
+        mock_user_repo.get_active_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
+        existing_membership = UserProject(user_id=user_id, project_name=project_name, is_project_admin=False)
+        mock_user_project_repo.get_by_user_and_project.return_value = existing_membership
+
+        # Act
+        ProjectAssignmentService.update_user_project_role(
+            session=mock_session,
+            project=project,
+            user_id=user_id,
+            project_name=project_name,
+            is_project_admin=True,
+            actor=actor,
+            action="PUT /v1/projects/team-project/users/user-123",
+        )
+
+        # Assert
+        event = mock_activity_repo.insert.call_args[0][0]
+        assert event.project_name == project_name == event.attributes["project_name"]
+        assert event.actor_email == actor.email
+        assert event.actor_display_name == actor.name
+        assert event.attributes == {"project_name": project_name, "is_project_admin": True}
+        assert event.entity_label == "user"
+
     @patch("codemie.service.project.project_assignment_service.user_repository")
     @patch("codemie.service.project.project_assignment_service.user_project_repository")
     @patch("codemie.service.project.project_assignment_service.logger")
@@ -245,6 +326,8 @@ class TestProjectAssignmentServiceRoleUpdate:
         user_id = str(uuid4())
         project_name = "team-project"
         requesting_user_id = str(uuid4())
+        actor = MagicMock(id=requesting_user_id, is_admin=False, email="actor@example.com")
+        actor.name = "Actor Name"
 
         mock_user_repo.get_active_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
         existing_membership = UserProject(user_id=user_id, project_name=project_name, is_project_admin=False)
@@ -257,7 +340,7 @@ class TestProjectAssignmentServiceRoleUpdate:
             user_id=user_id,
             project_name=project_name,
             is_project_admin=True,
-            actor=MagicMock(id=requesting_user_id, is_admin=False),
+            actor=actor,
             action="PUT /v1/projects/team-project/users/user-123",
         )
 
@@ -347,7 +430,11 @@ class TestProjectAssignmentServiceBulkAssign:
             {"user_id": user_id2, "is_project_admin": False},
         ]
 
+        actor = MagicMock(id=str(uuid4()), is_admin=False, email="actor@example.com")
+        actor.name = "Actor Name"
+
         mock_user_repo.get_existing_user_ids.return_value = {user_id1, user_id2}
+        mock_user_repo.get_display_labels.return_value = {user_id1: "First User", user_id2: "second"}
         mock_user_project_repo.get_by_users_and_project.return_value = {}
 
         # Act
@@ -356,7 +443,7 @@ class TestProjectAssignmentServiceBulkAssign:
             project=project,
             users=users,
             project_name="team-project",
-            actor=MagicMock(id=str(uuid4()), is_admin=False),
+            actor=actor,
             action="POST /v1/projects/team-project/users/bulk",
         )
 
@@ -387,8 +474,11 @@ class TestProjectAssignmentServiceBulkAssign:
             {"user_id": user_id1, "is_project_admin": True},
             {"user_id": user_id2, "is_project_admin": False},
         ]
+        actor = MagicMock(id=str(uuid4()), is_admin=False, email="actor3@example.com")
+        actor.name = "Actor Three"
 
         mock_user_repo.get_existing_user_ids.return_value = {user_id1, user_id2}
+        mock_user_repo.get_display_labels.return_value = {user_id1: "First User", user_id2: "second"}
         existing_membership = UserProject(user_id=user_id1, project_name="team-project", is_project_admin=False)
         mock_user_project_repo.get_by_users_and_project.return_value = {user_id1: existing_membership}
 
@@ -398,7 +488,7 @@ class TestProjectAssignmentServiceBulkAssign:
             project=project,
             users=users,
             project_name="team-project",
-            actor=MagicMock(id=str(uuid4()), is_admin=False),
+            actor=actor,
             action="POST /v1/projects/team-project/users/bulk",
         )
 
@@ -409,6 +499,15 @@ class TestProjectAssignmentServiceBulkAssign:
         assert results[0]["is_project_admin"] is True  # Updated to True
         mock_session.flush.assert_called_once()
         mock_logger.info.assert_called_once()
+
+        assert mock_activity_repo.insert.call_count == 2
+        for call in mock_activity_repo.insert.call_args_list:
+            event = call[0][0]
+            assert event.project_name == "team-project" == event.attributes["project_name"]
+            assert event.actor_email == actor.email
+            assert event.actor_display_name == actor.name
+            assert set(event.attributes.keys()) == {"project_name", "is_project_admin"}
+            assert event.entity_label == {user_id1: "First User", user_id2: "second"}[event.entity_id]
 
     @patch("codemie.service.project.project_assignment_service.user_repository")
     def test_bulk_assign_duplicate_ids(self, mock_user_repo):
@@ -504,8 +603,11 @@ class TestProjectAssignmentServiceBulkRemove:
         user_id1 = str(uuid4())
         user_id2 = str(uuid4())
         user_ids = [user_id1, user_id2]
+        actor = MagicMock(id=str(uuid4()), is_admin=False, email="actor4@example.com")
+        actor.name = "Actor Four"
 
         mock_user_repo.get_existing_user_ids.return_value = {user_id1, user_id2}
+        mock_user_repo.get_display_labels.return_value = {user_id1: "First User", user_id2: "second"}
         membership1 = UserProject(user_id=user_id1, project_name="team-project", is_project_admin=False)
         membership2 = UserProject(user_id=user_id2, project_name="team-project", is_project_admin=True)
         mock_user_project_repo.get_by_users_and_project.return_value = {user_id1: membership1, user_id2: membership2}
@@ -516,7 +618,7 @@ class TestProjectAssignmentServiceBulkRemove:
             project=project,
             user_ids=user_ids,
             project_name="team-project",
-            actor=MagicMock(id=str(uuid4()), is_admin=False),
+            actor=actor,
             action="DELETE /v1/projects/team-project/users/bulk",
         )
 
@@ -526,6 +628,15 @@ class TestProjectAssignmentServiceBulkRemove:
         assert mock_session.delete.call_count == 2
         mock_session.flush.assert_called_once()
         mock_logger.info.assert_called_once()
+
+        assert mock_activity_repo.insert.call_count == 2
+        for call in mock_activity_repo.insert.call_args_list:
+            event = call[0][0]
+            assert event.project_name == "team-project" == event.attributes["project_name"]
+            assert event.actor_email == actor.email
+            assert event.actor_display_name == actor.name
+            assert event.attributes == {"project_name": "team-project"}
+            assert event.entity_label == {user_id1: "First User", user_id2: "second"}[event.entity_id]
 
     @patch("codemie.service.project.project_assignment_service.user_repository")
     def test_bulk_remove_creator_raises_400(self, mock_user_repo):
@@ -586,6 +697,44 @@ class TestProjectAssignmentServiceBulkRemove:
 class TestProjectAssignmentServiceSingleRemoval:
     """Test suite for ProjectAssignmentService - single user removal"""
 
+    @patch("codemie.service.project.project_assignment_service.activity_event_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.logger")
+    def test_remove_user_success_emits_project_actor_snapshot(
+        self, mock_logger, mock_user_project_repo, mock_user_repo, mock_activity_repo
+    ):
+        """Test that remove_user_from_project emits project_name/actor snapshot on the activity event"""
+        # Arrange
+        mock_session = MagicMock()
+        project = Application(id=str(uuid4()), name="team-project", project_type="team")
+        user_id = str(uuid4())
+        project_name = "team-project"
+        requesting_user_id = str(uuid4())
+        actor = MagicMock(id=requesting_user_id, is_admin=False, email="actor5@example.com")
+        actor.name = "Actor Five"
+
+        mock_user_repo.get_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
+        mock_user_project_repo.remove_project.return_value = True
+
+        # Act
+        ProjectAssignmentService.remove_user_from_project(
+            session=mock_session,
+            project=project,
+            user_id=user_id,
+            project_name=project_name,
+            actor=actor,
+            action="DELETE /v1/projects/team-project/users/user-123",
+        )
+
+        # Assert
+        event = mock_activity_repo.insert.call_args[0][0]
+        assert event.project_name == project_name == event.attributes["project_name"]
+        assert event.actor_email == actor.email
+        assert event.actor_display_name == actor.name
+        assert event.attributes == {"project_name": project_name}
+        assert event.entity_label == "user"
+
     @patch("codemie.service.project.project_assignment_service.user_repository")
     @patch("codemie.service.project.project_assignment_service.user_project_repository")
     @patch("codemie.service.project.project_assignment_service.logger")
@@ -597,6 +746,8 @@ class TestProjectAssignmentServiceSingleRemoval:
         user_id = str(uuid4())
         project_name = "team-project"
         requesting_user_id = str(uuid4())
+        actor = MagicMock(id=requesting_user_id, is_admin=False, email="actor@example.com")
+        actor.name = "Actor Name"
 
         mock_user_repo.get_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
         mock_user_project_repo.remove_project.return_value = True
@@ -607,7 +758,7 @@ class TestProjectAssignmentServiceSingleRemoval:
             project=project,
             user_id=user_id,
             project_name=project_name,
-            actor=MagicMock(id=requesting_user_id, is_admin=False),
+            actor=actor,
             action="DELETE /v1/projects/team-project/users/user-123",
         )
 

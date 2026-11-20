@@ -1,0 +1,3 @@
+# Deferred from code review — activity-trail-taxonomy-metadata (2026-09-22)
+
+- **Admin activity listing lacks a tie-break on `created_at` for pagination** — `src/codemie/service/activity/activity_repository.py:289` (`find_all`) — orders solely by `desc(ActivityEvent.created_at)`, so rows sharing an exact timestamp can be skipped or duplicated across pages, unlike `find_by_project`'s `(desc(created_at), desc(id))` tie-break added by this change. Pre-existing: `find_all`'s single-column ordering predates this diff (introduced in EPMCDME-13275) and is untouched by this change, which only added the project-scoped `find_by_project` method; fixing the global admin listing is out of this change's scope.

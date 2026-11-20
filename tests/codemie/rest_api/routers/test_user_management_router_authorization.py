@@ -382,7 +382,7 @@ class TestRemapUserEndpoint:
 
         result = remap_user(data=data, user=super_admin_user, _=None)
 
-        mock_remap_service.remap_user_flow.assert_called_once_with("old-1", "new-1", super_admin_user.id)
+        mock_remap_service.remap_user_flow.assert_called_once_with("old-1", "new-1", super_admin_user)
         assert result == {"id": "new-1"}
 
 

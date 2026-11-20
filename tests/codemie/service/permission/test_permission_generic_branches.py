@@ -85,14 +85,14 @@ def delete_env():
 def test_delete_hosted_row_resolves_before_ability_then_revokes_and_commits(delete_env):
     descriptor, session, revoke, ability, calls = delete_env
     permission = _permission(ResourceType.HOSTED_APPLICATION)
-    descriptor.resolve.return_value = ResolvedResource(project="proj", creator_id="c", may_remove=True)
+    descriptor.resolve.return_value = ResolvedResource(project="proj", creator_id="c", may_remove=True, label="Helper")
     user = _admin()
 
     with patch.object(deletion_module.Permission, "get_by_id", return_value=permission):
         PermissionDeletionService.run("perm-1", user)
 
     descriptor.resolve.assert_called_once_with(session, RID, user)
-    revoke.assert_called_once_with(user, permission, session, project="proj")
+    revoke.assert_called_once_with(user, permission, session, project="proj", label="Helper")
     ability.assert_not_called()
     session.commit.assert_called_once()
     names = [c[0] for c in calls.mock_calls if c[0] in ("resolve", "revoke")]
@@ -102,7 +102,7 @@ def test_delete_hosted_row_resolves_before_ability_then_revokes_and_commits(dele
 def test_delete_hosted_row_refused_when_resolve_denies(delete_env):
     descriptor, session, revoke, ability, _ = delete_env
     permission = _permission(ResourceType.HOSTED_APPLICATION)
-    descriptor.resolve.return_value = ResolvedResource(project="proj", creator_id="c", may_remove=False)
+    descriptor.resolve.return_value = ResolvedResource(project="proj", creator_id="c", may_remove=False, label="Helper")
 
     with patch.object(deletion_module.Permission, "get_by_id", return_value=permission):
         with pytest.raises(PermissionAccessDenied):
@@ -195,7 +195,7 @@ def test_a_mixed_type_deletes_its_application_grant_through_the_generic_path(del
 def test_a_mixed_type_deletes_its_user_grant_through_the_descriptor(delete_env, datasource_takes_named_grants):
     descriptor, session, revoke, ability, _ = delete_env
     permission = _with_principal(ResourceType.DATASOURCE, PrincipalType.USER)
-    descriptor.resolve.return_value = ResolvedResource(project="p", creator_id="c", may_remove=True)
+    descriptor.resolve.return_value = ResolvedResource(project="p", creator_id="c", may_remove=True, label="Helper")
     with patch.object(deletion_module.Permission, "get_by_id", return_value=permission):
         PermissionDeletionService.run("perm-1", _admin())
     revoke.assert_called_once()

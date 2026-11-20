@@ -54,7 +54,7 @@ class TestCreateUserFromIdp:
             admin_project_names=["proj-a"],
             knowledge_bases=[],
         )
-        created = SimpleNamespace(id=user_id, email="jdoe@example.com", user_type="regular")
+        created = SimpleNamespace(id=user_id, email="jdoe@example.com", name="Jane Doe", user_type="regular")
 
         with (
             patch("codemie.service.user.authentication_service.config") as mock_config,
@@ -81,3 +81,5 @@ class TestCreateUserFromIdp:
             ("proj-a", True),
             ("proj-b", False),
         ]
+        event = mock_activity_repo.async_insert.call_args.args[0]
+        assert (event.entity_label, event.project_name) == ("Jane Doe", None)

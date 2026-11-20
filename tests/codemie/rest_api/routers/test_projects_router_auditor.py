@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
@@ -26,6 +27,8 @@ from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.spend.coverage import SpendResult
 from codemie.service.spend.ledger import ProjectHolder
+
+PROJECT_INSTANCE_ID = UUID("4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c")
 
 
 @asynccontextmanager
@@ -142,6 +145,7 @@ class TestProjectsRouterAuditorRouteLevel:
         mock_get_session.return_value.__enter__.return_value = MagicMock()
         mock_visibility_service.get_visible_project_with_members.return_value = {
             "name": "some-project",
+            "project_instance_id": PROJECT_INSTANCE_ID,
             "description": None,
             "project_type": "shared",
             "created_by": "owner-1",
@@ -189,6 +193,7 @@ class TestProjectsRouterAuditorRouteLevel:
         mock_get_session.return_value.__enter__.return_value = MagicMock()
         mock_visibility_service.get_visible_project_with_members.return_value = {
             "name": "some-project",
+            "project_instance_id": PROJECT_INSTANCE_ID,
             "description": None,
             "project_type": "shared",
             "created_by": "owner-1",

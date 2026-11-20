@@ -74,19 +74,24 @@ def _created_by(actor: Any) -> CreatedByUser:
     return CreatedByUser(id=actor.id, username=actor.username, name=actor.name)
 
 
-def _event(
+def _event(  # noqa: PLR0913 - flat keyword args mirror the call sites; a wrapper only moves the count
     grant: NamedGrantDescriptor,
     event_type: str,
     link: ShareLink,
     project: str | None,
     actor: Any,
+    label: str,
 ) -> ActivityEventCreate:
     return ActivityEventCreate(
         domain=grant.activity_domain,
         event_type=event_type,
         entity_type=grant.activity_entity_type,
         entity_id=str(link.resource_id),
+        entity_label=label,
+        project_name=project,
         actor_id=actor.id,
+        actor_email=actor.email,
+        actor_display_name=actor.name or None,
         attributes={
             "link_id": str(link.id),
             "resource_type": getattr(link.resource_type, "value", link.resource_type),
@@ -124,8 +129,13 @@ async def areload(session: AsyncSession, link_id: UUID) -> ShareLink | None:
 # ---- owner changes ------------------------------------------------------------------------------------------------
 
 
-async def aget_or_create_live(
-    session: AsyncSession, resource_type: ResourceType, resource_id: Any, actor: Any, project: str | None
+async def aget_or_create_live(  # noqa: PLR0913 - flat keyword args mirror the call sites; a wrapper only moves the count
+    session: AsyncSession,
+    resource_type: ResourceType,
+    resource_id: Any,
+    actor: Any,
+    project: str | None,
+    label: str,
 ) -> ShareLink:
     """The live link, or a new one with one created event. The caller authorizes (``acreate`` for owners)."""
     existing = await aget_live(session, resource_type, resource_id)
@@ -145,7 +155,7 @@ async def aget_or_create_live(
     await session.flush()
     event_type = link_descriptor_for(resource_type).event_created
     await activity_event_repository.async_insert_many_strict(
-        [_event(descriptor_for(resource_type), event_type, link, project, actor)], session
+        [_event(descriptor_for(resource_type), event_type, link, project, actor, label)], session
     )
     return link
 
@@ -161,11 +171,16 @@ async def acreate(
     grant = descriptor_for(resource_type)
     _check_owner(link_descriptor_for(resource_type), grant, resource, actor)
     grant.before_grant(resource)
-    return await aget_or_create_live(session, resource_type, resource.id, actor, project)
+    return await aget_or_create_live(session, resource_type, resource.id, actor, project, grant.label_of(resource))
 
 
-async def arevoke(
-    session: AsyncSession, resource_type: ResourceType, resource_id: Any, actor: Any, project: str | None
+async def arevoke(  # noqa: PLR0913 - flat keyword args mirror the call sites; a wrapper only moves the count
+    session: AsyncSession,
+    resource_type: ResourceType,
+    resource_id: Any,
+    actor: Any,
+    project: str | None,
+    label: str,
 ) -> UUID | None:
     """The one revoke step: tombstone the live link and remove the grants it made, each audited.
 
@@ -180,7 +195,7 @@ async def arevoke(
     await session.flush()
     event_type = link_descriptor_for(resource_type).event_revoked
     await activity_event_repository.async_insert_many_strict(
-        [_event(descriptor_for(resource_type), event_type, link, project, actor)], session
+        [_event(descriptor_for(resource_type), event_type, link, project, actor, label)], session
     )
     await named_grant_service.aremove_link_grants(
         actor=actor,
@@ -189,6 +204,7 @@ async def arevoke(
         link_id=link.id,
         project=project,
         session=session,
+        label=label,
     )
     return link.id
 
@@ -202,7 +218,7 @@ async def arevoke_checked(
     grant = descriptor_for(resource_type)
     if not grant.is_owner(resource, actor):
         raise link_rules.access_denied(grant.not_owner_message)
-    return await arevoke(session, resource_type, resource.id, actor, project)
+    return await arevoke(session, resource_type, resource.id, actor, project, grant.label_of(resource))
 
 
 # ---- open -----------------------------------------------------------------------------------------------------------

@@ -1,0 +1,96 @@
+{
+  "decision": "request-changes",
+  "rationale": "Taxonomy hard-codes project.member_spend_enforcement.updated as \"Settings\" instead of \"Budget\", failing AC17's requirement that Budget include the enforcement event (CR-002, critical) — the diff's own tests assert the wrong behavior. Standards audit blocks on two non-ticket-prefixed commit subjects (CR-005) and a bare list[dict] typing violation (CR-001); a pre-existing test assertion on get_domain_mapping's entity_types was silently deleted (CR-004), and the new trail endpoint's auth-dependency wiring has no HTTP-level test unlike its metadata sibling (CR-003). One pre-existing find_all pagination tie-break gap was deferred as out of scope; 8 other candidates (unknown-event_type KeyError risk, invalid-category silent empty set, VARCHAR(255) truncation risk, a false-positive NameError claim, naive-datetime comparison, missing project-existence check, pagination page-number math, and unguarded ais_admin DB call) were verified against source and dismissed as unreachable, already consistent with established codebase conventions, or mathematically correct.",
+  "confidence": "high",
+  "risk_flags": ["public-api"],
+  "business_review": [
+    { "kind": "spec", "item": "Taxonomy catalogue: single dict mapping every event_type from all 4 event classes + enforcement event to (label, category), categories restricted to 4 fixed values", "status": "pass", "notes": "EVENT_TAXONOMY covers all classes; CATEGORIES=(Budget,Members,Settings,Account); reflective test in test_activity_taxonomy.py" },
+    { "kind": "spec", "item": "Category assignment: Budget = every BudgetManagementEvent type, plus the new member-spend-enforcement event", "status": "fail", "notes": "activity_taxonomy.py maps project.member_spend_enforcement.updated to \"Settings\" not \"Budget\"; tests assert the wrong category too" },
+    { "kind": "spec", "item": "Category assignment: Members = USER_PROJECT_ASSIGNED/REMOVED/ROLE_UPDATED only", "status": "pass", "notes": "all three mapped to Members, verified by test" },
+    { "kind": "spec", "item": "Category assignment: Settings = ProjectManagementEvent (created/updated/deleted) and CustomerConfigEvent", "status": "pass", "notes": "mapped correctly in EVENT_TAXONOMY" },
+    { "kind": "spec", "item": "Category assignment: Account = USER_CREATED/UPDATED/DEACTIVATED/LOGIN/LOGOUT", "status": "pass", "notes": "all five mapped to Account, verified by test" },
+    { "kind": "spec", "item": "Reverse index (category -> set of event types) built once from the taxonomy dict", "status": "pass", "notes": "CATEGORY_EVENT_TYPES built at module load via single for-loop" },
+    { "kind": "spec", "item": "Add MEMBER_SPEND_ENFORCEMENT_UPDATED to ProjectManagementEvent, domain stays PROJECT_MANAGEMENT", "status": "pass", "notes": "constant added; emitted with ActivityDomain.PROJECT_MANAGEMENT" },
+    { "kind": "spec", "item": "update_project reads current enforce-member-spend-limits value before set call, emits new event only when value differs", "status": "pass", "notes": "gated insert covered by TestProjectServiceMemberSpendEnforcementActivityEvent (changed/unchanged cases)" },
+    { "kind": "spec", "item": "Enforcement event emission is additive: unconditional PROJECT_UPDATED emission unchanged, enforcement event fires alongside it", "status": "pass", "notes": "PROJECT_UPDATED emitted unconditionally before the guarded enforcement insert" },
+    { "kind": "spec", "item": "Add nullable entity_label VARCHAR(255) column to ActivityEvent with an Alembic migration, no backfill", "status": "pass", "notes": "migration adds nullable column with no data migration; verified by migration test" },
+    { "kind": "spec", "item": "ActivityEventCreate validator: entity_label must be None when entity_type/entity_id are None", "status": "pass", "notes": "model_validator raises ValueError when violated; covered by test" },
+    { "kind": "spec", "item": "Each of the ~36 emit sites passes a human-readable entity_label at write time", "status": "pass", "notes": "every touched emit site adds entity_label (project/budget/user/budget-group name)" },
+    { "kind": "spec", "item": "Once written, entity_label never changes even if the underlying entity is later renamed or deleted", "status": "pass", "notes": "no update/backfill path touches entity_label after insert" },
+    { "kind": "spec", "item": "find_by_project gains category: list[str] | None param, translated via reverse index into event_type IN (...) applied to both count and data statements", "status": "pass", "notes": "resolved_event_types applied to both count_stmt and data_stmt" },
+    { "kind": "spec", "item": "Router adds category: list[str] | None query param, forwarded through list_project_events", "status": "pass", "notes": "declared as Query(None) list, threaded into service call" },
+    { "kind": "spec", "item": "Selecting Budget returns budget events and the enforcement event together", "status": "fail", "notes": "direct consequence of the taxonomy mis-categorization; category=[\"Budget\"] excludes the enforcement event" },
+    { "kind": "spec", "item": "ActivityEventListItem gains label: str, category: str (resolved from catalogue), and entity_label: str | None", "status": "pass", "notes": "fields added and populated via activity_taxonomy.get_label/get_category" },
+    { "kind": "spec", "item": "Both the trail response and metadata response gain a top-level recording_enabled: bool field", "status": "pass", "notes": "both endpoints wire it through" },
+    { "kind": "spec", "item": "Service layer short-circuits on config.ACTIVITY_EVENTS_ENABLED=False before calling repository, returning recording_enabled=False with empty list/zero total", "status": "pass", "notes": "both list_project_events and get_project_event_metadata short-circuit; covered by tests" },
+    { "kind": "spec", "item": "New GET .../activity-events/metadata endpoint on the same router, using project_admin_or_admin_or_maintainer_access", "status": "pass", "notes": "route defined with the same dependency used by the trail endpoint" },
+    { "kind": "spec", "item": "New repository method selects DISTINCT event_type by project; service maps to {event_type, label, category} plus recording_enabled", "status": "pass", "notes": "get_distinct_event_types_by_project implemented and mapped in service" },
+    { "kind": "spec", "item": "A non-project-admin caller gets denied on the metadata endpoint with no data leaked", "status": "pass", "notes": "TestClient-based test asserts 403 and absent event_types/data body" },
+    { "kind": "spec", "item": "A test reflects over all four event-type enum classes (plus enforcement type) and fails if any lacks a catalogue entry", "status": "pass", "notes": "test_every_known_event_type_has_taxonomy_entry parametrized over all classes" }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "partial", "notes": "24 of 26 commit subjects match EPMCDME-####: Description; 2 subjects use a task-slug prefix instead of the ticket prefix" },
+    { "kind": "code-quality", "status": "partial", "notes": "ActivityEventProjectMetadata.event_types declared as bare list[dict] instead of a parameterized/dedicated type; new Optional/Dict fields follow surrounding file's established style" },
+    { "kind": "security", "status": "pass", "notes": "New project_admin_or_admin_or_maintainer_access dependency fails closed to 403; filters use SQLAlchemy ORM conditions with no injection risk; no credentials logged" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/activity_event.py",
+      "line": 61,
+      "title": "Bare list[dict] typing on metadata field",
+      "problem": "ActivityEventProjectMetadata.event_types is declared as bare list[dict] instead of a parameterized generic or dedicated model, so the {event_type, label, category} shape is enforced only by convention in get_project_event_metadata.",
+      "impact": "A documented code-quality standard is violated in new code; a future caller populating this field with a different shape would not be caught by schema validation, and the standards audit already flags this as a blocking finding.",
+      "recommendation": "Declare the field as list[dict[str, str]] or, preferably, a dedicated Pydantic model for the event_type/label/category triple."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/activity/activity_taxonomy.py",
+      "line": 31,
+      "title": "Enforcement event miscategorized as Settings",
+      "problem": "EVENT_TAXONOMY maps project.member_spend_enforcement.updated to category \"Settings\" instead of \"Budget\", contradicting the spec's explicit instruction that Budget must include every BudgetManagementEvent type plus the new member-spend-enforcement event.",
+      "impact": "Filtering the project trail by category=[\"Budget\"] excludes the enforcement event, failing AC17 (\"Selecting Budget returns budget events and the enforcement event together\"). The diff's own tests (test_find_by_project_category_filter_resolves_to_event_types_via_taxonomy and test_member_spend_enforcement_updated_event_constant_exists) assert and lock in the wrong category, so this is a required-criterion failure, not a cosmetic slip.",
+      "recommendation": "Change the taxonomy entry to (\"Member Spend Enforcement Updated\", \"Budget\") and flip the two tests that currently assert \"Settings\" to assert \"Budget\"."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_project_activity_events_router.py",
+      "title": "Main trail route's auth wiring has no HTTP-level test",
+      "problem": "TestListProjectActivityEvents' tests all call list_project_activity_events(...) as a plain Python function with _=None, never through a TestClient, so FastAPI's Depends(project_admin_or_admin_or_maintainer_access) resolution is never exercised for this route; only the /metadata sibling has such a test.",
+      "impact": "If the dependency is dropped, renamed, or mis-wired on this specific endpoint while the metadata endpoint keeps it, any authenticated user could list another project's full activity trail (including actor_email/actor_display_name/entity_label), and no existing test would catch it.",
+      "recommendation": "Add a TestClient-based access-control test for GET /v1/projects/{project_name}/activity-events mirroring TestGetProjectActivityEventsMetadataAccessControl, asserting a non-project-admin gets 403 and list_project_events is never called."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/activity/test_activity_repository.py",
+      "line": 60,
+      "title": "Deleted coverage for get_domain_mapping entity_types",
+      "problem": "The pre-existing assertion assert result['user_management'].entity_types == ['user'] in test_get_domain_mapping_groups_by_domain was deleted with no replacement and no stated reason, in a diff whose purpose is adding get_distinct_event_types_by_project coverage.",
+      "impact": "Silent regression-coverage loss for get_domain_mapping's entity_types field, which is unrelated to this diff's stated scope; a future regression in that field would go undetected.",
+      "recommendation": "Restore the deleted assertion alongside the new test_get_distinct_event_types_by_project_returns_event_types test."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Two commits use non-ticket commit-message prefix",
+      "problem": "Commits 2b6f83598 (\"project-scoped-activity-trail: commit remaining planning artifacts and doctor cache refresh\") and 3b46a8bd5 (\"project-scoped-activity-trail: add planning artifacts\") use a task-slug prefix instead of the required EPMCDME-####: Description format documented in git-workflow.md.",
+      "impact": "Breaks the convention used to trace changes to the Jira ticket; this is a documented blocking standard.",
+      "recommendation": "Reword the two commit subjects (via rebase, if the branch is not yet merged) to start with EPMCDME-14325:."
+    }
+  ]
+}

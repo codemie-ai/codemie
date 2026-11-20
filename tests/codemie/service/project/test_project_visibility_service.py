@@ -16,6 +16,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 import pytest
 
@@ -53,6 +54,7 @@ class TestProjectVisibilityService:
         mock_session = MagicMock()
         project = SimpleNamespace(
             name="proj-a",
+            project_instance_id=UUID("4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c"),
             display_name=None,
             description="Project A",
             project_type="shared",
@@ -166,6 +168,7 @@ class TestProjectVisibilityService:
         mock_session = MagicMock()
         project = SimpleNamespace(
             name="proj-a",
+            project_instance_id=UUID("4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c"),
             display_name=None,
             description="Project A",
             project_type="shared",
@@ -202,6 +205,7 @@ class TestProjectVisibilityService:
 
         assert result["user_count"] == 2
         assert result["admin_count"] == 1
+        assert result["project_instance_id"] == UUID("4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c")
         assert result["is_project_admin"] is True
         assert result["chargeback_enabled"] is False
         assert result["cli_analytics_enabled"] is True

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "generated": "2026-09-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 72,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Touches five components across the activity subsystem — API models (activity_event.py), a new taxonomy lookup module, the repository (category-based filtering query), the service (metadata/category enrichment), the project-scoped router, plus an incidental touch in project_service.py — crossing API, Service, and DB-Persistence layers and introducing a new abstraction (the event-type-to-label/category taxonomy)."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "activity_taxonomy.py intentionally raises KeyError for any event_type not present in EVENT_TAXONOMY (get_label/get_category), by design rather than degrading gracefully. This creates an ongoing maintenance coupling: any new event_type emitted elsewhere in the codebase (budget, project, user domains) that is not added to the taxonomy will surface as a runtime failure in the activity API rather than a silent gap. No existing precedent for this fail-hard mapping pattern was found in the repo."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "diffstat reports 72 files changed / 5585 insertions, mapping to the 16+ files XXL band. This is far larger than the 6 core files enumerated in changed_files (which touch only activity_event.py, activity_taxonomy.py, activity_repository.py, activity_event_service.py, project_activity_events_router.py, project_service.py) — the additional files are very likely the associated unit/migration test suites (tests/codemie/service/activity/*, tests/codemie/rest_api/*, tests/external/alembic/*) and fixture updates surfaced by grepping the activity_* file family, not net-new architectural surface. Scored per the diffstat instruction as given; flagged here because the disparity between changed_files (6) and diffstat (72) is unusually large and worth the caller's attention if diffstat was pasted from the wrong range."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

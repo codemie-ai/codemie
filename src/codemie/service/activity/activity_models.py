@@ -17,13 +17,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, model_validator
 from sqlalchemy import TIMESTAMP, Column, ForeignKey, Index, Text, VARCHAR, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.sql import func
 from sqlmodel import Field, SQLModel
+
+from codemie.configs import logger
+from codemie.service.activity.activity_taxonomy import EVENT_TAXONOMY
+
+
+# actor_id of events written by the platform itself; such an actor has no email to snapshot.
+SYSTEM_ACTOR_ID = "system"
 
 
 class ActivityDomain:
@@ -75,6 +82,7 @@ class ProjectManagementEvent:
     PROJECT_UPDATED = "project.updated"
     PROJECT_DELETED = "project.deleted"
     PROJECT_OWNERSHIP_CHANGED = "project.ownership_changed"
+    MEMBER_SPEND_ENFORCEMENT_UPDATED = "project.member_spend_enforcement.updated"
 
 
 class AssistantEvent:
@@ -136,6 +144,7 @@ class ActivityEvent(SQLModel, table=True):
 
     entity_type: Optional[str] = Field(default=None, sa_column=Column(VARCHAR(64), nullable=True))
     entity_id: Optional[str] = Field(default=None, sa_column=Column(Text(), nullable=True))
+    entity_label: Optional[str] = Field(default=None, sa_column=Column(VARCHAR(255), nullable=True))
 
     actor_id: Optional[str] = Field(
         default=None,
@@ -147,6 +156,11 @@ class ActivityEvent(SQLModel, table=True):
     )
 
     attributes: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSONB, nullable=True))
+
+    project_name: Optional[str] = Field(default=None, sa_column=Column(VARCHAR(255), nullable=True))
+    project_instance_id: UUID | None = Field(default=None, sa_column=Column(PGUUID(as_uuid=True), nullable=True))
+    actor_email: Optional[str] = Field(default=None, sa_column=Column(VARCHAR(255), nullable=True))
+    actor_display_name: Optional[str] = Field(default=None, sa_column=Column(VARCHAR(255), nullable=True))
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -175,6 +189,8 @@ class ActivityEvent(SQLModel, table=True):
             "domain",
             "created_at",
         ),
+        Index("ix_activity_events_project_name_created_at", "project_name", "created_at"),
+        Index("ix_activity_events_project_instance_id_created_at", "project_instance_id", "created_at"),
     )
 
 
@@ -186,13 +202,29 @@ class ActivityEventCreate(BaseModel):
 
     domain: str
     event_type: str
-    entity_type: Optional[str] = None
-    entity_id: Optional[str] = None
-    actor_id: Optional[str] = None
-    attributes: Optional[Dict[str, Any]] = None
+    entity_type: str | None = None
+    entity_id: str | None = None
+    entity_label: str | None = None
+    actor_id: str | None = None
+    attributes: Dict[str, Any] | None = None
+    project_name: str | None = None
+    project_instance_id: UUID | None = None
+    actor_email: str | None = None
+    actor_display_name: str | None = None
 
     @model_validator(mode="after")
     def entity_pair_must_be_complete(self) -> ActivityEventCreate:
         if (self.entity_type is None) != (self.entity_id is None):
             raise ValueError("entity_type and entity_id must both be set or both be absent")
+        if self.entity_label is not None and self.entity_type is None:
+            raise ValueError("entity_label requires entity_type to be set")
+        if self.project_instance_id is not None and self.project_name is None:
+            raise ValueError("project_instance_id requires project_name to be set")
+        if self.entity_label is not None:
+            self.entity_label = self.entity_label[:255]  # column is VARCHAR(255); an overflow would drop the event
+        if self.actor_id not in (None, SYSTEM_ACTOR_ID) and self.actor_email is None:
+            raise ValueError("actor_email is required when actor_id is set")
+        # Log, don't raise: emission is best-effort and must not break the business flow.
+        if self.event_type not in EVENT_TAXONOMY:
+            logger.error(f"[activity_events] event_type={self.event_type!r} has no EVENT_TAXONOMY entry")
         return self

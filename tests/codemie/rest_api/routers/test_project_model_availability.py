@@ -83,6 +83,7 @@ def mock_project():
     """Mock Application (project) object."""
     project = MagicMock(spec=Application)
     project.name = "test-project"
+    project.project_instance_id = "4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c"
     project.display_name = "Test Project"
     project.description = "A test project"
     project.project_type = "shared"
@@ -936,6 +937,7 @@ class TestUIModelConfigurationPersistence:
 
         project_detail = {
             "name": mock_project.name,
+            "project_instance_id": mock_project.project_instance_id,
             "display_name": mock_project.display_name,
             "description": mock_project.description,
             "project_type": mock_project.project_type,

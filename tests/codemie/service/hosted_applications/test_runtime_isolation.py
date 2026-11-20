@@ -117,7 +117,7 @@ async def test_failed_link_insert_leaves_the_token_out_of_logs_and_exception_tex
             # A NULL resource id violates NOT NULL on the INSERT, against the real database.
             with pytest.raises(IntegrityError) as failed:
                 await share_link_service.aget_or_create_live(
-                    session, ResourceType.HOSTED_APPLICATION, None, actor, "project"
+                    session, ResourceType.HOSTED_APPLICATION, None, actor, "project", "Label"
                 )
         assert sentinel not in str(failed.value)
         assert all(sentinel not in record.getMessage() for record in caplog.records)

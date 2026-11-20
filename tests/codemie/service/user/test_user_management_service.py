@@ -18,10 +18,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from codemie.rest_api.security.user import User
 from codemie.service.activity.activity_models import ActivityDomain, ActivityEntityType, UserManagementEvent
 from codemie.service.budget.budget_models import Budget, ProjectBudgetAssignment, ProjectMemberBudgetAssignment
 from codemie.service.project.project_assignment_service import ProjectAssignmentService
 from codemie.service.user.user_management_service import UserManagementService
+
+_ADMIN = User(id="admin-id", email="admin@example.com", name="Admin User")
 
 _REAL_BUDGET_SYNC = ProjectAssignmentService._sync_project_budget_member_added
 
@@ -32,6 +35,8 @@ def _mock_user(user_id: str = "user-1") -> MagicMock:
     user.is_admin = False
     user.is_maintainer = False
     user.is_active = True
+    user.name = f"Name {user_id}"
+    user.email = f"{user_id}@example.com"
     return user
 
 
@@ -59,6 +64,30 @@ def test_create_local_user_emits_user_created_event(mock_repo, mock_activity):
     assert event_dto.event_type == UserManagementEvent.USER_CREATED
     assert event_dto.entity_type == ActivityEntityType.USER
     assert event_dto.entity_id == "new-user-id"
+    assert event_dto.entity_label == created_user.name
+    assert event_dto.project_name is None
+    assert event_dto.actor_id is None
+    assert event_dto.actor_email is None
+    assert event_dto.actor_display_name is None
+
+
+@patch("codemie.service.user.user_management_service.activity_event_repository")
+@patch("codemie.service.user.user_management_service.user_repository")
+def test_create_local_user_snapshots_the_creating_admin(mock_repo, mock_activity):
+    session = MagicMock()
+    mock_repo.exists_by_email.return_value = False
+    mock_repo.exists_by_username.return_value = False
+    mock_repo.create.return_value = _mock_user("new-user-id")
+
+    with patch("codemie.service.password_service.password_service.hash_password", return_value="hashed"):
+        UserManagementService.create_local_user(
+            session, email="a@b.com", username="auser", password="password123", actor=_ADMIN
+        )
+
+    event_dto = mock_activity.insert.call_args[0][0]
+    assert event_dto.actor_id == "admin-id"
+    assert event_dto.actor_email == "admin@example.com"
+    assert event_dto.actor_display_name == "Admin User"
 
 
 @patch("codemie.service.user.user_management_service.activity_event_repository")
@@ -125,7 +154,7 @@ def test_update_user_emits_user_updated_event(mock_repo, mock_activity):
     updated_user = _mock_user("target-id")
     mock_repo.update.return_value = updated_user
 
-    UserManagementService.update_user(session, user_id="target-id", actor_user_id="admin-id", is_admin=True)
+    UserManagementService.update_user(session, user_id="target-id", actor_user=_ADMIN, is_admin=True)
 
     mock_activity.insert.assert_called_once()
     call_args = mock_activity.insert.call_args[0]
@@ -134,7 +163,11 @@ def test_update_user_emits_user_updated_event(mock_repo, mock_activity):
     assert event_dto.event_type == UserManagementEvent.USER_UPDATED
     assert event_dto.entity_type == ActivityEntityType.USER
     assert event_dto.entity_id == "target-id"
+    assert event_dto.entity_label == updated_user.name
     assert event_dto.actor_id == "admin-id"
+    assert event_dto.project_name is None
+    assert event_dto.actor_email == "admin@example.com"
+    assert event_dto.actor_display_name == "Admin User"
 
 
 @patch("codemie.service.user.user_management_service.activity_event_repository")
@@ -144,7 +177,7 @@ def test_update_user_no_event_when_user_not_found(mock_repo, mock_activity):
     session = MagicMock()
     mock_repo.update.return_value = None
 
-    result = UserManagementService.update_user(session, user_id="missing-id", actor_user_id="admin-id")
+    result = UserManagementService.update_user(session, user_id="missing-id", actor_user=_ADMIN)
 
     assert result is None
     mock_activity.insert.assert_not_called()
@@ -166,7 +199,7 @@ def test_deactivate_user_emits_user_deactivated_event(mock_repo, mock_activity):
     mock_repo.get_by_id.side_effect = [target_user, deactivated_user]
     mock_repo.soft_delete.return_value = None
 
-    UserManagementService.deactivate_user(session, user_id="target-id", actor_user_id="admin-id")
+    UserManagementService.deactivate_user(session, user_id="target-id", actor_user=_ADMIN)
 
     mock_activity.insert.assert_called_once()
     call_args = mock_activity.insert.call_args[0]
@@ -175,7 +208,11 @@ def test_deactivate_user_emits_user_deactivated_event(mock_repo, mock_activity):
     assert event_dto.event_type == UserManagementEvent.USER_DEACTIVATED
     assert event_dto.entity_type == ActivityEntityType.USER
     assert event_dto.entity_id == "target-id"
+    assert event_dto.entity_label == target_user.name
     assert event_dto.actor_id == "admin-id"
+    assert event_dto.project_name is None
+    assert event_dto.actor_email == "admin@example.com"
+    assert event_dto.actor_display_name == "Admin User"
 
 
 @patch("codemie.service.user.user_management_service.activity_event_repository")
@@ -188,7 +225,7 @@ def test_deactivate_user_no_event_when_user_not_found(mock_repo, mock_activity):
     mock_repo.get_by_id.return_value = None
 
     with pytest.raises(ExtendedHTTPException):
-        UserManagementService.deactivate_user(session, user_id="ghost-id", actor_user_id="admin-id")
+        UserManagementService.deactivate_user(session, user_id="ghost-id", actor_user=_ADMIN)
 
     mock_activity.insert.assert_not_called()
 
@@ -208,7 +245,7 @@ def test_deactivate_user_refuses_own_account(mock_repo, mock_activity):
     _deactivation_repo(mock_repo, admin, admin)
 
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.deactivate_user(MagicMock(), user_id="admin-id", actor_user_id="admin-id")
+        UserManagementService.deactivate_user(MagicMock(), user_id="admin-id", actor_user=_ADMIN)
 
     assert exc_info.value.code == 403
     assert exc_info.value.message == "You cannot deactivate your own account"
@@ -226,7 +263,7 @@ def test_deactivate_maintainer_requires_a_maintainer_actor(mock_repo, mock_activ
     _deactivation_repo(mock_repo, target, _mock_user("admin-id"))
 
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.deactivate_user(MagicMock(), user_id="target-id", actor_user_id="admin-id")
+        UserManagementService.deactivate_user(MagicMock(), user_id="target-id", actor_user=_ADMIN)
 
     assert exc_info.value.code == 403
     assert exc_info.value.details == "Only maintainers can deactivate a maintainer"
@@ -243,7 +280,7 @@ def test_maintainer_can_deactivate_a_maintainer(mock_repo, mock_activity):
     maintainer.is_maintainer = True
     _deactivation_repo(mock_repo, target, maintainer)
 
-    UserManagementService.deactivate_user(session, user_id="target-id", actor_user_id="admin-id")
+    UserManagementService.deactivate_user(session, user_id="target-id", actor_user=_ADMIN)
 
     mock_repo.soft_delete.assert_called_once_with(session, "target-id")
 
@@ -256,7 +293,7 @@ def test_admin_can_deactivate_an_admin(mock_repo, mock_activity):
     target.is_admin = True
     _deactivation_repo(mock_repo, target, _mock_user("admin-id"))
 
-    UserManagementService.deactivate_user(session, user_id="target-id", actor_user_id="admin-id")
+    UserManagementService.deactivate_user(session, user_id="target-id", actor_user=_ADMIN)
 
     mock_repo.soft_delete.assert_called_once_with(session, "target-id")
 
@@ -273,7 +310,7 @@ def test_deactivate_last_maintainer_is_refused(mock_repo, mock_activity):
     _deactivation_repo(mock_repo, target, maintainer, active_maintainers=1)
 
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.deactivate_user(MagicMock(), user_id="target-id", actor_user_id="admin-id")
+        UserManagementService.deactivate_user(MagicMock(), user_id="target-id", actor_user=_ADMIN)
 
     assert exc_info.value.code == 403
     assert exc_info.value.message == "Cannot deactivate last maintainer - assign another maintainer first"
@@ -345,7 +382,7 @@ def _assert_nothing_side_effected(env):
 def test_reactivate_user_emits_user_reactivated_event(reactivation_env):
     env = reactivation_env
 
-    result = UserManagementService.reactivate_user_flow("target-id", "admin-id")
+    result = UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     env.activity.insert.assert_called_once()
     event_dto, event_session = env.activity.insert.call_args[0]
@@ -353,7 +390,10 @@ def test_reactivate_user_emits_user_reactivated_event(reactivation_env):
     assert event_dto.event_type == UserManagementEvent.USER_REACTIVATED
     assert event_dto.entity_type == ActivityEntityType.USER
     assert event_dto.entity_id == "target-id"
+    assert event_dto.entity_label == env.target.name
     assert event_dto.actor_id == "admin-id"
+    assert event_dto.actor_email == "admin@example.com"
+    assert event_dto.actor_display_name == "Admin User"
     assert event_session is env.session
     env.repo.reactivate.assert_called_once_with(env.session, "target-id")
     env.session.commit.assert_called_once_with()
@@ -365,7 +405,7 @@ def test_reactivate_user_emits_user_reactivated_event(reactivation_env):
 def test_reactivate_user_logs_once_after_commit(reactivation_env):
     env = reactivation_env
 
-    UserManagementService.reactivate_user_flow("target-id", "admin-id")
+    UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     env.logger.info.assert_called_once_with(
         "user_reactivated: actor_user_id=admin-id, target_user_id=target-id, domain=user_management"
@@ -377,7 +417,7 @@ def test_reactivate_user_logs_once_after_commit(reactivation_env):
 def test_reactivate_user_invalidates_cache_once_after_commit(reactivation_env):
     env = reactivation_env
 
-    UserManagementService.reactivate_user_flow("target-id", "admin-id")
+    UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     env.invalidate.assert_called_once_with("target-id")
     names = [c[0] for c in env.manager.mock_calls if c[0] in ("commit", "invalidate")]
@@ -391,7 +431,7 @@ def test_reactivate_user_not_found_404_adds_no_event(reactivation_env):
     env.repo.get_by_id.side_effect = lambda _s, _uid: None
 
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.reactivate_user_flow("ghost-id", "admin-id")
+        UserManagementService.reactivate_user_flow("ghost-id", _ADMIN)
 
     assert exc_info.value.code == 404
     env.repo.reactivate.assert_not_called()
@@ -406,7 +446,7 @@ def test_reactivate_user_already_active_409_adds_no_event(reactivation_env):
     env.target.deleted_at = None
 
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.reactivate_user_flow("target-id", "admin-id")
+        UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     assert exc_info.value.code == 409
     env.repo.reactivate.assert_not_called()
@@ -423,7 +463,7 @@ def test_reactivate_user_half_state_is_reactivatable(reactivation_env, is_active
     env.target.is_active = is_active
     env.target.deleted_at = deleted_at
 
-    UserManagementService.reactivate_user_flow("target-id", "admin-id")
+    UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     env.repo.reactivate.assert_called_once_with(env.session, "target-id")
     env.activity.insert.assert_called_once()
@@ -435,7 +475,7 @@ def test_reactivate_user_commit_failure_skips_log_and_cache(reactivation_env):
     env.session.commit.side_effect = RuntimeError("db down")
 
     with pytest.raises(RuntimeError, match="db down"):
-        UserManagementService.reactivate_user_flow("target-id", "admin-id")
+        UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     env.session.commit.assert_called_once_with()
     env.logger.info.assert_not_called()
@@ -448,7 +488,7 @@ def test_reactivate_user_refuses_self_reactivation(reactivation_env):
     env = reactivation_env
 
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.reactivate_user_flow("admin-id", "admin-id")
+        UserManagementService.reactivate_user_flow("admin-id", _ADMIN)
 
     assert exc_info.value.code == 403
     env.repo.reactivate.assert_not_called()
@@ -459,7 +499,7 @@ def test_reactivate_user_cache_failure_does_not_fail_the_request(reactivation_en
     env = reactivation_env
     env.invalidate.side_effect = KeyError("racing scan")
 
-    result = UserManagementService.reactivate_user_flow("target-id", "admin-id")
+    result = UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     assert result is env.detail.return_value
     env.logger.exception.assert_called_once()
@@ -476,7 +516,7 @@ def test_reactivate_maintainer_requires_a_maintainer_actor(reactivation_env):
     env.repo.get_by_id.side_effect = lambda _s, uid: env.target if uid == "target-id" else admin
 
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.reactivate_user_flow("target-id", "admin-id")
+        UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     assert exc_info.value.code == 403
     env.repo.reactivate.assert_not_called()
@@ -490,7 +530,7 @@ def test_maintainer_can_reactivate_a_maintainer(reactivation_env):
     maintainer.is_maintainer = True
     env.repo.get_by_id.side_effect = lambda _s, uid: env.target if uid == "target-id" else maintainer
 
-    UserManagementService.reactivate_user_flow("target-id", "admin-id")
+    UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     env.repo.reactivate.assert_called_once_with(env.session, "target-id")
 
@@ -502,7 +542,7 @@ def test_admin_can_reactivate_a_non_maintainer(reactivation_env):
     admin.is_maintainer = False
     env.repo.get_by_id.side_effect = lambda _s, uid: env.target if uid == "target-id" else admin
 
-    UserManagementService.reactivate_user_flow("target-id", "admin-id")
+    UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     env.repo.reactivate.assert_called_once_with(env.session, "target-id")
 
@@ -512,7 +552,7 @@ def test_reactivate_user_restores_budget_shares_on_every_project(reactivation_en
     env.up_repo.get_by_user_id.return_value = [MagicMock(project_name="alpha"), MagicMock(project_name="beta")]
     env.manager.attach_mock(env.budget_sync, "budget_sync")
 
-    UserManagementService.reactivate_user_flow("target-id", "admin-id")
+    UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     env.up_repo.get_by_user_id.assert_called_once_with(env.session, "target-id")
     assert env.budget_sync.call_args_list == [
@@ -531,7 +571,7 @@ def test_reactivate_user_refused_touches_no_budget(reactivation_env):
     env.target.deleted_at = None
 
     with pytest.raises(ExtendedHTTPException):
-        UserManagementService.reactivate_user_flow("target-id", "admin-id")
+        UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     env.budget_sync.assert_not_called()
 
@@ -569,7 +609,7 @@ def test_reactivate_user_gets_share_of_budget_created_while_deactivated(reactiva
     env = reactivation_env
     _project_budget_queries(env, existing_share=None)
 
-    UserManagementService.reactivate_user_flow("target-id", "admin-id")
+    UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     shares = [c[0][0] for c in env.session.add.call_args_list if isinstance(c[0][0], ProjectMemberBudgetAssignment)]
     assert len(shares) == 1
@@ -584,6 +624,6 @@ def test_reactivate_user_keeps_an_existing_share(reactivation_env):
     env = reactivation_env
     _project_budget_queries(env, existing_share=MagicMock())
 
-    UserManagementService.reactivate_user_flow("target-id", "admin-id")
+    UserManagementService.reactivate_user_flow("target-id", _ADMIN)
 
     assert not [c for c in env.session.add.call_args_list if isinstance(c[0][0], ProjectMemberBudgetAssignment)]

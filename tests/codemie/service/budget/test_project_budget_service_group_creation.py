@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.rest_api.security.user import User
 from codemie.service.budget.project_budget_service import (
     ProjectBudgetGroupCategoryResult,
     ProjectBudgetGroupFullResult,
@@ -179,7 +180,7 @@ class TestGroupWritesRejectPlatformZero:
             ),
             pytest.raises(ExtendedHTTPException) as exc_info,
         ):
-            await service.create_project_budget_group(session=session, data=data, actor_id="actor-1")
+            await service.create_project_budget_group(session=session, data=data, actor=User(id="actor-1"))
 
         assert exc_info.value.code == 400
         assert "platform" in exc_info.value.message
@@ -225,7 +226,7 @@ class TestGroupWritesRejectPlatformZero:
             pytest.raises(ExtendedHTTPException) as exc_info,
         ):
             await service.update_project_budget_group(
-                session=session, group_id="group-1", data=data, actor_id="actor-1"
+                session=session, group_id="group-1", data=data, actor=User(id="actor-1")
             )
 
         assert exc_info.value.code == 400
@@ -472,7 +473,7 @@ class TestGroupWritesRunPlanCheckFirst:
             patch.object(service, "_ensure_project_budget_eligible", new=ensure_project),
             pytest.raises(ExtendedHTTPException) as exc_info,
         ):
-            await service.create_project_budget_group(session=session, data=data, actor_id="actor-1")
+            await service.create_project_budget_group(session=session, data=data, actor=User(id="actor-1"))
 
         assert exc_info.value is rejection
         check.assert_called_once_with(data, None)
@@ -503,7 +504,7 @@ class TestGroupWritesRunPlanCheckFirst:
             pytest.raises(ExtendedHTTPException) as exc_info,
         ):
             await service.update_project_budget_group(
-                session=session, group_id="group-1", data=data, actor_id="actor-1"
+                session=session, group_id="group-1", data=data, actor=User(id="actor-1")
             )
 
         assert exc_info.value.code == 400

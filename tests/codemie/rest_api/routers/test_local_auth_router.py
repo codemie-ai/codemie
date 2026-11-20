@@ -672,12 +672,23 @@ class TestLogoutEndpoint:
         mock_cleanup.assert_awaited_once_with(mock_user.id)
 
     @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.local_auth_router.activity_event_repository")
+    @patch("codemie.rest_api.routers.local_auth_router.get_async_session")
     @patch("codemie.rest_api.routers.local_auth_router.config")
-    async def test_logout_clears_cookie(self, mock_config, mock_request, mock_response, mock_user):
+    async def test_logout_clears_cookie(
+        self, mock_config, mock_get_async_session, mock_activity, mock_request, mock_response, mock_user
+    ):
         """Logout clears authentication cookie"""
         # Arrange
         mock_config.AUTH_COOKIE_NAME = "codemie_access_token"
         mock_config.AUTH_COOKIE_PATH = "/"
+
+        mock_session = AsyncMock()
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_session
+        cm.__aexit__.return_value = False
+        mock_get_async_session.return_value = cm
+        mock_activity.async_insert = AsyncMock()
 
         # Act
         result = await logout(mock_request, mock_response, _user=mock_user)
@@ -688,6 +699,13 @@ class TestLogoutEndpoint:
             key="codemie_access_token",
             path="/",
         )
+
+        mock_activity.async_insert.assert_called_once()
+        event_dto = mock_activity.async_insert.call_args[0][0]
+        assert event_dto.project_name is None
+        assert event_dto.actor_email == mock_user.email
+        assert event_dto.actor_display_name == mock_user.name
+        assert event_dto.entity_label == mock_user.name
 
 
 class TestLogoutNeverDependsOnHostedRevocation:

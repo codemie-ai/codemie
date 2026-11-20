@@ -329,18 +329,17 @@ class TestDeleteBudgetEndpoint:
         mock_session = AsyncMock()
         mock_session.commit = AsyncMock()
         mock_delete = AsyncMock(return_value=None)
+        user = _maintainer_user()
 
         with (
             _patch_litellm_enabled(),
             _patch_session(mock_session),
             patch("codemie.rest_api.routers.budget_router.budget_service.delete_budget", new=mock_delete),
         ):
-            result = await delete_budget(budget_id="test-budget", user=_maintainer_user(), _=None)
+            result = await delete_budget(budget_id="test-budget", user=user, _=None)
 
         assert result is None
-        mock_delete.assert_awaited_once_with(
-            mock_session, "test-budget", actor_id="maintainer-1", actor_name="maintainer"
-        )
+        mock_delete.assert_awaited_once_with(mock_session, "test-budget", actor=user)
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio

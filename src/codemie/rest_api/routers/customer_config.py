@@ -83,7 +83,7 @@ async def get_declarations():
 
 async def _write_threshold_event(
     event_type: str,
-    actor_id: str,
+    actor: User,
     payload: dict | None,
     entity_id: str = "marketplaceThresholds",
 ) -> None:
@@ -105,7 +105,10 @@ async def _write_threshold_event(
                     event_type=event_type,
                     entity_type=ActivityEntityType.CUSTOMER_CONFIG_SETTING,
                     entity_id=entity_id,
-                    actor_id=actor_id,
+                    entity_label=entity_id,
+                    actor_id=actor.id,
+                    actor_email=actor.email,
+                    actor_display_name=actor.name or None,
                     attributes={"settings": payload} if payload is not None else None,
                 ),
                 session,
@@ -115,9 +118,7 @@ async def _write_threshold_event(
         logger.error("Failed to write threshold audit event. %s=%r, %s=%r", "event_type", event_type, "exc", exc)
 
 
-async def _handle_threshold_hook(
-    component_id: str, event_type: str, actor_id: str, settings: dict | None = None
-) -> None:
+async def _handle_threshold_hook(component_id: str, event_type: str, actor: User, settings: dict | None = None) -> None:
     """Invalidate the audit-cache config and write an audit row for any marketplace threshold component.
 
     Review comment #21: this must do nothing when the feature is off --
@@ -137,7 +138,7 @@ async def _handle_threshold_hook(
 
     for kind in EntityKind:
         AUDIT_CACHE.update_config(kind, {})
-    await _write_threshold_event(event_type, actor_id, settings, entity_id=component_id)
+    await _write_threshold_event(event_type, actor, settings, entity_id=component_id)
 
 
 @router.put(
@@ -152,7 +153,7 @@ async def update_setting(
 ):
     """Override one declared setting. A payload failing its declaration stores nothing."""
     settings = await save_setting(component_id, request.settings, current_user)
-    await _handle_threshold_hook(component_id, MarketplaceModerationEvent.THRESHOLD_UPDATED, current_user.id, settings)
+    await _handle_threshold_hook(component_id, MarketplaceModerationEvent.THRESHOLD_UPDATED, current_user, settings)
     return SettingUpdateResponse(component_id=component_id, settings=settings)
 
 
@@ -181,7 +182,7 @@ async def delete_setting(component_id: str, current_user: User = Depends(authent
 
     await reset_setting(component_id, current_user)
     await _handle_threshold_hook(
-        component_id, MarketplaceModerationEvent.THRESHOLD_RESET, current_user.id, previous_settings
+        component_id, MarketplaceModerationEvent.THRESHOLD_RESET, current_user, previous_settings
     )
 
 

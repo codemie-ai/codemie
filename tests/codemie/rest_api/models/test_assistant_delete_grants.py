@@ -28,6 +28,7 @@ def _assistant():
     a = MagicMock()
     a.id = ASSISTANT_ID
     a.project = "proj1"
+    a.name = "Assistant"
     return a
 
 
@@ -42,6 +43,12 @@ def _rows(n=2):
         )
         for i in range(n)
     ]
+
+
+def _owner():
+    owner = MagicMock(id="owner-1", username="owner", email="owner@example.com")
+    owner.name = "Owner"  # `name=` is MagicMock's own constructor argument, not an attribute
+    return owner
 
 
 @pytest.fixture()
@@ -77,7 +84,7 @@ def _share_env(rows, insert_strict=None):
 
 def test_delete_assistant_removes_grants_with_one_event_each_before_deleting(delete_env):
     session, session_patch, strict_patch = _share_env(_rows(2))
-    user = MagicMock(id="owner-1", username="owner")
+    user = _owner()
     calls = []
     session.delete.side_effect = lambda obj: calls.append("delete")
     with session_patch, strict_patch as strict:
@@ -95,7 +102,7 @@ def test_delete_assistant_removes_grants_with_one_event_each_before_deleting(del
 def test_failed_audit_insert_aborts_assistant_delete(delete_env):
     session, session_patch, strict_patch = _share_env(_rows(2), insert_strict=RuntimeError("audit down"))
     with session_patch, strict_patch, pytest.raises(RuntimeError, match="audit down"):
-        Assistant.delete_assistant("assistant-1", user=MagicMock(id="owner-1", username="owner"))
+        Assistant.delete_assistant("assistant-1", user=_owner())
 
     session.commit.assert_not_called()
     session.delete.assert_not_called()
@@ -116,6 +123,6 @@ def test_failed_assistant_delete_rolls_back_grant_removal(delete_env):
     session, session_patch, strict_patch = _share_env(_rows(2))
     session.delete.side_effect = RuntimeError("db down")
     with session_patch, strict_patch, pytest.raises(RuntimeError, match="db down"):
-        Assistant.delete_assistant("assistant-1", user=MagicMock(id="owner-1", username="owner"))
+        Assistant.delete_assistant("assistant-1", user=_owner())
 
     session.commit.assert_not_called()

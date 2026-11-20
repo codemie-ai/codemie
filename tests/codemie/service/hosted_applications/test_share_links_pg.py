@@ -288,7 +288,7 @@ async def test_a_platform_admin_deleting_one_permission_removes_a_single_link_gr
     # The service function behind ``DELETE /v1/permissions/{id}``; its sync wrapper only adds the descriptor check.
     async with AsyncSession(world.engine, expire_on_commit=False) as session, session.begin():
         permission = await session.get(Permission, permission_id)
-        await named_grant_service.arevoke_permission(admin, permission, session, "demo")
+        await named_grant_service.arevoke_permission(admin, permission, session, "demo", "Label")
 
     assert permission.resource_type == ResourceType.HOSTED_APPLICATION
     assert await rows(world, app_id) == {FIRST: ("link", UUID(link["id"]))}

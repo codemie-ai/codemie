@@ -201,7 +201,7 @@ def delete_project(
             session=session,
             project_name=authorized_project.name,
             project_type=authorized_project.project_type,
-            actor_id=request.state.user.id,
+            actor=request.state.user,
             action=f"{request.method} {request.url.path}",
             creator_id=authorized_project.created_by,
         )

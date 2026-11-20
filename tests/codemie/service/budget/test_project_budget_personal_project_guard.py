@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.rest_api.security.user import User
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.service.budget.project_budget_service import ProjectBudgetService
@@ -110,7 +111,7 @@ async def test_create_project_budget_blocked_for_personal_project():
     service = ProjectBudgetService()
 
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        await service.create_project_budget(session, _make_budget_payload(), actor_id="admin-1")
+        await service.create_project_budget(session, _make_budget_payload(), actor=User(id="admin-1"))
 
     assert exc_info.value.code == 403
     assert "personal" in exc_info.value.message.lower()
@@ -146,7 +147,7 @@ async def test_create_project_budget_group_blocked_for_personal_project():
         patch("codemie.service.budget.project_budget_service.project_budget_group_repository") as mock_group_repo,
     ):
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            await service.create_project_budget_group(session, _make_group_payload(), actor_id="admin-1")
+            await service.create_project_budget_group(session, _make_group_payload(), actor=User(id="admin-1"))
 
         mock_group_repo.get_active_by_project.assert_not_called()
 
@@ -166,7 +167,7 @@ async def test_create_project_budget_group_proceeds_past_guard_for_shared_projec
         mock_group_repo.get_active_by_project = AsyncMock(return_value=existing)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            await service.create_project_budget_group(session, _make_group_payload(), actor_id="admin-1")
+            await service.create_project_budget_group(session, _make_group_payload(), actor=User(id="admin-1"))
 
     # Guard passed — error is about an already-active group (409), not personal (403).
     assert exc_info.value.code == 409

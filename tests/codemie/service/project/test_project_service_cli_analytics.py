@@ -40,6 +40,8 @@ def _app(project_type: str = "shared") -> Application:
 def _user(*, global_write: bool) -> MagicMock:
     user = MagicMock()
     user.id = "u-1"
+    user.email = "u-1@example.com"
+    user.name = "User One"
     user.is_admin_or_maintainer = global_write
     return user
 

@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.pool import StaticPool
 
+from codemie.core.models import Application
 from codemie.core.hosted_applications.access import manageable
 from codemie.core.hosted_applications.errors import HostedApplicationError
 from codemie.core.hosted_applications.protocol import decode_cursor
@@ -53,6 +54,7 @@ from codemie.rest_api.models.permission import Action, Permission, PrincipalType
 from codemie.rest_api.models.user_management import UserDB, UserProject
 from codemie.rest_api.security.hosted_applications import HostedActor
 from codemie.rest_api.security.user import User
+from codemie.service.activity.activity_models import ActivityEvent
 from codemie.service.hosted_applications import catalog as catalog_module
 from codemie.service.hosted_applications import runtime as runtime_module
 from codemie.service.hosted_applications.catalog import (
@@ -162,8 +164,13 @@ async def engine():
 
     # Jobs, attempts and share links, which delete reads and writes, without their PostgreSQL CHECK constraints.
     metadata = sa.MetaData()
-    for table in (Job.__table__, Attempt.__table__, Permission.__table__, ShareLink.__table__):
+    for table in (Job.__table__, Attempt.__table__, Permission.__table__, ShareLink.__table__, ActivityEvent.__table__):
         sa.Table(table.name, metadata, *[column._copy() for column in table.columns])
+    sa.Table(
+        Application.__tablename__,
+        metadata,
+        *[Application.__table__.c[name]._copy() for name in ("name", "project_instance_id", "deleted_at")],
+    )
     async with engine.begin() as connection:
         for table in (UserDB.__table__, UserProject.__table__, App.__table__, Category.__table__):
             await connection.run_sync(table.create)
@@ -1460,7 +1467,7 @@ async def test_delete_removes_every_grant_in_the_same_transaction(catalog, peopl
     app = await create(catalog, people["creator"])
     seen = []
 
-    async def removed(actor, resource_type, resource_id, project, session):
+    async def removed(actor, resource_type, resource_id, project, session, label=None):
         seen.append((actor.id, resource_type, resource_id, project))
 
     monkeypatch.setattr(named_grant_service, "aremove_all_grants", removed)
@@ -1479,7 +1486,7 @@ def link_calls(share_calls, monkeypatch):
     async def insert(items, session):
         events.extend(item.event_type for item in items)
 
-    async def remove_link_grants(actor, resource_type, resource_id, link_id, project, session):
+    async def remove_link_grants(actor, resource_type, resource_id, link_id, project, session, label=None):
         share_calls.append(("remove_link_grants", link_id))
         removed.append((actor.id, resource_type, resource_id, link_id, project))
 
@@ -1629,10 +1636,10 @@ async def test_delete_revokes_the_link_before_removing_every_grant(catalog, peop
     app = await create(catalog, people["creator"])
     order = []
 
-    async def revoke(session, resource_type, app_id, actor, project):
+    async def revoke(session, resource_type, app_id, actor, project, label=None):
         order.append(("revoke_link", resource_type, actor.id, app_id, project))
 
-    async def removed(actor, resource_type, resource_id, project, session):
+    async def removed(actor, resource_type, resource_id, project, session, label=None):
         order.append(("remove_all",))
 
     monkeypatch.setattr(share_link_service, "arevoke", revoke)

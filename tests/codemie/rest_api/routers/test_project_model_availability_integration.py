@@ -47,6 +47,7 @@ class TestEndToEndModelRestrictionFlow:
         """Setup a test project and admin user."""
         project = MagicMock(spec=Application)
         project.name = "Foo"
+        project.project_instance_id = "4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c"
         project.display_name = "Foo Project"
         project.description = "Test project"
         project.project_type = "shared"
@@ -406,6 +407,7 @@ class TestDataConsistency:
 
         project = MagicMock()
         project.name = "test-project"
+        project.project_instance_id = "4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c"
         selected_models = ["gpt-4", "claude-3-sonnet"]
         default_model = "gpt-4"
 
@@ -444,6 +446,7 @@ class TestDataConsistency:
         # Retrieve the project to verify persistence, via the real detail-response mapper.
         project_detail = {
             "name": project.name,
+            "project_instance_id": project.project_instance_id,
             "display_name": None,
             "description": "",
             "project_type": "shared",

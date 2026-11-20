@@ -197,3 +197,18 @@ def test_delete_non_threshold_does_not_trigger_hook(client):
     assert response.status_code == 204
     mock_cache.update_config.assert_not_called()
     mock_write.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_threshold_event_is_global_and_labelled_with_the_setting(admin):
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=MagicMock(commit=AsyncMock()))
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+    with (
+        patch(f"{_MOD}.get_async_session", return_value=session_cm),
+        patch(f"{_MOD}.activity_event_repository.async_insert", new=AsyncMock()) as insert,
+    ):
+        await cc._write_threshold_event(THRESHOLD_UPDATED, admin, {"hotMinUsers": "50"}, entity_id="marketplaceGates")
+
+    event = insert.await_args.args[0]
+    assert (event.entity_id, event.entity_label, event.project_name) == ("marketplaceGates", "marketplaceGates", None)

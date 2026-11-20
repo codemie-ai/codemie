@@ -55,6 +55,10 @@ class InactiveProjectBudgetStopService:
                         event_type=BudgetManagementEvent.PROJECT_BUDGET_STOPPED,
                         entity_type=ActivityEntityType.BUDGET,
                         entity_id=budget.budget_id,
+                        entity_label=budget.name,
+                        project_name=project_name,
+                        actor_email=None,
+                        actor_display_name=None,
                     ),
                     session,
                 )

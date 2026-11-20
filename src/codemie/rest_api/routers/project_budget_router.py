@@ -248,8 +248,7 @@ async def create_project_budget(
         budget = await project_budget_service.create_project_budget(
             session,
             payload,
-            actor_id=user.id,
-            actor_name=user.username,
+            actor=user,
         )
         await session.commit()
         await session.refresh(budget)
@@ -325,7 +324,7 @@ async def bulk_override_member_allocations(
                 pending.append((index, item))
 
         if pending:
-            results.update(await project_budget_service.bulk_override_member_allocations(session, pending, user.id))
+            results.update(await project_budget_service.bulk_override_member_allocations(session, pending, user))
         await session.commit()
 
         ordered = [results[index] for index in range(len(items))]
@@ -370,7 +369,7 @@ async def update_project_budget(
             session,
             budget_id=budget_id,
             data=payload,
-            actor_id=user.id,
+            actor=user,
         )
         await session.commit()
         await session.refresh(budget)
@@ -387,7 +386,7 @@ async def delete_project_budget(
     """Delete a project budget. Soft-deletes assignments, hard-deletes the budget row."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
-        await project_budget_service.delete_project_budget(session, budget_id=budget_id, actor_id=user.id)
+        await project_budget_service.delete_project_budget(session, budget_id=budget_id, actor=user)
         await session.commit()
 
 
@@ -400,7 +399,7 @@ async def reset_project_budget(
     """Reset project budget and member enforcement state through the active provider."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
-        budget = await project_budget_service.reset_project_budget(session, budget_id=budget_id, actor_id=user.id)
+        budget = await project_budget_service.reset_project_budget(session, budget_id=budget_id, actor=user)
         await session.commit()
         await session.refresh(budget)
         response = await _load_and_build_response(session, budget)
@@ -445,7 +444,7 @@ async def rebalance_project_budget(
     if not payload.apply_immediately:
         raise ExtendedHTTPException(code=400, message="Only immediate rebalance is currently supported")
     async with get_async_session() as session:
-        budget = await project_budget_service.rebalance_project_budget(session, budget_id=budget_id, actor_id=user.id)
+        budget = await project_budget_service.rebalance_project_budget(session, budget_id=budget_id, actor=user)
         await session.commit()
         await session.refresh(budget)
         response = await _load_and_build_response(session, budget)
@@ -471,7 +470,7 @@ async def override_member_allocation(
             allocated_max_budget=payload.allocated_max_budget,
             allocated_soft_budget=payload.allocated_soft_budget,
             override_reason=payload.override_reason,
-            actor_id=user.id,
+            actor=user,
         )
         await session.commit()
         budget, assignment, allocations = await project_budget_service.get_project_budget(session, budget_id)
@@ -494,7 +493,7 @@ async def clear_member_override(
             session,
             budget_id=budget_id,
             user_id=user_id,
-            actor_id=user.id,
+            actor=user,
         )
         await session.commit()
         budget, assignment, allocations = await project_budget_service.get_project_budget(session, budget_id)
@@ -583,7 +582,7 @@ async def create_project_budget_group(
     """Create a unified budget group for a project, distributing a total amount across categories."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
-        result = await project_budget_service.create_project_budget_group(session, payload, actor_id=user.id)
+        result = await project_budget_service.create_project_budget_group(session, payload, actor=user)
         new_group_id = result.group.id
         await session.commit()
         result = await project_budget_service.get_project_budget_group(session, new_group_id)
@@ -637,9 +636,7 @@ async def update_project_budget_group(
         if not (user.is_admin_or_maintainer or user.is_application_admin(project_name)):
             _raise_access_denied(f"You do not have permission to update budget groups for '{project_name}'.")
         _ensure_allowed_budget_group_update_fields(user, payload)
-        await project_budget_service.update_project_budget_group(
-            session, group_id=group_id, data=payload, actor_id=user.id
-        )
+        await project_budget_service.update_project_budget_group(session, group_id=group_id, data=payload, actor=user)
         await session.commit()
         result = await project_budget_service.get_project_budget_group(session, group_id)
     return _build_project_budget_group_response(result)
@@ -654,7 +651,7 @@ async def delete_project_budget_group(
     """Soft-delete a budget group and all its category budgets."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
-        await project_budget_service.delete_project_budget_group(session, group_id=group_id, actor_id=user.id)
+        await project_budget_service.delete_project_budget_group(session, group_id=group_id, actor=user)
         await session.commit()
 
 
@@ -667,7 +664,7 @@ async def reset_project_budget_group(
     """Reset spend counters for all category budgets in a group."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
-        await project_budget_service.reset_project_budget_group(session, group_id=group_id, actor_id=user.id)
+        await project_budget_service.reset_project_budget_group(session, group_id=group_id, actor=user)
         await session.commit()
         result = await project_budget_service.get_project_budget_group(session, group_id)
     return _build_project_budget_group_response(result)
@@ -682,7 +679,7 @@ async def rebalance_project_budget_group(
     """Rebalance member allocations for all category budgets in a group."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
-        await project_budget_service.rebalance_project_budget_group(session, group_id=group_id, actor_id=user.id)
+        await project_budget_service.rebalance_project_budget_group(session, group_id=group_id, actor=user)
         await session.commit()
         result = await project_budget_service.get_project_budget_group(session, group_id)
     return _build_project_budget_group_response(result)

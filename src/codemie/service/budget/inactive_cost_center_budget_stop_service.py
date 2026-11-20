@@ -60,7 +60,11 @@ class InactiveCostCenterBudgetStopService:
                             event_type=BudgetManagementEvent.PROJECT_BUDGET_STOPPED,
                             entity_type=ActivityEntityType.BUDGET,
                             entity_id=budget.budget_id,
+                            entity_label=budget.name,
                             attributes={"cost_center_name": cost_center_name},
+                            project_name=project_name,
+                            actor_email=None,
+                            actor_display_name=None,
                         ),
                         session,
                     )

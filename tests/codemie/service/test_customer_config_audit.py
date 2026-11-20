@@ -37,6 +37,8 @@ def reset_cache():
 def actor():
     user = MagicMock()
     user.id = "actor-1"
+    user.email = "actor-1@example.com"
+    user.name = "Actor One"
     return user
 
 
@@ -86,9 +88,13 @@ async def test_save_emits_an_audit_event_with_old_and_new_value(audit, actor, st
     assert event.event_type == CustomerConfigEvent.SETTING_UPDATED
     assert event.entity_type == ActivityEntityType.CUSTOMER_CONFIG_SETTING
     assert event.entity_id == "chatDisclaimer"
+    assert event.entity_label == "CUSTOMER_CONFIG__CHAT_DISCLAIMER"
     assert event.actor_id == "actor-1"
     assert event.attributes["old_value"] == {"enabled": False, "text": "old"}
     assert event.attributes["new_value"] == {"enabled": True, "text": "new"}
+    assert event.actor_email == "actor-1@example.com"
+    assert event.actor_display_name == "Actor One"
+    assert event.project_name is None
 
 
 @pytest.mark.asyncio
@@ -140,6 +146,7 @@ async def test_reset_deletes_the_row_and_audits_it(audit, actor, stored_row):
     adelete.assert_awaited_once_with("CUSTOMER_CONFIG__CHAT_DISCLAIMER")
     event = _emitted(audit)
     assert event.event_type == CustomerConfigEvent.SETTING_RESET
+    assert event.entity_label == "CUSTOMER_CONFIG__CHAT_DISCLAIMER"
     assert event.attributes["old_value"] == {"enabled": False, "text": "old"}
     assert event.attributes["new_value"] is None
 

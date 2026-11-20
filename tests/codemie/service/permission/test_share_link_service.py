@@ -42,6 +42,7 @@ ACTOR = SimpleNamespace(
     id="u-1",
     username="owner",
     name="Owner",
+    email="owner@example.com",
     user_type="regular",
     is_admin=False,
     is_maintainer=False,
@@ -51,6 +52,7 @@ OPENER = SimpleNamespace(
     id="u-2",
     username="opener",
     name="Opener",
+    email="opener@example.com",
     user_type="regular",
     is_admin=False,
     is_maintainer=False,
@@ -61,7 +63,11 @@ PROJECT = "team-a"
 
 def _app(owner="u-1", security_state="clear"):
     return SimpleNamespace(
-        id=uuid4(), created_by=SimpleNamespace(id=owner), security_state=security_state, project="demo"
+        id=uuid4(),
+        name="App",
+        created_by=SimpleNamespace(id=owner),
+        security_state=security_state,
+        project="demo",
     )
 
 
@@ -123,7 +129,7 @@ def events(monkeypatch):
 def removed(monkeypatch):
     calls = []
 
-    async def remove_link_grants(actor, resource_type, resource_id, link_id, project, session):
+    async def remove_link_grants(actor, resource_type, resource_id, link_id, project, session, label=None):
         calls.append((actor.id, resource_type, resource_id, link_id, project))
 
     monkeypatch.setattr(named_grant_service, "aremove_link_grants", remove_link_grants)
@@ -188,6 +194,7 @@ async def test_create_returns_the_same_live_link_with_one_created_event(session,
     assert first.token_sha256 == hashlib.sha256(first.token.encode()).hexdigest()
     assert [event.event_type for event in events] == ["hosted_application.share_link.created"]
     assert events[0].domain == ActivityDomain.HOSTED_APPLICATION
+    assert events[0].project_name == PROJECT
     attributes = events[0].attributes
     assert attributes["link_id"] == str(first.id)
     assert (attributes["resource_type"], attributes["resource_id"]) == ("hosted_application", str(app.id))
@@ -242,7 +249,7 @@ async def test_revoke_tombstones_the_link_and_removes_its_grants_in_one_step(ses
     link = await share_link_service.acreate(session, HOSTED, app, ACTOR, PROJECT)
     events.clear()
 
-    revoked_id = await share_link_service.arevoke(session, HOSTED, app.id, ACTOR, PROJECT)
+    revoked_id = await share_link_service.arevoke(session, HOSTED, app.id, ACTOR, PROJECT, "Label")
 
     assert revoked_id == link.id
     row = await share_link_service.areload(session, link.id)
@@ -256,7 +263,7 @@ async def test_revoke_tombstones_the_link_and_removes_its_grants_in_one_step(ses
 
 @pytest.mark.asyncio
 async def test_revoke_without_live_link_returns_none_and_writes_nothing(session, events, removed):
-    assert await share_link_service.arevoke(session, HOSTED, uuid4(), ACTOR, PROJECT) is None
+    assert await share_link_service.arevoke(session, HOSTED, uuid4(), ACTOR, PROJECT, "Label") is None
     assert events == [] and removed == []
 
 
@@ -291,6 +298,7 @@ async def test_a_sharing_manager_revokes_as_the_actor(session, events, removed, 
         id="u-9",
         username="admin",
         name="Admin",
+        email="admin@example.com",
         user_type="regular",
         is_admin=role == "is_admin",
         is_maintainer=role == "is_maintainer",
@@ -328,6 +336,7 @@ async def test_an_external_admin_may_not_revoke(session, events, removed):
         id="u-9",
         username="x",
         name="x",
+        email="x@example.com",
         user_type="external",
         is_admin=True,
         is_maintainer=False,
@@ -342,7 +351,7 @@ async def test_new_link_after_revoke_has_a_new_token(session, events, removed):
     app = _app()
     old = await share_link_service.acreate(session, HOSTED, app, ACTOR, PROJECT)
     old_token = old.token
-    await share_link_service.arevoke(session, HOSTED, app.id, ACTOR, PROJECT)
+    await share_link_service.arevoke(session, HOSTED, app.id, ACTOR, PROJECT, "Label")
 
     new = await share_link_service.acreate(session, HOSTED, app, ACTOR, PROJECT)
 
@@ -369,7 +378,7 @@ def test_token_lookup_binds_only_the_digest():
 async def test_no_event_attribute_contains_the_token(session, events, removed):
     app = _app()
     link = await share_link_service.acreate(session, HOSTED, app, ACTOR, PROJECT)
-    await share_link_service.arevoke(session, HOSTED, app.id, ACTOR, PROJECT)
+    await share_link_service.arevoke(session, HOSTED, app.id, ACTOR, PROJECT, "Label")
 
     assert len(events) == 2
     for event in events:
@@ -399,7 +408,7 @@ def opening(monkeypatch):
         state.locks.append(resource_id)
         if state.lock_hook:
             await state.lock_hook()
-        return SimpleNamespace(id=resource_id, project=PROJECT) if state.locked else None
+        return SimpleNamespace(id=resource_id, name="App", project=PROJECT) if state.locked else None
 
     async def alink_grant(session, resource_type, resource, user, link_id, project, granted_by):
         state.grants.append((resource_type, resource.id, user.id, link_id, project, granted_by))

@@ -25,6 +25,7 @@ from sqlmodel import Session, select
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.rest_api.models.repository_project_registration import RepositoryProjectRegistration
+from codemie.rest_api.security.user import User
 from codemie.service.project.project_service import ProjectService
 from codemie.service.project.repository_registration_service import RepositoryRegistrationRepository as Regs
 from codemie.service.project.repository_registration_service import canonical_identity
@@ -174,7 +175,10 @@ def _rename(session, fail: bool = False):
             session.rollback()
             raise
 
-    admin = MagicMock(is_admin=True, is_maintainer=False, id="admin", is_admin_or_maintainer=True)
+    admin = MagicMock(
+        is_admin=True, is_maintainer=False, id="admin", is_admin_or_maintainer=True, email="admin@example.com"
+    )
+    admin.name = "Admin"
     current = session.exec(select(Application).where(Application.name == "old")).one()
     with (
         patch(f"{P}.get_session", fake_get_session),
@@ -212,11 +216,14 @@ def _delete(session, fail: bool = False):
     ):
         members.get_by_project_name.return_value = []
         apps.get_project_entity_counts_bulk.return_value = {}
+        apps.get_active_by_name.side_effect = lambda s, name: s.exec(
+            select(Application).where(Application.name == name, Application.deleted_at.is_(None))
+        ).first()
         apps.delete_by_name.side_effect = delete_by_name
         if fail:
             events.insert.side_effect = RuntimeError("boom")
         ProjectService.delete_project(
-            session, "old", Application.ProjectType.SHARED, "admin", "DELETE /v1/projects/old"
+            session, "old", Application.ProjectType.SHARED, User(id="admin"), "DELETE /v1/projects/old"
         )
 
 

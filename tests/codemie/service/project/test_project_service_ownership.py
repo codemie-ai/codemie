@@ -52,6 +52,7 @@ class TestUpdateProjectOwnership:
 
         project = MagicMock()
         project.name = "my-project"
+        project.display_name = None
         project.created_by = "original-owner"
         project.deleted_at = None
         project.display_name = "My Project"
@@ -66,6 +67,7 @@ class TestUpdateProjectOwnership:
 
         updated_project = MagicMock()
         updated_project.name = "my-project"
+        updated_project.display_name = "My Project"
         updated_project.created_by = "new-owner"
         mock_application_repository.update_project.return_value = updated_project
 
@@ -115,6 +117,7 @@ class TestUpdateProjectOwnership:
 
         project = MagicMock()
         project.name = "my-project"
+        project.display_name = None
         project.created_by = "original-owner-id"
         project.deleted_at = None
         mock_application_repository.get_by_name.return_value = project
@@ -160,6 +163,7 @@ class TestUpdateProjectOwnership:
 
         project = MagicMock()
         project.name = "my-project"
+        project.display_name = None
         project.created_by = "original-owner"
         project.deleted_at = None
         project.display_name = "Existing Display Name"
@@ -207,6 +211,7 @@ class TestUpdateProjectOwnership:
 
         project = MagicMock()
         project.name = "my-project"
+        project.display_name = None
         project.created_by = "original-owner"
         project.deleted_at = None
         mock_application_repository.get_by_name.return_value = project
@@ -253,6 +258,7 @@ class TestUpdateProjectOwnership:
 
         project = MagicMock()
         project.name = "my-project"
+        project.display_name = None
         project.created_by = "original-owner"
         project.deleted_at = None
         mock_application_repository.get_by_name.return_value = project
@@ -337,6 +343,7 @@ class TestUpdateProjectOwnership:
 
         project = MagicMock()
         project.name = "my-project"
+        project.display_name = None
         project.created_by = "original-owner"
         project.deleted_at = None
         mock_application_repository.get_by_name.return_value = project
@@ -370,6 +377,7 @@ class TestUpdateProjectOwnership:
 
         project = MagicMock()
         project.name = "my-project"
+        project.display_name = None
         project.created_by = "original-owner"
         project.deleted_at = None
         mock_application_repository.get_by_name.return_value = project

@@ -31,6 +31,7 @@ AC Coverage:
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -43,6 +44,7 @@ from tests.codemie.configs.provisioning_clients_support import CLIENT_USER_ID, m
 
 def _make_async_session_cm(mock_session):
     """Create an async context manager mock that yields mock_session."""
+    mock_session.get.return_value = None  # no users row: the creation event gets no display name
     cm = AsyncMock()
     cm.__aenter__.return_value = mock_session
     cm.__aexit__.return_value = False
@@ -86,6 +88,47 @@ class TestPersonalProjectService:
                 assert result is True
                 mock_create.assert_called_once_with(mock_session, user_id, user_email)
                 mock_session.commit.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "user_row, expected_display_name",
+        [(SimpleNamespace(name="John Doe"), "John Doe"), (SimpleNamespace(name=None), None), (None, None)],
+        ids=["named", "nameless", "row_absent"],
+    )
+    @pytest.mark.asyncio
+    @patch("codemie.clients.postgres.get_async_session")
+    @patch("codemie.service.project.personal_project_service.activity_event_repository")
+    async def test_ensure_personal_project_event_carries_project_name_and_actor_snapshot(
+        self, mock_activity, mock_get_async_session, user_row, expected_display_name
+    ):
+        """EPMCDME-14325: the creation event is stamped with the personal project's name (the user's email)
+        and the actor snapshot, display name resolved once from the users row on the creation path."""
+        user_id = "user-123"
+        user_email = "john.doe@example.com"
+
+        mock_session = AsyncMock()
+        mock_get_async_session.return_value = _make_async_session_cm(mock_session)
+        mock_session.get.return_value = user_row
+        mock_activity.async_insert = AsyncMock()
+
+        with patch(
+            "codemie.service.project.personal_project_service.PersonalProjectService._has_personal_project_complete",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            with patch(
+                "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
+                new_callable=AsyncMock,
+                return_value=user_email,
+            ):
+                result = await PersonalProjectService.ensure_personal_project_async(user_id, user_email)
+
+        assert result is True
+        event = mock_activity.async_insert.call_args[0][0]
+        assert event.entity_id == user_email
+        assert event.project_name == user_email
+        assert event.actor_email == user_email
+        assert event.actor_display_name == expected_display_name
+        assert event.entity_label == user_email
 
     @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")

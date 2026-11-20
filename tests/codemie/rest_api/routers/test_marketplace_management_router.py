@@ -1316,3 +1316,18 @@ class TestDecisionsCarryExpectedVersion:
         response = client.post(f"{_BASE}/pending/asst-v-2/{action}", json={**body, "expected_version": -1})
 
         assert response.status_code == 422
+
+
+class TestPromptViewedActivityEvent:
+    def test_event_carries_the_assistants_project_and_name(self, monkeypatch: pytest.MonkeyPatch):
+        assistant = MagicMock(id="a-1", project="acme", system_prompt="p", system_prompt_history=[])
+        assistant.name = "Helper"
+        monkeypatch.setattr(mm, "_load_assistant_or_404", lambda aid: assistant)
+        monkeypatch.setattr(mm, "get_session", lambda: MagicMock())
+        user = User(id="u-1", username="alice", email="alice@example.com", name="Alice", roles=[])
+
+        with patch.object(mm, "activity_event_repository") as repo:
+            mm._get_assistant_prompt("a-1", "alice@example.com", user)
+
+        event = repo.insert.call_args.args[0]
+        assert (event.project_name, event.entity_label, event.entity_id) == ("acme", "Helper", "a-1")

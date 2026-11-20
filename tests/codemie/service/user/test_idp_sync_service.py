@@ -115,6 +115,20 @@ def _event_types(events: MagicMock) -> list[str]:
     return [c.args[0].event_type for c in events.call_args_list]
 
 
+def test_emit_snapshots_actor_and_entity(session, actor, events):
+    user = _seed_user(session)
+
+    IdpSyncService._emit(session, actor, UserManagementEvent.USER_UPDATED, user)
+
+    event = events.call_args.args[0]
+    assert (event.entity_id, event.entity_label, event.project_name) == (U1, "N", None)
+    assert (event.actor_id, event.actor_email, event.actor_display_name) == (
+        ACTOR_ID,
+        "idp-sync@example.com",
+        "idp-sync",
+    )
+
+
 # ------------------------------------------------------------------ upsert
 
 

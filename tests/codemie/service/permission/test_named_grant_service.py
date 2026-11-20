@@ -30,7 +30,13 @@ from codemie.service.permission import named_grant_service as svc
 RT = ResourceType.HOSTED_APPLICATION
 RID = uuid4()
 ACTOR = User(id="owner-1", username="owner", name="Owner Name")
-RESOURCE = SimpleNamespace(id=RID, created_by=SimpleNamespace(id="owner-1"), security_state="clear", project="demo")
+RESOURCE = SimpleNamespace(
+    id=RID,
+    name="Res",
+    created_by=SimpleNamespace(id="owner-1"),
+    security_state="clear",
+    project="demo",
+)
 
 
 def sql(statement) -> str:
@@ -64,6 +70,10 @@ class RecordingSession:
         self.statements.append(statement)
         return Result(self.answers.pop(0) if self.answers else [])
 
+    def exec(self, _statement):
+        # The project lookup used to attribute audit events has no matching row in these grant-only tests.
+        return Result([])
+
     def add(self, row):
         self.added.append(row)
 
@@ -76,6 +86,8 @@ class RecordingSession:
 
 class AsyncRecordingSession(RecordingSession):
     async def execute(self, statement):
+        if "applications" in str(statement):
+            return Result([])
         return super().execute(statement)
 
     async def flush(self):
@@ -276,7 +288,11 @@ def test_a_non_owner_is_refused_before_any_statement(operation):
 
 def test_owner_check_comes_before_before_grant():
     suspended = SimpleNamespace(
-        id=RID, created_by=SimpleNamespace(id="owner-1"), security_state="suspended", project="demo"
+        id=RID,
+        name="Res",
+        created_by=SimpleNamespace(id="owner-1"),
+        security_state="suspended",
+        project="demo",
     )
     with pytest.raises(ExtendedHTTPException) as err:
         svc.grant(RecordingSession(), **grant_args(resource=suspended, owner=_non_admin("x")))
@@ -287,7 +303,11 @@ def test_grant_runs_before_grant_and_revoke_does_not():
     from codemie.core.hosted_applications.errors import HostedApplicationError
 
     suspended = SimpleNamespace(
-        id=RID, created_by=SimpleNamespace(id="owner-1"), security_state="suspended", project="demo"
+        id=RID,
+        name="Res",
+        created_by=SimpleNamespace(id="owner-1"),
+        security_state="suspended",
+        project="demo",
     )
     session = RecordingSession()
     with pytest.raises(HostedApplicationError) as err:
@@ -315,6 +335,7 @@ def test_new_grants_emit_none_to_read_events_with_one_flush():
     assert event.domain == svc.descriptor_for(RT).activity_domain
     assert event.event_type == svc.descriptor_for(RT).event_added
     assert event.entity_id == str(RID)
+    assert event.project_name == "proj"
     attrs = event.attributes
     assert attrs["resource_type"] == "hosted_application"
     assert attrs["resource_id"] == str(RID)
@@ -363,19 +384,19 @@ def test_revoke_is_one_delete_returning_and_missing_is_noop():
 def test_revoke_permission_deletes_by_id():
     permission = SimpleNamespace(id=uuid4(), resource_type=RT, resource_id=RID)
     session = RecordingSession([deleted("u1", source="name")])
-    svc.revoke_permission(ACTOR, permission, session, "proj")
+    svc.revoke_permission(ACTOR, permission, session, "proj", "Label")
     text = sql(session.statements[0])
     assert text.startswith("DELETE FROM") and "RETURNING" in text and len(session.statements) == 1
     assert session.added[0].attributes["grant_source"] == "name"
     assert session.flushes == 1
     empty = RecordingSession([])
-    svc.revoke_permission(ACTOR, permission, empty, "proj")
+    svc.revoke_permission(ACTOR, permission, empty, "proj", "Label")
     assert empty.added == []
 
 
 def test_remove_all_grants_system_actor_and_single_delete():
     session = RecordingSession([deleted("u1"), deleted("u2")])
-    svc.remove_all_grants(None, RT, RID, "proj", session)
+    svc.remove_all_grants(None, RT, RID, "proj", session, "Label")
     assert len(session.statements) == 1
     assert "DELETE FROM" in sql(session.statements[0]) and "RETURNING" in sql(session.statements[0])
     assert len(session.added) == 2 and session.flushes == 1
@@ -399,12 +420,12 @@ async def test_async_twins_share_statements():
     assert session.flushes == 1
 
     session = AsyncRecordingSession([deleted("u1"), deleted("u2")])
-    await svc.aremove_all_grants(None, RT, RID, "proj", session)
+    await svc.aremove_all_grants(None, RT, RID, "proj", session, "Label")
     assert len(session.added) == 2 and session.flushes == 1
 
     permission = SimpleNamespace(id=uuid4(), resource_type=RT, resource_id=RID)
     session = AsyncRecordingSession([deleted("u1")])
-    await svc.arevoke_permission(ACTOR, permission, session, "proj")
+    await svc.arevoke_permission(ACTOR, permission, session, "proj", "Label")
     assert session.flushes == 1
 
 
@@ -539,6 +560,7 @@ def test_link_grant_writes_one_added_event_when_a_row_is_inserted():
     assert len(session.statements) == 1 and session.flushes == 1
     event = session.added[0]
     assert event.event_type == svc.descriptor_for(RT).event_added
+    assert event.project_name == "proj"
     attrs = event.attributes
     assert attrs["grant_source"] == "link" and attrs["source_link_id"] == str(link_id)
     assert attrs["before"] is None and attrs["after"] == svc.Action.READ.value
@@ -572,7 +594,7 @@ def test_remove_link_statement_filters_link_source_and_link_id():
 def test_remove_link_grants_one_removed_event_per_row():
     link_id = uuid4()
     session = RecordingSession([deleted("u1", "link", link_id), deleted("u2", "link", link_id)])
-    svc.remove_link_grants(ACTOR, RT, RID, link_id, "proj", session)
+    svc.remove_link_grants(ACTOR, RT, RID, link_id, "proj", session, "Label")
     assert len(session.statements) == 1 and session.flushes == 1 and len(session.added) == 2
     attrs = session.added[0].attributes
     assert session.added[0].event_type == svc.descriptor_for(RT).event_removed
@@ -582,7 +604,7 @@ def test_remove_link_grants_one_removed_event_per_row():
 
 def test_remove_link_grants_without_rows_is_a_noop():
     session = RecordingSession([])
-    svc.remove_link_grants(ACTOR, RT, RID, uuid4(), "proj", session)
+    svc.remove_link_grants(ACTOR, RT, RID, uuid4(), "proj", session, "Label")
     assert session.added == [] and session.flushes == 0
 
 
@@ -594,7 +616,7 @@ async def test_async_link_twins_share_statements():
     assert session.flushes == 1 and session.added[0].attributes["source_link_id"] == str(link_id)
 
     session = AsyncRecordingSession([deleted("u1", "link", link_id)])
-    await svc.aremove_link_grants(ACTOR, RT, RID, link_id, "proj", session)
+    await svc.aremove_link_grants(ACTOR, RT, RID, link_id, "proj", session, "Label")
     assert session.flushes == 1 and len(session.added) == 1
 
 
@@ -603,6 +625,7 @@ async def test_async_link_twins_share_statements():
 ASSISTANT_ID = "00000000-0000-0000-0000-0000000000a1"
 ASSISTANT = SimpleNamespace(
     id=ASSISTANT_ID,
+    name="Assistant",
     project="proj",
     toolkits=[],
     mcp_servers=[],
@@ -648,15 +671,24 @@ def test_assistant_non_owner_gets_the_assistant_message():
 
 def test_assistant_removal_events_keep_assistant_id():
     session = RecordingSession([deleted("u1")])
-    svc.remove_all_grants(ACTOR, ResourceType.ASSISTANT, ASSISTANT_ID, "proj", session)
+    svc.remove_all_grants(ACTOR, ResourceType.ASSISTANT, ASSISTANT_ID, "proj", session, "Label")
     attrs = session.added[0].attributes
     assert session.added[0].event_type == "assistant.grant.removed"
     assert attrs["assistant_id"] == ASSISTANT_ID and attrs["before"] == "read" and attrs["after"] is None
 
 
+def test_grant_and_removal_events_snapshot_the_resource_label(no_personal_integration):
+    session = RecordingSession([user_row("u1")], [upserted("u1")])
+    svc.grant(session, **grant_args(resource_type=ResourceType.ASSISTANT, resource=ASSISTANT, user_ids=["u1"]))
+    assert session.added[0].entity_label == ASSISTANT.name
+    session = RecordingSession([deleted("u1")])
+    svc.remove_all_grants(ACTOR, RT, RID, "proj", session, "Gone App")
+    assert session.added[0].entity_label == "Gone App"
+
+
 def test_hosted_events_get_no_assistant_id():
     session = RecordingSession([deleted("u1")])
-    svc.remove_all_grants(ACTOR, RT, RID, "proj", session)
+    svc.remove_all_grants(ACTOR, RT, RID, "proj", session, "Label")
     assert "assistant_id" not in session.added[0].attributes
 
 
@@ -712,6 +744,6 @@ def test_granted_ids_statement_compares_through_the_type_key(monkeypatch):
 def test_a_resource_with_a_non_uuid_id_has_no_grants_to_list_or_remove():
     """Assistant ids are text; one that is not a UUID can hold no permission row (resource_id is a uuid)."""
     session = RecordingSession()
-    svc.remove_all_grants(ACTOR, ResourceType.ASSISTANT, "assistant-1", "proj", session)
+    svc.remove_all_grants(ACTOR, ResourceType.ASSISTANT, "assistant-1", "proj", session, "Label")
     assert svc.list_shared_with(session, ResourceType.ASSISTANT, "assistant-1") == []
     assert session.statements == [] and session.added == []

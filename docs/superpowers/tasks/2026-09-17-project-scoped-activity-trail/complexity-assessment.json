@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "task": "Add project and actor-snapshot attribution to activity_events (36 emit sites, 10 files) plus a new project-scoped, project-admin-or-platform-admin-authorized read endpoint, leaving the existing global endpoint untouched.",
+  "generated": "2026-09-17T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 25,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base XL on criteria alone (data model, migration, repository, service, router, security layer — 6 components, multiple subsystems, new abstractions for actor-snapshot and the admin-or-project-admin authz combinator); bumped to XXL because activity_events is a core shared utility spanning project/user/budget domains and the change affects all three workflows simultaneously." },
+    { "dimension": "technical_risk", "reason": "Base L (no exact precedent for combining the denormalized-snapshot pattern with a new admin-or-project-admin authz guard, moderate security implications, rollback plan needed via migration). Bumped twice per the rubric's auto-bump rules: the closest authorization precedent (project_admin_or_admin_user_detail_access) doesn't fully cover the new project-scoped combinator and has no located test coverage of its own; and the AC enumerate specific defensive cases (personal-project exclusion, actor-deleted snapshot, project-deleted snapshot, deterministic pagination on timestamp ties) with no existing test template for any of them. Further reinforced by the authorization red flag." },
+    { "dimension": "file_change_estimate", "reason": "36 emit sites collapse to 10 modified files, plus activity_models.py, activity_repository.py, activity_event_service.py and authentication.py (~14 modified), plus new migration, new router, new API models, and new tests (~4-6 new) — matches the XL band (11-15 modified, 4-6 new, multiple subsystems)." },
+    { "dimension": "affected_layers", "reason": "Base L (data model/DB-persistence with a schema migration, service, API, and security/infrastructure layers — 3-4 layers including persistence). Bumped to XL via the 'changes database schema significantly' red flag (new indexed columns against a table with 29 existing Alembic heads to reconcile)." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped: touches core shared utility (activity_events spans project/user/budget domains)",
+    "Component Scope bumped: affects multiple workflows (project management, user management, budget management all touched by the same write-path change)",
+    "Technical Risk bumped: affects authentication/authorization (new project-scoped admin-or-project-admin guard)",
+    "Affected Layers bumped from L to XL: database schema change (new indexed columns, migration against 29 existing heads)"
+  ],
+  "split_recommendation": null
+}

@@ -49,7 +49,9 @@ def _permission(resource_type: ResourceType) -> Permission:
 
 def _run(permission: Permission, user: User, may_remove: bool):
     """Run the delete with the ASSISTANT descriptor's resolve answering ``may_remove``."""
-    resolve = MagicMock(return_value=ResolvedResource(project="proj", creator_id="grantor", may_remove=may_remove))
+    resolve = MagicMock(
+        return_value=ResolvedResource(project="proj", creator_id="grantor", may_remove=may_remove, label="Helper")
+    )
     session = MagicMock()
     session_cm = MagicMock()
     session_cm.__enter__.return_value = session
@@ -81,7 +83,7 @@ def test_assistant_row_is_decided_by_the_descriptor_and_revoked_with_audit():
     user = _user("creator")
     mocks = _run(permission, user, may_remove=True)
     mocks.resolve.assert_called_once_with(mocks.session, permission.resource_id, user)
-    mocks.revoke.assert_called_once_with(user, permission, mocks.session, project="proj")
+    mocks.revoke.assert_called_once_with(user, permission, mocks.session, project="proj", label="Helper")
     mocks.ability.assert_not_called()
     mocks.plain_delete.assert_not_called()
     mocks.session.commit.assert_called_once()

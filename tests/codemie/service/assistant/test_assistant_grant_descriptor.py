@@ -35,6 +35,7 @@ def _assistant(created_by="owner-1", creator="system", project="proj"):
     return SimpleNamespace(
         id=ASSISTANT_ID,
         project=project,
+        name="Helper",
         created_by=SimpleNamespace(id=created_by) if created_by else None,
         creator=creator,
         is_owned_by=lambda user: user.id == (created_by or creator),

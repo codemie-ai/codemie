@@ -473,6 +473,15 @@ class UserRepository:
             statement = statement.where(_ACTIVE)
         return set(session.exec(statement).all())
 
+    def get_display_labels(self, session: Session, user_ids: list[str]) -> dict[str, str]:
+        """Map each existing user id to a readable label: name, else username, else the id."""
+        if not user_ids:
+            return {}
+        statement = select(UserDB.id, UserDB.name, UserDB.username).where(
+            UserDB.id.in_(user_ids)  # type: ignore[attr-defined]
+        )
+        return {uid: name or username or uid for uid, name, username in session.exec(statement).all()}
+
     def get_deactivated_labels(self, session: Session, user_ids: list[str]) -> list[str]:
         """Return email (or id when no email) of the given users that exist but are not active."""
         if not user_ids:

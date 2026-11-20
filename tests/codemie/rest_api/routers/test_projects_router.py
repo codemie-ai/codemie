@@ -73,6 +73,8 @@ from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.spend.coverage import Portion, SpendDimension, SpendResult, TimeRange
 from codemie.service.spend.ledger import ProjectHolder
 
+PROJECT_INSTANCE_ID = UUID("4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c")
+
 
 @pytest.fixture(autouse=True)
 def _no_budget_reset_refresh():
@@ -373,6 +375,7 @@ class TestProjectsVisibilityEndpoints:
         mock_get_session.return_value.__enter__.return_value = mock_session
         mock_visibility_service.get_visible_project_with_members.return_value = {
             "name": "shared-proj",
+            "project_instance_id": PROJECT_INSTANCE_ID,
             "description": "desc",
             "project_type": "shared",
             "created_by": "owner-1",
@@ -401,6 +404,7 @@ class TestProjectsVisibilityEndpoints:
         )
 
         assert isinstance(result, ProjectDetailResponse)
+        assert result.project_instance_id == PROJECT_INSTANCE_ID
         assert result.created_at == datetime(2026, 2, 10, tzinfo=UTC)
         assert result.user_count == 2
         assert result.admin_count == 1
@@ -468,6 +472,7 @@ class TestProjectsVisibilityEndpoints:
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_get_project_detail_sync.return_value = {
             "name": "proj-a",
+            "project_instance_id": PROJECT_INSTANCE_ID,
             "description": "desc",
             "project_type": "shared",
             "created_by": "owner-1",
@@ -515,6 +520,7 @@ class TestProjectsVisibilityEndpoints:
         mock_get_tracking_enabled.return_value = True
         mock_get_project_detail_sync.return_value = {
             "name": "proj-a",
+            "project_instance_id": PROJECT_INSTANCE_ID,
             "description": "desc",
             "project_type": "shared",
             "created_by": "owner-1",
@@ -877,6 +883,7 @@ class TestProjectsVisibilityEndpoints:
         mock_get_session.return_value.__enter__.return_value = mock_session
         mock_visibility_service.get_visible_project_with_members.return_value = {
             "name": "analytics-dashboard",
+            "project_instance_id": PROJECT_INSTANCE_ID,
             "description": "Analytics project",
             "project_type": "shared",
             "created_by": "user-456",
@@ -1246,7 +1253,14 @@ class TestProjectTotalSpendFigures:
         items = [ProjectListItem(name="proj-a", project_type="shared", user_count=1, admin_count=1)]
         await attach_project_spending_summaries(items, cls.ENRICHED, user)
 
-        response = ProjectDetailResponse(name="proj-a", project_type="shared", user_count=1, admin_count=1, members=[])
+        response = ProjectDetailResponse(
+            name="proj-a",
+            project_instance_id=PROJECT_INSTANCE_ID,
+            project_type="shared",
+            user_count=1,
+            admin_count=1,
+            members=[],
+        )
         await attach_project_detail_spending(
             response=response, project_name="proj-a", spending_rows_limit=spending_rows_limit
         )
@@ -2202,11 +2216,12 @@ class TestDeleteProjectEndpoint:
         authorized_project.name = "my-project"
         authorized_project.project_type = "shared"
 
+        actor = MagicMock(id="user-1")
         response = delete_project(
             request=MagicMock(
                 method="DELETE",
                 url=SimpleNamespace(path="/v1/projects/my-project"),
-                state=SimpleNamespace(user=MagicMock(id="user-1")),
+                state=SimpleNamespace(user=actor),
             ),
             project_name="my-project",
             authorized_project=authorized_project,
@@ -2218,7 +2233,7 @@ class TestDeleteProjectEndpoint:
             session=mock_session,
             project_name="my-project",
             project_type="shared",
-            actor_id="user-1",
+            actor=actor,
             action="DELETE /v1/projects/my-project",
             creator_id=authorized_project.created_by,
         )
@@ -3007,6 +3022,7 @@ def _make_personal_project_detail(owner_id: str = 'user1@example.com') -> dict:
     """Return a mock project_detail dict for a personal project."""
     return {
         'name': owner_id,
+        'project_instance_id': PROJECT_INSTANCE_ID,
         'description': None,
         'project_type': 'personal',
         'created_by': owner_id,
@@ -3491,6 +3507,7 @@ class TestChargebackEnabledField:
     def test_project_detail_response_has_chargeback_enabled_field(self):
         resp = ProjectDetailResponse(
             name="proj",
+            project_instance_id=PROJECT_INSTANCE_ID,
             project_type="shared",
             user_count=0,
             admin_count=0,
@@ -3592,6 +3609,7 @@ class TestChargebackAttributionField:
     def test_project_detail_response_has_chargeback_attribution_field(self):
         resp = ProjectDetailResponse(
             name="proj",
+            project_instance_id=PROJECT_INSTANCE_ID,
             project_type="shared",
             user_count=0,
             admin_count=0,
@@ -3667,6 +3685,7 @@ class TestChargebackAttributionField:
         response = _build_project_detail_response(
             {
                 "name": "proj",
+                "project_instance_id": PROJECT_INSTANCE_ID,
                 "description": "desc",
                 "project_type": "shared",
                 "created_by": "user-1",

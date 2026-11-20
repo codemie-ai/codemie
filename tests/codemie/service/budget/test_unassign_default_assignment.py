@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from cachetools import TTLCache
 
+from codemie.rest_api.security.user import User
 from codemie.rest_api.models.user_management import UserDB
 from codemie.service.budget import budget_service as budget_service_module
 from codemie.service.budget.budget_enums import BudgetCategory
@@ -106,7 +107,7 @@ class TestUnassignRecordsDefault:
 
         with patch.object(BudgetService, "_default_budget_id_for_category", return_value=DEFAULT_PREMIUM):
             await BudgetService().assign_budget_to_user(
-                session, USER_ID, {BudgetCategory.PREMIUM_MODELS: None}, actor_id="admin-1"
+                session, USER_ID, {BudgetCategory.PREMIUM_MODELS: None}, actor=User(id="admin-1")
             )
 
         mock_repo.upsert_user_category_assignment.assert_awaited_once_with(
@@ -130,7 +131,7 @@ class TestUnassignRecordsDefault:
 
         with patch.object(BudgetService, "_default_budget_id_for_category", return_value=DEFAULT_PREMIUM):
             await BudgetService().assign_budget_to_user(
-                _session_returning(_db_user()), USER_ID, {BudgetCategory.PREMIUM_MODELS: None}, actor_id="admin-1"
+                _session_returning(_db_user()), USER_ID, {BudgetCategory.PREMIUM_MODELS: None}, actor=User(id="admin-1")
             )
 
         mock_repo.delete_user_category_assignment.assert_awaited_once()
@@ -151,7 +152,7 @@ class TestUnassignRecordsDefault:
 
         with patch.object(BudgetService, "_default_budget_id_for_category", return_value=None):
             await BudgetService().assign_budget_to_user(
-                _session_returning(_db_user()), USER_ID, {BudgetCategory.CLI: None}, actor_id="admin-1"
+                _session_returning(_db_user()), USER_ID, {BudgetCategory.CLI: None}, actor=User(id="admin-1")
             )
 
         provider.clear_user_budget.assert_awaited_once()
@@ -184,7 +185,7 @@ class TestBulkUnassignRecordsDefault:
             patch.object(BudgetService, "_default_budget_id_for_category", return_value=DEFAULT_PREMIUM),
         ):
             await service.bulk_set_user_budgets(
-                session, ["u-ok", "u-bad"], {BudgetCategory.PREMIUM_MODELS: None}, actor_id="admin-1"
+                session, ["u-ok", "u-bad"], {BudgetCategory.PREMIUM_MODELS: None}, actor=User(id="admin-1")
             )
 
         mock_repo.upsert_user_category_assignment.assert_awaited_once_with(
@@ -219,7 +220,7 @@ class TestUnassignAcrossReplicas:
 
             budget_service_module._budget_assignment_cache = admin_cache
             await service.assign_budget_to_user(
-                _session_returning(_db_user()), USER_ID, {category: None}, actor_id="admin-1"
+                _session_returning(_db_user()), USER_ID, {category: None}, actor=User(id="admin-1")
             )
 
             budget_service_module._budget_assignment_cache = proxy_cache

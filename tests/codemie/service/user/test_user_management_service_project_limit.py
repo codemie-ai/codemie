@@ -36,6 +36,7 @@ import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.user_management import CodeMieUserDetail, UserDB
+from codemie.rest_api.security.user import User
 from codemie.service.user.user_management_service import UserManagementService
 
 
@@ -156,7 +157,9 @@ def test_promotion_auto_sets_project_limit_null(
     mock_get_relationships.return_value = mock_result
 
     # Act
-    result = UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="super-admin-1", is_admin=True)
+    result = UserManagementService.update_user_fields(
+        user_id="regular-1", actor_user=User(id="super-admin-1"), is_admin=True
+    )
 
     # Assert
     assert result.is_admin is True
@@ -231,7 +234,7 @@ def test_demotion_auto_sets_project_limit_3(
 
     # Act
     result = UserManagementService.update_user_fields(
-        user_id="super-admin-1", actor_user_id="other-admin", is_admin=False
+        user_id="super-admin-1", actor_user=User(id="other-admin"), is_admin=False
     )
 
     # Assert
@@ -301,7 +304,7 @@ def test_atomic_transaction_role_and_limit(mock_get_session, mock_repo, mock_get
     mock_get_relationships.return_value = mock_result
 
     # Act
-    UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="super-admin-1", is_admin=True)
+    UserManagementService.update_user_fields(user_id="regular-1", actor_user=User(id="super-admin-1"), is_admin=True)
 
     # Assert - both fields updated in single call
     assert mock_repo.update.call_count == 1
@@ -333,7 +336,7 @@ def test_super_admin_modify_own_limit_403(mock_get_session, mock_repo, super_adm
     with pytest.raises(ExtendedHTTPException) as exc_info:
         UserManagementService.update_user_fields(
             user_id="super-admin-1",
-            actor_user_id="super-admin-1",  # Same as target = self-modification
+            actor_user=User(id="super-admin-1"),  # Same as target = self-modification
             project_limit=5,
         )
 
@@ -367,7 +370,7 @@ def test_negative_project_limit_400(mock_get_session, mock_repo, regular_user):
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="admin-1", project_limit=-1)
+        UserManagementService.update_user_fields(user_id="regular-1", actor_user=User(id="admin-1"), project_limit=-1)
 
     # Verify exception
     assert exc_info.value.code == 400
@@ -436,7 +439,7 @@ def test_super_admin_set_another_user_limit(mock_get_session, mock_repo, mock_ge
 
     # Act
     result = UserManagementService.update_user_fields(
-        user_id="regular-1", actor_user_id="super-admin-1", project_limit=10
+        user_id="regular-1", actor_user=User(id="super-admin-1"), project_limit=10
     )
 
     # Assert
@@ -484,7 +487,7 @@ def test_various_valid_project_limits(mock_get_session, mock_repo, mock_get_rela
 
     # Act
     result = UserManagementService.update_user_fields(
-        user_id="regular-1", actor_user_id="admin-1", project_limit=limit_value
+        user_id="regular-1", actor_user=User(id="admin-1"), project_limit=limit_value
     )
 
     # Assert
@@ -546,7 +549,9 @@ def test_super_admin_gets_null_via_auto_management(mock_get_session, mock_repo, 
     mock_get_relationships.return_value = mock_result
 
     # Act
-    result = UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="super-admin-1", is_admin=True)
+    result = UserManagementService.update_user_fields(
+        user_id="regular-1", actor_user=User(id="super-admin-1"), is_admin=True
+    )
 
     # Assert
     assert result.is_admin is True
@@ -593,7 +598,7 @@ def test_idempotent_promotion(mock_get_session, mock_repo, mock_get_relationship
 
     # Act - promote already-super-admin user
     result = UserManagementService.update_user_fields(
-        user_id="super-admin-1", actor_user_id="other-admin", is_admin=True
+        user_id="super-admin-1", actor_user=User(id="other-admin"), is_admin=True
     )
 
     # Assert - operation succeeds, no errors
@@ -645,7 +650,9 @@ def test_project_limit_in_response(mock_get_session, mock_repo, mock_get_relatio
     mock_get_relationships.return_value = mock_result
 
     # Act
-    result = UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="admin-1", project_limit=7)
+    result = UserManagementService.update_user_fields(
+        user_id="regular-1", actor_user=User(id="admin-1"), project_limit=7
+    )
 
     # Assert - project_limit is in response
     assert hasattr(result, "project_limit")
@@ -790,7 +797,7 @@ def test_super_admin_promotion_enforces_null_limit_invariant(
 
     # Act - promote to super admin AND provide explicit project_limit (should be ignored)
     result = UserManagementService.update_user_fields(
-        user_id="regular-1", actor_user_id="super-admin-1", is_admin=True, project_limit=5
+        user_id="regular-1", actor_user=User(id="super-admin-1"), is_admin=True, project_limit=5
     )
 
     # Assert - INVARIANT enforced: super admin MUST have NULL limit
@@ -834,7 +841,9 @@ def test_user_not_found_returns_404(mock_get_session, mock_repo):
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="nonexistent", actor_user_id="super-admin-1", is_admin=True)
+        UserManagementService.update_user_fields(
+            user_id="nonexistent", actor_user=User(id="super-admin-1"), is_admin=True
+        )
 
     assert exc_info.value.code == 404
     assert "User not found" in exc_info.value.message
@@ -876,7 +885,9 @@ def test_explicit_project_limit_allowed_for_non_promotion(
     mock_get_relationships.return_value = mock_result
 
     # Act - update regular user's project_limit (no role change)
-    result = UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="admin-1", project_limit=10)
+    result = UserManagementService.update_user_fields(
+        user_id="regular-1", actor_user=User(id="admin-1"), project_limit=10
+    )
 
     # Assert - explicit value accepted
     assert result.is_admin is False
@@ -951,7 +962,7 @@ def test_no_auto_management_when_role_unchanged(mock_get_session, mock_repo, moc
 
     # Act - demote from admin while maintainer actor performs the role change
     result = UserManagementService.update_user_fields(
-        user_id="regular-1", actor_user_id="super-admin-1", is_admin=False
+        user_id="regular-1", actor_user=User(id="super-admin-1"), is_admin=False
     )
 
     # Assert - demotion applies project-limit auto-management

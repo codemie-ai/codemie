@@ -76,11 +76,13 @@ from sqlmodel import select
 
 from codemie.clients.postgres import get_session
 from codemie.rest_api.models.assistant import Assistant
+from codemie.rest_api.models.user_management import UserDB
 from codemie.service.activity.activity_models import (
     ActivityDomain,
     ActivityEntityType,
     ActivityEventCreate,
     MarketplaceModerationEvent,
+    SYSTEM_ACTOR_ID,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
 from codemie.service.marketplace_management.models import (
@@ -336,7 +338,8 @@ _CAS_SQL = text(
               marketplace_submitted_at,
               is_global,
               is_verified,
-              name
+              name,
+              project
     """
 )
 
@@ -815,6 +818,9 @@ class MarketplaceQueueService:
                 entity_id=assistant_id,
                 actor=actor,
                 actor_id=decided_by_id,
+                actor_email=decided_by_email,
+                entity_label=updated["name"],
+                project_name=updated["project"],
                 attributes={
                     "decision": decision.value,
                     "from_status": current["marketplace_status"],
@@ -1232,15 +1238,40 @@ class MarketplaceQueueService:
         return {**result, "indexing": indexing}
 
     @staticmethod
-    def _record_activity_event(
+    def _snapshot_actor(
+        session, actor: str, actor_id: str | None, actor_email: str | None
+    ) -> tuple[str | None, str | None, str | None]:
+        """Return the `(actor_id, actor_email, actor_display_name)` snapshot stored on an activity row.
+
+        Snapshot the actor the way every other domain does. `ActivityEventCreate` raises when `actor_id` is set
+        without an email, and that happens before `insert`'s savepoint, so an unresolvable email must never
+        reach it: fall back to an email-shaped `actor` string, then drop `actor_id` (`attributes.actor` keeps it).
+        """
+        actor_display_name = None
+        if actor_id and actor_id != SYSTEM_ACTOR_ID:
+            user = session.get(UserDB, actor_id)
+            if user is not None:
+                actor_email = actor_email or user.email
+                actor_display_name = user.name or None
+            if actor_email is None and "@" in actor:
+                actor_email = actor
+            if actor_email is None:
+                actor_id = None
+        return actor_id, actor_email, actor_display_name
+
+    @staticmethod
+    def _record_activity_event(  # noqa: PLR0913 - keyword-only fields mirror the activity_events columns
         session,
         *,
         rule: TransitionRule,
         entity_kind: EntityKind,
         entity_id: str,
         actor: str,
-        actor_id: Optional[str],
-        attributes: Optional[Mapping[str, Any]] = None,
+        actor_id: str | None,
+        actor_email: str | None = None,
+        entity_label: str | None = None,
+        project_name: str | None = None,
+        attributes: Mapping[str, Any] | None = None,
     ) -> None:
         """Append this decision to `activity_events`, inside the caller's transaction.
 
@@ -1262,13 +1293,26 @@ class MarketplaceQueueService:
                 payload[key] = value
 
         entity_type = ActivityEntityType.ASSISTANT if entity_kind is EntityKind.ASSISTANT else None
+        # `entity_label` / `project_name` come from the row the decision's UPDATE just returned, so they exist
+        # exactly when the entity does; an entity-less event carries neither.
+        if not entity_type:
+            entity_label = project_name = None
+
+        actor_id, actor_email, actor_display_name = MarketplaceQueueService._snapshot_actor(
+            session, actor, actor_id, actor_email
+        )
+
         activity_event_repository.insert(
             ActivityEventCreate(
                 domain=ActivityDomain.MARKETPLACE,
                 event_type=rule.activity_event_type,
                 entity_type=entity_type,
                 entity_id=entity_id if entity_type else None,
+                entity_label=entity_label,
+                project_name=project_name,
                 actor_id=actor_id,
+                actor_email=actor_email,
+                actor_display_name=actor_display_name,
                 attributes=payload,
             ),
             session,

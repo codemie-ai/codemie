@@ -236,6 +236,7 @@ def create_user(
         is_maintainer=data.is_maintainer,
         is_auditor=data.is_auditor,
         actor_user_id=user.id,
+        actor=user,
     )
 
 
@@ -264,7 +265,7 @@ def update_user(
 
     return user_management_service.update_user_fields(
         user_id=user_id,
-        actor_user_id=user.id,
+        actor_user=user,
         name=data.name,
         picture=data.picture,
         email=data.email,
@@ -290,7 +291,7 @@ def remap_user(data: UserRemapRequest, user: User = Depends(authenticate), _: No
     if not config.ENABLE_USER_MANAGEMENT:
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
 
-    return UserRemapService.remap_user_flow(data.old_user_id, data.new_user_id, user.id)
+    return UserRemapService.remap_user_flow(data.old_user_id, data.new_user_id, user)
 
 
 @router.delete("/{user_id}")
@@ -308,7 +309,7 @@ def deactivate_user(
     if not config.ENABLE_USER_MANAGEMENT:
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
 
-    return user_management_service.deactivate_user_flow(user_id, user.id)
+    return user_management_service.deactivate_user_flow(user_id, user)
 
 
 @router.post("/{user_id}/reactivate", response_model=CodeMieUserDetail)
@@ -327,7 +328,7 @@ def reactivate_user(
     if not config.ENABLE_USER_MANAGEMENT:
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
 
-    return user_management_service.reactivate_user_flow(user_id, user.id)
+    return user_management_service.reactivate_user_flow(user_id, user)
 
 
 @router.put("/{user_id}/password")
@@ -549,7 +550,7 @@ async def bulk_set_user_budgets(
             session=session,
             user_ids=data.user_ids,
             assignments=data.assignments,
-            actor_id=user.id,
+            actor=user,
         )
         await session.commit()
 
@@ -636,6 +637,6 @@ async def set_user_budgets(
             session=session,
             user_id=user_id,
             assignments=data.assignments,
-            actor_id=user.id,
+            actor=user,
         )
         await session.commit()

@@ -271,7 +271,7 @@ async def sync_budgets_from_litellm() -> None:
     logger.info("Syncing budgets from LiteLLM...")
     try:
         async with get_async_session() as session:
-            result = await budget_service.sync_budgets_from_litellm(session, actor_id="system")
+            result = await budget_service.sync_budgets_from_litellm(session)
         logger.info(
             f"Budgets synced from LiteLLM: created={result.created}, "
             f"updated={result.updated}, unchanged={result.unchanged}, "

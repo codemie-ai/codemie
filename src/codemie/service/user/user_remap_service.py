@@ -34,6 +34,7 @@ from sqlmodel import Session, select
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.user_repository import user_repository
 from codemie.rest_api.models.user_management import CodeMieUserDetail, UserDB
+from codemie.rest_api.security.user import User
 from codemie.service.activity.activity_models import (
     ActivityDomain,
     ActivityEntityType,
@@ -144,7 +145,7 @@ class UserRemapService:
     """Rewrites every DB reference from an old users.id to a new one, in one transaction."""
 
     @staticmethod
-    def remap_user_flow(old_user_id: str, new_user_id: str, actor_user_id: str) -> Optional[CodeMieUserDetail]:
+    def remap_user_flow(old_user_id: str, new_user_id: str, actor: User) -> Optional[CodeMieUserDetail]:
         """Remap `old_user_id` to `new_user_id` and return the remapped user's detail view.
 
         Owns the session and its commit end to end (matches
@@ -155,16 +156,16 @@ class UserRemapService:
         from codemie.service.user.user_management_service import user_management_service
 
         with get_session() as session:
-            remapped = UserRemapService.remap_user(session, old_user_id, new_user_id, actor_user_id)
+            remapped = UserRemapService.remap_user(session, old_user_id, new_user_id, actor)
             session.commit()
-            return user_management_service.get_user_with_relationships(session, remapped.id, actor_user_id, True, False)
+            return user_management_service.get_user_with_relationships(session, remapped.id, actor.id, True, False)
 
     @staticmethod
     def remap_user(
         session: Session,
         old_user_id: str,
         new_user_id: str,
-        actor_user_id: str,
+        actor: User,
     ) -> UserDB:
         """Remap `old_user_id` to `new_user_id`, transferring the id and every reference to it.
 
@@ -176,7 +177,7 @@ class UserRemapService:
             session: Caller-owned session; the caller commits (see `remap_user_flow`).
             old_user_id: The pre-Keycloak id currently on the row.
             new_user_id: The Keycloak-issued id to move the row to.
-            actor_user_id: The superadmin performing the remap (for the audit log).
+            actor: The superadmin performing the remap (for the audit log).
 
         Returns:
             The UserDB row at its new id.
@@ -197,21 +198,25 @@ class UserRemapService:
         UserRemapService._update_fk_columns_referencing_users_id(session, old_user_id, new_user_id)
         UserRemapService._update_created_by_jsonb(session, old_user_id, new_user_id)
 
+        remapped = user_repository.get_by_id(session, new_user_id)
+        if not remapped:
+            raise ExtendedHTTPException(code=404, message=_USER_NOT_FOUND)
+
         activity_event_repository.insert(
             ActivityEventCreate(
                 domain=ActivityDomain.USER_MANAGEMENT,
                 event_type=UserManagementEvent.USER_REMAPPED,
                 entity_type=ActivityEntityType.USER,
                 entity_id=new_user_id,
-                actor_id=actor_user_id,
-                attributes={"old_id": old_user_id, "new_id": new_user_id, "actor_user_id": actor_user_id},
+                entity_label=remapped.name or remapped.email,
+                project_name=None,
+                actor_id=actor.id,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
+                attributes={"old_id": old_user_id, "new_id": new_user_id, "actor_user_id": actor.id},
             ),
             session,
         )
-
-        remapped = user_repository.get_by_id(session, new_user_id)
-        if not remapped:
-            raise ExtendedHTTPException(code=404, message=_USER_NOT_FOUND)
         return remapped
 
     @staticmethod

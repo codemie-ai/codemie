@@ -45,13 +45,15 @@ def creation_flow():
         mock_create.return_value = SimpleNamespace(id="user-1")
         mock_get_user.return_value = SimpleNamespace(id="user-1")
         mock_user_repository.get_by_id.return_value = None
-        yield SimpleNamespace(session=mock_session)
+        yield SimpleNamespace(session=mock_session, create=mock_create)
 
 
 @pytest.fixture
 def flow_mocks(creation_flow):
     with patch(f"{_BUDGET}.budget_service") as mock_budget_service:
-        yield SimpleNamespace(session=creation_flow.session, budget_service=mock_budget_service)
+        yield SimpleNamespace(
+            session=creation_flow.session, create=creation_flow.create, budget_service=mock_budget_service
+        )
 
 
 def _create(email="user@example.com", username="user1"):
@@ -133,3 +135,13 @@ async def test_create_local_user_with_flow_leaves_default_budget_assignments_for
         ("user-1", BudgetCategory.PREMIUM_MODELS): "mirrored-premium-default",
     }
     assert {c.kwargs["username"] for c in provider.provision_category_customer.await_args_list} == {"alice_corp"}
+
+
+def test_create_local_user_with_flow_forwards_the_acting_admin(flow_mocks):
+    admin = SimpleNamespace(id="admin-1")
+
+    UserManagementService.create_local_user_with_flow(
+        email="user@example.com", username="user1", password="secret", actor_user_id="admin-1", actor=admin
+    )
+
+    assert flow_mocks.create.call_args.kwargs["actor"] is admin

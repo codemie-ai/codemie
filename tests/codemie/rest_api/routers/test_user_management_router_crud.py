@@ -179,6 +179,7 @@ class TestCreateUser:
             is_maintainer=False,
             is_auditor=False,
             actor_user_id="admin-123",
+            actor=admin_user,
         )
 
     @patch("codemie.rest_api.routers.user_management_router.config")
@@ -295,7 +296,7 @@ class TestUpdateUser:
         assert result.name == "Updated Name"
         mock_service.update_user_fields.assert_called_once_with(
             user_id="user-456",
-            actor_user_id="admin-123",
+            actor_user=admin_user,
             name="Updated Name",
             picture="https://example.com/pic.jpg",
             email=None,
@@ -421,7 +422,7 @@ class TestDeactivateUser:
         assert result == {"message": "User deactivated"}
         mock_service.deactivate_user_flow.assert_called_once_with(
             "user-456",
-            "admin-123",
+            admin_user,
         )
 
     @patch("codemie.rest_api.routers.user_management_router.config")
@@ -454,7 +455,7 @@ class TestReactivateUser:
         result = reactivate_user("user-456", admin_user, None)
 
         assert result == {"id": "user-456", "is_active": True}
-        mock_service.reactivate_user_flow.assert_called_once_with("user-456", "admin-123")
+        mock_service.reactivate_user_flow.assert_called_once_with("user-456", admin_user)
 
     @patch("codemie.rest_api.routers.user_management_router.config")
     @patch("codemie.rest_api.routers.user_management_router.user_management_service")
@@ -482,7 +483,7 @@ class TestReactivateUser:
 
         assert exc_info.value.code == code
         assert exc_info.value.message == "boom"
-        mock_service.reactivate_user_flow.assert_called_once_with("user-456", "admin-123")
+        mock_service.reactivate_user_flow.assert_called_once_with("user-456", admin_user)
 
 
 class TestAdminChangePassword:

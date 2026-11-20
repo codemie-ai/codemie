@@ -349,6 +349,35 @@ async def project_admin_or_admin_user_detail_access(request: Request):
     )
 
 
+def project_activity_instance_access(request: Request, project_instance_id: _uuid.UUID):
+    """Allow platform roles any non-personal generation and project admins active generations only."""
+    from codemie.clients.postgres import get_session
+    from codemie.repository.application_repository import application_repository
+    from codemie.repository.user_project_repository import user_project_repository
+    from codemie.service.activity.activity_repository import activity_event_repository
+
+    user = request.state.user
+    with get_session() as session:
+        project = application_repository.get_by_project_instance_id(session, project_instance_id)
+        has_events = activity_event_repository.has_project_instance_events(project_instance_id, session)
+        is_personal = project is not None and project.project_type == "personal"
+        if not is_personal and (project is not None or has_events):
+            if user.is_admin_or_maintainer:
+                return
+            if (
+                project is not None
+                and project.deleted_at is None
+                and user_project_repository.is_admin(session, user.id, project.name)
+            ):
+                return
+
+    logger.warning(f"access_denied_project_instance_scope: actor_user_id={user.id}, domain=activity_events")
+    raise ExtendedHTTPException(
+        code=status.HTTP_404_NOT_FOUND,
+        message="Project activity history not found",
+    )
+
+
 def application_access_check(request: Request, app_name: str):
     """
     Checks if current user has access to application

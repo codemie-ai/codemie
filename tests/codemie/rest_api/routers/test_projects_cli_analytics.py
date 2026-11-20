@@ -17,6 +17,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI, Request
@@ -40,6 +41,7 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 
 KEY = "cli_analytics_enabled"
+PROJECT_INSTANCE_ID = UUID("4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c")
 
 # label -> (user kwargs, may see the value of project "proj")
 ROLES = {
@@ -167,6 +169,7 @@ async def test_detail_exposes_value_only_to_viewers(label):
     can_view = ROLES[label][1]
     detail = {
         "name": "proj",
+        "project_instance_id": PROJECT_INSTANCE_ID,
         "description": "d",
         "project_type": "shared",
         "created_by": "owner",
@@ -190,7 +193,14 @@ async def test_detail_exposes_value_only_to_viewers(label):
 def test_defaults_never_leak_the_field():
     """A response built without the value (Pydantic default) carries no key at all."""
     created = ProjectCreateResponse(name="p", project_type="shared", created_by="u", created_at=datetime.now(UTC))
-    detail = ProjectDetailResponse(name="p", project_type="shared", user_count=0, admin_count=0, members=[])
+    detail = ProjectDetailResponse(
+        name="p",
+        project_instance_id=PROJECT_INSTANCE_ID,
+        project_type="shared",
+        user_count=0,
+        admin_count=0,
+        members=[],
+    )
     item = ProjectListItem(name="p", project_type="shared", user_count=0, admin_count=0)
 
     assert all(KEY not in dumped(m) for m in (created, detail, item))
@@ -316,7 +326,11 @@ def _get_legacy_application(label: str):
     with (
         patch(
             f"{code_repositories}.Application.get_by_id",
-            return_value=Application(name="proj", cli_analytics_enabled=True),
+            return_value=Application(
+                name="proj",
+                project_instance_id=PROJECT_INSTANCE_ID,
+                cli_analytics_enabled=True,
+            ),
         ),
         patch(f"{code_repositories}.CodeIndexInfo.get_all", return_value=[]),
         patch(f"{code_repositories}.CodeIndexInfo.filter_by_names_or_user", return_value=[]),

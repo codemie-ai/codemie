@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
@@ -33,6 +34,7 @@ from codemie.service.spend.coverage import SpendResult
 
 # Differs from the route default (50) so a handler that ignores the query parameter is caught.
 NON_DEFAULT_ROWS_LIMIT = 37
+PROJECT_INSTANCE_ID = UUID("4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c")
 
 
 def _user(user_id: str, *, is_admin: bool = False, **fields) -> User:
@@ -44,6 +46,7 @@ def _user(user_id: str, *, is_admin: bool = False, **fields) -> User:
 def _project(name: str, **fields) -> dict:
     return {
         "name": name,
+        "project_instance_id": PROJECT_INSTANCE_ID,
         "description": "",
         "project_type": "shared",
         "created_by": "owner-1",

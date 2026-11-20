@@ -36,8 +36,8 @@ async def test_run_stops_budgets_for_inactive_projects():
     session.flush = AsyncMock()
 
     inactive_ids = ["proj-a", "proj-b"]
-    budget_a = SimpleNamespace(budget_id="b-1", project_name="proj-a", is_active=True)
-    budget_b = SimpleNamespace(budget_id="b-2", project_name="proj-b", is_active=True)
+    budget_a = SimpleNamespace(budget_id="b-1", name="Budget A", project_name="proj-a", is_active=True)
+    budget_b = SimpleNamespace(budget_id="b-2", name="Budget B", project_name="proj-b", is_active=True)
 
     mock_enrichment_repo = AsyncMock()
     mock_enrichment_repo.get_inactive_application_ids.return_value = inactive_ids
@@ -85,6 +85,14 @@ async def test_run_stops_budgets_for_inactive_projects():
     mock_clear_cache.assert_called_once()
     assert mock_activity_repo.async_insert.call_count == 2
     assert mock_email_service.send_email.call_count >= 1
+    emitted_project_names = {call[0][0].project_name for call in mock_activity_repo.async_insert.call_args_list}
+    assert emitted_project_names == {"proj-a", "proj-b"}
+    emitted_entity_labels = {call[0][0].entity_label for call in mock_activity_repo.async_insert.call_args_list}
+    assert emitted_entity_labels == {"Budget A", "Budget B"}
+    for call in mock_activity_repo.async_insert.call_args_list:
+        emitted_event = call[0][0]
+        assert emitted_event.actor_email is None
+        assert emitted_event.actor_display_name is None
 
 
 @pytest.mark.asyncio

@@ -39,6 +39,7 @@ from codemie.service.budget.budget_models import (
 )
 
 if TYPE_CHECKING:
+    from codemie.rest_api.security.user import User
     from codemie.service.budget.project_budget_service import ProjectBudgetService
 
 IndexedItems = list[tuple[int, BulkMemberOverrideItem]]
@@ -199,7 +200,7 @@ class BulkMemberOverrideRunner:
         budget: Budget,
         assignment: ProjectBudgetAssignment | None,
         item: BulkMemberOverrideItem,
-        actor_id: str,
+        actor: User,
     ) -> None:
         await activity_event_repository.async_insert(
             ActivityEventCreate(
@@ -207,12 +208,16 @@ class BulkMemberOverrideRunner:
                 event_type=BudgetManagementEvent.MEMBER_ALLOCATION_OVERRIDDEN,
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=item.budget_id,
-                actor_id=actor_id,
+                entity_label=budget.name,
+                actor_id=actor.id,
                 attributes={
                     "user_id": item.user_id,
                     "allocated_max_budget": item.allocated_max_budget,
                     "allocated_soft_budget": item.allocated_soft_budget,
                 },
+                project_name=assignment.project_name if assignment else None,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -222,14 +227,14 @@ class BulkMemberOverrideRunner:
             f"budget_category={budget.budget_category!r} user_id={item.user_id!r} "
             f"allocated_max_budget={item.allocated_max_budget!r} "
             f"allocated_soft_budget={item.allocated_soft_budget!r} "
-            f"actor_id={actor_id!r} domain=budget_management"
+            f"actor_id={actor.id!r} domain=budget_management"
         )
 
     async def run(
         self,
         session: AsyncSession,
         items: IndexedItems,
-        actor_id: str,
+        actor: User,
     ) -> dict[int, BulkMemberOverrideResult]:
         results, accepted, loaded = await self.check(session, items)
         if not accepted:
@@ -237,17 +242,17 @@ class BulkMemberOverrideRunner:
 
         for _index, item in accepted:
             budget, assignment = loaded[item.budget_id]
-            await self._write_override(session, budget=budget, assignment=assignment, item=item, actor_id=actor_id)
+            await self._write_override(session, budget=budget, assignment=assignment, item=item, actor_id=actor.id)
 
         await session.flush()
         for budget_id, (budget, _assignment) in loaded.items():
             await self._recheck_budget(session, budget_id, budget)
 
         for budget_id in loaded:
-            await self._service.rebalance_project_budget(session, budget_id, actor_id)
+            await self._service.rebalance_project_budget(session, budget_id, actor)
 
         for index, item in accepted:
             budget, assignment = loaded[item.budget_id]
-            await self._record_override(session, budget=budget, assignment=assignment, item=item, actor_id=actor_id)
+            await self._record_override(session, budget=budget, assignment=assignment, item=item, actor=actor)
             results[index] = BulkMemberOverrideResult(budget_id=item.budget_id, user_id=item.user_id, status="ok")
         return results

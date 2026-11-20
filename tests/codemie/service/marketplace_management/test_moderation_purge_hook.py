@@ -45,6 +45,7 @@ from fastapi import FastAPI
 class _FakeAssistant:
     def __init__(self) -> None:
         self.id = "assistant-being-deleted"
+        self.name = "Assistant"
         self.project = "demo"
         self.mcp_servers = []
         self.deleted = False

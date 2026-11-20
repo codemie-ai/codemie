@@ -76,7 +76,13 @@ class AssistantShareService:
 
     @classmethod
     def remove_all_grants(
-        cls, actor: User | None, assistant_id: str, project: str | None = None, session: Session | None = None
+        cls,
+        actor: User | None,
+        assistant_id: str,
+        project: str | None = None,
+        session: Session | None = None,
+        *,
+        label: str,
     ) -> None:
         """Delete every grant on an assistant (e.g. on assistant delete), one audit event per row.
 
@@ -85,10 +91,10 @@ class AssistantShareService:
         """
         if session is None:
             with Session(BaseModelWithSQLSupport.get_engine()) as own_session:
-                named_grant_service.remove_all_grants(actor, RESOURCE_TYPE, assistant_id, project, own_session)
+                named_grant_service.remove_all_grants(actor, RESOURCE_TYPE, assistant_id, project, own_session, label)
                 own_session.commit()
             return
-        named_grant_service.remove_all_grants(actor, RESOURCE_TYPE, assistant_id, project, session)
+        named_grant_service.remove_all_grants(actor, RESOURCE_TYPE, assistant_id, project, session, label)
 
     @classmethod
     def has_named_grants(cls, assistant_id: str) -> bool:

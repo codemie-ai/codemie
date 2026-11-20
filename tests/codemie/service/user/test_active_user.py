@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.rest_api.security.user import User
 from codemie.service.user.active_user import require_active_user
 from codemie.service.user.user_management_service import UserManagementService
 
@@ -61,7 +62,7 @@ def test_platform_role_grant_to_deactivated_user_is_409(role):
         patch("codemie.service.user.user_management_service.user_repository", repo),
         pytest.raises(ExtendedHTTPException) as exc_info,
     ):
-        UserManagementService.update_user_fields("u1", "admin-1", **{role: True})
+        UserManagementService.update_user_fields("u1", User(id="admin-1"), **{role: True})
 
     assert exc_info.value.code == 409
     assert exc_info.value.message == "User is deactivated"

@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.rest_api.security.user import User
 from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.service.budget import budget_service as budget_service_module
 from codemie.service.budget.budget_enums import BudgetCategory
@@ -210,7 +211,7 @@ class TestCreateBudgetLiteLLMRollback:
             mock_get_active_provider.return_value = mock_provider
             request = _make_create_request()
             with pytest.raises(ExtendedHTTPException) as exc_info:
-                await service.create_budget(mock_session, request, actor_id="admin")
+                await service.create_budget(mock_session, request, actor=User(id="admin"))
 
         assert exc_info.value.code == 502
         mock_session.rollback.assert_awaited_once()
@@ -252,7 +253,7 @@ class TestCreateBudgetLiteLLMRollback:
             mock_provider.ensure_global_budget = AsyncMock(return_value=litellm_result)
             mock_get_active_provider.return_value = mock_provider
             request = _make_create_request()
-            result = await service.create_budget(mock_session, request, actor_id="admin")
+            result = await service.create_budget(mock_session, request, actor=User(id="admin"))
 
         assert result.budget_reset_at == "2026-05-01T00:00:00Z"
         mock_session.rollback.assert_not_called()
@@ -268,7 +269,7 @@ class TestCreateBudgetLiteLLMRollback:
         ):
             request = _make_create_request()
             with pytest.raises(ExtendedHTTPException) as exc_info:
-                await service.create_budget(mock_session, request, actor_id="admin")
+                await service.create_budget(mock_session, request, actor=User(id="admin"))
 
         assert exc_info.value.code == 409
 
@@ -535,7 +536,7 @@ class TestAResetCodeMieSetIsRecorded:
             patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
             patch("codemie.service.budget.budget_service.activity_event_repository.async_insert", new=AsyncMock()),
         ):
-            await service.create_budget(AsyncMock(), _make_create_request(), actor_id="admin")
+            await service.create_budget(AsyncMock(), _make_create_request(), actor=User(id="admin"))
 
         assert written[-1]["budget_reset_at"] == _PINNED
         assert _recorded(written) == [(datetime(2099, 11, 9, tzinfo=timezone.utc), _OCTOBER)]
@@ -574,7 +575,9 @@ class TestAResetCodeMieSetIsRecorded:
         ):
             from codemie.rest_api.routers.budget_router import BudgetUpdateRequest
 
-            await service.update_budget(AsyncMock(), "test-budget", BudgetUpdateRequest(budget_duration="7d"), "admin")
+            await service.update_budget(
+                AsyncMock(), "test-budget", BudgetUpdateRequest(budget_duration="7d"), User(id="admin")
+            )
 
         assert _recorded(written) == [(datetime(2099, 10, 28, tzinfo=timezone.utc), period_start)]
 
@@ -1131,7 +1134,7 @@ class TestCreateBudgetPersistsNotificationOwner:
             repo.insert = AsyncMock(side_effect=_fake_insert)
             repo.update = AsyncMock(side_effect=lambda s, bid, fields: captured["budget"])
 
-            await service.create_budget(session=AsyncMock(), data=request, actor_id="admin-1")
+            await service.create_budget(session=AsyncMock(), data=request, actor=User(id="admin-1"))
 
         assert captured["budget"].notification_owner_email == "owner@example.com"
 
@@ -1191,7 +1194,7 @@ class TestUpdateBudgetResetsSoftLimitNotifiedAt:
                 session=AsyncMock(),
                 budget_id=existing.budget_id,
                 data=BudgetUpdateRequest(soft_budget=75.0),
-                actor_id="admin-1",
+                actor=User(id="admin-1"),
             )
 
         # First repo.update call is the main update payload; second is provider_metadata sync.
@@ -1236,7 +1239,7 @@ class TestUpdateBudgetResetsSoftLimitNotifiedAt:
                 session=AsyncMock(),
                 budget_id=existing.budget_id,
                 data=BudgetUpdateRequest(notification_owner_email="new@example.com"),
-                actor_id="admin-1",
+                actor=User(id="admin-1"),
             )
 
         primary = captured["calls"][0]
@@ -1280,7 +1283,7 @@ class TestUpdateBudgetResetsSoftLimitNotifiedAt:
                 session=AsyncMock(),
                 budget_id=existing.budget_id,
                 data=BudgetUpdateRequest(description="A new description"),
-                actor_id="admin-1",
+                actor=User(id="admin-1"),
             )
 
         primary = captured["calls"][0]

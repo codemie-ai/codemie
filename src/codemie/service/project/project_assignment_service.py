@@ -317,7 +317,7 @@ class ProjectAssignmentService:
         ProjectAssignmentService._validate_user_id_format(user_id)
 
         # Validate target user exists and is active
-        require_active_user(session, user_id, user_repository)
+        target_user = require_active_user(session, user_id, user_repository)
 
         # Check if already assigned
         existing = user_project_repository.get_by_user_and_project(session, user_id, project_name)
@@ -343,8 +343,12 @@ class ProjectAssignmentService:
                 event_type=UserManagementEvent.USER_PROJECT_ASSIGNED,
                 entity_type=ActivityEntityType.USER,
                 entity_id=user_id,
+                entity_label=target_user.name or target_user.username or user_id,
                 actor_id=actor.id,
                 attributes={"project_name": project_name, "is_project_admin": is_project_admin},
+                project_name=project_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -394,7 +398,7 @@ class ProjectAssignmentService:
         ProjectAssignmentService._validate_user_id_format(user_id)
 
         # Validate target user exists and is active
-        require_active_user(session, user_id, user_repository)
+        target_user = require_active_user(session, user_id, user_repository)
 
         # Check if user is assigned to project
         membership = user_project_repository.get_by_user_and_project(session, user_id, project_name)
@@ -414,8 +418,12 @@ class ProjectAssignmentService:
                 event_type=UserManagementEvent.USER_PROJECT_ROLE_UPDATED,
                 entity_type=ActivityEntityType.USER,
                 entity_id=user_id,
+                entity_label=target_user.name or target_user.username or user_id,
                 actor_id=actor.id,
                 attributes={"project_name": project_name, "is_project_admin": is_project_admin},
+                project_name=project_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -506,6 +514,7 @@ class ProjectAssignmentService:
 
         # Bulk-fetch existing assignments
         existing_assignments = user_project_repository.get_by_users_and_project(session, user_ids, project_name)
+        labels = user_repository.get_display_labels(session, user_ids)
 
         # Execute: assign new or update existing (using pre-fetched objects to avoid N+1)
         results = []
@@ -545,8 +554,12 @@ class ProjectAssignmentService:
                     event_type=event_type,
                     entity_type=ActivityEntityType.USER,
                     entity_id=user_id,
+                    entity_label=labels.get(user_id, user_id),
                     actor_id=actor.id,
                     attributes={"project_name": project_name, "is_project_admin": is_project_admin},
+                    project_name=project_name,
+                    actor_email=actor.email,
+                    actor_display_name=actor.name or None,
                 ),
                 session,
             )
@@ -646,6 +659,7 @@ class ProjectAssignmentService:
             )
 
         # Execute: bulk delete using pre-fetched records (avoids redundant query)
+        labels = user_repository.get_display_labels(session, user_ids)
         for record in existing_assignments.values():
             session.delete(record)
             ProjectAssignmentService._sync_project_budget_member_removed(session, project_name, record.user_id)
@@ -655,8 +669,12 @@ class ProjectAssignmentService:
                     event_type=UserManagementEvent.USER_PROJECT_REMOVED,
                     entity_type=ActivityEntityType.USER,
                     entity_id=record.user_id,
+                    entity_label=labels.get(record.user_id, record.user_id),
                     actor_id=actor.id,
                     attributes={"project_name": project_name},
+                    project_name=project_name,
+                    actor_email=actor.email,
+                    actor_display_name=actor.name or None,
                 ),
                 session,
             )
@@ -724,8 +742,12 @@ class ProjectAssignmentService:
                 event_type=UserManagementEvent.USER_PROJECT_REMOVED,
                 entity_type=ActivityEntityType.USER,
                 entity_id=user_id,
+                entity_label=target_user.name or target_user.username or user_id,
                 actor_id=actor.id,
                 attributes={"project_name": project_name},
+                project_name=project_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )

@@ -28,20 +28,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.rest_api.security.user import User
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.activity.activity_models import (
     ActivityDomain,
     ActivityEntityType,
     BudgetManagementEvent,
 )
-from codemie.service.budget.budget_enums import BudgetCategory, BudgetType
+from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory, BudgetType, SyncStatus
 from codemie.service.budget.budget_models import Budget
 from codemie.service.budget.budget_service import BudgetService
+from codemie.service.budget.provider import BudgetProviderMemberState
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+_ACTOR = User(id="admin-1", email="admin@example.com", name="Admin One")
+_ACTOR_1 = User(id="actor-1", email="actor@example.com", name="Actor One")
 
 
 def _make_service() -> BudgetService:
@@ -125,7 +131,7 @@ class TestCreateBudgetActivityEvent:
         service = _make_service()
         data = _make_create_request(budget_id="new-budget")
 
-        await service.create_budget(session, data, actor_id="admin-1", actor_name="Admin")
+        await service.create_budget(session, data, actor=_ACTOR)
 
         mock_activity.async_insert.assert_called_once()
         call_args = mock_activity.async_insert.call_args[0]
@@ -134,7 +140,11 @@ class TestCreateBudgetActivityEvent:
         assert event_dto.event_type == BudgetManagementEvent.BUDGET_CREATED
         assert event_dto.entity_type == ActivityEntityType.BUDGET
         assert event_dto.entity_id == "new-budget"
+        assert event_dto.entity_label == "Test Budget"
         assert event_dto.actor_id == "admin-1"
+        assert event_dto.project_name is None
+        assert event_dto.actor_email == "admin@example.com"
+        assert event_dto.actor_display_name == "Admin One"
         # The session is passed as the second positional arg
         assert call_args[1] is session
 
@@ -165,7 +175,7 @@ class TestCreateBudgetActivityEvent:
         data = _make_create_request(budget_id="new-budget")
 
         with pytest.raises(ExtendedHTTPException):
-            await service.create_budget(session, data, actor_id="admin-1")
+            await service.create_budget(session, data, actor=_ACTOR)
 
         mock_activity.async_insert.assert_not_called()
 
@@ -201,7 +211,7 @@ class TestUpdateBudgetActivityEvent:
         # The simplest path: no provider-owned fields set means no sync call needed
         # soft_budget IS provider-owned, so we need to mock _sync_updated_global_budget
         with patch.object(service, "_sync_updated_global_budget", AsyncMock(return_value=updated_budget)):
-            await service.update_budget(session, "test-budget", data, actor_id="admin-1", actor_name="Admin")
+            await service.update_budget(session, "test-budget", data, actor=_ACTOR)
 
         mock_activity.async_insert.assert_called_once()
         call_args = mock_activity.async_insert.call_args[0]
@@ -210,7 +220,11 @@ class TestUpdateBudgetActivityEvent:
         assert event_dto.event_type == BudgetManagementEvent.BUDGET_UPDATED
         assert event_dto.entity_type == ActivityEntityType.BUDGET
         assert event_dto.entity_id == "test-budget"
+        assert event_dto.entity_label == "Test Budget"
         assert event_dto.actor_id == "admin-1"
+        assert event_dto.project_name is None
+        assert event_dto.actor_email == "admin@example.com"
+        assert event_dto.actor_display_name == "Admin One"
         assert call_args[1] is session
 
     @pytest.mark.asyncio
@@ -234,7 +248,7 @@ class TestUpdateBudgetActivityEvent:
         data = _make_update_request(soft_budget=15.0)
 
         with pytest.raises(ExtendedHTTPException):
-            await service.update_budget(session, "predefined-budget", data, actor_id="admin-1")
+            await service.update_budget(session, "predefined-budget", data, actor=_ACTOR)
 
         mock_activity.async_insert.assert_not_called()
 
@@ -282,12 +296,14 @@ class TestAssignBudgetToUserActivityEvent:
         service = _make_service()
 
         # Mock validate_assignment_budget_categories to be a no-op
-        with patch.object(service, "validate_assignment_budget_categories", AsyncMock()):
+        with patch.object(
+            service, "validate_assignment_budget_categories", AsyncMock(return_value={"test-budget": "Test Budget"})
+        ):
             await service.assign_budget_to_user(
                 session,
                 user_id="user-123",
                 assignments={BudgetCategory.PLATFORM: "test-budget"},
-                actor_id="admin-1",
+                actor=_ACTOR,
             )
 
         mock_activity.async_insert.assert_called_once()
@@ -297,8 +313,12 @@ class TestAssignBudgetToUserActivityEvent:
         assert event_dto.event_type == BudgetManagementEvent.USER_BUDGET_ASSIGNED
         assert event_dto.entity_type == ActivityEntityType.USER_BUDGET_ASSIGNMENT
         assert event_dto.entity_id == "user-123"
+        assert event_dto.entity_label == "Test Budget"
         assert event_dto.actor_id == "admin-1"
         assert event_dto.attributes == {"budget_id": "test-budget"}
+        assert event_dto.project_name is None
+        assert event_dto.actor_email == "admin@example.com"
+        assert event_dto.actor_display_name == "Admin One"
         assert call_args[1] is session
         mock_logger.info.assert_called_once()
         assert "user_budget_assignment_completed" in mock_logger.info.call_args[0][0]
@@ -343,7 +363,7 @@ class TestAssignBudgetToUserActivityEvent:
                 session,
                 user_id="user-123",
                 assignments={BudgetCategory.PLATFORM: None},
-                actor_id="admin-1",
+                actor=_ACTOR,
             )
 
         mock_activity.async_insert.assert_called_once()
@@ -353,8 +373,12 @@ class TestAssignBudgetToUserActivityEvent:
         assert event_dto.event_type == BudgetManagementEvent.USER_BUDGET_REMOVED
         assert event_dto.entity_type == ActivityEntityType.USER_BUDGET_ASSIGNMENT
         assert event_dto.entity_id == "user-123"
+        assert event_dto.entity_label == BudgetCategory.PLATFORM.value
         assert event_dto.actor_id == "admin-1"
         assert event_dto.attributes == {"category": BudgetCategory.PLATFORM.value}
+        assert event_dto.project_name is None
+        assert event_dto.actor_email == "admin@example.com"
+        assert event_dto.actor_display_name == "Admin One"
         assert call_args[1] is session
 
     @pytest.mark.asyncio
@@ -390,7 +414,11 @@ class TestAssignBudgetToUserActivityEvent:
 
         service = _make_service()
 
-        with patch.object(service, "validate_assignment_budget_categories", AsyncMock()):
+        with patch.object(
+            service,
+            "validate_assignment_budget_categories",
+            AsyncMock(return_value={"platform-budget": "Platform Budget", "cli-budget": "CLI Budget"}),
+        ):
             await service.assign_budget_to_user(
                 session,
                 user_id="user-123",
@@ -398,12 +426,17 @@ class TestAssignBudgetToUserActivityEvent:
                     BudgetCategory.PLATFORM: "platform-budget",
                     BudgetCategory.CLI: "cli-budget",
                 },
-                actor_id="admin-1",
+                actor=_ACTOR,
             )
 
         assert mock_activity.async_insert.call_count == 2
         emitted_budget_ids = {call[0][0].attributes["budget_id"] for call in mock_activity.async_insert.call_args_list}
         assert emitted_budget_ids == {"platform-budget", "cli-budget"}
+        for call in mock_activity.async_insert.call_args_list:
+            emitted_event = call[0][0]
+            assert emitted_event.project_name is None
+            assert emitted_event.actor_email == "admin@example.com"
+            assert emitted_event.actor_display_name == "Admin One"
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +477,7 @@ class TestBudgetGrantToDeactivatedUser:
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
             await _make_service().assign_budget_to_user(
-                session, user_id="user-1", assignments={BudgetCategory.PLATFORM: "b1"}, actor_id="admin-1"
+                session, user_id="user-1", assignments={BudgetCategory.PLATFORM: "b1"}, actor=_ACTOR
             )
 
         assert exc_info.value.code == 409
@@ -502,7 +535,7 @@ class TestCreateProjectBudgetActivityEvent:
             ),
             patch.object(service, "_sync_created_project_budget", AsyncMock(return_value=created_budget)),
         ):
-            await service.create_project_budget(session, data, actor_id="admin-1", actor_name="Admin")
+            await service.create_project_budget(session, data, actor=_ACTOR)
 
         mock_activity.async_insert.assert_called_once()
         call_args = mock_activity.async_insert.call_args[0]
@@ -513,6 +546,10 @@ class TestCreateProjectBudgetActivityEvent:
         assert event_dto.entity_id == created_budget.budget_id
         assert event_dto.actor_id == "admin-1"
         assert event_dto.attributes == {"project_name": "my-project"}
+        assert event_dto.project_name == "my-project"
+        assert event_dto.actor_email == "admin@example.com"
+        assert event_dto.actor_display_name == "Admin One"
+        assert event_dto.entity_label == created_budget.name
         assert call_args[1] is session
 
     @pytest.mark.asyncio
@@ -564,7 +601,7 @@ class TestCreateProjectBudgetActivityEvent:
             ),
         ):
             with pytest.raises(RuntimeError):
-                await service.create_project_budget(session, data, actor_id="admin-1")
+                await service.create_project_budget(session, data, actor=_ACTOR)
 
         mock_activity.async_insert.assert_not_called()
 
@@ -610,7 +647,7 @@ class TestDeleteProjectBudgetActivityEvent:
             patch.object(service, "_delete_provider_project_budget", AsyncMock()),
             patch.object(service, "_soft_delete_project_budget_rows", AsyncMock()),
         ):
-            await service.delete_project_budget(session, "proj-budget-abc123", actor_id="admin-1")
+            await service.delete_project_budget(session, "proj-budget-abc123", actor=_ACTOR)
 
         mock_activity.async_insert.assert_called_once()
         call_args = mock_activity.async_insert.call_args[0]
@@ -620,6 +657,10 @@ class TestDeleteProjectBudgetActivityEvent:
         assert event_dto.entity_type == ActivityEntityType.PROJECT_BUDGET_GROUP
         assert event_dto.entity_id == "proj-budget-abc123"
         assert event_dto.actor_id == "admin-1"
+        assert event_dto.project_name == "my-project"
+        assert event_dto.actor_email == "admin@example.com"
+        assert event_dto.actor_display_name == "Admin One"
+        assert event_dto.entity_label == budget.name
         assert call_args[1] is session
 
     @pytest.mark.asyncio
@@ -641,9 +682,522 @@ class TestDeleteProjectBudgetActivityEvent:
         service = _make_project_service()
 
         with pytest.raises(ExtendedHTTPException):
-            await service.delete_project_budget(session, "nonexistent-id", actor_id="admin-1")
+            await service.delete_project_budget(session, "nonexistent-id", actor=_ACTOR)
 
         mock_activity.async_insert.assert_not_called()
+
+
+class TestUpdateProjectBudgetActivityEvent:
+    @pytest.mark.asyncio
+    async def test_update_project_budget_emits_project_name_and_actor_snapshot(self):
+        """update_project_budget must stamp project_name from the active assignment; no actor display name available."""
+        from codemie.rest_api.routers.project_budget_router import ProjectBudgetUpdateRequest
+
+        service = _make_project_service()
+        session = AsyncMock()
+        budget = SimpleNamespace(
+            budget_id="proj-budget-1",
+            budget_type="project",
+            budget_category="cli",
+            name="Proj Budget One",
+            soft_budget=10.0,
+            max_budget=100.0,
+            budget_duration="30d",
+        )
+        assignment = SimpleNamespace(project_name="proj-x")
+        data = ProjectBudgetUpdateRequest(soft_budget=15.0)
+
+        with (
+            patch(
+                "codemie.service.budget.project_budget_service.budget_repository.get_by_id",
+                AsyncMock(return_value=budget),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.budget_repository.update",
+                AsyncMock(return_value=budget),
+            ),
+            patch.object(
+                service,
+                "_sync_updated_project_budget",
+                AsyncMock(return_value=(budget, assignment, SimpleNamespace())),
+            ),
+            patch.object(service, "_resync_member_allocations", AsyncMock()),
+            patch(
+                "codemie.service.budget.project_budget_service.activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+        ):
+            await service.update_project_budget(session, "proj-budget-1", data, actor=_ACTOR_1)
+
+        mock_insert.assert_called_once()
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.project_name == "proj-x"
+        assert event_dto.actor_email == "actor@example.com"
+        assert event_dto.actor_display_name == "Actor One"
+        assert event_dto.entity_label == "Proj Budget One"
+
+    @pytest.mark.asyncio
+    async def test_update_project_budget_non_amount_change_still_stamps_project_name(self):
+        """A non-amount field change (e.g. name only) must still resolve and stamp
+        project_name via the active assignment lookup, even though the amounts/models sync
+        branch (which normally resolves the assignment) is not entered."""
+        from codemie.rest_api.routers.project_budget_router import ProjectBudgetUpdateRequest
+
+        service = _make_project_service()
+        session = AsyncMock()
+        budget = SimpleNamespace(
+            budget_id="proj-budget-1",
+            budget_type="project",
+            budget_category="cli",
+            name="Proj Budget One",
+            soft_budget=10.0,
+            max_budget=100.0,
+            budget_duration="30d",
+            provider_metadata={},
+        )
+        assignment = SimpleNamespace(project_name="proj-x")
+        data = ProjectBudgetUpdateRequest(name="Renamed Budget")
+
+        with (
+            patch(
+                "codemie.service.budget.project_budget_service.budget_repository.get_by_id",
+                AsyncMock(return_value=budget),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.budget_repository.update",
+                AsyncMock(return_value=budget),
+            ),
+            patch.object(service, "_sync_updated_project_budget", AsyncMock()) as mock_sync,
+            patch.object(service, "_member_sync_failed", AsyncMock(return_value=False)),
+            patch.object(service, "_resync_member_allocations", AsyncMock()),
+            patch(
+                "codemie.service.budget.project_budget_service.project_budget_assignment_repository."
+                "get_active_by_budget_id",
+                AsyncMock(return_value=assignment),
+            ) as mock_get_assignment,
+            patch(
+                "codemie.service.budget.project_budget_service.activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+        ):
+            await service.update_project_budget(session, "proj-budget-1", data, actor=_ACTOR_1)
+
+        mock_sync.assert_not_called()
+        mock_get_assignment.assert_called_once_with(session, "proj-budget-1")
+        mock_insert.assert_called_once()
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.project_name == "proj-x"
+        assert event_dto.actor_email == "actor@example.com"
+        assert event_dto.actor_display_name == "Actor One"
+        assert event_dto.entity_label == "Proj Budget One"
+
+
+class TestRebalanceProjectBudgetActivityEvent:
+    @pytest.mark.asyncio
+    async def test_rebalance_project_budget_emits_project_name_and_actor_snapshot(self):
+        service = _make_project_service()
+        session = AsyncMock()
+        budget = SimpleNamespace(
+            budget_id="proj-budget-1",
+            budget_category="cli",
+            name="Proj Budget One",
+            max_budget=100.0,
+            soft_budget=80.0,
+        )
+        assignment = SimpleNamespace(project_name="proj-x", budget_category="cli")
+
+        with (
+            patch.object(service, "get_project_budget", AsyncMock(return_value=(budget, assignment, []))),
+            patch.object(service, "_resync_member_allocations", AsyncMock()),
+            patch(
+                "codemie.service.budget.project_budget_service.get_active_provider",
+                return_value=SimpleNamespace(),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+        ):
+            await service.rebalance_project_budget(session, "proj-budget-1", actor=_ACTOR_1)
+
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.project_name == "proj-x"
+        assert event_dto.actor_email == "actor@example.com"
+        assert event_dto.actor_display_name == "Actor One"
+        assert event_dto.entity_label == "Proj Budget One"
+
+
+class TestResetProjectBudgetActivityEvent:
+    @pytest.mark.asyncio
+    async def test_reset_project_budget_emits_project_name_and_actor_snapshot(self):
+        service = _make_project_service()
+        session = AsyncMock()
+        budget = SimpleNamespace(
+            budget_id="proj-budget-1",
+            budget_category="cli",
+            name="Proj Budget One",
+            provider_metadata={},
+            budget_reset_at=None,
+        )
+        assignment = SimpleNamespace(project_name="proj-x")
+        provider = SimpleNamespace(
+            reset_project_budget_spend=AsyncMock(
+                return_value=SimpleNamespace(
+                    provider="litellm",
+                    provider_budget_ref="ref",
+                    sync_status=SyncStatus.OK,
+                    budget_reset_at=None,
+                    metadata={},
+                )
+            ),
+        )
+
+        with (
+            patch.object(service, "get_project_budget", AsyncMock(return_value=(budget, assignment, []))),
+            patch(
+                "codemie.service.budget.project_budget_service.get_active_provider",
+                return_value=provider,
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.budget_repository.update",
+                AsyncMock(return_value=budget),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+        ):
+            await service.reset_project_budget(session, "proj-budget-1", actor=_ACTOR_1)
+
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.project_name == "proj-x"
+        assert event_dto.actor_email == "actor@example.com"
+        assert event_dto.actor_display_name == "Actor One"
+        assert event_dto.entity_label == "Proj Budget One"
+
+
+class TestOverrideMemberAllocationActivityEvent:
+    @pytest.mark.asyncio
+    async def test_override_member_allocation_emits_project_name_and_actor_snapshot(self):
+        service = _make_project_service()
+        session = AsyncMock()
+        allocation = SimpleNamespace(
+            id="alloc-1",
+            user_id="user-a",
+            shared_budget_id="proj-budget-1:shared",
+            override_budget_id=None,
+        )
+        budget = SimpleNamespace(
+            budget_id="proj-budget-1", budget_type="project", budget_category="cli", name="Proj Budget One"
+        )
+        assignment = SimpleNamespace(project_name="proj-a", budget_category="cli")
+
+        with (
+            patch.object(service, "get_project_budget", AsyncMock(return_value=(budget, assignment, [allocation]))),
+            patch(
+                "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository."
+                "update_member_override",
+                AsyncMock(return_value=allocation),
+            ),
+            patch.object(
+                service,
+                "_ensure_override_child_budget",
+                AsyncMock(return_value=SimpleNamespace(budget_id="override-bud-1")),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository."
+                "update_member_budget_routing",
+                AsyncMock(return_value=allocation),
+            ),
+            patch.object(service, "rebalance_project_budget", AsyncMock()),
+            patch(
+                "codemie.service.budget.project_budget_service.activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+        ):
+            await service.override_member_allocation(
+                session=session,
+                budget_id="proj-budget-1",
+                user_id="user-a",
+                allocated_max_budget=20.0,
+                allocated_soft_budget=15.0,
+                override_reason="manual",
+                actor=_ACTOR_1,
+            )
+
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.project_name == "proj-a"
+        assert event_dto.actor_email == "actor@example.com"
+        assert event_dto.actor_display_name == "Actor One"
+        assert event_dto.entity_label == "Proj Budget One"
+
+
+class TestClearMemberOverrideActivityEvent:
+    @pytest.mark.asyncio
+    async def test_clear_member_override_emits_project_name_and_actor_snapshot(self):
+        service = _make_project_service()
+        session = AsyncMock()
+        allocation = SimpleNamespace(
+            id="alloc-1",
+            user_id="user-a",
+            project_budget_id="proj-budget-1",
+            project_name="proj-a",
+            budget_category="cli",
+            override_budget_id=None,
+            shared_budget_id=None,
+            effective_budget_id=None,
+            allocation_mode=AllocationMode.EQUAL.value,
+            allocated_max_budget=50.0,
+            allocated_soft_budget=40.0,
+            override_reason=None,
+        )
+        budget = SimpleNamespace(
+            budget_id="proj-budget-1",
+            budget_type="project",
+            budget_category="cli",
+            name="Proj Budget One",
+            budget_duration="30d",
+            budget_reset_at=None,
+            max_budget=100.0,
+            soft_budget=80.0,
+        )
+        assignment = SimpleNamespace(project_name="proj-a", budget_category="cli")
+        shared_budget_result = SimpleNamespace(budget_id="proj-budget-1:shared")
+        member_state = BudgetProviderMemberState(
+            provider="litellm",
+            provider_member_ref="ref-1",
+            provider_budget_id="provider-bud-1",
+            sync_status=SyncStatus.OK,
+        )
+        mock_provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=member_state))
+
+        with (
+            patch(
+                "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository."
+                "clear_member_override",
+                AsyncMock(return_value=allocation),
+            ),
+            patch.object(service, "get_project_budget", AsyncMock(return_value=(budget, assignment, []))),
+            patch(
+                "codemie.service.budget.project_budget_service.budget_repository.get_by_id",
+                AsyncMock(return_value=None),
+            ),
+            patch.object(service, "_ensure_shared_child_budget", AsyncMock(return_value=shared_budget_result)),
+            patch(
+                "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository."
+                "update_member_budget_routing",
+                AsyncMock(return_value=allocation),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.get_active_provider",
+                return_value=mock_provider,
+            ),
+            patch.object(service, "_persist_child_budget_provider_state", AsyncMock()),
+            patch(
+                "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository."
+                "update_provider_metadata",
+                AsyncMock(),
+            ),
+            patch.object(service, "rebalance_project_budget", AsyncMock()),
+            patch(
+                "codemie.service.budget.project_budget_service.activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+        ):
+            await service.clear_member_override(
+                session=session, budget_id="proj-budget-1", user_id="user-a", actor=_ACTOR_1
+            )
+
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.project_name == "proj-a"
+        assert event_dto.actor_email == "actor@example.com"
+        assert event_dto.actor_display_name == "Actor One"
+        assert event_dto.entity_label == "Proj Budget One"
+
+
+class TestCreateProjectBudgetGroupActivityEvent:
+    @pytest.mark.asyncio
+    @patch("codemie.service.budget.project_budget_service.activity_event_repository")
+    @patch("codemie.service.budget.project_budget_service.get_active_provider")
+    @patch("codemie.service.budget.project_budget_service.project_member_budget_assignment_repository")
+    @patch("codemie.service.budget.project_budget_service.project_budget_assignment_repository")
+    @patch("codemie.service.budget.project_budget_service.project_budget_group_repository")
+    @patch("codemie.service.budget.project_budget_service.budget_repository")
+    async def test_create_project_budget_group_emits_project_name_and_actor_snapshot(
+        self,
+        mock_budget_repo,
+        mock_group_repo,
+        mock_assignment_repo,
+        mock_member_repo,
+        mock_get_provider,
+        mock_activity,
+    ):
+        from codemie.rest_api.models.project_budget import CategoryBudgetSpec
+        from codemie.rest_api.routers.project_budget_router import ProjectBudgetGroupCreateRequest
+
+        mock_activity.async_insert = AsyncMock()
+        session = AsyncMock()
+
+        group = MagicMock(id="group-1", project_name="proj-g")
+        group.name = "Group G"
+        mock_group_repo.get_active_by_project = AsyncMock(return_value=None)
+        mock_group_repo.insert = AsyncMock(return_value=group)
+
+        created_budget = _make_budget(budget_id="proj-g-platform-abc123")
+        mock_budget_repo.insert = AsyncMock(return_value=created_budget)
+
+        mock_assignment_repo.insert = AsyncMock(return_value=MagicMock(project_name="proj-g"))
+        mock_member_repo.insert_many = AsyncMock(return_value=[])
+
+        provider = AsyncMock()
+        mock_get_provider.return_value = provider
+
+        service = _make_project_service()
+        data = ProjectBudgetGroupCreateRequest(
+            project_name="proj-g",
+            name="Group G",
+            total_amount=100.0,
+            budget_duration="30d",
+            categories={"platform": CategoryBudgetSpec(pct=100)},
+        )
+
+        with (
+            patch.object(service, "_ensure_project_budget_eligible", AsyncMock()),
+            patch.object(service, "_get_active_member_user_ids", AsyncMock(return_value=[])),
+            patch.object(
+                service,
+                "_ensure_shared_child_budget",
+                AsyncMock(return_value=_make_budget(budget_id="shared-child")),
+            ),
+            patch.object(service, "_sync_created_project_budget", AsyncMock(return_value=created_budget)),
+        ):
+            await service.create_project_budget_group(session, data, actor=_ACTOR)
+
+        mock_activity.async_insert.assert_called_once()
+        event_dto = mock_activity.async_insert.call_args[0][0]
+        assert event_dto.project_name == "proj-g"
+        assert event_dto.actor_email == "admin@example.com"
+        assert event_dto.actor_display_name == "Admin One"
+        assert event_dto.entity_label == "Group G"
+
+
+class TestUpdateProjectBudgetGroupActivityEvent:
+    @pytest.mark.asyncio
+    async def test_update_project_budget_group_emits_project_name_and_actor_snapshot(self):
+        from codemie.rest_api.models.project_budget import CategoryBudgetSpecUpdate
+        from codemie.rest_api.routers.project_budget_router import ProjectBudgetGroupUpdateRequest
+
+        service = _make_project_service()
+        session = AsyncMock()
+        session.refresh = AsyncMock()
+
+        group = SimpleNamespace(
+            id="group-1",
+            project_name="proj-g",
+            name="Group G",
+            deleted_at=None,
+            budget_duration="30d",
+            description=None,
+        )
+        data = ProjectBudgetGroupUpdateRequest(
+            total_amount=100.0,
+            categories={"platform": CategoryBudgetSpecUpdate(pct=100)},
+        )
+        full_result = SimpleNamespace(categories=[], total_amount=100.0)
+
+        with (
+            patch(
+                "codemie.service.budget.project_budget_service.project_budget_group_repository.get_by_id",
+                AsyncMock(return_value=group),
+            ),
+            patch.object(service, "check_group_request", AsyncMock()),
+            patch.object(service, "_update_group_scalar_fields", AsyncMock()),
+            patch.object(service, "_load_group_full_result", AsyncMock(return_value=full_result)),
+            patch.object(service, "_update_group_categories", AsyncMock()),
+            patch(
+                "codemie.service.budget.project_budget_service.activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+        ):
+            await service.update_project_budget_group(session, "group-1", data, actor=_ACTOR_1)
+
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.project_name == "proj-g"
+        assert event_dto.actor_email == "actor@example.com"
+        assert event_dto.actor_display_name == "Actor One"
+        assert event_dto.entity_label == "Group G"
+
+
+class TestResetProjectBudgetGroupActivityEvent:
+    @pytest.mark.asyncio
+    async def test_reset_project_budget_group_emits_project_name_and_actor_snapshot(self):
+        service = _make_project_service()
+        session = AsyncMock()
+        group = SimpleNamespace(id="group-1", project_name="proj-g", name="Group G", deleted_at=None)
+
+        with (
+            patch(
+                "codemie.service.budget.project_budget_service.project_budget_group_repository.get_by_id",
+                AsyncMock(return_value=group),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.project_budget_assignment_repository."
+                "get_active_by_group_id",
+                AsyncMock(return_value=[]),
+            ),
+            patch.object(
+                service,
+                "_load_group_full_result",
+                AsyncMock(return_value=SimpleNamespace(group=group, categories=[])),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+        ):
+            await service.reset_project_budget_group(session, "group-1", actor=_ACTOR_1)
+
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.project_name == "proj-g"
+        assert event_dto.actor_email == "actor@example.com"
+        assert event_dto.actor_display_name == "Actor One"
+        assert event_dto.entity_label == "Group G"
+
+
+class TestRebalanceProjectBudgetGroupActivityEvent:
+    @pytest.mark.asyncio
+    async def test_rebalance_project_budget_group_emits_project_name_and_actor_snapshot(self):
+        service = _make_project_service()
+        session = AsyncMock()
+        group = SimpleNamespace(id="group-1", project_name="proj-g", name="Group G", deleted_at=None)
+
+        with (
+            patch(
+                "codemie.service.budget.project_budget_service.project_budget_group_repository.get_by_id",
+                AsyncMock(return_value=group),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.project_budget_assignment_repository."
+                "get_active_by_group_id",
+                AsyncMock(return_value=[]),
+            ),
+            patch.object(
+                service,
+                "_load_group_full_result",
+                AsyncMock(return_value=SimpleNamespace(group=group, categories=[])),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+        ):
+            await service.rebalance_project_budget_group(session, "group-1", actor=_ACTOR_1)
+
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.project_name == "proj-g"
+        assert event_dto.actor_email == "actor@example.com"
+        assert event_dto.actor_display_name == "Actor One"
+        assert event_dto.entity_label == "Group G"
 
 
 class TestBulkSetUserBudgetsLogger:
@@ -673,7 +1227,7 @@ class TestBulkSetUserBudgetsLogger:
                 session,
                 user_ids=["user-1", "user-2"],
                 assignments={BudgetCategory.PLATFORM: "shared-budget"},
-                actor_id="admin-1",
+                actor=_ACTOR,
             )
 
         mock_logger.info.assert_called_once()
@@ -721,7 +1275,8 @@ class TestDeleteBudget:
         provider = _mock_provider(mock_get_provider)
         session = AsyncMock()
 
-        await _make_service().delete_budget(session, "manual-budget", actor_id="maintainer-1", actor_name="M")
+        budget = mock_budget_repo.get_by_id_for_update.return_value
+        await _make_service().delete_budget(session, "manual-budget", actor=_ACTOR)
 
         mock_budget_repo.delete.assert_awaited_once_with(session, "manual-budget")
         provider.delete_global_budget.assert_awaited_once_with(budget_id="manual-budget")
@@ -731,7 +1286,11 @@ class TestDeleteBudget:
         assert event_dto.event_type == BudgetManagementEvent.BUDGET_DELETED
         assert event_dto.entity_type == ActivityEntityType.BUDGET
         assert event_dto.entity_id == "manual-budget"
-        assert event_dto.actor_id == "maintainer-1"
+        assert event_dto.entity_label == budget.name
+        assert event_dto.project_name is None
+        assert event_dto.actor_id == _ACTOR.id
+        assert event_dto.actor_email == _ACTOR.email
+        assert event_dto.actor_display_name == _ACTOR.name
         assert event_dto.attributes == {"reason": "manual_delete"}
         assert event_session is session
 
@@ -749,7 +1308,7 @@ class TestDeleteBudget:
         call_order.attach_mock(mock_budget_repo.count_users_by_budget_ids, "count")
         call_order.attach_mock(mock_budget_repo.delete, "delete")
 
-        await _make_service().delete_budget(AsyncMock(), "manual-budget", actor_id="maintainer-1")
+        await _make_service().delete_budget(AsyncMock(), "manual-budget", actor=_ACTOR)
 
         assert [c[0] for c in call_order.mock_calls] == ["lock", "count", "delete"]
         mock_budget_repo.get_by_id.assert_not_called()
@@ -767,7 +1326,7 @@ class TestDeleteBudget:
         session = AsyncMock()
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            await _make_service().delete_budget(session, "manual-budget", actor_id="maintainer-1")
+            await _make_service().delete_budget(session, "manual-budget", actor=_ACTOR)
 
         assert exc_info.value.code == 502
         assert exc_info.value.message == "Failed to delete budget in enforcement provider"
@@ -787,7 +1346,7 @@ class TestDeleteBudget:
         provider = _mock_provider(mock_get_provider)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            await _make_service().delete_budget(AsyncMock(), "busy-budget", actor_id="maintainer-1")
+            await _make_service().delete_budget(AsyncMock(), "busy-budget", actor=_ACTOR)
 
         assert exc_info.value.code == 409
         assert exc_info.value.message == f"Budget 'busy-budget' is in use: {suffix}"
@@ -810,7 +1369,7 @@ class TestDeleteBudget:
         _mock_provider(mock_get_provider)
         session = AsyncMock()
 
-        await _make_service().delete_budget(session, "orphan-budget", actor_id="maintainer-1")
+        await _make_service().delete_budget(session, "orphan-budget", actor=_ACTOR)
 
         mock_budget_repo.delete.assert_awaited_once_with(session, "orphan-budget")
         mock_budget_repo.count_assignments.assert_not_called()
@@ -836,7 +1395,7 @@ class TestDeleteBudget:
         provider = _mock_provider(mock_get_provider)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            await _make_service().delete_budget(AsyncMock(), "mixed-budget", actor_id="maintainer-1")
+            await _make_service().delete_budget(AsyncMock(), "mixed-budget", actor=_ACTOR)
 
         assert exc_info.value.code == 409
         assert exc_info.value.message == "Budget 'mixed-budget' is in use: 1 user assigned"
@@ -858,7 +1417,7 @@ class TestDeleteBudget:
         provider = _mock_provider(mock_get_provider)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            await _make_service().delete_budget(AsyncMock(), "predefined-budget", actor_id="maintainer-1")
+            await _make_service().delete_budget(AsyncMock(), "predefined-budget", actor=_ACTOR)
 
         assert exc_info.value.code == 403
         assert exc_info.value.message == "Budget 'predefined-budget' is preconfigured and cannot be deleted via API"
@@ -884,7 +1443,7 @@ class TestDeleteBudget:
         provider = _mock_provider(mock_get_provider)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            await _make_service().delete_budget(AsyncMock(), "missing-budget", actor_id="maintainer-1")
+            await _make_service().delete_budget(AsyncMock(), "missing-budget", actor=_ACTOR)
 
         assert exc_info.value.code == 404
         assert exc_info.value.message == "Budget 'missing-budget' not found"
@@ -892,3 +1451,230 @@ class TestDeleteBudget:
         mock_budget_repo.delete.assert_not_called()
         provider.delete_global_budget.assert_not_called()
         mock_activity.async_insert.assert_not_called()
+
+
+# TestSyncBudgetsFromProviderOrphanDeleteActivityEvent
+# ---------------------------------------------------------------------------
+
+
+class TestSyncBudgetsFromProviderOrphanDeleteActivityEvent:
+    @pytest.mark.asyncio
+    @patch("codemie.service.budget.budget_service.activity_event_repository")
+    @patch("codemie.service.budget.budget_service.get_active_provider")
+    @patch("codemie.service.budget.budget_service.budget_repository")
+    async def test_sync_budgets_from_provider_emits_budget_deleted_event_for_orphan(
+        self, mock_budget_repo, mock_get_provider, mock_activity
+    ):
+        """sync_budgets_from_provider must emit BUDGET_DELETED with no project/actor snapshot for orphans."""
+        mock_activity.async_insert = AsyncMock()
+        session = AsyncMock()
+        session.commit = AsyncMock()
+
+        provider = AsyncMock()
+        provider.provider_name = "litellm"
+        provider.list_global_budget_states = AsyncMock(return_value=[])
+        mock_get_provider.return_value = provider
+
+        from datetime import datetime, timezone
+
+        orphan_budget = _make_budget(budget_id="orphan-budget", created_at=datetime.now(timezone.utc))
+        from codemie.service.budget.budget_enums import BudgetType
+
+        mock_budget_repo.get_all_keyed_by_id = AsyncMock(
+            return_value={"orphan-budget": SimpleNamespace(budget_type=BudgetType.GLOBAL, name="Orphan Budget")}
+        )
+        mock_budget_repo.delete = AsyncMock()
+        mock_budget_repo.list_paginated = AsyncMock(return_value=([orphan_budget], 1))
+
+        service = _make_service()
+
+        await service.sync_budgets_from_provider(session, actor=_ACTOR)
+
+        mock_activity.async_insert.assert_called_once()
+        call_args = mock_activity.async_insert.call_args[0]
+        event_dto = call_args[0]
+        assert event_dto.domain == ActivityDomain.BUDGET_MANAGEMENT
+        assert event_dto.event_type == BudgetManagementEvent.BUDGET_DELETED
+        assert event_dto.entity_type == ActivityEntityType.BUDGET
+        assert event_dto.entity_id == "orphan-budget"
+        assert event_dto.entity_label == "Orphan Budget"
+        assert event_dto.actor_id == "admin-1"
+        assert event_dto.project_name is None
+        assert event_dto.actor_email == "admin@example.com"
+        assert event_dto.actor_display_name == "Admin One"
+        assert call_args[1] is session
+
+
+# ---------------------------------------------------------------------------
+# TestPersistBulkBudgetAssignmentsActivityEvent
+# ---------------------------------------------------------------------------
+
+
+class TestPersistBulkBudgetAssignmentsActivityEvent:
+    @pytest.mark.asyncio
+    @patch("codemie.service.budget.budget_service.activity_event_repository")
+    @patch("codemie.service.budget.budget_service.budget_repository")
+    async def test_persist_bulk_budget_assignments_emits_assigned_event_with_actor_snapshot(
+        self, mock_budget_repo, mock_activity
+    ):
+        """_persist_bulk_budget_assignments must emit USER_BUDGET_ASSIGNED with the actor snapshot and the budget name as label."""
+        mock_activity.async_insert = AsyncMock()
+        session = AsyncMock()
+
+        mock_budget_repo.upsert_user_category_assignment = AsyncMock()
+
+        service = _make_service()
+
+        await service._persist_bulk_budget_assignments(
+            session,
+            user_ids=["user-1"],
+            assignments={BudgetCategory.PLATFORM: "platform-budget"},
+            actor=_ACTOR,
+            budget_names={"platform-budget": "Platform Budget"},
+        )
+
+        mock_activity.async_insert.assert_called_once()
+        call_args = mock_activity.async_insert.call_args[0]
+        event_dto = call_args[0]
+        assert event_dto.event_type == BudgetManagementEvent.USER_BUDGET_ASSIGNED
+        assert event_dto.entity_id == "user-1"
+        assert event_dto.entity_label == "Platform Budget"
+        assert event_dto.actor_id == "admin-1"
+        assert event_dto.project_name is None
+        assert event_dto.actor_email == "admin@example.com"
+        assert event_dto.actor_display_name == "Admin One"
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.budget.budget_service.activity_event_repository")
+    @patch("codemie.service.budget.budget_service.budget_repository")
+    async def test_persist_bulk_budget_assignments_emits_removed_event_with_actor_snapshot(
+        self, mock_budget_repo, mock_activity
+    ):
+        """_persist_bulk_budget_assignments must emit USER_BUDGET_REMOVED with the actor snapshot."""
+        mock_activity.async_insert = AsyncMock()
+        session = AsyncMock()
+
+        mock_budget_repo.delete_user_category_assignment = AsyncMock()
+
+        service = _make_service()
+
+        await service._persist_bulk_budget_assignments(
+            session,
+            user_ids=["user-1"],
+            assignments={BudgetCategory.PLATFORM: None},
+            actor=_ACTOR,
+            budget_names={},
+        )
+
+        mock_activity.async_insert.assert_called_once()
+        call_args = mock_activity.async_insert.call_args[0]
+        event_dto = call_args[0]
+        assert event_dto.event_type == BudgetManagementEvent.USER_BUDGET_REMOVED
+        assert event_dto.entity_id == "user-1"
+        assert event_dto.entity_label == BudgetCategory.PLATFORM.value
+        assert event_dto.actor_id == "admin-1"
+        assert event_dto.project_name is None
+        assert event_dto.actor_email == "admin@example.com"
+        assert event_dto.actor_display_name == "Admin One"
+
+
+# ---------------------------------------------------------------------------
+# TestActiveProjectBudgetRestoreActivityEvent
+# ---------------------------------------------------------------------------
+
+
+class TestActiveProjectBudgetRestoreActivityEvent:
+    @pytest.mark.asyncio
+    async def test_restore_project_emits_budget_restored_event_without_snapshot(self):
+        """ActiveProjectBudgetRestoreService._restore_project must emit PROJECT_BUDGET_RESTORED
+        with the resolved project_name but no actor snapshot (no actor context in this scheduler)."""
+        from codemie.service.budget.active_project_budget_restore_service import (
+            ActiveProjectBudgetRestoreService,
+        )
+
+        session = AsyncMock()
+        budget = SimpleNamespace(budget_id="budget-1", name="Restored Budget", is_active=False)
+
+        with (
+            patch(
+                "codemie.service.budget.active_project_budget_restore_service.budget_repository.list_stopped_project_budgets",
+                AsyncMock(return_value=[budget]),
+            ),
+            patch(
+                "codemie.service.budget.active_project_budget_restore_service.activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+        ):
+            service = ActiveProjectBudgetRestoreService()
+            count = await service._restore_project(session, "proj-x")
+
+        assert count == 1
+        mock_insert.assert_called_once()
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.event_type == BudgetManagementEvent.PROJECT_BUDGET_RESTORED
+        assert event_dto.entity_id == "budget-1"
+        assert event_dto.entity_label == "Restored Budget"
+        assert event_dto.project_name == "proj-x"
+        assert event_dto.actor_email is None
+        assert event_dto.actor_display_name is None
+
+
+# ---------------------------------------------------------------------------
+# TestInactiveCostCenterBudgetStopActivityEvent
+# ---------------------------------------------------------------------------
+
+
+class TestInactiveCostCenterBudgetStopActivityEvent:
+    @pytest.mark.asyncio
+    async def test_run_emits_budget_stopped_event_without_snapshot(self):
+        """InactiveCostCenterBudgetStopService.run must emit PROJECT_BUDGET_STOPPED
+        with the resolved project_name but no actor snapshot (no actor context in this scheduler)."""
+        from codemie.service.budget.inactive_cost_center_budget_stop_service import (
+            InactiveCostCenterBudgetStopService,
+        )
+
+        session = AsyncMock()
+        budget = SimpleNamespace(budget_id="budget-1", name="Cost Center Budget", is_active=True)
+
+        mock_admin_result = MagicMock()
+        mock_admin_result.scalars.return_value.all.return_value = []
+        session.execute = AsyncMock(return_value=mock_admin_result)
+
+        with (
+            patch(
+                "codemie.service.budget.inactive_cost_center_budget_stop_service."
+                "project_enrichment_repository.get_inactive_cost_center_names",
+                AsyncMock(return_value=["cc-1"]),
+            ),
+            patch(
+                "codemie.service.budget.inactive_cost_center_budget_stop_service."
+                "application_repository.aget_project_names_by_cost_center_name",
+                AsyncMock(return_value=["proj-x"]),
+            ),
+            patch(
+                "codemie.service.budget.inactive_cost_center_budget_stop_service."
+                "budget_repository.list_active_project_budgets",
+                AsyncMock(return_value=[budget]),
+            ),
+            patch(
+                "codemie.service.budget.inactive_cost_center_budget_stop_service.clear_budget_resolution_cache",
+            ),
+            patch(
+                "codemie.service.budget.inactive_cost_center_budget_stop_service."
+                "activity_event_repository.async_insert",
+                AsyncMock(),
+            ) as mock_insert,
+            patch("codemie.service.email_service.email_service", AsyncMock()),
+        ):
+            service = InactiveCostCenterBudgetStopService()
+            await service.run(session)
+
+        assert budget.is_active is False
+        mock_insert.assert_called_once()
+        event_dto = mock_insert.call_args[0][0]
+        assert event_dto.event_type == BudgetManagementEvent.PROJECT_BUDGET_STOPPED
+        assert event_dto.entity_id == "budget-1"
+        assert event_dto.entity_label == "Cost Center Budget"
+        assert event_dto.project_name == "proj-x"
+        assert event_dto.actor_email is None
+        assert event_dto.actor_display_name is None

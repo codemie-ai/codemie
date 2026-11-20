@@ -395,8 +395,11 @@ async def _audit(
         event_type=event_type,
         entity_type=ActivityEntityType.CUSTOMER_CONFIG_SETTING,
         entity_id=declaration.component_id,
+        entity_label=declaration.key,
         actor_id=actor.id,
         attributes={"key": declaration.key, "old_value": old_value, "new_value": new_value},
+        actor_email=actor.email,
+        actor_display_name=actor.name or None,
     )
 
     # The config write is already committed; an audit failure must not turn it into a 500

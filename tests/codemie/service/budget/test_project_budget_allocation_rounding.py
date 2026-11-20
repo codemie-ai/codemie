@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.rest_api.security.user import User
 from codemie.rest_api.models.project_budget import ProjectBudgetCreateRequest
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory, SyncStatus
 from codemie.service.budget.budget_models import Budget
@@ -189,7 +190,7 @@ async def _create_budget_with_members(max_budget: float, soft_budget: float, mem
         mock_assignment_repo.get_active_by_project_category = AsyncMock(return_value=None)
         mock_assignment_repo.insert = AsyncMock(return_value=MagicMock(project_name="my-project"))
         mock_member_repo.insert_many = AsyncMock(side_effect=lambda _session, rows: rows)
-        await service.create_project_budget(session, data, actor_id="admin")
+        await service.create_project_budget(session, data, actor=User(id="admin"))
     return mock_shared_child, mock_logger
 
 

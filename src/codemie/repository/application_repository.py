@@ -181,6 +181,9 @@ class ApplicationRepository:
         statement = select(Application).where(Application.name == name, Application.deleted_at.is_(None))
         return session.exec(statement).first()
 
+    def get_by_project_instance_id(self, session: Session, project_instance_id: UUID) -> Application | None:
+        return session.exec(select(Application).where(Application.project_instance_id == project_instance_id)).first()
+
     def get_by_name_case_insensitive(self, session: Session, name: str) -> Optional[Application]:
         """Get application by name using case-insensitive lookup."""
         statement = select(Application).where(func.lower(Application.name) == name.lower())

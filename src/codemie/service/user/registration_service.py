@@ -107,8 +107,12 @@ class RegistrationService:
                 event_type=UserManagementEvent.USER_CREATED,
                 entity_type=ActivityEntityType.USER,
                 entity_id=user.id,
-                actor_id=None,
+                entity_label=user.name or user.email,
+                actor_id=user.id,
                 attributes={"auth_source": "local"},
+                project_name=None,
+                actor_email=user.email,
+                actor_display_name=user.name or None,
             ),
             session,
         )

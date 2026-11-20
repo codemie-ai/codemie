@@ -62,6 +62,7 @@ def _member(user_id, mode=AllocationMode.EQUAL.value, max_budget=0.0, soft_budge
 def _budget(budget_id="b-1", max_budget=100.0, soft_budget=50.0):
     return SimpleNamespace(
         budget_id=budget_id,
+        name=f"{budget_id}-name",
         budget_type="project",
         budget_category="cli",
         max_budget=max_budget,
@@ -238,6 +239,7 @@ async def test_phase1_does_not_mutate_orm_rows_or_write():
 
 
 ASSIGNMENT = SimpleNamespace(project_name="proj-a", budget_category="cli")
+ACTOR = SimpleNamespace(id="actor-1", email="actor-1@example.com", name=None)
 
 
 def _fixed(user_id, max_budget, soft_budget):
@@ -263,8 +265,8 @@ def _bulk_harness(loaded, reloaded=None):
     async def _refresh(obj):
         calls.append(("refresh", obj.budget_id))
 
-    async def _rebalance(session_arg, budget_id, actor_id):
-        calls.append(("rebalance", budget_id, actor_id))
+    async def _rebalance(session_arg, budget_id, actor):
+        calls.append(("rebalance", budget_id, actor.id))
 
     session.flush = AsyncMock(side_effect=_flush)
     session.refresh = AsyncMock(side_effect=_refresh)
@@ -323,7 +325,7 @@ async def test_writes_use_same_args_as_patch_and_null_reason_clears_and_sets_fix
     reloaded = {"b-1": [_fixed("u-a", 12.0, 6.0)]}
     with _bulk_harness(loaded, reloaded) as h:
         results = await h.service.bulk_override_member_allocations(
-            h.session, _indexed(_item(user_id="u-a", max_budget=12.0, soft_budget=6.0, reason=None)), "actor-1"
+            h.session, _indexed(_item(user_id="u-a", max_budget=12.0, soft_budget=6.0, reason=None)), ACTOR
         )
 
     assert results[0].status == "ok"
@@ -367,7 +369,7 @@ async def test_repeated_user_later_wins_each_item_gets_event():
                 _item(user_id="u-a", max_budget=20.0, soft_budget=10.0),
                 _item(user_id="u-a", max_budget=30.0, soft_budget=15.0),
             ),
-            "actor-1",
+            ACTOR,
         )
 
     assert [results[0].status, results[1].status] == ["ok", "ok"]
@@ -389,7 +391,7 @@ async def test_each_budget_loaded_once_across_phases():
                 _item(budget_id="b-2", user_id="u-c"),
                 _item(budget_id="b-1", user_id="u-b"),
             ),
-            "actor-1",
+            ACTOR,
         )
 
     assert [call.args[1] for call in h.loader.await_args_list] == ["b-1", "b-2"]
@@ -408,7 +410,7 @@ async def test_rebalance_once_per_touched_budget_none_for_failed_budget():
                 _item(budget_id="b-2", user_id="u-c"),
                 _item(budget_id="b-1", user_id="u-b"),
             ),
-            "actor-1",
+            ACTOR,
         )
 
     assert [results[i].status for i in range(4)] == ["ok", "failed", "ok", "ok"]
@@ -430,7 +432,7 @@ async def test_recheck_runs_once_per_touched_budget_with_populate_existing_and_f
                 _item(budget_id="b-2", user_id="u-c"),
                 _item(budget_id="b-1", user_id="u-b"),
             ),
-            "actor-1",
+            ACTOR,
         )
 
     assert h.calls == [
@@ -453,7 +455,7 @@ async def test_recheck_failure_second_budget_raises_400_no_rebalance_no_provider
             await h.service.bulk_override_member_allocations(
                 h.session,
                 _indexed(_item(budget_id="b-1", user_id="u-a"), _item(budget_id="b-2", user_id="u-c")),
-                "actor-1",
+                ACTOR,
             )
 
     assert exc_info.value.code == 400
@@ -470,7 +472,7 @@ async def test_reloaded_amounts_differ_from_phase1_objects_raises_400_no_rebalan
     with _bulk_harness(loaded, reloaded) as h:
         with pytest.raises(ExtendedHTTPException) as exc_info:
             await h.service.bulk_override_member_allocations(
-                h.session, _indexed(_item(user_id="u-a", max_budget=10.0, soft_budget=5.0)), "actor-1"
+                h.session, _indexed(_item(user_id="u-a", max_budget=10.0, soft_budget=5.0)), ACTOR
             )
 
     assert exc_info.value.code == 400
@@ -490,7 +492,7 @@ async def test_event_and_log_only_for_accepted_items():
                 _item(user_id="ghost"),
                 _item(user_id="u-b", max_budget=1.0, soft_budget=2.0),
             ),
-            "actor-1",
+            ACTOR,
         )
 
     assert [results[i].status for i in range(3)] == ["ok", "failed", "failed"]
@@ -514,7 +516,7 @@ async def test_all_items_fail_returns_all_failed_no_writes_rebalance_provider_ev
         results = await h.service.bulk_override_member_allocations(
             h.session,
             _indexed(_item(user_id="ghost"), _item(budget_id="gone", user_id="u-a")),
-            "actor-1",
+            ACTOR,
         )
 
     assert sorted(results) == [0, 1]

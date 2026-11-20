@@ -71,7 +71,7 @@ async def create_budget(
     """Create a new budget (DB + LiteLLM sync). Super admin only."""
     require_litellm_enabled()
     async with get_async_session() as session:
-        budget = await budget_service.create_budget(session, payload, actor_id=user.id, actor_name=user.username)
+        budget = await budget_service.create_budget(session, payload, actor=user)
         await session.commit()
         await session.refresh(budget)
         creator_names = await budget_service.resolve_creator_names(session, [budget])
@@ -114,7 +114,7 @@ async def sync_budgets(
     """Pull all budgets from LiteLLM and upsert into DB. Super admin only."""
     require_litellm_enabled()
     async with get_async_session() as session:
-        result = await budget_service.sync_budgets_from_litellm(session, actor_id=user.id)
+        result = await budget_service.sync_budgets_from_litellm(session, actor=user)
         creator_names = await budget_service.resolve_creator_names(session, result.budgets)
         return BudgetSyncResult(
             created=result.created,
@@ -161,9 +161,7 @@ async def update_budget(
     """Update budget (LiteLLM delete+recreate). Super admin only."""
     require_litellm_enabled()
     async with get_async_session() as session:
-        budget = await budget_service.update_budget(
-            session, budgetId, payload, actor_id=user.id, actor_name=user.username
-        )
+        budget = await budget_service.update_budget(session, budgetId, payload, actor=user)
         await session.commit()
         await session.refresh(budget)
         creator_names = await budget_service.resolve_creator_names(session, [budget])
@@ -179,5 +177,5 @@ async def delete_budget(
     """Hard-delete a manually-created global budget with no user assignments. Maintainer only."""
     require_litellm_enabled()
     async with get_async_session() as session:
-        await budget_service.delete_budget(session, budget_id, actor_id=user.id, actor_name=user.username)
+        await budget_service.delete_budget(session, budget_id, actor=user)
         await session.commit()

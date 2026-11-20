@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Extend the project-scoped activity trail with an event taxonomy catalogue (label+category), category filtering, entity-label snapshotting, a dedicated member-spend-enforcement event, a project-scoped metadata endpoint, and explicit disabled-vs-empty recording-state reporting.",
+  "generated": "2026-09-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches a new taxonomy catalogue module (new abstraction), ActivityEvent model, activity_repository (category filter, distinct-event-types-in-project query, disabled-vs-empty), activity_event_service (new metadata method), the project activity events router (new endpoint + extended filter), and project_service.py::update_project (cross-domain conditional emission via SettingsService) — 4+ components across 3-4 layers plus a genuinely new abstraction (the catalogue)." },
+    { "dimension": "requirements_clarity", "reason": "Core behaviors are enumerated clearly, but the exact label-column shape, per-emit-site label resolution across up to 36 call sites, and the response-envelope shape for the disabled-vs-empty distinction are explicitly called out in the technical analysis as open design decisions, not discoverable in code." },
+    { "dimension": "technical_risk", "reason": "No exact precedent for a category concept that cuts across the existing `domain` column (Budget category spans project_management and budget_management event types), so the category filter cannot reuse the simple SQL IN-on-domain pattern; bumped via the 'requires data migration' red flag (new label column needs an Alembic migration)." },
+    { "dimension": "file_change_estimate", "reason": "New taxonomy module + its reflective completeness test, new/extended response models, migration file, and several new category/disabled-vs-empty/conditional-emission test files, alongside modifications to activity_models.py, activity_repository.py, activity_event_service.py, project_activity_events_router.py, and project_service.py, with possible touches to several of the 10 existing emit-site files for label snapshotting; bumped via the data-migration red flag." },
+    { "dimension": "affected_layers", "reason": "Model/DB-Persistence (new column, migration), Service, and API layers are all touched in a standard path; Settings layer is read for the pre-update flag value." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: new label column requires a data migration (no existing precedent for a readable-label field on ActivityEvent).",
+    "File Change Estimate bumped from L to XL: same data-migration red flag, plus the wide but shallow ripple across existing emit sites."
+  ],
+  "split_recommendation": null
+}

@@ -53,6 +53,7 @@ from codemie.service.budget.provision_limiter import run_customer_provisioning_i
 from codemie.service.spend.budget_period import parse_budget_reset_at, running_period_start
 
 if TYPE_CHECKING:
+    from codemie.rest_api.security.user import User
     from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetProviderState, GlobalBudgetState
     from codemie.service.budget.provider import PersonalBudgetEntry
     from codemie.rest_api.models.budget import (
@@ -196,15 +197,14 @@ class BudgetService:
         self,
         session: AsyncSession,
         data: BudgetCreateRequest,
-        actor_id: str,
-        actor_name: str = "",
+        actor: User,
     ) -> Budget:
         """Validate, persist in DB, sync to provider, read back budget_reset_at."""
         logger.debug(
             f"budget_event=budget_create_started component=budget_service budget_id={data.budget_id!r} "
             f"budget_category={data.budget_category.value!r} max_budget={data.max_budget!r} "
             f"soft_budget={data.soft_budget!r} budget_duration={data.budget_duration!r} "
-            f"actor_id={actor_id!r} actor_name={actor_name!r}"
+            f"actor_id={actor.id!r} actor_name={actor.username!r}"
         )
         try:
             self._validate_constraints(
@@ -219,13 +219,13 @@ class BudgetService:
         if await budget_repository.get_by_id(session, data.budget_id) is not None:
             logger.debug(
                 f"budget_event=budget_create_rejected component=budget_service budget_id={data.budget_id!r} "
-                f"reason=duplicate_budget_id actor_id={actor_id!r} actor_name={actor_name!r}"
+                f"reason=duplicate_budget_id actor_id={actor.id!r} actor_name={actor.username!r}"
             )
             raise ExtendedHTTPException(code=409, message=f"Budget '{data.budget_id}' already exists")
         if await budget_repository.get_by_name(session, data.name) is not None:
             logger.debug(
                 f"budget_event=budget_create_rejected component=budget_service budget_id={data.budget_id!r} "
-                f"name={data.name!r} reason=duplicate_name actor_id={actor_id!r} actor_name={actor_name!r}"
+                f"name={data.name!r} reason=duplicate_name actor_id={actor.id!r} actor_name={actor.username!r}"
             )
             raise ExtendedHTTPException(code=409, message=f"Budget name '{data.name}' already in use")
 
@@ -239,7 +239,7 @@ class BudgetService:
             budget_duration=data.budget_duration,
             budget_category=data.budget_category.value,
             provider_metadata=self._provider_metadata(data.budget_id),
-            created_by=actor_id,
+            created_by=actor.id,
             notification_owner_email=data.notification_owner_email,
             soft_limit_notify_once=data.soft_limit_notify_once,
             soft_limit_notification_enabled=data.soft_limit_notification_enabled,
@@ -290,7 +290,7 @@ class BudgetService:
         logger.info(
             f"budget_event=budget_create_completed component=budget_service budget_id={data.budget_id!r} "
             f"name={data.name!r} budget_category={data.budget_category.value!r} "
-            f"actor_id={actor_id!r} actor_name={actor_name or actor_id!r}"
+            f"actor_id={actor.id!r} actor_name={actor.username or actor.id!r}"
         )
         await activity_event_repository.async_insert(
             ActivityEventCreate(
@@ -298,13 +298,17 @@ class BudgetService:
                 event_type=BudgetManagementEvent.BUDGET_CREATED,
                 entity_type=ActivityEntityType.BUDGET,
                 entity_id=budget.budget_id,
-                actor_id=actor_id,
+                entity_label=budget.name,
+                actor_id=actor.id,
                 attributes={
                     "budget_category": data.budget_category.value,
                     "soft_budget": data.soft_budget,
                     "max_budget": data.max_budget,
                     "budget_duration": data.budget_duration,
                 },
+                project_name=None,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -360,18 +364,17 @@ class BudgetService:
         session: AsyncSession,
         budget_id: str,
         data: BudgetUpdateRequest,
-        actor_id: str,
-        actor_name: str = "",
+        actor: User,
     ) -> Budget:
         """Apply partial update to DB row, then sync enforcement-owned fields to provider."""
         logger.debug(
             f"budget_event=budget_update_started component=budget_service budget_id={budget_id!r} "
-            f"provided_fields={sorted(data.model_fields_set)!r} actor_id={actor_id!r} actor_name={actor_name!r}"
+            f"provided_fields={sorted(data.model_fields_set)!r} actor_id={actor.id!r} actor_name={actor.username!r}"
         )
         if any(b.budget_id == budget_id for b in budget_config.predefined_budgets):
             logger.debug(
                 f"budget_event=budget_update_rejected component=budget_service budget_id={budget_id!r} "
-                f"reason=predefined_budget actor_id={actor_id!r} actor_name={actor_name!r}"
+                f"reason=predefined_budget actor_id={actor.id!r} actor_name={actor.username!r}"
             )
             raise ExtendedHTTPException(
                 code=403,
@@ -411,8 +414,8 @@ class BudgetService:
 
         logger.info(
             f"budget_event=budget_update_completed component=budget_service budget_id={budget_id!r} "
-            f"updated_fields={sorted(update_fields.keys())!r} actor_id={actor_id!r} "
-            f"actor_name={actor_name or actor_id!r}"
+            f"updated_fields={sorted(update_fields.keys())!r} actor_id={actor.id!r} "
+            f"actor_name={actor.username or actor.id!r}"
         )
         if change_attributes["updated_fields"]:
             await activity_event_repository.async_insert(
@@ -421,8 +424,12 @@ class BudgetService:
                     event_type=BudgetManagementEvent.BUDGET_UPDATED,
                     entity_type=ActivityEntityType.BUDGET,
                     entity_id=budget_id,
-                    actor_id=actor_id,
+                    entity_label=budget.name,
+                    actor_id=actor.id,
                     attributes=change_attributes,
+                    project_name=None,
+                    actor_email=actor.email,
+                    actor_display_name=actor.name or None,
                 ),
                 session,
             )
@@ -432,8 +439,7 @@ class BudgetService:
         self,
         session: AsyncSession,
         budget_id: str,
-        actor_id: str,
-        actor_name: str = "",
+        actor: User,
     ) -> None:
         """Hard-delete a manually-created global budget that has no user assignments.
 
@@ -442,12 +448,12 @@ class BudgetService:
         """
         logger.debug(
             f"budget_event=budget_delete_started component=budget_service budget_id={budget_id!r} "
-            f"actor_id={actor_id!r} actor_name={actor_name!r}"
+            f"actor_id={actor.id!r} actor_name={actor.username!r}"
         )
         if any(b.budget_id == budget_id for b in budget_config.predefined_budgets):
             logger.debug(
                 f"budget_event=budget_delete_rejected component=budget_service budget_id={budget_id!r} "
-                f"reason=predefined_budget actor_id={actor_id!r} actor_name={actor_name!r}"
+                f"reason=predefined_budget actor_id={actor.id!r} actor_name={actor.username!r}"
             )
             raise ExtendedHTTPException(
                 code=403,
@@ -470,7 +476,8 @@ class BudgetService:
         if assignment_count > 0:
             logger.debug(
                 f"budget_event=budget_delete_rejected component=budget_service budget_id={budget_id!r} "
-                f"reason=in_use assignment_count={assignment_count} actor_id={actor_id!r} actor_name={actor_name!r}"
+                f"reason=in_use assignment_count={assignment_count} actor_id={actor.id!r} "
+                f"actor_name={actor.username!r}"
             )
             users_label = "user" if assignment_count == 1 else "users"
             raise ExtendedHTTPException(
@@ -487,7 +494,7 @@ class BudgetService:
             logger.error(
                 f"budget_event=provider_global_budget_delete_failed component=budget_service "
                 f"provider={getattr(provider, 'provider_name', 'unknown')!r} budget_id={budget_id!r} "
-                f"actor_id={actor_id!r} error={exc}",
+                f"actor_id={actor.id!r} error={exc}",
                 exc_info=True,
             )
             await session.rollback()
@@ -499,14 +506,18 @@ class BudgetService:
                 event_type=BudgetManagementEvent.BUDGET_DELETED,
                 entity_type=ActivityEntityType.BUDGET,
                 entity_id=budget_id,
-                actor_id=actor_id,
+                entity_label=budget.name,
+                actor_id=actor.id,
                 attributes={"reason": "manual_delete"},
+                project_name=None,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
         logger.info(
             f"budget_event=budget_delete_completed component=budget_service budget_id={budget_id!r} "
-            f"actor_id={actor_id!r} actor_name={actor_name or actor_id!r}"
+            f"actor_id={actor.id!r} actor_name={actor.username or actor.id!r}"
         )
 
     async def _validate_budget_update_request(
@@ -818,10 +829,15 @@ class BudgetService:
     async def sync_budgets_from_provider(
         self,
         session: AsyncSession,
-        actor_id: str,
+        actor: User | None = None,
     ) -> BudgetSyncResult:
-        """Pull all global budgets from the provider, upsert differences and delete orphans."""
+        """Pull all global budgets from the provider, upsert differences and delete orphans.
+
+        `actor` is None for the scheduled sync; its events then carry no actor.
+        """
         from codemie.rest_api.models.budget import BudgetSyncResult
+
+        actor_id = actor.id if actor else "system"
 
         provider = get_active_provider()
         logger.debug(
@@ -879,8 +895,12 @@ class BudgetService:
                     event_type=BudgetManagementEvent.BUDGET_DELETED,
                     entity_type=ActivityEntityType.BUDGET,
                     entity_id=budget_id,
-                    actor_id=actor_id,
+                    entity_label=db_budgets[budget_id].name,
+                    actor_id=actor.id if actor else None,
                     attributes={"reason": "absent_from_provider"},
+                    project_name=None,
+                    actor_email=actor.email if actor else None,
+                    actor_display_name=(actor.name or None) if actor else None,
                 ),
                 session,
             )
@@ -1331,8 +1351,12 @@ class BudgetService:
         self,
         session: AsyncSession,
         assignments: dict[BudgetCategory, str | None],
-    ) -> None:
-        """Validate all non-null assignment budgets exist, are global, and match their category."""
+    ) -> dict[str, str]:
+        """Validate all non-null assignment budgets exist, are global, and match their category.
+
+        Returns the validated budgets' names keyed by budget id.
+        """
+        names: dict[str, str] = {}
         for category, budget_id in assignments.items():
             if budget_id is None:
                 continue
@@ -1348,13 +1372,15 @@ class BudgetService:
                 self._validate_budget_matches_category(budget, category)
             except ValidationException as exc:
                 raise ExtendedHTTPException(code=400, message=str(exc)) from exc
+            names[budget_id] = budget.name
+        return names
 
     async def assign_budget_to_user(
         self,
         session: AsyncSession,
         user_id: str,
         assignments: dict[BudgetCategory, str | None],
-        actor_id: str,
+        actor: User,
     ) -> None:
         """Set or clear per-category budget assignments for a user and propagate to provider.
 
@@ -1381,9 +1407,9 @@ class BudgetService:
 
         for category, budget_id in assignments.items():
             if budget_id is not None:
-                await self.validate_assignment_budget_categories(session, {category: budget_id})
+                names = await self.validate_assignment_budget_categories(session, {category: budget_id})
                 await budget_repository.upsert_user_category_assignment(
-                    session, user_id, category, budget_id, assigned_by=actor_id
+                    session, user_id, category, budget_id, assigned_by=actor.id
                 )
                 _budget_assignment_cache.pop((user_id, category.value), None)
                 await activity_event_repository.async_insert(
@@ -1392,8 +1418,12 @@ class BudgetService:
                         event_type=BudgetManagementEvent.USER_BUDGET_ASSIGNED,
                         entity_type=ActivityEntityType.USER_BUDGET_ASSIGNMENT,
                         entity_id=user_id,
-                        actor_id=actor_id,
+                        entity_label=names[budget_id],
+                        actor_id=actor.id,
                         attributes={"budget_id": budget_id},
+                        project_name=None,
+                        actor_email=actor.email,
+                        actor_display_name=actor.name or None,
                     ),
                     session,
                 )
@@ -1406,11 +1436,11 @@ class BudgetService:
                         f"Failed to propagate budget assignment for user {user_id!r} category {category.value!r}: {exc}"
                     )
             else:
-                await self._unassign_user_category(session, provider, db_user, user_id, category, actor_id)
+                await self._unassign_user_category(session, provider, db_user, user_id, category, actor)
         logger.info(
             f"budget_event=user_budget_assignment_completed component=budget_service "
             f"user_id={user_id!r} categories={sorted(c.value for c in assignments)!r} "
-            f"actor_id={actor_id!r} domain=budget_management"
+            f"actor_id={actor.id!r} domain=budget_management"
         )
 
     async def _unassign_user_category(
@@ -1420,7 +1450,7 @@ class BudgetService:
         db_user,
         user_id: str,
         category: BudgetCategory,
-        actor_id: str,
+        actor: User,
     ) -> None:
         """Drop the user's row for *category* and fall back to the category default (or none) in the provider."""
         await budget_repository.delete_user_category_assignment(session, user_id, category)
@@ -1431,8 +1461,12 @@ class BudgetService:
                 event_type=BudgetManagementEvent.USER_BUDGET_REMOVED,
                 entity_type=ActivityEntityType.USER_BUDGET_ASSIGNMENT,
                 entity_id=user_id,
-                actor_id=actor_id,
+                entity_label=category.value,
+                actor_id=actor.id,
                 attributes={"category": category.value},
+                project_name=None,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -1456,7 +1490,7 @@ class BudgetService:
         session: AsyncSession,
         user_ids: list[str],
         assignments: dict[BudgetCategory, str | None],
-        actor_id: str,
+        actor: User,
     ) -> None:
         """Apply the same budget assignment map to multiple users and propagate to provider.
 
@@ -1471,19 +1505,18 @@ class BudgetService:
         from sqlmodel import select
 
         non_null = {cat: bid for cat, bid in assignments.items() if bid is not None}
-        if non_null:
-            await self.validate_assignment_budget_categories(session, non_null)
+        budget_names = await self.validate_assignment_budget_categories(session, non_null)
 
         db_users = await self._load_bulk_budget_users(session, user_ids, select, UserDB)
         self._reject_budget_grant_to_deactivated(list(db_users.values()), assignments)
-        await self._persist_bulk_budget_assignments(session, user_ids, assignments, actor_id)
+        await self._persist_bulk_budget_assignments(session, user_ids, assignments, actor, budget_names)
         re_pointed_to_default = await self._propagate_bulk_budget_assignments(db_users, assignments)
         for user_id, category, default_budget_id in re_pointed_to_default:
             await self._record_default_assignment(session, user_id, category, default_budget_id)
         logger.info(
             f"budget_event=bulk_user_budget_assignment_completed component=budget_service "
             f"user_count={len(user_ids)} categories={sorted(c.value for c in assignments)!r} "
-            f"actor_id={actor_id!r} domain=budget_management"
+            f"actor_id={actor.id!r} domain=budget_management"
         )
 
     async def _load_bulk_budget_users(self, session: AsyncSession, user_ids: list[str], select, user_model) -> dict:
@@ -1512,13 +1545,14 @@ class BudgetService:
         session: AsyncSession,
         user_ids: list[str],
         assignments: dict[BudgetCategory, str | None],
-        actor_id: str,
+        actor: User,
+        budget_names: dict[str, str],
     ) -> None:
         for user_id in user_ids:
             for category, budget_id in assignments.items():
                 if budget_id is not None:
                     await budget_repository.upsert_user_category_assignment(
-                        session, user_id, category, budget_id, assigned_by=actor_id
+                        session, user_id, category, budget_id, assigned_by=actor.id
                     )
                     await activity_event_repository.async_insert(
                         ActivityEventCreate(
@@ -1526,8 +1560,12 @@ class BudgetService:
                             event_type=BudgetManagementEvent.USER_BUDGET_ASSIGNED,
                             entity_type=ActivityEntityType.USER_BUDGET_ASSIGNMENT,
                             entity_id=user_id,
-                            actor_id=actor_id,
+                            entity_label=budget_names[budget_id],
+                            actor_id=actor.id,
                             attributes={"budget_id": budget_id, "category": category.value},
+                            project_name=None,
+                            actor_email=actor.email,
+                            actor_display_name=actor.name or None,
                         ),
                         session,
                     )
@@ -1539,8 +1577,12 @@ class BudgetService:
                             event_type=BudgetManagementEvent.USER_BUDGET_REMOVED,
                             entity_type=ActivityEntityType.USER_BUDGET_ASSIGNMENT,
                             entity_id=user_id,
-                            actor_id=actor_id,
+                            entity_label=category.value,
+                            actor_id=actor.id,
                             attributes={"category": category.value},
+                            project_name=None,
+                            actor_email=actor.email,
+                            actor_display_name=actor.name or None,
                         ),
                         session,
                     )

@@ -147,7 +147,7 @@ async def test_clear_member_override_returns_reloaded_budget_response():
         session,
         budget_id="proj-budget-1",
         user_id="user-1",
-        actor_id="maint-1",
+        actor=maintainer_user(),
     )
     assert result.member_allocations[0].budget_id == "member-budget-7"
     assert result.member_allocations[0].allocation_mode == "fixed"

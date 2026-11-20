@@ -18,6 +18,7 @@ import asyncio
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -32,6 +33,7 @@ from codemie.service.assistant.assistant_share_service import AssistantShareServ
 
 MODULE = "codemie.service.assistant.assistant_share_service"
 ASSISTANT_ID = "00000000-0000-0000-0000-000000000001"
+PROJECT_INSTANCE_ID = UUID("4d35d8a6-99eb-4a39-8dc5-49ad1c9ee37c")
 
 
 def _owner(user_id="owner-1"):
@@ -39,6 +41,7 @@ def _owner(user_id="owner-1"):
     u.id = user_id
     u.username = "owner"
     u.name = "Owner"
+    u.email = "owner@example.com"
     u.is_external_user = False
     u.project_names = []
     return u
@@ -48,6 +51,7 @@ def _assistant(owner_id="owner-1", toolkits=None, mcp_servers=None, bedrock=None
     a = MagicMock()
     a.id = ASSISTANT_ID
     a.project = "proj"
+    a.name = "Assistant"
     a.toolkits = toolkits or []
     a.mcp_servers = mcp_servers or []
     a.bedrock = bedrock
@@ -83,6 +87,10 @@ class _Session:
     def execute(self, statement):
         self.statements.append(statement)
         return _Result(self.answers.pop(0) if self.answers else [])
+
+    def exec(self, statement):
+        self.statements.append(statement)
+        return _Result([("proj", PROJECT_INSTANCE_ID)])
 
     def add_all(self, rows):
         self.added.extend(rows)
@@ -221,6 +229,7 @@ def test_grant_event_payload_keeps_the_assistant_contract():
     assert event.event_type == AssistantEvent.GRANT_ADDED
     assert event.entity_type == ActivityEntityType.ASSISTANT
     assert event.entity_id == ASSISTANT_ID
+    assert event.project_instance_id == PROJECT_INSTANCE_ID
     assert event.actor_id == "owner-1"
     attrs = event.attributes
     assert attrs["actor_id"] == "owner-1"
@@ -251,14 +260,14 @@ def test_revoke_writes_event_only_for_deleted_rows():
 
 def test_remove_all_grants_audits_each_deleted_row_and_commits_its_own_session():
     with _env([_deleted("uid-1"), _deleted("uid-2")]) as (session, _):
-        AssistantShareService.remove_all_grants(_owner(), ASSISTANT_ID)
+        AssistantShareService.remove_all_grants(_owner(), ASSISTANT_ID, label="Helper")
     assert len(session.added) == 2 and session.commits == 1
 
 
 def test_remove_all_grants_with_caller_session_does_not_commit():
     session = _Session([_deleted("uid-1")])
     with patch.object(config, "ACTIVITY_EVENTS_ENABLED", True):
-        AssistantShareService.remove_all_grants(_owner(), ASSISTANT_ID, "proj", session)
+        AssistantShareService.remove_all_grants(_owner(), ASSISTANT_ID, "proj", session, label="Helper")
     assert len(session.added) == 1 and session.commits == 0
 
 

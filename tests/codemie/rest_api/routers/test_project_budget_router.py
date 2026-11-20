@@ -999,7 +999,7 @@ async def test_member_override_endpoints_allow_project_admin_and_maintainer(endp
 
     assert result.budget_id == _BUDGET_ID
     service_mock.assert_awaited_once()
-    assert service_mock.await_args.kwargs["actor_id"] == user.id
+    assert service_mock.await_args.kwargs["actor"] is user
 
 
 @pytest.mark.asyncio
@@ -1260,7 +1260,7 @@ async def test_bulk_returns_results_in_input_order_and_touched_budgets():
     assert [call.args[1] for call in budget_lookup.await_args_list] == ["b-1", "b-2"]
     pairs = service_mock.await_args.args[1]
     assert [(index, item.user_id) for index, item in pairs] == [(0, "u-1"), (1, "u-9"), (2, "u-2"), (3, "u-3")]
-    assert service_mock.await_args.args[2] == maintainer_user().id
+    assert service_mock.await_args.args[2].id == maintainer_user().id
 
 
 @pytest.mark.asyncio

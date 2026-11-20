@@ -32,6 +32,8 @@ def _item() -> ActivityEventListItem:
         id="evt-1",
         domain="user_management",
         event_type="user.created",
+        label="User Created",
+        category="Account",
         created_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
     )
 

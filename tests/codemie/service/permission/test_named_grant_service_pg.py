@@ -135,7 +135,7 @@ def test_upgraded_link_row_becomes_name_and_survives_link_removal(pg_session):
     _link_row(pg_session, rid, ids[0], link_id)
     _link_row(pg_session, rid, ids[1], link_id)
     pg_session.execute(svc.upsert_statement(ResourceType.HOSTED_APPLICATION, rid, None, [ids[0]]))
-    svc.remove_link_grants(None, ResourceType.HOSTED_APPLICATION, rid, link_id, None, pg_session)
+    svc.remove_link_grants(None, ResourceType.HOSTED_APPLICATION, rid, link_id, None, pg_session, "Label")
     left = pg_session.query(Permission).filter(Permission.resource_id == rid).all()
     assert [(r.principal_id, r.grant_source, r.source_link_id) for r in left] == [(ids[0], "name", None)]
 
@@ -151,7 +151,7 @@ def test_timing_remove_all_grants(pg_session, count):
     rid = uuid4()
     pg_session.execute(svc.upsert_statement(ResourceType.HOSTED_APPLICATION, rid, None, ids))
     started = time.perf_counter()
-    svc.remove_all_grants(None, ResourceType.HOSTED_APPLICATION, rid, None, pg_session)
+    svc.remove_all_grants(None, ResourceType.HOSTED_APPLICATION, rid, None, pg_session, "Label")
     sys.stderr.write(f"remove_all_grants x{count}: {time.perf_counter() - started:.3f}s\n")
 
 

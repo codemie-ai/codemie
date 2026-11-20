@@ -155,6 +155,54 @@ class TestRegistrationService:
         call_args = mock_user_repo.create.call_args[0][1]
         assert call_args.email_verified is True
 
+    @patch("codemie.service.user.registration_service.activity_event_repository")
+    @patch("codemie.service.user.registration_service.user_repository")
+    @patch("codemie.service.password_service.password_service")
+    @patch("codemie.service.user.registration_service.config")
+    def test_register_user_emits_user_created_event_with_actor_snapshot(
+        self, mock_config, mock_password_service, mock_user_repo, mock_activity
+    ):
+        """Self-registration snapshots the new user as actor and has no project context."""
+        # Arrange
+        mock_config.PASSWORD_MIN_LENGTH = 8
+        mock_config.EMAIL_VERIFICATION_ENABLED = True
+        mock_config.USER_PROJECT_LIMIT = 10
+
+        mock_session = MagicMock()
+        email = "newuser@example.com"
+        username = "newuser"
+        password = "securePassword123"
+
+        mock_user_repo.exists_by_email.return_value = False
+        mock_user_repo.exists_by_username.return_value = False
+        mock_password_service.hash_password.return_value = "hashed_password"
+
+        created_user = UserDB(
+            id=str(uuid4()),
+            email=email,
+            username=username,
+            name=username,
+            password_hash="hashed_password",
+            auth_source="local",
+            email_verified=False,
+            is_active=True,
+            is_admin=False,
+            project_limit=10,
+        )
+        mock_user_repo.create.return_value = created_user
+
+        # Act
+        RegistrationService.register_user(mock_session, email, username, password)
+
+        # Assert
+        mock_activity.insert.assert_called_once()
+        event_dto = mock_activity.insert.call_args[0][0]
+        assert event_dto.entity_label == created_user.name
+        assert event_dto.project_name is None
+        assert event_dto.actor_id == created_user.id
+        assert event_dto.actor_email == created_user.email
+        assert event_dto.actor_display_name == created_user.name
+
     @patch("codemie.service.user.registration_service.email_token_repository")
     @patch("codemie.service.user.registration_service.user_repository")
     def test_verify_email_success(self, mock_user_repo, mock_token_repo):

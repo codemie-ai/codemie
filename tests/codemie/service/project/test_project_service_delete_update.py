@@ -22,6 +22,8 @@ import pytest
 from codemie.configs.customer_config import CustomerConfig
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
+from codemie.rest_api.security.user import User
+from codemie.service.activity.activity_models import ProjectManagementEvent
 from codemie.service.project.project_service import ProjectService
 
 
@@ -46,6 +48,14 @@ def _make_app(name: str, project_type: str = "shared") -> Application:
         date=datetime.now(),
         update_date=datetime.now(),
     )
+
+
+def _make_actor(user_id: str) -> User:
+    return User(id=user_id, email=f"{user_id}@example.com")
+
+
+def _set_active_project(mock_app_repo, name: str) -> None:
+    mock_app_repo.get_active_by_name.return_value = _make_app(name)
 
 
 def _zero_counts(project_name: str) -> dict[str, dict]:
@@ -94,7 +104,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="user@example.com",
                 project_type=Application.ProjectType.PERSONAL,
-                actor_id="user-1",
+                actor=User(id="user-1"),
                 action="DELETE /v1/projects/user@example.com",
             )
 
@@ -115,7 +125,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="user-1",
+                actor=User(id="user-1"),
                 action="DELETE /v1/projects/my-project",
             )
 
@@ -138,7 +148,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="user-1",
+                actor=User(id="user-1"),
                 action="DELETE /v1/projects/my-project",
             )
 
@@ -161,7 +171,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="user-1",
+                actor=User(id="user-1"),
                 action="DELETE /v1/projects/my-project",
             )
 
@@ -183,7 +193,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="user-1",
+                actor=User(id="user-1"),
                 action="DELETE /v1/projects/my-project",
             )
 
@@ -203,7 +213,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="user-1",
+                actor=User(id="user-1"),
                 action="DELETE /v1/projects/my-project",
             )
 
@@ -223,7 +233,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="user-1",
+                actor=User(id="user-1"),
                 action="DELETE /v1/projects/my-project",
             )
 
@@ -241,6 +251,7 @@ class TestProjectServiceDeleteProject:
         mock_session = MagicMock()
         mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with("my-project", integrations_count=2)
+        _set_active_project(mock_app_repo, "my-project")
         setting_1 = MagicMock(id="setting-1")
         setting_2 = MagicMock(id="setting-2")
         mock_settings.get_by_project_names.return_value = [setting_1, setting_2]
@@ -249,7 +260,7 @@ class TestProjectServiceDeleteProject:
             session=mock_session,
             project_name="my-project",
             project_type=Application.ProjectType.SHARED,
-            actor_id="user-1",
+            actor=_make_actor("user-1"),
             action="DELETE /v1/projects/my-project",
         )
 
@@ -270,12 +281,13 @@ class TestProjectServiceDeleteProject:
         mock_session = MagicMock()
         mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
+        _set_active_project(mock_app_repo, "my-project")
 
         ProjectService.delete_project(
             session=mock_session,
             project_name="my-project",
             project_type=Application.ProjectType.SHARED,
-            actor_id="user-1",
+            actor=_make_actor("user-1"),
             action="DELETE /v1/projects/my-project",
         )
 
@@ -296,7 +308,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="user-1",
+                actor=User(id="user-1"),
                 action="DELETE /v1/projects/my-project",
             )
 
@@ -317,7 +329,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="user-1",
+                actor=User(id="user-1"),
                 action="DELETE /v1/projects/my-project",
             )
 
@@ -340,7 +352,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="user-1",
+                actor=User(id="user-1"),
                 action="DELETE /v1/projects/my-project",
             )
 
@@ -357,12 +369,13 @@ class TestProjectServiceDeleteProject:
         mock_session = MagicMock()
         mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
+        _set_active_project(mock_app_repo, "my-project")
 
         ProjectService.delete_project(
             session=mock_session,
             project_name="my-project",
             project_type=Application.ProjectType.SHARED,
-            actor_id="user-1",
+            actor=_make_actor("user-1"),
             action="DELETE /v1/projects/my-project",
         )
 
@@ -377,12 +390,13 @@ class TestProjectServiceDeleteProject:
         creator_record.user_id = "creator-1"
         mock_upr.get_by_project_name.return_value = [creator_record]
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
+        _set_active_project(mock_app_repo, "my-project")
 
         ProjectService.delete_project(
             session=mock_session,
             project_name="my-project",
             project_type=Application.ProjectType.SHARED,
-            actor_id="creator-1",
+            actor=_make_actor("creator-1"),
             action="DELETE /v1/projects/my-project",
             creator_id="creator-1",
         )
@@ -405,7 +419,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="creator-1",
+                actor=User(id="creator-1"),
                 action="DELETE /v1/projects/my-project",
                 creator_id="creator-1",
             )
@@ -428,7 +442,7 @@ class TestProjectServiceDeleteProject:
                 session=mock_session,
                 project_name="my-project",
                 project_type=Application.ProjectType.SHARED,
-                actor_id="actor-1",
+                actor=User(id="actor-1"),
                 action="DELETE /v1/projects/my-project",
             )
 
@@ -438,17 +452,18 @@ class TestProjectServiceDeleteProject:
     @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
     def test_empty_counts_dict_calls_delete(self, mock_app_repo, mock_upr):
-        """delete_project treats missing project-name key in counts dict as zero resources."""
+        """A missing project-name key in counts is zero resources for an active project."""
         mock_session = MagicMock()
         mock_upr.get_by_project_name.return_value = []
         # Simulate bulk returning no entry for the project
         mock_app_repo.get_project_entity_counts_bulk.return_value = {}
+        _set_active_project(mock_app_repo, "ghost-project")
 
         ProjectService.delete_project(
             session=mock_session,
             project_name="ghost-project",
             project_type=Application.ProjectType.SHARED,
-            actor_id="user-1",
+            actor=_make_actor("user-1"),
             action="DELETE /v1/projects/ghost-project",
         )
 
@@ -465,12 +480,13 @@ class TestProjectServiceDeleteProject:
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
         mock_budgets.clear_project_on_deleted_budgets.return_value = []
         mock_groups.clear_project_on_deleted_groups.return_value = []
+        _set_active_project(mock_app_repo, "my-project")
 
         ProjectService.delete_project(
             session=mock_session,
             project_name="my-project",
             project_type=Application.ProjectType.SHARED,
-            actor_id="user-1",
+            actor=_make_actor("user-1"),
             action="DELETE /v1/projects/my-project",
         )
 
@@ -492,12 +508,13 @@ class TestProjectServiceDeleteProject:
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
         mock_budgets.clear_project_on_deleted_budgets.return_value = ["budget-1", "budget-2"]
         mock_groups.clear_project_on_deleted_groups.return_value = ["group-1"]
+        _set_active_project(mock_app_repo, "my-project")
 
         ProjectService.delete_project(
             session=mock_session,
             project_name="my-project",
             project_type=Application.ProjectType.SHARED,
-            actor_id="user-1",
+            actor=_make_actor("user-1"),
             action="DELETE /v1/projects/my-project",
         )
 
@@ -515,12 +532,13 @@ class TestProjectServiceDeleteProject:
         mock_session = MagicMock()
         mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("analytics")
+        _set_active_project(mock_app_repo, "analytics")
 
         ProjectService.delete_project(
             session=mock_session,
             project_name="analytics",
             project_type=Application.ProjectType.SHARED,
-            actor_id="user-1",
+            actor=_make_actor("user-1"),
             action="DELETE /v1/projects/analytics",
         )
 
@@ -536,12 +554,13 @@ class TestProjectServiceDeleteProject:
         creator_record.user_id = "creator-1"
         mock_upr.get_by_project_name.return_value = [creator_record]
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
+        _set_active_project(mock_app_repo, "my-project")
 
         ProjectService.delete_project(
             session=mock_session,
             project_name="my-project",
             project_type=Application.ProjectType.SHARED,
-            actor_id="creator-1",
+            actor=_make_actor("creator-1"),
             action="DELETE /v1/projects/my-project",
             creator_id="creator-1",
         )
@@ -576,12 +595,13 @@ class TestProjectServiceDeleteProject:
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
         mock_budgets.clear_project_on_deleted_budgets.return_value = []
         mock_groups.clear_project_on_deleted_groups.return_value = []
+        _set_active_project(mock_app_repo, "my-project")
 
         ProjectService.delete_project(
             session=mock_session,
             project_name="my-project",
             project_type=Application.ProjectType.SHARED,
-            actor_id="actor-1",
+            actor=_make_actor("actor-1"),
             action="DELETE /v1/projects/my-project",
         )
 
@@ -609,6 +629,8 @@ class TestProjectServiceUpdateProject:
         user.is_admin = True
         user.is_maintainer = False
         user.id = "admin-1"
+        user.email = "admin-1@example.com"
+        user.name = "Admin One"
         user.is_admin_or_maintainer = True
         return user
 
@@ -617,6 +639,8 @@ class TestProjectServiceUpdateProject:
         user.is_admin = False
         user.is_maintainer = False
         user.id = "user-1"
+        user.email = "user-1@example.com"
+        user.name = "User One"
         user.is_admin_or_maintainer = False
         return user
 
@@ -626,6 +650,8 @@ class TestProjectServiceUpdateProject:
         user.is_maintainer = False
         user.is_auditor = True
         user.id = "auditor-1"
+        user.email = "auditor-1@example.com"
+        user.name = "Auditor One"
         user.is_admin_or_maintainer = False
         return user
 
@@ -1123,6 +1149,62 @@ class TestProjectServiceUpdateProject:
         mock_logger.info.assert_called_once()
         assert "project_updated" in mock_logger.info.call_args[0][0]
 
+    @staticmethod
+    def _update_recording_events(service, *, stored_flag=False, **update_kwargs):
+        """Run update_project against mocks; return the activity events it inserted, in order."""
+        with (
+            patch("codemie.service.project.project_service.SettingsService") as settings,
+            patch("codemie.service.project.project_service.cost_center_service"),
+            patch("codemie.service.project.project_service.application_repository") as app_repo,
+            patch("codemie.service.project.project_service.activity_event_repository") as activity,
+            patch("codemie.service.project.project_service.get_session") as get_session,
+            patch.object(CustomerConfig, "is_feature_enabled", return_value=True),
+        ):
+            get_session.return_value.__enter__.return_value = MagicMock()
+            settings.get_enforce_member_spend_limits.return_value = stored_flag
+            project = _make_app("my-project")
+            project.cost_center_id = None
+            app_repo.get_by_name.return_value = project
+
+            def _apply(_session, current, *, display_name=None, **_):
+                current.display_name = display_name or current.display_name
+                return current
+
+            app_repo.update_project.side_effect = _apply
+            ProjectService.update_project(user=service._make_super_admin(), project_name="my-project", **update_kwargs)
+        return [call.args[0] for call in activity.insert.call_args_list]
+
+    def test_flipping_member_spend_enforcement_emits_project_updated_and_the_enforcement_event(self):
+        events = self._update_recording_events(self, stored_flag=False, enforce_member_spend_limits=True)
+
+        assert [e.event_type for e in events] == [
+            ProjectManagementEvent.PROJECT_UPDATED,
+            ProjectManagementEvent.MEMBER_SPEND_ENFORCEMENT_UPDATED,
+        ]
+        assert events[0].attributes["updated_fields"] == ["enforce_member_spend_limits"]
+        enforcement = events[1]
+        assert enforcement.attributes == {
+            "previous_enforce_member_spend_limits": False,
+            "new_enforce_member_spend_limits": True,
+        }
+        assert (enforcement.entity_type, enforcement.entity_id) == ("project", "my-project")
+        assert (enforcement.project_name, enforcement.entity_label) == ("my-project", "my-project")
+        assert (enforcement.actor_id, enforcement.actor_email, enforcement.actor_display_name) == (
+            "admin-1",
+            "admin-1@example.com",
+            "Admin One",
+        )
+
+    def test_resubmitting_the_same_enforcement_value_emits_no_event(self):
+        events = self._update_recording_events(self, stored_flag=True, enforce_member_spend_limits=True)
+
+        assert events == []
+
+    def test_display_name_only_change_emits_only_project_updated(self):
+        events = self._update_recording_events(self, display_name="Shiny")
+
+        assert [e.event_type for e in events] == [ProjectManagementEvent.PROJECT_UPDATED]
+
 
 # ---------------------------------------------------------------------------
 # Regression: delete-then-same-name-recreate must not inherit membership
@@ -1146,12 +1228,13 @@ class TestProjectServiceDeleteRecreate:
         creator_record.user_id = "original-admin"
         mock_upr.get_by_project_name.return_value = [creator_record]
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("alpha")
+        _set_active_project(mock_app_repo, "alpha")
 
         ProjectService.delete_project(
             session=mock_session,
             project_name="alpha",
             project_type=Application.ProjectType.SHARED,
-            actor_id="original-admin",
+            actor=_make_actor("original-admin"),
             action="DELETE /v1/projects/alpha",
             creator_id="original-admin",
         )

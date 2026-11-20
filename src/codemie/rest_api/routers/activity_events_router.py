@@ -21,9 +21,15 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query, status
 
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.rest_api.models.activity_event import ActivityEventFilterOptions, ActivityEventListItem
+from codemie.rest_api.models.activity_event import (
+    ActivityEventFilterOptions,
+    ActivityEventListItem,
+)
 from codemie.rest_api.models.base import PaginatedListResponse, PaginationData
-from codemie.rest_api.security.authentication import authenticate, maintainer_access_only
+from codemie.rest_api.security.authentication import (
+    authenticate,
+    maintainer_access_only,
+)
 from codemie.service.activity.activity_event_service import activity_event_service
 
 

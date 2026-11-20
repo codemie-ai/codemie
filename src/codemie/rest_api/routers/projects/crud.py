@@ -382,6 +382,7 @@ def _with_visible_cli_analytics(user: User, project: dict[str, Any]) -> dict[str
 def _build_project_detail_response(project_detail: dict, project_name: str) -> ProjectDetailResponse:
     return ProjectDetailResponse(
         name=project_detail["name"],
+        project_instance_id=project_detail["project_instance_id"],
         display_name=project_detail.get("display_name"),
         description=project_detail["description"],
         project_type=project_detail["project_type"],

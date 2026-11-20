@@ -486,6 +486,68 @@ class TestCreateUserFromIdp:
             mock_ensure.assert_called_once_with(["project1", "project2", "idp@example.com"])
 
     @pytest.mark.asyncio
+    async def test_create_user_from_idp_emits_user_created_event_as_system(self):
+        """First-login account provisioning has no human actor and no project context."""
+        # Arrange
+        session = AsyncMock()
+        user_id = str(uuid4())
+
+        idp_user = security_user.User(
+            id=user_id,
+            username="idpuser",
+            name="IDP User",
+            email="idp@example.com",
+            user_type="human",
+            roles=[],
+            project_names=[],
+            admin_project_names=[],
+            knowledge_bases=[],
+            is_admin=False,
+        )
+
+        mock_created_user = UserDB(
+            id=user_id,
+            email="idp@example.com",
+            username="idpuser",
+            name="IDP User",
+            user_type="human",
+            auth_source="keycloak",
+            email_verified=True,
+            is_active=True,
+            is_admin=False,
+        )
+
+        with (
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+            patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
+            patch("codemie.service.user.authentication_service.user_kb_repository") as mock_kb_repo,
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService._ensure_projects_exist",
+                new_callable=AsyncMock,
+            ),
+            patch("codemie.service.user.authentication_service.config") as mock_config,
+            patch("codemie.service.user.authentication_service.activity_event_repository") as mock_activity,
+        ):
+            mock_config.IDP_PROVIDER = "keycloak"
+            mock_config.ADMIN_USER_ID = "admin-id"
+            mock_config.ADMIN_ROLE_NAME = "SuperAdmin"
+
+            mock_user_repo.acreate = AsyncMock(return_value=mock_created_user)
+            mock_proj_repo.aadd_project = AsyncMock()
+            mock_kb_repo.aadd_kb = AsyncMock()
+            mock_activity.async_insert = AsyncMock()
+
+            # Act
+            await AuthenticationService.create_user_from_idp(session, idp_user)
+
+            # Assert
+            mock_activity.async_insert.assert_called_once()
+            event_dto = mock_activity.async_insert.call_args[0][0]
+            assert event_dto.entity_label == mock_created_user.name
+            assert event_dto.project_name is None
+            assert (event_dto.actor_id, event_dto.actor_email, event_dto.actor_display_name) == (None, None, None)
+
+    @pytest.mark.asyncio
     async def test_create_user_from_idp_invalid_uuid(self):
         """Raises 422 when user_id is not a valid UUID"""
         # Arrange
@@ -1591,11 +1653,13 @@ class TestAuthenticateDevHeader:
                 new_callable=AsyncMock,
             ) as mock_finalize,
             patch("codemie.service.user.authentication_service.logger") as mock_logger,
+            patch("codemie.service.user.authentication_service.activity_event_repository") as mock_activity,
         ):
             mock_get_session.return_value = _make_async_session_cm(mock_session)
             mock_user_repo.aget_by_id = AsyncMock(return_value=None)  # User doesn't exist
             mock_user_repo.acreate = AsyncMock(return_value=created_user)
             mock_user_repo.aupdate_last_login = AsyncMock()
+            mock_activity.async_insert = AsyncMock()
 
             expected_user = security_user.User(
                 id=user_id,
@@ -1623,6 +1687,23 @@ class TestAuthenticateDevHeader:
             assert created_call.is_admin is True
             mock_logger.info.assert_called_once()
             assert f"user_id={user_id}" in mock_logger.info.call_args[0][0]
+
+            # Assert: account creation and login both snapshot the user and have no project context.
+            assert mock_activity.async_insert.call_count == 2
+            created_event = mock_activity.async_insert.call_args_list[0][0][0]
+            login_event = mock_activity.async_insert.call_args_list[1][0][0]
+            assert created_event.project_name is None
+            assert (created_event.actor_id, created_event.actor_email, created_event.actor_display_name) == (
+                None,
+                None,
+                None,
+            )
+            assert created_event.entity_label == created_user.name
+            assert login_event.project_name is None
+            assert login_event.actor_id == created_user.id
+            assert login_event.actor_email == created_user.email
+            assert login_event.actor_display_name == created_user.name
+            assert login_event.entity_label == created_user.name
 
 
 class TestFinalizeAuthenticationPersonalProjectGuard:
@@ -2474,6 +2555,10 @@ class TestLoginActivityEvent:
         assert event_dto.event_type == UserManagementEvent.USER_LOGIN
         assert event_dto.entity_id == user_id
         assert event_dto.actor_id == user_id
+        assert event_dto.project_name is None
+        assert event_dto.actor_email == mock_user.email
+        assert event_dto.actor_display_name == mock_user.name
+        assert event_dto.entity_label == mock_user.name
 
     @pytest.mark.asyncio
     @patch("codemie.service.user.authentication_service.activity_event_repository")

@@ -47,6 +47,8 @@ class ResolvedResource:
     project: str | None
     creator_id: str | None
     may_remove: bool
+    # The resource's display name; None only for an orphan grant, whose resource row is gone.
+    label: str | None
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,8 @@ class NamedGrantDescriptor:
     before_grant: Callable[[Any], None]
     # (resource, actor) -> whether the actor owns the resource; the shared grant/revoke refuse anyone else.
     is_owner: Callable[[Any, Any], bool]
+    # resource -> its display name, snapshotted into activity events so they survive a rename or deletion.
+    label_of: Callable[[Any], str]
     not_owner_message: str = NOT_OWNER
     # ``permissions.resource_id`` (uuid) as the resource table's id type, for SQL that compares the two columns.
     resource_key: Callable[[Any], Any] = _same_type

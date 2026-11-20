@@ -252,7 +252,11 @@ async def logout(request: Request, response: Response, _user: User = Depends(aut
                 event_type=UserManagementEvent.USER_LOGOUT,
                 entity_type=ActivityEntityType.USER,
                 entity_id=_user.id,
+                entity_label=_user.name or _user.email,
                 actor_id=_user.id,
+                project_name=None,
+                actor_email=_user.email,
+                actor_display_name=_user.name or None,
             ),
             session,
         )

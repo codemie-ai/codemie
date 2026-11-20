@@ -62,6 +62,7 @@ def _resolved(assistant: Any, actor_row: Any, actor: Any) -> ResolvedResource:
     admin = bool(actor_row is not None and (actor_row.is_admin or actor_row.is_maintainer))
     return ResolvedResource(
         project=assistant.project if assistant is not None else None,
+        label=assistant.name if assistant is not None else None,
         creator_id=creator,
         may_remove=eligible and (admin or (creator is not None and creator == actor.id)),
     )
@@ -111,5 +112,6 @@ DESCRIPTOR = NamedGrantDescriptor(
     not_owner_message="Only the assistant owner can share or revoke access",
     resource_key=_text_key,
     audit_attributes=_audit_attributes,
+    label_of=lambda assistant: assistant.name,
     recipient=eligible_internal_user,
 )

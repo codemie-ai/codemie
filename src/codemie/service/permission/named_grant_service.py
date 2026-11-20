@@ -355,7 +355,7 @@ def _check_users(found: list[Row[Any]], user_ids: list[str]) -> dict[str, Row[An
     return by_id
 
 
-def _event(
+def _event(  # noqa: PLR0913 - flat keyword args mirror the call sites; a wrapper only moves the count
     descriptor: NamedGrantDescriptor,
     actor: User | None,
     resource_type: ResourceType,
@@ -367,13 +367,19 @@ def _event(
     after: Action | None,
     grant_source: str | None,
     extra: dict[str, Any] | None = None,
+    *,
+    label: str | None,
 ) -> ActivityEventCreate:
     return ActivityEventCreate(
         domain=descriptor.activity_domain,
         event_type=descriptor.event_added if after is not None else descriptor.event_removed,
         entity_type=descriptor.activity_entity_type,
         entity_id=str(resource_id),
+        entity_label=label,
+        project_name=project,
         actor_id=actor.id if actor else None,
+        actor_email=actor.email if actor else None,
+        actor_display_name=(actor.name or None) if actor else None,
         attributes={
             "actor_id": actor.id if actor else None,
             "actor_username": actor.username if actor else "system",
@@ -392,6 +398,10 @@ def _event(
     )
 
 
+def _label(resource_type: ResourceType, resource: Any) -> str:
+    return descriptor_for(resource_type).label_of(resource)
+
+
 def _grant_events(
     resource_type: ResourceType,
     resource_id: Any,
@@ -399,6 +409,7 @@ def _grant_events(
     actor: User | None,
     upserted: list[Row[Any]],
     existing: dict[str, Row[Any]],
+    label: str,
 ) -> list[ActivityEventCreate]:
     descriptor = descriptor_for(resource_type)
     events = []
@@ -425,13 +436,19 @@ def _grant_events(
                 row.permission_level,
                 GRANT_SOURCE_NAME,
                 extra,
+                label=label,
             )
         )
     return events
 
 
 def _removal_events(
-    resource_type: ResourceType, resource_id: Any, project: str | None, actor: User | None, deleted: list[Row[Any]]
+    resource_type: ResourceType,
+    resource_id: Any,
+    project: str | None,
+    actor: User | None,
+    deleted: list[Row[Any]],
+    label: str | None,
 ) -> list[ActivityEventCreate]:
     descriptor = descriptor_for(resource_type)
     return [
@@ -447,6 +464,7 @@ def _removal_events(
             None,
             row.grant_source,
             {"previous_source_link_id": str(row.source_link_id)} if row.source_link_id else None,
+            label=label,
         )
         for row in deleted
     ]
@@ -459,6 +477,7 @@ def _link_grant_events(
     user: User,
     link_id: Any,
     inserted: list[Row[Any]],
+    label: str,
 ) -> list[ActivityEventCreate]:
     descriptor = descriptor_for(resource_type)
     return [
@@ -474,6 +493,7 @@ def _link_grant_events(
             Action.READ,
             GRANT_SOURCE_LINK,
             {"source_link_id": str(link_id)},
+            label=label,
         )
         for row in inserted
     ]
@@ -530,7 +550,8 @@ def grant(
     existing = _check_users(session.execute(validation_statement(resource_type, resource_id, ids)).all(), ids)
     upserted = session.execute(upsert_statement(resource_type, resource_id, owner, ids, level)).all()
     activity_event_repository.insert_many_strict(
-        _grant_events(resource_type, resource_id, project, owner, upserted, existing), session
+        _grant_events(resource_type, resource_id, project, owner, upserted, existing, _label(resource_type, resource)),
+        session,
     )
     return [row.principal_id for row in upserted]
 
@@ -554,21 +575,28 @@ def revoke(
     resource_id = resource.id
     deleted = session.execute(revoke_statement(resource_type, resource_id, ids)).all()
     activity_event_repository.insert_many_strict(
-        _removal_events(resource_type, resource_id, project, owner, deleted), session
+        _removal_events(resource_type, resource_id, project, owner, deleted, _label(resource_type, resource)), session
     )
     return [row.principal_id for row in deleted]
 
 
-def revoke_permission(actor: User | None, permission: Permission, session: Session, project: str | None) -> None:
+def revoke_permission(
+    actor: User | None, permission: Permission, session: Session, project: str | None, label: str | None
+) -> None:
     """Delete one permission row of a named-grant resource type with audit. The caller authorizes."""
     deleted = session.execute(revoke_permission_statement(permission.id)).all()
     activity_event_repository.insert_many_strict(
-        _removal_events(permission.resource_type, permission.resource_id, project, actor, deleted), session
+        _removal_events(permission.resource_type, permission.resource_id, project, actor, deleted, label), session
     )
 
 
 def remove_all_grants(
-    actor: User | None, resource_type: ResourceType, resource_id: Any, project: str | None, session: Session
+    actor: User | None,
+    resource_type: ResourceType,
+    resource_id: Any,
+    project: str | None,
+    session: Session,
+    label: str,
 ) -> None:
     """Delete every grant on a resource, one audit event per row. actor None is recorded as "system".
 
@@ -578,7 +606,7 @@ def remove_all_grants(
         return
     deleted = session.execute(remove_all_statement(resource_type, resource_id)).all()
     activity_event_repository.insert_many_strict(
-        _removal_events(resource_type, resource_id, project, actor, deleted), session
+        _removal_events(resource_type, resource_id, project, actor, deleted, label), session
     )
 
 
@@ -597,23 +625,27 @@ def link_grant(
     """
     inserted = session.execute(link_grant_statement(resource_type, resource.id, user, link_id, granted_by)).all()
     activity_event_repository.insert_many_strict(
-        _link_grant_events(resource_type, resource.id, project, user, link_id, inserted), session
+        _link_grant_events(
+            resource_type, resource.id, project, user, link_id, inserted, _label(resource_type, resource)
+        ),
+        session,
     )
     return bool(inserted)
 
 
-def remove_link_grants(
+def remove_link_grants(  # noqa: PLR0913 - flat keyword args mirror the call sites; a wrapper only moves the count
     actor: User | None,
     resource_type: ResourceType,
     resource_id: Any,
     link_id: Any,
     project: str | None,
     session: Session,
+    label: str,
 ) -> None:
     """Delete every grant the link still owns, one audit event per row."""
     deleted = session.execute(remove_link_statement(resource_type, resource_id, link_id)).all()
     activity_event_repository.insert_many_strict(
-        _removal_events(resource_type, resource_id, project, actor, deleted), session
+        _removal_events(resource_type, resource_id, project, actor, deleted, label), session
     )
 
 
@@ -651,7 +683,7 @@ def load_class_grants(user: User, class_name: str) -> PreloadedGrants | None:
 # ---- async twins --------------------------------------------------------------------------------------------------
 
 
-async def agrant(
+async def agrant(  # noqa: PLR0913 - flat keyword args mirror the call sites; a wrapper only moves the count
     session: AsyncSession,
     *,
     resource_type: ResourceType,
@@ -669,7 +701,8 @@ async def agrant(
     existing = _check_users(found, ids)
     upserted = (await session.execute(upsert_statement(resource_type, resource_id, owner, ids, level))).all()
     await activity_event_repository.async_insert_many_strict(
-        _grant_events(resource_type, resource_id, project, owner, upserted, existing), session
+        _grant_events(resource_type, resource_id, project, owner, upserted, existing, _label(resource_type, resource)),
+        session,
     )
     return [row.principal_id for row in upserted]
 
@@ -689,32 +722,37 @@ async def arevoke(
     resource_id = resource.id
     deleted = (await session.execute(revoke_statement(resource_type, resource_id, ids))).all()
     await activity_event_repository.async_insert_many_strict(
-        _removal_events(resource_type, resource_id, project, owner, deleted), session
+        _removal_events(resource_type, resource_id, project, owner, deleted, _label(resource_type, resource)), session
     )
     return [row.principal_id for row in deleted]
 
 
 async def arevoke_permission(
-    actor: User | None, permission: Permission, session: AsyncSession, project: str | None
+    actor: User | None, permission: Permission, session: AsyncSession, project: str | None, label: str | None
 ) -> None:
     deleted = (await session.execute(revoke_permission_statement(permission.id))).all()
     await activity_event_repository.async_insert_many_strict(
-        _removal_events(permission.resource_type, permission.resource_id, project, actor, deleted), session
+        _removal_events(permission.resource_type, permission.resource_id, project, actor, deleted, label), session
     )
 
 
 async def aremove_all_grants(
-    actor: User | None, resource_type: ResourceType, resource_id: Any, project: str | None, session: AsyncSession
+    actor: User | None,
+    resource_type: ResourceType,
+    resource_id: Any,
+    project: str | None,
+    session: AsyncSession,
+    label: str,
 ) -> None:
     if not _uuids([resource_id]):
         return
     deleted = (await session.execute(remove_all_statement(resource_type, resource_id))).all()
     await activity_event_repository.async_insert_many_strict(
-        _removal_events(resource_type, resource_id, project, actor, deleted), session
+        _removal_events(resource_type, resource_id, project, actor, deleted, label), session
     )
 
 
-async def alink_grant(
+async def alink_grant(  # noqa: PLR0913 - flat keyword args mirror the call sites; a wrapper only moves the count
     session: AsyncSession,
     resource_type: ResourceType,
     resource: Any,
@@ -726,22 +764,26 @@ async def alink_grant(
     statement = link_grant_statement(resource_type, resource.id, user, link_id, granted_by)
     inserted = (await session.execute(statement)).all()
     await activity_event_repository.async_insert_many_strict(
-        _link_grant_events(resource_type, resource.id, project, user, link_id, inserted), session
+        _link_grant_events(
+            resource_type, resource.id, project, user, link_id, inserted, _label(resource_type, resource)
+        ),
+        session,
     )
     return bool(inserted)
 
 
-async def aremove_link_grants(
+async def aremove_link_grants(  # noqa: PLR0913 - flat keyword args mirror the call sites; a wrapper only moves the count
     actor: User | None,
     resource_type: ResourceType,
     resource_id: Any,
     link_id: Any,
     project: str | None,
     session: AsyncSession,
+    label: str,
 ) -> None:
     deleted = (await session.execute(remove_link_statement(resource_type, resource_id, link_id))).all()
     await activity_event_repository.async_insert_many_strict(
-        _removal_events(resource_type, resource_id, project, actor, deleted), session
+        _removal_events(resource_type, resource_id, project, actor, deleted, label), session
     )
 
 

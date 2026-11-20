@@ -160,6 +160,7 @@ APPS = sa.Table(
     sa.MetaData(),
     sa.Column("id", sa.Uuid, primary_key=True),
     sa.Column("project", sa.Text),
+    sa.Column("name", sa.String(120)),
     sa.Column("created_by", sa.JSON),
     sa.Column("shared", sa.Boolean),
     sa.Column("is_global", sa.Boolean),

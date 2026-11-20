@@ -503,6 +503,10 @@
             ],
             "title": "Attributes"
           },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -523,6 +527,17 @@
             ],
             "title": "Entity Id"
           },
+          "entity_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Label"
+          },
           "entity_type": {
             "anyOf": [
               {
@@ -541,15 +556,92 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "project_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Name"
           }
         },
         "required": [
           "id",
           "domain",
           "event_type",
+          "label",
+          "category",
           "created_at"
         ],
         "title": "ActivityEventListItem",
+        "type": "object"
+      },
+      "ActivityEventProjectMetadata": {
+        "properties": {
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "domains": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Domains",
+            "type": "array"
+          },
+          "event_types": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityEventTypeInfo"
+            },
+            "title": "Event Types",
+            "type": "array"
+          },
+          "recording_enabled": {
+            "title": "Recording Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "domains",
+          "event_types",
+          "categories",
+          "recording_enabled"
+        ],
+        "title": "ActivityEventProjectMetadata",
+        "type": "object"
+      },
+      "ActivityEventTypeInfo": {
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_type",
+          "label",
+          "category"
+        ],
+        "title": "ActivityEventTypeInfo",
         "type": "object"
       },
       "AdminGlobalDefaultRequest": {
@@ -23114,6 +23206,31 @@
         "title": "ProjectAccessUpdateRequest",
         "type": "object"
       },
+      "ProjectActivityEventsResponse": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityEventListItem"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/PaginationData"
+          },
+          "recording_enabled": {
+            "title": "Recording Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "pagination",
+          "recording_enabled"
+        ],
+        "title": "ProjectActivityEventsResponse",
+        "type": "object"
+      },
       "ProjectAssignedBudgetSummary": {
         "description": "Compact assigned project budget summary for project list responses.",
         "properties": {
@@ -24365,6 +24482,11 @@
             "title": "Name",
             "type": "string"
           },
+          "project_instance_id": {
+            "format": "uuid",
+            "title": "Project Instance Id",
+            "type": "string"
+          },
           "project_type": {
             "title": "Project Type",
             "type": "string"
@@ -24396,6 +24518,7 @@
         },
         "required": [
           "name",
+          "project_instance_id",
           "project_type",
           "user_count",
           "admin_count",
@@ -39448,6 +39571,11 @@
           },
           "name": {
             "title": "Name",
+            "type": "string"
+          },
+          "project_instance_id": {
+            "format": "uuid",
+            "title": "Project Instance Id",
             "type": "string"
           },
           "project_type": {
@@ -80075,6 +80203,252 @@
         "summary": "Register Repository",
         "tags": [
           "Projects"
+        ]
+      }
+    },
+    "/v1/projects/{project_instance_id}/activity-events": {
+      "get": {
+        "operationId": "list_project_activity_events_v1_projects__project_instance_id__activity_events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_instance_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Instance Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "domain",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Domain"
+            }
+          },
+          {
+            "in": "query",
+            "name": "event_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Event Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "in": "query",
+            "name": "actor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "title": "Sort Dir",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectActivityEventsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "List Project Activity Events",
+        "tags": [
+          "activity-events"
+        ]
+      }
+    },
+    "/v1/projects/{project_instance_id}/activity-events/metadata": {
+      "get": {
+        "operationId": "get_project_activity_events_metadata_v1_projects__project_instance_id__activity_events_metadata_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_instance_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Instance Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityEventProjectMetadata"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Project Activity Events Metadata",
+        "tags": [
+          "activity-events"
         ]
       }
     },

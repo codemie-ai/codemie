@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from codemie.rest_api.security.user import User
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.budget.project_budget_service import ProjectBudgetService
@@ -105,7 +106,7 @@ async def test_create_project_budget_blocked_when_no_enrichment():
             mock_repo.get_is_active_for_project = AsyncMock(return_value=None)
 
             with pytest.raises(ExtendedHTTPException) as exc_info:
-                await service.create_project_budget(session, _make_payload(), actor_id="admin-1")
+                await service.create_project_budget(session, _make_payload(), actor=User(id="admin-1"))
 
         assert exc_info.value.code == 422
         assert "enrichment" in exc_info.value.message.lower()
@@ -133,7 +134,7 @@ async def test_create_project_budget_blocked_when_project_inactive():
             mock_repo.get_is_active_for_project = AsyncMock(return_value=False)
 
             with pytest.raises(ExtendedHTTPException) as exc_info:
-                await service.create_project_budget(session, _make_payload(), actor_id="admin-1")
+                await service.create_project_budget(session, _make_payload(), actor=User(id="admin-1"))
 
         assert exc_info.value.code == 422
         assert "inactive" in exc_info.value.message.lower()
@@ -169,7 +170,7 @@ async def test_create_project_budget_proceeds_past_enrichment_guard_when_active(
             existing = SimpleNamespace(deleted_at=None)
             with patch.object(BudgetRepository, "get_by_name", new=AsyncMock(return_value=existing)):
                 with pytest.raises(ExtendedHTTPException) as exc_info:
-                    await service.create_project_budget(session, _make_payload(), actor_id="admin-1")
+                    await service.create_project_budget(session, _make_payload(), actor=User(id="admin-1"))
 
         # Enrichment guard passed — error is about duplicate name (409), not enrichment (422)
         assert exc_info.value.code == 409

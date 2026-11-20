@@ -157,14 +157,18 @@ class IdpSyncService:
     # --------------------------------------------------------------- events
 
     @staticmethod
-    def _emit(session: Session, actor: User, event_type: str, user_id: str, attributes: dict | None = None) -> None:
+    def _emit(session: Session, actor: User, event_type: str, user: UserDB, attributes: dict | None = None) -> None:
         activity_event_repository.insert(
             ActivityEventCreate(
                 domain=ActivityDomain.USER_MANAGEMENT,
                 event_type=event_type,
                 entity_type=ActivityEntityType.USER,
-                entity_id=user_id,
+                entity_id=user.id,
+                entity_label=user.name or user.email,
                 actor_id=actor.id,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
+                project_name=None,
                 attributes=attributes or {},
             ),
             session,
@@ -297,10 +301,10 @@ class IdpSyncService:
             IdpSyncService._add_missing_budget_shares(session, user.id, actor.id)
         attributes = {k: v for k, v in changes.items() if k in _AUDITED_FIELDS}
         if attributes:
-            IdpSyncService._emit(session, actor, UserManagementEvent.USER_UPDATED, user.id, attributes)
+            IdpSyncService._emit(session, actor, UserManagementEvent.USER_UPDATED, user, attributes)
         if reactivated:
             # the same event as the administrator reactivation, so the audit sees both paths alike
-            IdpSyncService._emit(session, actor, UserManagementEvent.USER_REACTIVATED, user.id)
+            IdpSyncService._emit(session, actor, UserManagementEvent.USER_REACTIVATED, user)
 
     @staticmethod
     def _targets(user: UserDB, req: IdpUserUpsertRequest) -> _RoleTargets:
@@ -331,7 +335,7 @@ class IdpSyncService:
                 attributes.update(
                     {k: v for k, v in (("is_maintainer", req.is_maintainer), ("is_auditor", req.is_auditor)) if v}
                 )
-                IdpSyncService._emit(session, actor, UserManagementEvent.USER_CREATED, user.id, attributes)
+                IdpSyncService._emit(session, actor, UserManagementEvent.USER_CREATED, user, attributes)
                 return IdpSyncService._response_for(session, user), True
             user = user_repository.get_by_id(session, req.id)
             if user is None:
@@ -501,7 +505,7 @@ class IdpSyncService:
         if user.is_maintainer:
             IdpSyncService._ensure_not_last_maintainer(session, user_id, "deactivate")
         user_repository.soft_delete(session, user_id)
-        IdpSyncService._emit(session, actor, UserManagementEvent.USER_DEACTIVATED, user_id)
+        IdpSyncService._emit(session, actor, UserManagementEvent.USER_DEACTIVATED, user)
         return True
 
     @staticmethod

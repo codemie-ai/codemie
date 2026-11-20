@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from types import SimpleNamespace
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 from sqlalchemy import func
@@ -289,7 +289,11 @@ class ProjectService:
                 event_type=ProjectManagementEvent.PROJECT_CREATED,
                 entity_type=ActivityEntityType.PROJECT,
                 entity_id=validated_name,
+                entity_label=display_name or validated_name,
                 actor_id=actor.id,
+                project_name=validated_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -318,7 +322,11 @@ class ProjectService:
                     event_type=ProjectManagementEvent.PROJECT_UPDATED,
                     entity_type=ActivityEntityType.PROJECT,
                     entity_id=project.name,
+                    entity_label=project.display_name or project.name,
                     actor_id=actor.id,
+                    project_name=project.name,
+                    actor_email=actor.email,
+                    actor_display_name=actor.name or None,
                 ),
                 session,
             )
@@ -405,18 +413,7 @@ class ProjectService:
                 value_fields=_PROJECT_AUDIT_VALUE_FIELDS,
                 name_only_fields=_PROJECT_AUDIT_NAME_ONLY_FIELDS,
             )
-            if change_attributes["updated_fields"]:
-                activity_event_repository.insert(
-                    ActivityEventCreate(
-                        domain=ActivityDomain.PROJECT_MANAGEMENT,
-                        event_type=ProjectManagementEvent.PROJECT_UPDATED,
-                        entity_type=ActivityEntityType.PROJECT,
-                        entity_id=project.name,
-                        actor_id=user.id,
-                        attributes=change_attributes,
-                    ),
-                    session,
-                )
+            cls._record_project_update_activity(session, user, project, resolved_display_name, change_attributes)
             session.commit()
             session.refresh(project)
             logger.info(
@@ -468,7 +465,11 @@ class ProjectService:
                     event_type=ProjectManagementEvent.PROJECT_OWNERSHIP_CHANGED,
                     entity_type=ActivityEntityType.PROJECT,
                     entity_id=project.name,
+                    entity_label=project.display_name or project.name,
                     actor_id=user.id,
+                    project_name=project.name,
+                    actor_email=user.email,
+                    actor_display_name=user.name or None,
                     attributes={
                         "previous_owner_username": previous_owner_username,
                         "new_owner_username": new_owner.username,
@@ -488,6 +489,56 @@ class ProjectService:
                 f"new_owner={new_owner_id}, by={user.id}, domain=project_management"
             )
             return project
+
+    @staticmethod
+    def _record_project_update_activity(
+        session: Session,
+        user: User,
+        project: Application,
+        resolved_display_name: str | None,
+        change_attributes: dict[str, Any],
+    ) -> None:
+        """Append PROJECT_UPDATED, plus a Budget-category event when spend enforcement changed."""
+        if change_attributes["updated_fields"]:
+            activity_event_repository.insert(
+                ActivityEventCreate(
+                    domain=ActivityDomain.PROJECT_MANAGEMENT,
+                    event_type=ProjectManagementEvent.PROJECT_UPDATED,
+                    entity_type=ActivityEntityType.PROJECT,
+                    entity_id=project.name,
+                    entity_label=resolved_display_name or project.name,
+                    actor_id=user.id,
+                    project_name=project.name,
+                    actor_email=user.email,
+                    actor_display_name=user.name or None,
+                    attributes=change_attributes,
+                ),
+                session,
+            )
+            if "enforce_member_spend_limits" in change_attributes["updated_fields"]:
+                # A distinct Budget-category event, so a spend-enforcement flip is findable without opening
+                # every project.updated row.
+                activity_event_repository.insert(
+                    ActivityEventCreate(
+                        domain=ActivityDomain.PROJECT_MANAGEMENT,
+                        event_type=ProjectManagementEvent.MEMBER_SPEND_ENFORCEMENT_UPDATED,
+                        entity_type=ActivityEntityType.PROJECT,
+                        entity_id=project.name,
+                        entity_label=resolved_display_name or project.name,
+                        actor_id=user.id,
+                        project_name=project.name,
+                        actor_email=user.email,
+                        actor_display_name=user.name or None,
+                        attributes={
+                            key: change_attributes[key]
+                            for key in (
+                                "previous_enforce_member_spend_limits",
+                                "new_enforce_member_spend_limits",
+                            )
+                        },
+                    ),
+                    session,
+                )
 
     @staticmethod
     def _require_cli_analytics_write(user: User, cli_analytics_enabled: bool | None) -> None:
@@ -740,7 +791,7 @@ class ProjectService:
         session: Session,
         project_name: str,
         project_type: str,
-        actor_id: str,
+        actor: User,
         action: str,
         creator_id: str | None = None,
     ) -> None:
@@ -752,7 +803,7 @@ class ProjectService:
             session: Database session (caller commits/rolls back)
             project_name: Name of the project to delete
             project_type: Project type string (used for personal-project guard)
-            actor_id: ID of the requesting user (for logging)
+            actor: Requesting user (for logging and the activity trail)
             action: HTTP method+path string for logging (e.g., "DELETE /v1/projects/foo")
             creator_id: ID of the project creator — excluded from the assigned-users check
 
@@ -763,7 +814,7 @@ class ProjectService:
         """
         if project_type == Application.ProjectType.PERSONAL:
             http_method = action.split()[0] if action else "UNKNOWN"
-            logger.warning(f"personal_project_delete_blocked: user_id={actor_id}, method={http_method}")
+            logger.warning(f"personal_project_delete_blocked: user_id={actor.id}, method={http_method}")
             raise ExtendedHTTPException(code=403, message=cls.ERRORS.PERSONAL_DELETE)
 
         assigned = [
@@ -772,7 +823,7 @@ class ProjectService:
         if assigned:
             logger.warning(
                 f"project_delete_blocked_by_assigned_users: project={project_name}, "
-                f"user_count={len(assigned)}, by={actor_id}"
+                f"user_count={len(assigned)}, by={actor.id}"
             )
             raise ExtendedHTTPException(
                 code=409,
@@ -793,19 +844,29 @@ class ProjectService:
         affected_group_ids = project_budget_group_repository.clear_project_on_deleted_groups(session, project_name)
 
         cls._lock_project_or_404(session, project_name)
+        project = application_repository.get_active_by_name(session, project_name)
+        if project is None:
+            raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
+        project_name_snapshot = project.name
+        project_instance_id = project.project_instance_id
         RepositoryRegistrationRepository.delete_for_project(session, project_name)
-        application_repository.delete_by_name(session, project_name)
+        application_repository.delete_by_name(session, project_name_snapshot)
         if creator_id is not None:
-            user_project_repository.remove_project(session, creator_id, project_name)
-            ProjectAssignmentService._sync_project_budget_member_removed(session, project_name, creator_id)
+            user_project_repository.remove_project(session, creator_id, project_name_snapshot)
+            ProjectAssignmentService._sync_project_budget_member_removed(session, project_name_snapshot, creator_id)
             invalidate_user_from_cache(creator_id)
         activity_event_repository.insert(
             ActivityEventCreate(
                 domain=ActivityDomain.PROJECT_MANAGEMENT,
                 event_type=ProjectManagementEvent.PROJECT_DELETED,
                 entity_type=ActivityEntityType.PROJECT,
-                entity_id=project_name,
-                actor_id=actor_id,
+                entity_id=project_name_snapshot,
+                entity_label=project_name_snapshot,
+                actor_id=actor.id,
+                project_name=project_name_snapshot,
+                project_instance_id=project_instance_id,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
                 attributes={
                     "affected_budgets": affected_budget_ids,
                     "affected_budget_groups": affected_group_ids,
@@ -814,7 +875,7 @@ class ProjectService:
             ),
             session,
         )
-        logger.info(f"project_deleted: project={project_name}, by={actor_id}")
+        logger.info(f"project_deleted: project={project_name}, by={actor.id}")
 
     @staticmethod
     def validate_allowed_models(allowed_models: list[str] | None) -> list[str] | None:
@@ -1025,7 +1086,7 @@ class ProjectService:
                 )
 
             return cls._persist_allowed_models(
-                session, project_name, validated_models, effective_default_model, actor_id=user.id
+                session, project_name, validated_models, effective_default_model, actor=user
             )
 
     @classmethod
@@ -1035,7 +1096,7 @@ class ProjectService:
             project = cls._find_project(session, project_name)
             cls._check_allowed_models_authorization(project, user)
 
-            return cls._persist_allowed_models(session, project_name, None, None, actor_id=user.id)
+            return cls._persist_allowed_models(session, project_name, None, None, actor=user)
 
     @staticmethod
     def _get_available_chat_model_ids(all_models: list) -> set[str]:
@@ -1107,7 +1168,7 @@ class ProjectService:
         project_name: str,
         allowed_models: list[str] | None,
         default_model: str | None,
-        actor_id: str,
+        actor: User,
     ) -> Application:
         """Lock the project row and persist allowed_models/default_model.
 
@@ -1135,7 +1196,11 @@ class ProjectService:
                     event_type=ProjectManagementEvent.PROJECT_UPDATED,
                     entity_type=ActivityEntityType.PROJECT,
                     entity_id=project.name,
-                    actor_id=actor_id,
+                    entity_label=project.display_name or project.name,
+                    actor_id=actor.id,
+                    project_name=project.name,
+                    actor_email=actor.email,
+                    actor_display_name=actor.name or None,
                     attributes=change_attributes,
                 ),
                 session,
@@ -1151,7 +1216,7 @@ class ProjectService:
             raise ExtendedHTTPException(code=500, message="Failed to update project allowed models")
 
         logger.info(
-            f"project_updated: project={project.name!r}, by={actor_id}, "
+            f"project_updated: project={project.name!r}, by={actor.id}, "
             f"updated_fields={change_attributes['updated_fields']}, domain=project_management"
         )
         return project

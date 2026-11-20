@@ -14,7 +14,11 @@
 
 import pytest
 from pydantic import ValidationError
-from codemie.service.activity.activity_models import ActivityEventCreate
+from codemie.service.activity.activity_models import (
+    ActivityDomain,
+    ActivityEventCreate,
+    ProjectManagementEvent,
+)
 
 
 def test_entity_pair_both_set_is_valid():
@@ -52,3 +56,39 @@ def test_entity_id_set_without_entity_type_raises():
             entity_type=None,
             entity_id="abc-123",
         )
+
+
+def test_activity_event_create_accepts_project_and_actor_snapshot_fields():
+    event = ActivityEventCreate(
+        domain=ActivityDomain.PROJECT_MANAGEMENT,
+        event_type=ProjectManagementEvent.PROJECT_CREATED,
+        project_name="acme",
+        actor_email="a@b.com",
+        actor_display_name="A B",
+    )
+    assert event.project_name == "acme"
+    assert event.actor_email == "a@b.com"
+    assert event.actor_display_name == "A B"
+
+
+def test_activity_event_create_defaults_project_and_actor_snapshot_to_none():
+    event = ActivityEventCreate(domain="d", event_type="e")
+    assert event.project_name is None
+    assert event.actor_email is None
+    assert event.actor_display_name is None
+
+
+def test_entity_label_without_entity_type_raises():
+    with pytest.raises(ValidationError, match="entity_label"):
+        ActivityEventCreate(
+            domain="user_management",
+            event_type="user.created",
+            entity_label="x",
+        )
+
+
+def test_actor_id_without_actor_email_raises_but_empty_email_is_allowed():
+    with pytest.raises(ValidationError, match="actor_email is required"):
+        ActivityEventCreate(domain="user_management", event_type="user.updated", actor_id="u-1")
+    assert ActivityEventCreate(domain="user_management", event_type="user.updated", actor_id="u-1", actor_email="")
+    assert ActivityEventCreate(domain="user_management", event_type="user.updated")

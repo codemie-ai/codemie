@@ -1765,9 +1765,7 @@ async def update_config(
     from codemie.rest_api.routers.customer_config import _handle_threshold_hook
 
     for component_id, payload in sections:
-        await _handle_threshold_hook(
-            component_id, MarketplaceModerationEvent.THRESHOLD_UPDATED, getattr(user, "id", None), payload
-        )
+        await _handle_threshold_hook(component_id, MarketplaceModerationEvent.THRESHOLD_UPDATED, user, payload)
     return {"ok": True, "entity_kind": kind.value, "config": new_cfg.to_dict()}
 
 
@@ -2157,10 +2155,10 @@ async def get_entity_prompt(
     the largest share of what F-18 exposed. Only how many there are.
     """
     _reject_non_assistant(kind, "prompt")
-    return await run_in_threadpool(_get_assistant_prompt, eid, _require_actor(user), getattr(user, "id", None))
+    return await run_in_threadpool(_get_assistant_prompt, eid, _require_actor(user), user)
 
 
-def _get_assistant_prompt(aid: str, actor: str, actor_id: Optional[str]) -> EntityPromptResponse:
+def _get_assistant_prompt(aid: str, actor: str, user: User) -> EntityPromptResponse:
     assistant = _load_assistant_or_404(aid)
     logger.info(
         "[marketplace_management] system prompt of assistant %s read by %s",
@@ -2174,7 +2172,11 @@ def _get_assistant_prompt(aid: str, actor: str, actor_id: Optional[str]) -> Enti
                 event_type=MarketplaceModerationEvent.ASSISTANT_PROMPT_VIEWED,
                 entity_type=ActivityEntityType.ASSISTANT,
                 entity_id=aid,
-                actor_id=actor_id,
+                entity_label=assistant.name or None,
+                project_name=assistant.project,
+                actor_id=user.id,
+                actor_email=user.email,
+                actor_display_name=user.name or None,
                 attributes={"actor": actor},
             ),
             session,

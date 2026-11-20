@@ -33,9 +33,9 @@ from codemie.service.permission.named_grant_types import NamedGrantDescriptor, R
 
 
 def build_resolve_statement() -> sa.Select:
-    """One SELECT of scalar subqueries on ``apps.id = :rid``: project, creator id and the removal right.
+    """One SELECT of scalar subqueries on ``apps.id = :rid``: project, name, creator id and the removal right.
 
-    Without an app row (an orphan grant) project and creator are NULL and only the administrator
+    Without an app row (an orphan grant) project, name and creator are NULL and only the administrator
     branch (``orphan_grant_remover``) can hold; with one, the sharing rule decides.
     """
     apps = HostedApplications.__table__
@@ -43,11 +43,14 @@ def build_resolve_statement() -> sa.Select:
     actor = sa.bindparam("actor", type_=sa.String)
     by_id = apps.c.id == rid
     project = sa.select(apps.c.project).where(by_id).scalar_subquery()
+    name = sa.select(apps.c.name).where(by_id).scalar_subquery()
     creator = sa.select(apps.c.created_by["id"].as_string()).where(by_id).scalar_subquery()
     with_app = sa.exists(sa.select(apps.c.id).where(by_id, sharing_manager(apps, actor)))
     orphan = sa.and_(orphan_grant_remover(actor), ~sa.exists(sa.select(apps.c.id).where(by_id)))
     may_remove = sa.or_(orphan, with_app)
-    return sa.select(project.label("project"), creator.label("creator_id"), may_remove.label("may_remove"))
+    return sa.select(
+        project.label("project"), name.label("name"), creator.label("creator_id"), may_remove.label("may_remove")
+    )
 
 
 MANAGERS_ONLY = (
@@ -57,7 +60,9 @@ MANAGERS_ONLY = (
 
 
 def _resolved(row: Any) -> ResolvedResource:
-    return ResolvedResource(project=row.project, creator_id=row.creator_id, may_remove=bool(row.may_remove))
+    return ResolvedResource(
+        project=row.project, creator_id=row.creator_id, may_remove=bool(row.may_remove), label=row.name
+    )
 
 
 def resolve(session: Any, resource_id: Any, actor: Any) -> ResolvedResource:
@@ -99,5 +104,6 @@ DESCRIPTOR = NamedGrantDescriptor(
     is_owner=is_owner,
     not_owner_message=MANAGERS_ONLY,
     audit_attributes=audit_attributes,
+    label_of=lambda app: app.name,
     recipient=grant_recipient,
 )

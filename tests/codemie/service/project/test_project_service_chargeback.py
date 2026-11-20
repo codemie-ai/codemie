@@ -23,6 +23,13 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.project.project_service import ProjectService
 
 
+def _make_admin_user() -> MagicMock:
+    user = MagicMock(id="admin-1", is_admin=True)
+    user.email = "admin-1@example.com"
+    user.name = "Admin One"
+    return user
+
+
 class TestProjectServiceChargebackEnabled:
     @patch("codemie.service.project.project_service.customer_config", create=True)
     @patch("codemie.service.project.project_service.application_repository")
@@ -74,7 +81,7 @@ class TestProjectServiceChargebackEnabled:
             patch("codemie.service.project.project_service.SettingsService"),
         ):
             ProjectService.update_project(
-                user=MagicMock(id="admin-1", is_admin=True),
+                user=_make_admin_user(),
                 project_name="my-project",
                 chargeback_enabled=True,
             )
@@ -134,7 +141,7 @@ class TestProjectServiceChargebackAttribution:
         ):
             mock_customer_config.is_feature_enabled.return_value = True
             ProjectService.update_project(
-                user=MagicMock(id="admin-1", is_admin=True),
+                user=_make_admin_user(),
                 project_name="my-project",
                 **kwargs,
             )
@@ -212,7 +219,7 @@ class TestProjectServiceChargebackFeatureGate:
             pytest.raises(ExtendedHTTPException) as exc_info,
         ):
             ProjectService.update_project(
-                user=MagicMock(id="admin-1", is_admin=True),
+                user=_make_admin_user(),
                 project_name="my-project",
                 chargeback_attribution="project",
             )
@@ -278,7 +285,7 @@ class TestProjectServiceChargebackAttributionValidation:
             patch("codemie.service.project.project_service.SettingsService"),
         ):
             ProjectService.update_project(
-                user=MagicMock(id="admin-1", is_admin=True),
+                user=_make_admin_user(),
                 project_name="my-project",
                 chargeback_attribution=chargeback_attribution,
             )
@@ -442,7 +449,7 @@ class TestProjectServiceChargebackAttributionUnrelatedUpdate:
             patch("codemie.service.project.project_service.SettingsService"),
         ):
             ProjectService.update_project(
-                user=MagicMock(id="admin-1", is_admin=True),
+                user=_make_admin_user(),
                 project_name="my-project",
                 description="new desc",
             )
@@ -509,7 +516,7 @@ class TestProjectServiceCostCentersFeatureGate:
             pytest.raises(ExtendedHTTPException) as exc_info,
         ):
             ProjectService.update_project(
-                user=MagicMock(id="admin-1", is_admin=True),
+                user=_make_admin_user(),
                 project_name="my-project",
                 chargeback_attribution="cost_center",
             )
@@ -569,7 +576,7 @@ class TestProjectServiceCostCentersFeatureGate:
             patch("codemie.service.project.project_service.SettingsService"),
         ):
             ProjectService.update_project(
-                user=MagicMock(id="admin-1", is_admin=True),
+                user=_make_admin_user(),
                 project_name="my-project",
                 chargeback_attribution="project",
             )
@@ -630,7 +637,7 @@ class TestProjectServiceChargebackClearCostCenter:
             pytest.raises(ExtendedHTTPException) as exc_info,
         ):
             ProjectService.update_project(
-                user=MagicMock(id="admin-1", is_admin=True),
+                user=_make_admin_user(),
                 project_name="my-project",
                 clear_cost_center=True,
             )
@@ -685,7 +692,7 @@ class TestProjectServiceChargebackClearCostCenter:
             patch("codemie.service.project.project_service.SettingsService"),
         ):
             ProjectService.update_project(
-                user=MagicMock(id="admin-1", is_admin=True),
+                user=_make_admin_user(),
                 project_name="my-project",
                 clear_cost_center=True,
                 chargeback_attribution="project",

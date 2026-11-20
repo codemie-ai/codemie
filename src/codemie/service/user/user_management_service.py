@@ -205,6 +205,7 @@ class UserManagementService:
         is_admin: bool = False,
         is_maintainer: bool = False,
         is_auditor: bool = False,
+        actor: Optional[User] = None,
     ) -> UserDB:
         """Create a local user (admin only)
 
@@ -216,6 +217,7 @@ class UserManagementService:
             name: Display name
             is_admin: Grant admin status
             is_auditor: Grant auditor status
+            actor: Admin creating the user; snapshotted on the event. None for system-initiated creation (bootstrap)
 
         Returns:
             Created UserDB
@@ -261,6 +263,11 @@ class UserManagementService:
                 event_type=UserManagementEvent.USER_CREATED,
                 entity_type=ActivityEntityType.USER,
                 entity_id=user.id,
+                entity_label=user.name or user.email,
+                project_name=None,
+                actor_id=actor.id if actor else None,
+                actor_email=actor.email if actor else None,
+                actor_display_name=(actor.name or None) if actor else None,
             ),
             session,
         )
@@ -356,13 +363,13 @@ class UserManagementService:
         )
 
     @staticmethod
-    def update_user(session: Session, user_id: str, actor_user_id: str, **fields) -> Optional[UserDB]:
+    def update_user(session: Session, user_id: str, actor_user: User, **fields) -> Optional[UserDB]:
         """Update user fields (admin action)
 
         Args:
             session: Database session
             user_id: Target user UUID
-            actor_user_id: User performing the action (for audit)
+            actor_user: User performing the action (for audit)
             **fields: Fields to update
 
         Returns:
@@ -375,7 +382,7 @@ class UserManagementService:
             role_detail = ", ".join(f"{k}={v}" for k, v in role_fields.items())
             suffix = f", {role_detail}" if role_detail else ""
             logger.info(
-                f"user_updated: actor_user_id={actor_user_id}, target_user_id={user_id}{suffix}, domain=user_management"
+                f"user_updated: actor_user_id={actor_user.id}, target_user_id={user_id}{suffix}, domain=user_management"
             )
             activity_event_repository.insert(
                 ActivityEventCreate(
@@ -383,8 +390,12 @@ class UserManagementService:
                     event_type=UserManagementEvent.USER_UPDATED,
                     entity_type=ActivityEntityType.USER,
                     entity_id=user_id,
-                    actor_id=actor_user_id,
+                    entity_label=user.name or user.email,
+                    actor_id=actor_user.id,
                     attributes=dict(fields) or None,
+                    project_name=None,
+                    actor_email=actor_user.email,
+                    actor_display_name=actor_user.name or None,
                 ),
                 session,
             )
@@ -392,13 +403,13 @@ class UserManagementService:
         return user
 
     @staticmethod
-    def deactivate_user(session: Session, user_id: str, actor_user_id: str) -> UserDB:
+    def deactivate_user(session: Session, user_id: str, actor_user: User) -> UserDB:
         """Deactivate (soft delete) user
 
         Args:
             session: Database session
             user_id: Target user UUID
-            actor_user_id: User performing the action
+            actor_user: User performing the action
 
         Returns:
             Deactivated UserDB
@@ -410,11 +421,11 @@ class UserManagementService:
         if not user:
             raise ExtendedHTTPException(code=404, message=_USER_NOT_FOUND)
 
-        UserManagementService._check_status_change_allowed(session, user, actor_user_id, "deactivate")
+        UserManagementService._check_status_change_allowed(session, user, actor_user.id, "deactivate")
 
         if user.is_maintainer and user_repository.count_active_maintainers(session) <= 1:
             logger.warning(
-                f"blocked_last_maintainer_deactivation: actor_user_id={actor_user_id}, "
+                f"blocked_last_maintainer_deactivation: actor_user_id={actor_user.id}, "
                 f"target_user_id={user_id}, action=deactivate, domain=user_management"
             )
             raise ExtendedHTTPException(
@@ -427,7 +438,7 @@ class UserManagementService:
             count = user_repository.count_active_admins(session)
             if count <= 1:
                 msg = (
-                    f"blocked_last_admin_deactivation: actor_user_id={actor_user_id}, "
+                    f"blocked_last_admin_deactivation: actor_user_id={actor_user.id}, "
                     f"target_user_id={user_id}, action=deactivate, "
                     f"timestamp={datetime.now(UTC)}, domain=user_management"
                 )
@@ -445,7 +456,11 @@ class UserManagementService:
                 event_type=UserManagementEvent.USER_DEACTIVATED,
                 entity_type=ActivityEntityType.USER,
                 entity_id=user_id,
-                actor_id=actor_user_id,
+                entity_label=user.name or user.email,
+                actor_id=actor_user.id,
+                project_name=None,
+                actor_email=actor_user.email,
+                actor_display_name=actor_user.name or None,
             ),
             session,
         )
@@ -491,7 +506,7 @@ class UserManagementService:
             )
 
     @staticmethod
-    def list_users(
+    def list_users(  # noqa: PLR0913 - flat keyword args mirror the call sites; a wrapper only moves the count
         session: Session,
         requesting_user_id: str,
         is_project_admin: bool,
@@ -790,7 +805,7 @@ class UserManagementService:
             return user_detail
 
     @staticmethod
-    def create_local_user_with_flow(
+    def create_local_user_with_flow(  # noqa: PLR0913 - flat keyword args mirror the call sites; a wrapper only moves the count
         email: str,
         username: str,
         password: str,
@@ -799,6 +814,7 @@ class UserManagementService:
         is_maintainer: bool = False,
         is_auditor: bool = False,
         actor_user_id: str = "system",
+        actor: Optional[User] = None,
     ) -> CodeMieUserDetail:
         """Create local user (admin action)
 
@@ -813,6 +829,7 @@ class UserManagementService:
             is_admin: Grant admin status
             is_auditor: Grant auditor status
             actor_user_id: User performing the action
+            actor: The acting admin, snapshotted on the USER_CREATED event
 
         Returns:
             CodeMieUserDetail with full user information
@@ -836,6 +853,7 @@ class UserManagementService:
                 is_admin=is_admin,
                 is_maintainer=is_maintainer,
                 is_auditor=is_auditor,
+                actor=actor,
             )
 
             # Extract values before commit to avoid expired attribute access
@@ -1289,13 +1307,13 @@ class UserManagementService:
         return normalized
 
     @staticmethod
-    def _handle_deactivation_flow(session: Session, user_id: str, actor_user_id: str) -> CodeMieUserDetail:
+    def _handle_deactivation_flow(session: Session, user_id: str, actor_user: User) -> CodeMieUserDetail:
         """Handle user deactivation as separate flow (complexity reduction).
 
         Args:
             session: Database session
             user_id: Target user UUID
-            actor_user_id: User performing the action
+            actor_user: User performing the action
 
         Returns:
             CodeMieUserDetail after deactivation
@@ -1303,20 +1321,20 @@ class UserManagementService:
         Raises:
             ExtendedHTTPException: 404, 403 from deactivate_user
         """
-        UserManagementService.deactivate_user(session, user_id, actor_user_id)
+        UserManagementService.deactivate_user(session, user_id, actor_user)
         session.commit()
-        UserManagementService._after_status_change(user_id, actor_user_id, "user_deactivated", cleanup_mcp=True)
+        UserManagementService._after_status_change(user_id, actor_user.id, "user_deactivated", cleanup_mcp=True)
 
         # Story 10: Get actor's admin status for visibility filtering
-        actor = user_repository.get_by_id(session, actor_user_id)
+        actor = user_repository.get_by_id(session, actor_user.id)
         actor_is_admin = actor.is_admin if actor else False
 
-        return UserManagementService.get_user_with_relationships(session, user_id, actor_user_id, actor_is_admin)
+        return UserManagementService.get_user_with_relationships(session, user_id, actor_user.id, actor_is_admin)
 
     @staticmethod
     def update_user_fields(
         user_id: str,
-        actor_user_id: str,
+        actor_user: User,
         name: Optional[str] = None,
         picture: Optional[str] = None,
         email: Optional[str] = None,
@@ -1325,8 +1343,8 @@ class UserManagementService:
         is_admin: Optional[bool] = None,
         is_maintainer: Optional[bool] = None,
         is_auditor: Optional[bool] = None,
-        is_active: Optional[bool] = None,
-        project_limit: Optional[int] = None,
+        is_active: bool | None = None,
+        project_limit: int | None = None,
         project_limit_provided: bool = False,
     ) -> CodeMieUserDetail:
         """Update user fields (admin action)
@@ -1346,7 +1364,7 @@ class UserManagementService:
 
         Args:
             user_id: Target user UUID
-            actor_user_id: User performing the action
+            actor_user: User performing the action
             name: New name
             picture: New picture URL
             email: New email (Story 8: local mode only)
@@ -1367,6 +1385,7 @@ class UserManagementService:
         """
         from codemie.clients.postgres import get_session
 
+        actor_user_id = actor_user.id
         with get_session() as session:
             # Handle deactivation as separate flow (early exit reduces complexity)
             if is_active is not None:
@@ -1375,7 +1394,7 @@ class UserManagementService:
                         code=400,
                         message="Cannot reactivate user via update. Use POST /v1/admin/users/{user_id}/reactivate.",
                     )
-                return UserManagementService._handle_deactivation_flow(session, user_id, actor_user_id)
+                return UserManagementService._handle_deactivation_flow(session, user_id, actor_user)
 
             # Granting a platform role to a deactivated user is refused; revoking stays allowed for cleanup
             if is_admin or is_maintainer or is_auditor:
@@ -1433,7 +1452,7 @@ class UserManagementService:
                     ),
                 )
 
-            updated_user = UserManagementService.update_user(session, user_id, actor_user_id, **updates)
+            updated_user = UserManagementService.update_user(session, user_id, actor_user, **updates)
 
             if not updated_user:
                 raise ExtendedHTTPException(code=404, message=_USER_NOT_FOUND)
@@ -1449,14 +1468,14 @@ class UserManagementService:
             return UserManagementService.get_user_with_relationships(session, user_id, actor_user_id, actor_is_admin)
 
     @staticmethod
-    def deactivate_user_flow(user_id: str, actor_user_id: str) -> dict[str, str]:
+    def deactivate_user_flow(user_id: str, actor_user: User) -> dict[str, str]:
         """Deactivate user (admin action)
 
         Handles complete user deactivation flow with session management.
 
         Args:
             user_id: Target user UUID
-            actor_user_id: User performing the action
+            actor_user: User performing the action
 
         Returns:
             Dict with "message"
@@ -1467,14 +1486,14 @@ class UserManagementService:
         from codemie.clients.postgres import get_session
 
         with get_session() as session:
-            UserManagementService.deactivate_user(session, user_id, actor_user_id)
+            UserManagementService.deactivate_user(session, user_id, actor_user)
             session.commit()
-            UserManagementService._after_status_change(user_id, actor_user_id, "user_deactivated", cleanup_mcp=True)
+            UserManagementService._after_status_change(user_id, actor_user.id, "user_deactivated", cleanup_mcp=True)
 
             return {"message": "User deactivated successfully"}
 
     @staticmethod
-    def reactivate_user_flow(user_id: str, actor_user_id: str) -> CodeMieUserDetail:
+    def reactivate_user_flow(user_id: str, actor_user: User) -> CodeMieUserDetail:
         """Reactivate user (admin action)
 
         The USER_REACTIVATED event is staged in the same session as the reactivation and
@@ -1483,7 +1502,7 @@ class UserManagementService:
 
         Args:
             user_id: Target user UUID
-            actor_user_id: User performing the action
+            actor_user: User performing the action
 
         Returns:
             CodeMieUserDetail of the reactivated user
@@ -1494,7 +1513,8 @@ class UserManagementService:
         from codemie.clients.postgres import get_session
 
         with get_session() as session:
-            UserManagementService.reactivate_user(session, user_id, actor_user_id)
+            UserManagementService.reactivate_user(session, user_id, actor_user.id)
+            target = user_repository.get_by_id(session, user_id)
 
             activity_event_repository.insert(
                 ActivityEventCreate(
@@ -1502,17 +1522,21 @@ class UserManagementService:
                     event_type=UserManagementEvent.USER_REACTIVATED,
                     entity_type=ActivityEntityType.USER,
                     entity_id=user_id,
-                    actor_id=actor_user_id,
+                    entity_label=target.name or target.email,
+                    project_name=None,
+                    actor_id=actor_user.id,
+                    actor_email=actor_user.email,
+                    actor_display_name=actor_user.name or None,
                 ),
                 session,
             )
             session.commit()
-            UserManagementService._after_status_change(user_id, actor_user_id, "user_reactivated")
+            UserManagementService._after_status_change(user_id, actor_user.id, "user_reactivated")
 
-            actor = user_repository.get_by_id(session, actor_user_id)
+            actor = user_repository.get_by_id(session, actor_user.id)
             actor_is_admin = is_admin_or_maintainer(actor) if actor else False
 
-            return UserManagementService.get_user_with_relationships(session, user_id, actor_user_id, actor_is_admin)
+            return UserManagementService.get_user_with_relationships(session, user_id, actor_user.id, actor_is_admin)
 
     @staticmethod
     def _after_status_change(user_id: str, actor_user_id: str, event: str, *, cleanup_mcp: bool = False) -> None:

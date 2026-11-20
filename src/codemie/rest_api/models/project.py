@@ -191,6 +191,7 @@ class ProjectDetailResponse(_CliAnalyticsViewMixin):
     """Project detail response with member list (Story 16)"""
 
     name: str
+    project_instance_id: UUID
     display_name: Optional[str] = None
     description: Optional[str] = None
     project_type: str

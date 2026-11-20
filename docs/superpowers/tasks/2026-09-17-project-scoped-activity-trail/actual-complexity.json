@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-09-18T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 41,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the shared activity-event core (activity_repository.py, activity_models.py, activity_event_service.py) plus ~14 call sites across four independent domains (project, budget, user, customer_config) to populate the new project/actor snapshot at every emit site." },
+    { "dimension": "technical_risk", "reason": "Established emit pattern is reused (low risk), but the new project_admin_or_admin_or_maintainer_access dependency in authentication.py adds a new authorization branch (project-admin check via user_project_repository.ais_admin) that did not exist before -- an authz-layer change, bumped per the auth red flag." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 41 files changed (22 non-test source files enumerated plus 19 test files), mapping to the XXL band (16+) of the actual-mode file-count formula." },
+    { "dimension": "affected_layers", "reason": "Spans API (new project_activity_events_router.py), Service (activity_event_service.py, budget/project/user services), and DB-Persistence (new migration adding project_name/actor_email/actor_display_name columns + index on activity_events) -- three layers including a schema migration." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped to XXL: touches the shared activity-event utility and affects multiple independent workflows (project, budget, user, customer_config domains) in a single change.",
+    "Technical Risk bumped to L: new authorization dependency (project_admin_or_admin_or_maintainer_access) added to authentication.py -- affects authentication/authorization surface."
+  ],
+  "split_recommendation": null
+}

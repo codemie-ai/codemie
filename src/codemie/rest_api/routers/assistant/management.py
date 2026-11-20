@@ -386,7 +386,7 @@ def _trigger_re_review(assistant: Assistant, assistant_id: str, user: User) -> N
             actor=str(getattr(user, "email", None) or getattr(user, "id", "")),
             expected_version=assistant.marketplace_version,
             decided_by_id=str(user.id) if getattr(user, "id", None) else None,
-            decided_by_email=getattr(user, "email", None),
+            decided_by_email=getattr(user, "email", None) or getattr(user, "username", None),
             gate_findings=snapshot or None,
         )
     except MarketplaceConflictError as _ce:

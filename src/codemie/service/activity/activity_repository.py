@@ -25,16 +25,17 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import asc, delete, desc, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, select
 
 from codemie.configs import config, logger
+from codemie.core.models import Application
 from codemie.rest_api.models.user_management import UserDB
-from codemie.service.activity.activity_models import ActivityEvent, ActivityEventCreate
-
-SYSTEM_ACTOR_ID = "system"
+from codemie.service.activity.activity_models import SYSTEM_ACTOR_ID, ActivityEvent, ActivityEventCreate
+from codemie.service.activity.activity_taxonomy import CATEGORY_EVENT_TYPES
 
 
 @dataclass
@@ -49,6 +50,8 @@ class ActivityEventRow:
     actor_name: str | None
     attributes: dict[str, Any] | None
     created_at: datetime
+    project_name: str | None = None
+    entity_label: str | None = None
 
 
 class ActivityEventRepository(ABC):
@@ -135,6 +138,28 @@ class ActivityEventRepository(ABC):
         """Return enriched events matching filters plus total count for pagination."""
 
     @abstractmethod
+    def find_by_project_instance_id(  # noqa: PLR0913 - flat filters mirror the query params
+        self,
+        project_instance_id: UUID,
+        *,
+        domain: list[str] | None = None,
+        event_type: list[str] | None = None,
+        category: list[str] | None = None,
+        actor_id: str | None = None,
+        from_dt: datetime | None = None,
+        to_dt: datetime | None = None,
+        sort_dir: str = "desc",
+        limit: int,
+        offset: int,
+        session: Session,
+    ) -> tuple[list[ActivityEventRow], int]:
+        """Return enriched events for one project generation plus total count."""
+
+    @abstractmethod
+    def has_project_instance_events(self, project_instance_id: UUID, session: Session) -> bool:
+        """Return whether retained events are attributed to a project generation."""
+
+    @abstractmethod
     def get_distinct_domains(self, session: Session) -> list[str]:
         """Return sorted non-null distinct domain values."""
 
@@ -147,12 +172,66 @@ class ActivityEventRepository(ABC):
         """Return sorted non-null distinct entity_type values."""
 
     @abstractmethod
+    def get_domain_mapping(self, session: Session) -> dict:
+        """Return the domain-to-event-type and entity-type mapping used by the filter options."""
+
+    @abstractmethod
+    def get_distinct_event_types_by_project_instance_id(self, project_instance_id: UUID, session: Session) -> list[str]:
+        """Return sorted distinct event_type values recorded for a project generation."""
+
+    @abstractmethod
+    def get_distinct_domains_by_project_instance_id(self, project_instance_id: UUID, session: Session) -> list[str]:
+        """Return sorted distinct domain values recorded for a project generation."""
+
+    @abstractmethod
     def delete_older_than(self, cutoff: datetime, session: Session) -> int:
         """Delete events created before cutoff. Returns the count of deleted rows."""
 
 
 class SQLActivityEventRepository(ActivityEventRepository):
     """Postgres-backed implementation."""
+
+    @staticmethod
+    def _event_values(events: list[ActivityEventCreate], project_ids: dict[str, UUID]) -> list[dict[str, Any]]:
+        values = []
+        for event in events:
+            data = event.model_dump()
+            if data["project_instance_id"] is None and event.project_name is not None:
+                data["project_instance_id"] = project_ids.get(event.project_name.lower())
+            values.append(data)
+        return values
+
+    @staticmethod
+    def _project_ids_for_events(events: list[ActivityEventCreate], session: Session) -> dict[str, UUID]:
+        names = {
+            event.project_name.lower() for event in events if event.project_instance_id is None and event.project_name
+        }
+        if not names:
+            return {}
+        rows = session.exec(
+            select(func.lower(Application.name), Application.project_instance_id).where(
+                func.lower(Application.name).in_(names),
+                Application.deleted_at.is_(None),
+            )
+        ).all()
+        return dict(rows)
+
+    @staticmethod
+    async def _async_project_ids_for_events(
+        events: list[ActivityEventCreate], session: AsyncSession
+    ) -> dict[str, UUID]:
+        names = {
+            event.project_name.lower() for event in events if event.project_instance_id is None and event.project_name
+        }
+        if not names:
+            return {}
+        result = await session.execute(
+            select(func.lower(Application.name), Application.project_instance_id).where(
+                func.lower(Application.name).in_(names),
+                Application.deleted_at.is_(None),
+            )
+        )
+        return dict(result.all())
 
     def insert(self, event: ActivityEventCreate, session: Session) -> ActivityEvent | None:
         if not config.ACTIVITY_EVENTS_ENABLED:
@@ -162,7 +241,8 @@ class SQLActivityEventRepository(ActivityEventRepository):
         session.flush()
         try:
             with session.begin_nested():
-                row = ActivityEvent(**event.model_dump())
+                project_ids = self._project_ids_for_events([event], session)
+                row = ActivityEvent(**self._event_values([event], project_ids)[0])
                 session.add(row)
                 session.flush()
             logger.debug(
@@ -179,7 +259,8 @@ class SQLActivityEventRepository(ActivityEventRepository):
     def insert_strict(self, event: ActivityEventCreate, session: Session) -> ActivityEvent | None:
         if not config.ACTIVITY_EVENTS_ENABLED:
             return None
-        row = ActivityEvent(**event.model_dump())
+        project_ids = self._project_ids_for_events([event], session)
+        row = ActivityEvent(**self._event_values([event], project_ids)[0])
         session.add(row)
         session.flush()
         return row
@@ -192,7 +273,8 @@ class SQLActivityEventRepository(ActivityEventRepository):
         await session.flush()
         try:
             async with session.begin_nested():
-                row = ActivityEvent(**event.model_dump())
+                project_ids = await self._async_project_ids_for_events([event], session)
+                row = ActivityEvent(**self._event_values([event], project_ids)[0])
                 session.add(row)
                 await session.flush()
             logger.debug(
@@ -209,7 +291,8 @@ class SQLActivityEventRepository(ActivityEventRepository):
     async def async_insert_strict(self, event: ActivityEventCreate, session: AsyncSession) -> ActivityEvent | None:
         if not config.ACTIVITY_EVENTS_ENABLED:
             return None
-        row = ActivityEvent(**event.model_dump())
+        project_ids = await self._async_project_ids_for_events([event], session)
+        row = ActivityEvent(**self._event_values([event], project_ids)[0])
         session.add(row)
         await session.flush()
         return row
@@ -217,7 +300,8 @@ class SQLActivityEventRepository(ActivityEventRepository):
     def insert_many_strict(self, events: list[ActivityEventCreate], session: Session) -> list[ActivityEvent]:
         if not config.ACTIVITY_EVENTS_ENABLED or not events:
             return []
-        rows = [ActivityEvent(**event.model_dump()) for event in events]
+        project_ids = self._project_ids_for_events(events, session)
+        rows = [ActivityEvent(**values) for values in self._event_values(events, project_ids)]
         session.add_all(rows)
         session.flush()
         return rows
@@ -227,7 +311,8 @@ class SQLActivityEventRepository(ActivityEventRepository):
     ) -> list[ActivityEvent]:
         if not config.ACTIVITY_EVENTS_ENABLED or not events:
             return []
-        rows = [ActivityEvent(**event.model_dump()) for event in events]
+        project_ids = await self._async_project_ids_for_events(events, session)
+        rows = [ActivityEvent(**values) for values in self._event_values(events, project_ids)]
         session.add_all(rows)
         await session.flush()
         return rows
@@ -335,6 +420,9 @@ class SQLActivityEventRepository(ActivityEventRepository):
         order = desc(ActivityEvent.created_at) if sort_dir == "desc" else asc(ActivityEvent.created_at)
         data_stmt = select(
             ActivityEvent,
+            # Live user only, no snapshot fallback: this endpoint must keep returning what it returned before the
+            # snapshot columns existed. A deleted actor gets null name/email here, while the project trail shows the
+            # snapshot. Do not coalesce with ActivityEvent.actor_email / actor_display_name.
             UserDB.email.label("actor_email"),
             UserDB.name.label("actor_name"),
         ).outerjoin(UserDB, ActivityEvent.actor_id == UserDB.id)
@@ -350,6 +438,83 @@ class SQLActivityEventRepository(ActivityEventRepository):
                 event_type=event.event_type,
                 entity_type=event.entity_type,
                 entity_id=event.entity_id,
+                entity_label=event.entity_label,
+                project_name=event.project_name,
+                actor_id=event.actor_id,
+                actor_email=actor_email,
+                actor_name=actor_name,
+                attributes=event.attributes,
+                created_at=event.created_at,
+            )
+            for event, actor_email, actor_name in rows
+        ]
+        return result, total
+
+    def find_by_project_instance_id(  # noqa: PLR0913 - flat filters mirror the query params
+        self,
+        project_instance_id: UUID,
+        *,
+        domain: list[str] | None = None,
+        event_type: list[str] | None = None,
+        category: list[str] | None = None,
+        actor_id: str | None = None,
+        from_dt: datetime | None = None,
+        to_dt: datetime | None = None,
+        sort_dir: str = "desc",
+        limit: int,
+        offset: int,
+        session: Session,
+    ) -> tuple[list[ActivityEventRow], int]:
+        if not config.ACTIVITY_EVENTS_ENABLED:
+            return [], 0
+
+        conditions = [ActivityEvent.project_instance_id == project_instance_id]
+        if domain:
+            conditions.append(ActivityEvent.domain.in_(domain))
+        if event_type:
+            conditions.append(ActivityEvent.event_type.in_(event_type))
+        if category:
+            unknown = sorted(set(category) - CATEGORY_EVENT_TYPES.keys())
+            if unknown:
+                raise ValueError(f"Unknown activity event categories: {', '.join(unknown)}")
+            resolved_event_types: set[str] = set().union(*(CATEGORY_EVENT_TYPES[c] for c in category))
+            conditions.append(ActivityEvent.event_type.in_(resolved_event_types))
+        if actor_id is not None:
+            conditions.append(ActivityEvent.actor_id == actor_id)
+        if from_dt is not None:
+            conditions.append(ActivityEvent.created_at >= from_dt)
+        if to_dt is not None:
+            conditions.append(ActivityEvent.created_at <= to_dt)
+
+        count_stmt = select(func.count(ActivityEvent.id))
+        for c in conditions:
+            count_stmt = count_stmt.where(c)
+        total: int = session.execute(count_stmt).scalar_one()
+
+        if sort_dir == "desc":
+            order = (desc(ActivityEvent.created_at), desc(ActivityEvent.id))
+        else:
+            order = (asc(ActivityEvent.created_at), asc(ActivityEvent.id))
+
+        # Live user first, so a renamed user shows the current name, as in the global list. The write-time snapshot
+        # only fills in when the user no longer exists (the join finds nothing).
+        data_stmt = select(
+            ActivityEvent,
+            func.coalesce(UserDB.email, ActivityEvent.actor_email).label("actor_email"),
+            func.coalesce(UserDB.name, ActivityEvent.actor_display_name).label("actor_name"),
+        ).outerjoin(UserDB, ActivityEvent.actor_id == UserDB.id)
+        data_stmt = data_stmt.where(*conditions).order_by(*order).offset(offset).limit(limit)
+
+        rows = session.execute(data_stmt).all()
+        result = [
+            ActivityEventRow(
+                id=event.id,
+                domain=event.domain,
+                event_type=event.event_type,
+                entity_type=event.entity_type,
+                entity_id=event.entity_id,
+                entity_label=event.entity_label,
+                project_name=event.project_name,
                 actor_id=event.actor_id,
                 actor_email=actor_email,
                 actor_name=actor_name,
@@ -402,6 +567,26 @@ class SQLActivityEventRepository(ActivityEventRepository):
             )
             for domain, data in raw.items()
         }
+
+    def get_distinct_event_types_by_project_instance_id(self, project_instance_id: UUID, session: Session) -> list[str]:
+        stmt = (
+            select(ActivityEvent.event_type).distinct().where(ActivityEvent.project_instance_id == project_instance_id)
+        )
+        stmt = stmt.order_by(ActivityEvent.event_type)
+        return [r for (r,) in session.execute(stmt).all()]
+
+    def get_distinct_domains_by_project_instance_id(self, project_instance_id: UUID, session: Session) -> list[str]:
+        stmt = select(ActivityEvent.domain).distinct().where(ActivityEvent.project_instance_id == project_instance_id)
+        stmt = stmt.order_by(ActivityEvent.domain)
+        return [r for (r,) in session.execute(stmt).all()]
+
+    def has_project_instance_events(self, project_instance_id: UUID, session: Session) -> bool:
+        return (
+            session.exec(
+                select(ActivityEvent.id).where(ActivityEvent.project_instance_id == project_instance_id).limit(1)
+            ).first()
+            is not None
+        )
 
     def delete_older_than(self, cutoff: datetime, session: Session) -> int:
         stmt = delete(ActivityEvent).where(ActivityEvent.created_at < cutoff)

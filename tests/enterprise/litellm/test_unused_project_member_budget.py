@@ -24,6 +24,7 @@ import pytest_asyncio
 from codemie.enterprise.litellm.budget_provider_adapter import LiteLLMBudgetEnforcementProvider
 from codemie.enterprise.litellm.project_member_sync_executor import ProjectMemberSyncExecutor
 from codemie.repository.project_budget_repository import project_member_budget_assignment_repository as repository
+from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_models import build_shared_project_budget_id, build_override_project_budget_id
 from codemie.service.budget.project_budget_service import ProjectBudgetService
 
@@ -45,6 +46,7 @@ async def member_sync_executor(mocker):
 async def test_unused_member_is_provisioned_once_in_explicit_project(mocker, action, project, category):
     enterprise = pytest.importorskip("codemie_enterprise.litellm.service")
     budget_id = f"{project}-{category}"
+    actor = User(id="admin")
     shared_id = build_shared_project_budget_id(budget_id)
     override_id = build_override_project_budget_id(budget_id, "new-user")
 
@@ -91,12 +93,14 @@ async def test_unused_member_is_provisioned_once_in_explicit_project(mocker, act
     provider = LiteLLMBudgetEnforcementProvider(service=client)
     budget = SimpleNamespace(
         budget_id=budget_id,
+        name=f"{project} {category} budget",
         max_budget=100.0,
         soft_budget=80.0,
         budget_duration="30d",
         budget_reset_at=None,
         budget_category=category,
         created_by="admin",
+        provider_metadata=None,
     )
     allocations = [
         SimpleNamespace(
@@ -162,12 +166,12 @@ async def test_unused_member_is_provisioned_once_in_explicit_project(mocker, act
             10.0,
             8.0,
             "manual override",
-            "admin",
+            actor,
         )
     else:
-        await service.rebalance_project_budget(session, budget_id, "admin")
+        await service.rebalance_project_budget(session, budget_id, actor)
     # Repeating the operation must update the same customer rather than create a duplicate.
-    await service.rebalance_project_budget(session, budget_id, "admin")
+    await service.rebalance_project_budget(session, budget_id, actor)
 
     assert created_customers == [ref("new-user")]
     assert customers[ref("new-user")]["budget_id"] == (override_id if action == "override" else shared_id)

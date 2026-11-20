@@ -80,6 +80,7 @@ from codemie.service.budget.provider import (
 from codemie.service.budget.provider_registry import get_active_provider, is_sync_current
 
 if TYPE_CHECKING:
+    from codemie.rest_api.security.user import User
     from codemie.rest_api.models.project_budget import (
         BulkMemberOverrideItem,
         BulkMemberOverrideResult,
@@ -960,8 +961,7 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         data: "ProjectBudgetCreateRequest",
-        actor_id: str,
-        actor_name: str = "",
+        actor: User,
     ) -> Budget:
         """12-step project budget creation flow.
 
@@ -985,7 +985,7 @@ class ProjectBudgetService:
             f"project_name={data.project_name!r} requested_budget_id={data.budget_id!r} "
             f"budget_category={data.budget_category.value!r} allocation_mode={data.allocation_mode!r} "
             f"max_budget={data.max_budget!r} soft_budget={data.soft_budget!r} "
-            f"budget_duration={data.budget_duration!r} actor_id={actor_id!r} actor_name={actor_name!r}"
+            f"budget_duration={data.budget_duration!r} actor_id={actor.id!r} actor_name={actor.username!r}"
         )
         try:
             self._validate_constraints(
@@ -1045,7 +1045,7 @@ class ProjectBudgetService:
             max_budget=data.max_budget,
             budget_duration=data.budget_duration,
             budget_category=data.budget_category.value,
-            created_by=actor_id,
+            created_by=actor.id,
         )
         try:
             budget = await budget_repository.insert(session, budget)
@@ -1059,7 +1059,7 @@ class ProjectBudgetService:
             budget_category=data.budget_category.value,
             budget_id=budget_id,
             allocation_mode=data.allocation_mode,
-            assigned_by=actor_id,
+            assigned_by=actor.id,
         )
         assignment = await project_budget_assignment_repository.insert(session, assignment)
 
@@ -1082,7 +1082,7 @@ class ProjectBudgetService:
             project_name=data.project_name,
             budget_category=data.budget_category.value,
             allocation_mode=data.allocation_mode,
-            assigned_by=actor_id,
+            assigned_by=actor.id,
         )
         logger.debug(
             f"budget_event=project_budget_allocations_built component=project_budget_service "
@@ -1103,7 +1103,7 @@ class ProjectBudgetService:
             session,
             main_budget=budget,
             project_name=data.project_name,
-            actor_id=actor_id,
+            actor_id=actor.id,
             per_member_soft_budget=shared_soft,
             per_member_max_budget=shared_max,
         )
@@ -1138,7 +1138,7 @@ class ProjectBudgetService:
             f"budget_event=project_budget_create_completed component=project_budget_service "
             f"project_name={data.project_name!r} budget_id={budget_id!r} "
             f"budget_category={data.budget_category.value!r} member_count={member_count} "
-            f"actor_id={actor_id!r} actor_name={actor_name or actor_id!r}"
+            f"actor_id={actor.id!r} actor_name={actor.username or actor.id!r}"
         )
         await activity_event_repository.async_insert(
             ActivityEventCreate(
@@ -1146,8 +1146,12 @@ class ProjectBudgetService:
                 event_type=BudgetManagementEvent.PROJECT_BUDGET_CREATED,
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=budget.budget_id,
-                actor_id=actor_id,
+                entity_label=budget.name,
+                actor_id=actor.id,
                 attributes={"project_name": data.project_name},
+                project_name=data.project_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -1491,7 +1495,7 @@ class ProjectBudgetService:
         session: AsyncSession,
         budget_id: str,
         data: "ProjectBudgetUpdateRequest",
-        actor_id: str,
+        actor: User,
     ) -> Budget:
         """Update a project budget and sync changed amounts with the provider."""
         budget = await budget_repository.get_by_id(session, budget_id)
@@ -1540,6 +1544,8 @@ class ProjectBudgetService:
                     eff_soft=eff_soft,
                     provider=provider,
                 )
+        else:
+            _assignment = await project_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
 
         if _assignment is None:
             _assignment = await project_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
@@ -1551,7 +1557,7 @@ class ProjectBudgetService:
             f"budget_event=project_budget_update_completed component=project_budget_service "
             f"project_name={project_name!r} budget_id={budget_id!r} "
             f"budget_category={budget.budget_category!r} updated_fields={change_attributes['updated_fields']!r} "
-            f"actor_id={actor_id!r}"
+            f"actor_id={actor.id!r}"
         )
         if change_attributes["updated_fields"]:
             await activity_event_repository.async_insert(
@@ -1560,8 +1566,12 @@ class ProjectBudgetService:
                     event_type=BudgetManagementEvent.PROJECT_BUDGET_UPDATED,
                     entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                     entity_id=budget_id,
-                    actor_id=actor_id,
+                    entity_label=budget.name,
+                    actor_id=actor.id,
                     attributes=change_attributes,
+                    project_name=project_name,
+                    actor_email=actor.email,
+                    actor_display_name=actor.name or None,
                 ),
                 session,
             )
@@ -1571,7 +1581,7 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         budget_id: str,
-        actor_id: str,
+        actor: User,
     ) -> Budget:
         """Recalculate member allocations and sync them through the active provider."""
         budget, assignment, _allocations = await self.get_project_budget(session, budget_id)
@@ -1598,7 +1608,7 @@ class ProjectBudgetService:
         logger.info(
             f"budget_event=project_budget_rebalance_completed component=project_budget_service "
             f"project_name={assignment.project_name if assignment else None!r} budget_id={budget_id!r} "
-            f"budget_category={budget.budget_category!r} actor_id={actor_id!r}"
+            f"budget_category={budget.budget_category!r} actor_id={actor.id!r}"
         )
         await activity_event_repository.async_insert(
             ActivityEventCreate(
@@ -1606,11 +1616,15 @@ class ProjectBudgetService:
                 event_type=BudgetManagementEvent.PROJECT_BUDGET_REBALANCED,
                 entity_type=ActivityEntityType.BUDGET,
                 entity_id=budget_id,
-                actor_id=actor_id,
+                entity_label=budget.name,
+                actor_id=actor.id,
                 attributes={
                     "budget_category": budget.budget_category,
                     "project_name": assignment.project_name if assignment else None,
                 },
+                project_name=assignment.project_name if assignment else None,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -1620,7 +1634,7 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         budget_id: str,
-        actor_id: str,
+        actor: User,
     ) -> Budget:
         """Reset project and member enforcement state through the active provider."""
         from codemie.service.budget.provider import BudgetProviderState
@@ -1641,7 +1655,7 @@ class ProjectBudgetService:
             project_name=assignment.project_name,
             budget_category=BudgetCategory(budget.budget_category),
             budget_id=budget_id,
-            changed_by=actor_id,
+            changed_by=actor.id,
             models=existing_models or None,
         )
         update_fields = {
@@ -1712,7 +1726,7 @@ class ProjectBudgetService:
             f"budget_event=project_budget_reset_completed component=project_budget_service "
             f"project_name={assignment.project_name!r} budget_id={budget_id!r} "
             f"budget_category={budget.budget_category!r} allocation_count={len(allocations)} "
-            f"actor_id={actor_id!r}"
+            f"actor_id={actor.id!r}"
         )
         await activity_event_repository.async_insert(
             ActivityEventCreate(
@@ -1720,11 +1734,15 @@ class ProjectBudgetService:
                 event_type=BudgetManagementEvent.PROJECT_BUDGET_RESET,
                 entity_type=ActivityEntityType.BUDGET,
                 entity_id=budget_id,
-                actor_id=actor_id,
+                entity_label=budget.name,
+                actor_id=actor.id,
                 attributes={
                     "budget_category": budget.budget_category,
                     "project_name": assignment.project_name,
                 },
+                project_name=assignment.project_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -1738,7 +1756,7 @@ class ProjectBudgetService:
         allocated_max_budget: float,
         allocated_soft_budget: float,
         override_reason: str | None,
-        actor_id: str,
+        actor: User,
     ) -> ProjectMemberBudgetAssignment:
         """Set a fixed member allocation override and rebalance remaining members."""
         budget, assignment, _allocations = await self.get_project_budget(session, budget_id)
@@ -1753,7 +1771,7 @@ class ProjectBudgetService:
             allocated_max_budget=allocated_max_budget,
             allocated_soft_budget=allocated_soft_budget,
             override_reason=override_reason,
-            assigned_by=actor_id,
+            assigned_by=actor.id,
         )
         if allocation is None:
             raise ExtendedHTTPException(code=404, message=f"Member allocation not found for user '{user_id}'")
@@ -1762,7 +1780,7 @@ class ProjectBudgetService:
             main_budget=budget,
             project_name=assignment.project_name if assignment else "",
             user_id=user_id,
-            actor_id=actor_id,
+            actor_id=actor.id,
             allocated_soft_budget=allocated_soft_budget,
             allocated_max_budget=allocated_max_budget,
         )
@@ -1775,7 +1793,7 @@ class ProjectBudgetService:
             allocation_mode=AllocationMode.FIXED.value,
             override_reason=override_reason,
         )
-        await self.rebalance_project_budget(session, budget_id, actor_id)
+        await self.rebalance_project_budget(session, budget_id, actor)
         if allocation is None:
             raise ExtendedHTTPException(code=404, message=f"Member allocation not found for user '{user_id}'")
         await activity_event_repository.async_insert(
@@ -1784,12 +1802,16 @@ class ProjectBudgetService:
                 event_type=BudgetManagementEvent.MEMBER_ALLOCATION_OVERRIDDEN,
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=budget_id,
-                actor_id=actor_id,
+                entity_label=budget.name,
+                actor_id=actor.id,
                 attributes={
                     "user_id": user_id,
                     "allocated_max_budget": allocated_max_budget,
                     "allocated_soft_budget": allocated_soft_budget,
                 },
+                project_name=assignment.project_name if assignment else None,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -1798,7 +1820,7 @@ class ProjectBudgetService:
             f"project_name={assignment.project_name if assignment else None!r} budget_id={budget_id!r} "
             f"budget_category={budget.budget_category!r} user_id={user_id!r} "
             f"allocated_max_budget={allocated_max_budget!r} allocated_soft_budget={allocated_soft_budget!r} "
-            f"actor_id={actor_id!r} domain=budget_management"
+            f"actor_id={actor.id!r} domain=budget_management"
         )
         return allocation
 
@@ -1806,17 +1828,17 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         items: list[tuple[int, BulkMemberOverrideItem]],
-        actor_id: str,
+        actor: User,
     ) -> dict[int, BulkMemberOverrideResult]:
         """Apply member overrides across budgets with one rebalance per touched budget."""
-        return await BulkMemberOverrideRunner(self).run(session, items, actor_id)
+        return await BulkMemberOverrideRunner(self).run(session, items, actor)
 
     async def clear_member_override(
         self,
         session: AsyncSession,
         budget_id: str,
         user_id: str,
-        actor_id: str,
+        actor: User,
     ) -> ProjectMemberBudgetAssignment:
         """Clear a fixed member override and rebalance the category."""
         allocation = await project_member_budget_assignment_repository.clear_member_override(
@@ -1847,7 +1869,7 @@ class ProjectBudgetService:
             session,
             main_budget=budget,
             project_name=project_name,
-            actor_id=actor_id,
+            actor_id=actor.id,
             per_member_soft_budget=correct_soft,
             per_member_max_budget=correct_max,
         )
@@ -1876,15 +1898,19 @@ class ProjectBudgetService:
             budget_id=self._effective_member_budget_id(budget.budget_id, allocation),
             member_state=member_state,
         )
-        await self.rebalance_project_budget(session, budget_id, actor_id)
+        await self.rebalance_project_budget(session, budget_id, actor)
         await activity_event_repository.async_insert(
             ActivityEventCreate(
                 domain=ActivityDomain.BUDGET_MANAGEMENT,
                 event_type=BudgetManagementEvent.MEMBER_ALLOCATION_OVERRIDE_CLEARED,
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=budget_id,
-                actor_id=actor_id,
+                entity_label=budget.name,
+                actor_id=actor.id,
                 attributes={"user_id": user_id},
+                project_name=assignment.project_name if assignment else None,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -1893,7 +1919,7 @@ class ProjectBudgetService:
             f"project_name={assignment.project_name if assignment else None!r} budget_id={budget_id!r} "
             f"budget_category={budget.budget_category!r} user_id={user_id!r} "
             f"restored_max_budget={correct_max!r} restored_soft_budget={correct_soft!r} "
-            f"actor_id={actor_id!r} domain=budget_management"
+            f"actor_id={actor.id!r} domain=budget_management"
         )
         return allocation
 
@@ -2016,7 +2042,7 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         budget_id: str,
-        actor_id: str,
+        actor: User,
     ) -> None:
         """Delete a project budget by soft-deleting active assignment/allocation rows."""
         budget = await budget_repository.get_by_id(session, budget_id)
@@ -2051,7 +2077,7 @@ class ProjectBudgetService:
             f"budget_event=project_budget_delete_completed component=project_budget_service "
             f"project_name={assignment.project_name if assignment else None!r} budget_id={budget_id!r} "
             f"budget_category={budget.budget_category!r} allocation_count={len(allocations)} "
-            f"child_budget_count={len(child_budgets)} actor_id={actor_id!r}"
+            f"child_budget_count={len(child_budgets)} actor_id={actor.id!r}"
         )
         await activity_event_repository.async_insert(
             ActivityEventCreate(
@@ -2059,7 +2085,11 @@ class ProjectBudgetService:
                 event_type=BudgetManagementEvent.PROJECT_BUDGET_DELETED,
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=budget_id,
-                actor_id=actor_id,
+                entity_label=budget.name,
+                actor_id=actor.id,
+                project_name=assignment.project_name if assignment else None,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
                 attributes={
                     "project_name": assignment.project_name if assignment else None,
                     "budget_category": budget.budget_category,
@@ -2235,7 +2265,7 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         data: "ProjectBudgetGroupCreateRequest",
-        actor_id: str,
+        actor: User,
     ) -> ProjectBudgetGroupFullResult:
         """Create a budget group with per-category budgets for a project.
 
@@ -2260,7 +2290,7 @@ class ProjectBudgetService:
             name=data.name,
             budget_duration=data.budget_duration,
             description=data.description,
-            created_by=actor_id,
+            created_by=actor.id,
         )
         group = await project_budget_group_repository.insert(session, group)
 
@@ -2289,7 +2319,7 @@ class ProjectBudgetService:
                 max_budget=amount,
                 budget_duration=data.budget_duration,
                 budget_category=cat_key,
-                created_by=actor_id,
+                created_by=actor.id,
                 notification_owner_email=getattr(data, "notification_owner_email", None),
                 soft_limit_notify_once=getattr(data, "soft_limit_notify_once", False),
                 soft_limit_notification_enabled=getattr(data, "soft_limit_notification_enabled", False),
@@ -2302,7 +2332,7 @@ class ProjectBudgetService:
                 budget_id=budget_id,
                 group_id=group.id,
                 allocation_mode=AllocationMode.EQUAL.value,
-                assigned_by=actor_id,
+                assigned_by=actor.id,
             )
             assignment = await project_budget_assignment_repository.insert(session, assignment)
             self._invalidate_resolution_cache_for_project(data.project_name, cat_key)
@@ -2315,7 +2345,7 @@ class ProjectBudgetService:
                 project_name=data.project_name,
                 budget_category=cat_key,
                 allocation_mode=AllocationMode.EQUAL.value,
-                assigned_by=actor_id,
+                assigned_by=actor.id,
             )
             self._log_zero_equal_share(
                 data.project_name, budget_id, (row.allocated_max_budget for row in allocation_rows), enforce_limit
@@ -2326,7 +2356,7 @@ class ProjectBudgetService:
                     session,
                     main_budget=budget,
                     project_name=data.project_name,
-                    actor_id=actor_id,
+                    actor_id=actor.id,
                     per_member_soft_budget=shared_soft,
                     per_member_max_budget=shared_max,
                 )
@@ -2356,7 +2386,7 @@ class ProjectBudgetService:
         logger.info(
             f"budget_event=project_budget_group_create_completed component=project_budget_service "
             f"project_name={data.project_name!r} group_id={group.id!r} "
-            f"category_count={len(results)} actor_id={actor_id!r}"
+            f"category_count={len(results)} actor_id={actor.id!r}"
         )
         await activity_event_repository.async_insert(
             ActivityEventCreate(
@@ -2364,8 +2394,12 @@ class ProjectBudgetService:
                 event_type=BudgetManagementEvent.PROJECT_BUDGET_GROUP_CREATED,
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=group.id,
-                actor_id=actor_id,
+                entity_label=group.name,
+                actor_id=actor.id,
                 attributes={"project_name": data.project_name},
+                project_name=data.project_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -2410,7 +2444,7 @@ class ProjectBudgetService:
     async def _emit_group_updated_event(
         session: AsyncSession,
         group: ProjectBudgetGroup,
-        actor_id: str,
+        actor: User,
         attributes: dict[str, Any],
     ) -> None:
         if not attributes["updated_fields"]:
@@ -2421,8 +2455,12 @@ class ProjectBudgetService:
                 event_type=BudgetManagementEvent.PROJECT_BUDGET_GROUP_UPDATED,
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=group.id,
-                actor_id=actor_id,
+                entity_label=group.name,
+                actor_id=actor.id,
                 attributes={"project_name": group.project_name, **attributes},
+                project_name=group.project_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -2486,7 +2524,7 @@ class ProjectBudgetService:
         session: AsyncSession,
         group_id: str,
         data: "ProjectBudgetGroupUpdateRequest",
-        actor_id: str,
+        actor: User,
     ) -> ProjectBudgetGroupFullResult:
         """Update a group in-place: total amount, duration, or category distribution.
 
@@ -2511,11 +2549,9 @@ class ProjectBudgetService:
             logger.info(
                 f"budget_event=project_budget_group_update_completed component=project_budget_service "
                 f"project_name={group.project_name!r} group_id={group_id!r} "
-                f"updated_fields={updated_fields!r} actor_id={actor_id!r} domain=budget_management"
+                f"updated_fields={updated_fields!r} actor_id={actor.id!r} domain=budget_management"
             )
-            await self._emit_group_updated_event(
-                session, group, actor_id, group_update_attributes(data, previous_values)
-            )
+            await self._emit_group_updated_event(session, group, actor, group_update_attributes(data, previous_values))
             return await self._load_group_full_result(session, group)
 
         current_result = await self._load_group_full_result(session, group)
@@ -2544,11 +2580,9 @@ class ProjectBudgetService:
             logger.info(
                 f"budget_event=project_budget_group_update_completed component=project_budget_service "
                 f"project_name={group.project_name!r} group_id={group_id!r} "
-                f"updated_fields={updated_fields!r} actor_id={actor_id!r} domain=budget_management"
+                f"updated_fields={updated_fields!r} actor_id={actor.id!r} domain=budget_management"
             )
-            await self._emit_group_updated_event(
-                session, group, actor_id, group_update_attributes(data, previous_values)
-            )
+            await self._emit_group_updated_event(session, group, actor, group_update_attributes(data, previous_values))
             return await self._load_group_full_result(session, group)
 
         new_categories = None
@@ -2564,7 +2598,7 @@ class ProjectBudgetService:
                 current_by_cat,
                 eff_total,
                 eff_duration,
-                actor_id,
+                actor,
                 notification_owner_email=eff_notif_email,
                 soft_limit_notify_once=eff_notify_once,
                 soft_limit_notification_enabled=eff_notification_enabled,
@@ -2574,13 +2608,13 @@ class ProjectBudgetService:
         logger.info(
             f"budget_event=project_budget_group_update_completed component=project_budget_service "
             f"project_name={group.project_name!r} group_id={group_id!r} "
-            f"updated_fields={updated_fields!r} actor_id={actor_id!r} domain=budget_management"
+            f"updated_fields={updated_fields!r} actor_id={actor.id!r} domain=budget_management"
         )
         result = await self._load_group_full_result(session, group)
         await self._emit_group_updated_event(
             session,
             group,
-            actor_id,
+            actor,
             group_update_attributes(
                 data,
                 previous_values,
@@ -2649,7 +2683,7 @@ class ProjectBudgetService:
         current_by_cat: dict,
         eff_total: float,
         eff_duration: str,
-        actor_id: str,
+        actor: User,
         notification_owner_email: str | None = None,
         soft_limit_notify_once: bool = False,
         soft_limit_notification_enabled: bool = False,
@@ -2667,12 +2701,12 @@ class ProjectBudgetService:
 
             if cat_spec.pct <= 0:
                 if cat_key in current_by_cat:
-                    await self.delete_project_budget(session, current_by_cat[cat_key].budget.budget_id, actor_id)
+                    await self.delete_project_budget(session, current_by_cat[cat_key].budget.budget_id, actor)
                 continue
 
             if cat_key in current_by_cat:
                 await self._update_existing_group_category(
-                    session, current_by_cat[cat_key], amount, soft_amount, eff_duration, actor_id
+                    session, current_by_cat[cat_key], amount, soft_amount, eff_duration, actor
                 )
             else:
                 await self._create_new_group_category(
@@ -2684,7 +2718,7 @@ class ProjectBudgetService:
                     eff_duration,
                     member_user_ids,
                     provider,
-                    actor_id,
+                    actor.id,
                     enforce_limit=enforce_limit,
                     notification_owner_email=notification_owner_email,
                     soft_limit_notify_once=soft_limit_notify_once,
@@ -2705,7 +2739,7 @@ class ProjectBudgetService:
         amount: float,
         soft_amount: float,
         eff_duration: str,
-        actor_id: str,
+        actor: User,
     ) -> None:
         """Update hard/soft limits on an existing group category budget."""
         await self.update_project_budget(
@@ -2716,7 +2750,7 @@ class ProjectBudgetService:
                 soft_budget=soft_amount,
                 budget_duration=(eff_duration if eff_duration != existing_cat.budget.budget_duration else None),
             ),
-            actor_id=actor_id,
+            actor=actor,
         )
 
     async def _create_new_group_category(
@@ -2808,7 +2842,7 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         group_id: str,
-        actor_id: str,
+        actor: User,
     ) -> None:
         """Soft-delete a group and all its active category budgets."""
         group = await project_budget_group_repository.get_by_id(session, group_id)
@@ -2817,13 +2851,13 @@ class ProjectBudgetService:
 
         assignments = await project_budget_assignment_repository.get_active_by_group_id(session, group_id)
         for assignment in assignments:
-            await self.delete_project_budget(session, budget_id=assignment.budget_id, actor_id=actor_id)
+            await self.delete_project_budget(session, budget_id=assignment.budget_id, actor=actor)
 
         await project_budget_group_repository.soft_delete(session, group_id)
         logger.info(
             f"budget_event=project_budget_group_delete_completed component=project_budget_service "
             f"project_name={group.project_name!r} group_id={group_id!r} "
-            f"category_count={len(assignments)} actor_id={actor_id!r}"
+            f"category_count={len(assignments)} actor_id={actor.id!r}"
         )
         await activity_event_repository.async_insert(
             ActivityEventCreate(
@@ -2831,7 +2865,11 @@ class ProjectBudgetService:
                 event_type=BudgetManagementEvent.PROJECT_BUDGET_GROUP_DELETED,
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=group_id,
-                actor_id=actor_id,
+                entity_label=group.name,
+                actor_id=actor.id,
+                project_name=group.project_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
                 attributes={
                     "project_name": group.project_name,
                     "name": group.name,
@@ -2847,7 +2885,7 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         group_id: str,
-        actor_id: str,
+        actor: User,
     ) -> ProjectBudgetGroupFullResult:
         """Reset all category budgets in a group."""
         group = await project_budget_group_repository.get_by_id(session, group_id)
@@ -2856,12 +2894,12 @@ class ProjectBudgetService:
 
         assignments = await project_budget_assignment_repository.get_active_by_group_id(session, group_id)
         for assignment in assignments:
-            await self.reset_project_budget(session, budget_id=assignment.budget_id, actor_id=actor_id)
+            await self.reset_project_budget(session, budget_id=assignment.budget_id, actor=actor)
 
         logger.info(
             f"budget_event=project_budget_group_reset_completed component=project_budget_service "
             f"project_name={group.project_name!r} group_id={group_id!r} "
-            f"category_count={len(assignments)} actor_id={actor_id!r}"
+            f"category_count={len(assignments)} actor_id={actor.id!r}"
         )
         await activity_event_repository.async_insert(
             ActivityEventCreate(
@@ -2869,11 +2907,15 @@ class ProjectBudgetService:
                 event_type=BudgetManagementEvent.PROJECT_BUDGET_GROUP_RESET,
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=group_id,
-                actor_id=actor_id,
+                entity_label=group.name,
+                actor_id=actor.id,
                 attributes={
                     "project_name": group.project_name,
                     "category_count": len(assignments),
                 },
+                project_name=group.project_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )
@@ -2883,7 +2925,7 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         group_id: str,
-        actor_id: str,
+        actor: User,
     ) -> ProjectBudgetGroupFullResult:
         """Rebalance member allocations for all category budgets in a group."""
         group = await project_budget_group_repository.get_by_id(session, group_id)
@@ -2892,12 +2934,12 @@ class ProjectBudgetService:
 
         assignments = await project_budget_assignment_repository.get_active_by_group_id(session, group_id)
         for assignment in assignments:
-            await self.rebalance_project_budget(session, budget_id=assignment.budget_id, actor_id=actor_id)
+            await self.rebalance_project_budget(session, budget_id=assignment.budget_id, actor=actor)
 
         logger.info(
             f"budget_event=project_budget_group_rebalance_completed component=project_budget_service "
             f"project_name={group.project_name!r} group_id={group_id!r} "
-            f"category_count={len(assignments)} actor_id={actor_id!r}"
+            f"category_count={len(assignments)} actor_id={actor.id!r}"
         )
         await activity_event_repository.async_insert(
             ActivityEventCreate(
@@ -2905,11 +2947,15 @@ class ProjectBudgetService:
                 event_type=BudgetManagementEvent.PROJECT_BUDGET_GROUP_REBALANCED,
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=group_id,
-                actor_id=actor_id,
+                entity_label=group.name,
+                actor_id=actor.id,
                 attributes={
                     "project_name": group.project_name,
                     "category_count": len(assignments),
                 },
+                project_name=group.project_name,
+                actor_email=actor.email,
+                actor_display_name=actor.name or None,
             ),
             session,
         )

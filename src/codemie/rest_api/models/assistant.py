@@ -1311,7 +1311,9 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
             # Strict audit: a failure here aborts the delete so grants are never dropped unaudited.
             # One transaction for grants + audit + the row itself: any failure rolls all of it back.
             with Session(cls.get_engine()) as session:
-                AssistantShareService.remove_all_grants(user, assistant_internal_id, assistant_project, session)
+                AssistantShareService.remove_all_grants(
+                    user, assistant_internal_id, assistant_project, session, label=assistant.name
+                )
                 session.delete(assistant)
                 session.commit()
             GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.ASSISTANT, assistant_internal_id)

@@ -35,6 +35,7 @@ import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.user_management import CodeMieUserDetail, UserDB
+from codemie.rest_api.security.user import User
 from codemie.service.user.user_management_service import UserManagementService
 
 
@@ -127,7 +128,7 @@ def test_email_update_local_mode_success(mock_get_session, mock_repo, local_user
     with patch.object(UserManagementService, "get_user_with_relationships", return_value=mock_detail):
         # Act
         result = UserManagementService.update_user_fields(
-            user_id="user-local-1", actor_user_id="admin-1", email="newemail@example.com"
+            user_id="user-local-1", actor_user=User(id="admin-1"), email="newemail@example.com"
         )
 
     # Assert
@@ -184,7 +185,7 @@ def test_is_auditor_update_success(mock_get_session, mock_repo, local_user):
     with patch.object(UserManagementService, "get_user_with_relationships", return_value=mock_detail):
         # Act
         result = UserManagementService.update_user_fields(
-            user_id="user-local-1", actor_user_id="admin-1", is_auditor=True
+            user_id="user-local-1", actor_user=User(id="admin-1"), is_auditor=True
         )
 
     # Assert
@@ -203,7 +204,9 @@ def test_email_update_idp_mode_blocked(mock_get_session):
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="user-idp-1", actor_user_id="admin-1", email="new@example.com")
+        UserManagementService.update_user_fields(
+            user_id="user-idp-1", actor_user=User(id="admin-1"), email="new@example.com"
+        )
 
     # Verify exception
     assert exc_info.value.code == 400
@@ -222,7 +225,7 @@ def test_email_update_oidc_mode_blocked(mock_get_session):
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
         UserManagementService.update_user_fields(
-            user_id="user-oidc-1", actor_user_id="admin-1", email="new@example.com"
+            user_id="user-oidc-1", actor_user=User(id="admin-1"), email="new@example.com"
         )
 
     assert exc_info.value.code == 400
@@ -246,7 +249,7 @@ def test_username_update_always_blocked(mock_get_session):
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
         UserManagementService.update_user_fields(
-            user_id="user-local-1", actor_user_id="admin-1", username="newusername"
+            user_id="user-local-1", actor_user=User(id="admin-1"), username="newusername"
         )
 
     # Verify exception
@@ -317,7 +320,7 @@ def test_user_type_update_local_mode_success(mock_get_session, mock_repo, local_
     with patch.object(UserManagementService, "get_user_with_relationships", return_value=mock_detail):
         # Act
         result = UserManagementService.update_user_fields(
-            user_id="user-local-1", actor_user_id="super-admin-1", user_type="external"
+            user_id="user-local-1", actor_user=User(id="super-admin-1"), user_type="external"
         )
 
     # Assert
@@ -388,7 +391,7 @@ def test_user_type_update_local_mode_accepts_service_account(mock_get_session, m
     with patch.object(UserManagementService, "get_user_with_relationships", return_value=mock_detail):
         # Act
         result = UserManagementService.update_user_fields(
-            user_id="user-local-1", actor_user_id="super-admin-1", user_type="service_account"
+            user_id="user-local-1", actor_user=User(id="super-admin-1"), user_type="service_account"
         )
 
     # Assert
@@ -430,7 +433,7 @@ def test_user_type_update_local_mode_accepts_regular_and_external(mock_get_sessi
 
     with patch.object(UserManagementService, "get_user_with_relationships", return_value=mock_detail):
         result = UserManagementService.update_user_fields(
-            user_id="user-local-1", actor_user_id="super-admin-1", user_type=user_type
+            user_id="user-local-1", actor_user=User(id="super-admin-1"), user_type=user_type
         )
 
     assert result.user_type == user_type
@@ -467,7 +470,7 @@ def test_user_type_invalid_value_rejected(mock_get_session):
     with pytest.raises(ExtendedHTTPException) as exc_info:
         UserManagementService.update_user_fields(
             user_id="user-local-1",
-            actor_user_id="admin-1",
+            actor_user=User(id="admin-1"),
             user_type="contractor",  # Invalid value
         )
 
@@ -537,7 +540,7 @@ def test_user_type_case_insensitive_normalization(mock_get_session, mock_repo, l
         # Act - uppercase input by super admin
         result = UserManagementService.update_user_fields(
             user_id="user-local-1",
-            actor_user_id="super-admin-1",
+            actor_user=User(id="super-admin-1"),
             user_type="EXTERNAL",  # Uppercase
         )
 
@@ -592,7 +595,7 @@ def test_name_and_picture_editable_in_idp_mode(mock_get_session, mock_repo, idp_
         # Act
         result = UserManagementService.update_user_fields(
             user_id="user-idp-1",
-            actor_user_id="admin-1",
+            actor_user=User(id="admin-1"),
             name="Updated Name",
             picture="https://example.com/pic.jpg",
         )
@@ -645,7 +648,7 @@ def test_no_fields_to_update_returns_400(mock_get_session):
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="user-1", actor_user_id="admin-1")
+        UserManagementService.update_user_fields(user_id="user-1", actor_user=User(id="admin-1"))
 
     # Verify exception
     assert exc_info.value.code == 400
@@ -664,7 +667,7 @@ def test_multiple_validation_errors_username_first(mock_get_session):
     with pytest.raises(ExtendedHTTPException) as exc_info:
         UserManagementService.update_user_fields(
             user_id="user-1",
-            actor_user_id="admin-1",
+            actor_user=User(id="admin-1"),
             username="newname",
             user_type="invalid",  # Also invalid
         )
@@ -760,7 +763,7 @@ def test_user_type_update_requires_super_admin(mock_get_session, mock_repo, supe
     with patch.object(UserManagementService, "get_user_with_relationships", return_value=mock_detail):
         # Act - super admin can change user_type
         result = UserManagementService.update_user_fields(
-            user_id="user-local-1", actor_user_id="super-admin-1", user_type="external"
+            user_id="user-local-1", actor_user=User(id="super-admin-1"), user_type="external"
         )
 
     # Assert
@@ -803,7 +806,7 @@ def test_user_type_update_allowed_for_regular_admin(mock_get_session, mock_repo,
 
     with patch.object(UserManagementService, "get_user_with_relationships", return_value=mock_detail):
         result = UserManagementService.update_user_fields(
-            user_id="user-local-1", actor_user_id="regular-admin-1", user_type="external"
+            user_id="user-local-1", actor_user=User(id="regular-admin-1"), user_type="external"
         )
 
     assert result.user_type == "external"
@@ -858,7 +861,7 @@ def test_deactivation_via_put_is_active_false(
     with patch.object(UserManagementService, "get_user_with_relationships", return_value=mock_detail):
         # Act
         result = UserManagementService.update_user_fields(
-            user_id="user-local-1", actor_user_id="admin-1", is_active=False
+            user_id="user-local-1", actor_user=User(id="admin-1"), is_active=False
         )
 
     # Assert
@@ -889,7 +892,7 @@ def test_handle_deactivation_flow_does_not_schedule_cleanup_when_commit_fails(
     with pytest.raises(RuntimeError, match="commit failed"):
         UserManagementService.update_user_fields(
             user_id="user-local-1",
-            actor_user_id="admin-1",
+            actor_user=User(id="admin-1"),
             is_active=False,
         )
 
@@ -905,7 +908,7 @@ def test_reactivation_via_put_is_active_true_blocked(mock_get_session):
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="user-1", actor_user_id="admin-1", is_active=True)
+        UserManagementService.update_user_fields(user_id="user-1", actor_user=User(id="admin-1"), is_active=True)
 
     # Verify exception
     assert exc_info.value.code == 400

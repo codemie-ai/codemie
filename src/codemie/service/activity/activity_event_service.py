@@ -15,11 +15,19 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 from sqlmodel import Session
 
 from codemie.clients.postgres import PostgresClient
-from codemie.rest_api.models.activity_event import ActivityEventFilterOptions, ActivityEventListItem
+from codemie.configs import config
+from codemie.rest_api.models.activity_event import (
+    ActivityEventFilterOptions,
+    ActivityEventListItem,
+    ActivityEventProjectMetadata,
+    ProjectActivityEventFilters,
+)
+from codemie.service.activity import activity_taxonomy
 from codemie.service.activity.activity_repository import activity_event_repository
 
 
@@ -59,8 +67,12 @@ class ActivityEventService:
                 id=r.id,
                 domain=r.domain,
                 event_type=r.event_type,
+                label=activity_taxonomy.get_label(r.event_type),
+                category=activity_taxonomy.get_category(r.event_type),
                 entity_type=r.entity_type,
                 entity_id=r.entity_id,
+                entity_label=r.entity_label,
+                project_name=r.project_name,
                 actor_id=r.actor_id,
                 actor_email=r.actor_email,
                 actor_name=r.actor_name,
@@ -70,6 +82,49 @@ class ActivityEventService:
             for r in rows
         ], total
 
+    def list_project_events(
+        self,
+        project_instance_id: UUID,
+        filters: ProjectActivityEventFilters,
+    ) -> tuple[list[ActivityEventListItem], int, bool]:
+        if not config.ACTIVITY_EVENTS_ENABLED:
+            return [], 0, False
+
+        with Session(PostgresClient.get_engine()) as session:
+            rows, total = activity_event_repository.find_by_project_instance_id(
+                project_instance_id,
+                domain=filters.domain,
+                event_type=filters.event_type,
+                category=filters.category,
+                actor_id=filters.actor_id,
+                from_dt=filters.from_dt,
+                to_dt=filters.to_dt,
+                sort_dir=filters.sort_dir,
+                limit=filters.limit,
+                offset=filters.offset,
+                session=session,
+            )
+        items = [
+            ActivityEventListItem(
+                id=r.id,
+                domain=r.domain,
+                event_type=r.event_type,
+                label=activity_taxonomy.get_label(r.event_type),
+                category=activity_taxonomy.get_category(r.event_type),
+                entity_type=r.entity_type,
+                entity_id=r.entity_id,
+                entity_label=r.entity_label,
+                actor_id=r.actor_id,
+                actor_email=r.actor_email,
+                actor_name=r.actor_name,
+                attributes=r.attributes,
+                created_at=r.created_at,
+                project_name=r.project_name,
+            )
+            for r in rows
+        ]
+        return items, total, True
+
     def get_filter_options(self) -> ActivityEventFilterOptions:
         with Session(PostgresClient.get_engine()) as session:
             return ActivityEventFilterOptions(
@@ -78,6 +133,34 @@ class ActivityEventService:
                 entity_types=activity_event_repository.get_distinct_entity_types(session),
                 mapping=activity_event_repository.get_domain_mapping(session),
             )
+
+    def get_project_event_metadata(self, project_instance_id: UUID) -> ActivityEventProjectMetadata:
+        if not config.ACTIVITY_EVENTS_ENABLED:
+            return ActivityEventProjectMetadata(
+                domains=[], event_types=[], categories=list(activity_taxonomy.CATEGORIES), recording_enabled=False
+            )
+
+        with Session(PostgresClient.get_engine()) as session:
+            event_types = activity_event_repository.get_distinct_event_types_by_project_instance_id(
+                project_instance_id, session
+            )
+            domains = activity_event_repository.get_distinct_domains_by_project_instance_id(
+                project_instance_id, session
+            )
+
+        return ActivityEventProjectMetadata(
+            domains=domains,
+            event_types=[
+                {
+                    "event_type": event_type,
+                    "label": activity_taxonomy.get_label(event_type),
+                    "category": activity_taxonomy.get_category(event_type),
+                }
+                for event_type in event_types
+            ],
+            categories=list(activity_taxonomy.CATEGORIES),
+            recording_enabled=True,
+        )
 
 
 activity_event_service = ActivityEventService()

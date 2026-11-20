@@ -49,5 +49,5 @@ class PermissionDeletionService:
             resolved = descriptor.resolve(session, permission.resource_id, user)
             if not resolved.may_remove:
                 raise PermissionAccessDenied
-            revoke_permission(user, permission, session, project=resolved.project)
+            revoke_permission(user, permission, session, project=resolved.project, label=resolved.label)
             session.commit()

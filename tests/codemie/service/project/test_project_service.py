@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
+from codemie.core.models import Application
 from codemie.rest_api.security.user import User
 from codemie.service.activity.activity_models import ProjectManagementEvent
 from codemie.service.project.project_service import ProjectService
@@ -100,6 +101,53 @@ class TestProjectServiceCreateSharedProject:
         mock_session.commit.assert_called_once()
         mock_logger.info.assert_called_once()
         assert mock_logger.info.call_args[0][0].startswith("project_created: project=")
+
+    @patch("codemie.service.project.project_service.activity_event_repository")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_create_shared_project_emits_project_name_and_actor_snapshot(
+        self,
+        mock_get_session,
+        mock_cost_center_service,
+        mock_user_repository,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+    ):
+        """EPMCDME-14325: activity event carries project_name + actor email/display name snapshot."""
+        with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+            user = User(id="user-1", username="user1", email="user1@example.com", name="User One", is_admin=False)
+
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repository.get_active_by_id.return_value = MagicMock(project_limit=3)
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
+        mock_application_repository.count_shared_projects_created_by_user.return_value = 1
+        mock_application_repository.get_by_name_case_insensitive.return_value = None
+        project = SimpleNamespace(
+            name="data-pipeline",
+            description="Analytics pipeline",
+            project_type="shared",
+            created_by="user-1",
+            date=datetime(2026, 2, 10, tzinfo=UTC),
+        )
+        mock_application_repository.create.return_value = project
+        mock_activity.insert = MagicMock()
+
+        ProjectService.create_shared_project(
+            user=user,
+            project_name="data-pipeline",
+            description="Analytics pipeline",
+        )
+
+        event = mock_activity.insert.call_args[0][0]
+        assert event.project_name == "data-pipeline"
+        assert event.actor_email == user.email
+        assert event.actor_display_name == user.name
+        assert event.entity_label == "data-pipeline"
 
     @patch("codemie.service.project.project_service.application_repository")
     @patch("codemie.service.project.project_service.user_repository")
@@ -595,7 +643,7 @@ class TestLinkCostCenterInSession:
     ):
         cost_center_id = uuid4()
         session = self._session_storing(cost_center_id)
-        project = SimpleNamespace(id="epm-aimf", name="epm-aimf", cost_center_id=None)
+        project = SimpleNamespace(id="epm-aimf", name="epm-aimf", display_name=None, cost_center_id=None)
         mock_application_repository.set_cost_center_if_unset.return_value = True
 
         result = ProjectService.link_cost_center_in_session(
@@ -1315,3 +1363,98 @@ class TestFindProject:
             ProjectService._find_project(session, "ghost-project")
 
         assert exc_info.value.code == 404
+
+
+class TestProjectServiceUpdateProjectActivityEvent:
+    """EPMCDME-14325: activity event emitted by ProjectService.update_project."""
+
+    @patch("codemie.service.project.project_service.activity_event_repository")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_update_project_emits_project_name_and_actor_snapshot(
+        self,
+        mock_get_session,
+        mock_app_repo,
+        mock_upr,
+        mock_activity,
+    ):
+        with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+            user = User(
+                id="user-1",
+                username="user1",
+                email="user1@example.com",
+                name="User One",
+                is_admin=True,
+            )
+
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        project = SimpleNamespace(
+            name="my-project",
+            description="old",
+            display_name=None,
+            cost_center_id=None,
+            deleted_at=None,
+        )
+        mock_app_repo.get_by_name.return_value = project
+        mock_upr.is_admin.return_value = True
+        updated = SimpleNamespace(name="my-project", description="new desc")
+        mock_app_repo.update_project.return_value = updated
+
+        ProjectService.update_project(
+            user=user,
+            project_name="my-project",
+            description="new desc",
+        )
+
+        event = mock_activity.insert.call_args[0][0]
+        assert event.project_name == "my-project"
+        assert event.actor_email == user.email
+        assert event.actor_display_name == user.name
+        assert event.entity_label == "my-project"
+
+
+class TestProjectServiceDeleteProjectActivityEvent:
+    """EPMCDME-14325: activity event emitted by ProjectService.delete_project.
+
+    delete_project receives the acting User, so the event carries the actor snapshot.
+    """
+
+    @patch("codemie.service.project.project_service.RepositoryRegistrationRepository")
+    @patch("codemie.service.project.project_service.project_budget_group_repository")
+    @patch("codemie.service.project.project_service.budget_repository")
+    @patch("codemie.service.project.project_service.activity_event_repository")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_delete_project_emits_project_name_and_actor_snapshot(
+        self,
+        mock_app_repo,
+        mock_upr,
+        mock_activity,
+        mock_budgets,
+        mock_groups,
+        _mock_registrations,
+    ):
+        mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
+        mock_app_repo.get_project_entity_counts_bulk.return_value = {}
+        mock_budgets.clear_project_on_deleted_budgets.return_value = []
+        mock_groups.clear_project_on_deleted_groups.return_value = []
+        project = SimpleNamespace(name="my-project", project_instance_id=uuid4())
+        mock_app_repo.get_active_by_name.return_value = project
+
+        ProjectService.delete_project(
+            session=mock_session,
+            project_name="my-project",
+            project_type=Application.ProjectType.SHARED,
+            actor=User(id="user-1", email="user1@example.com", name="User One"),
+            action="DELETE /v1/projects/my-project",
+        )
+
+        event = mock_activity.insert.call_args[0][0]
+        assert event.project_name == "my-project"
+        assert event.actor_email == "user1@example.com"
+        assert event.actor_display_name == "User One"
+        assert event.entity_label == "my-project"
+        assert event.project_instance_id == project.project_instance_id
