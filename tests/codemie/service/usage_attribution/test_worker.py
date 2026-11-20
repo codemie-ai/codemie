@@ -31,7 +31,8 @@ MONTH = {"from": "2026-09-13T00:00:00Z", "to": "2026-10-13T14:45:00Z", "days": 3
 WEEK = {"from": "2026-10-06T00:00:00Z", "to": "2026-10-13T14:45:00Z", "days": 7.6146}
 # The same 30 days computed at the start of the hour.
 EARLY_MONTH = {"from": "2026-09-13T00:00:00Z", "to": "2026-10-13T14:00:00Z", "days": 30.5833}
-EVIDENCE_SPECS = {"cards", "values", "tool", "sess", "ev_persons"}
+SIZING_SPECS = {"cli", "tools", "sessions", "web", "fb"}
+EVIDENCE_SPECS = SIZING_SPECS | {"values", "tool", "sess", "ev_persons"}
 
 
 def _unzip(blob: bytes) -> dict:
@@ -102,7 +103,7 @@ def job(window: dict, evidence_window: dict = MONTH, evidence_blob: bytes | None
 
 def test_a_first_read_returns_the_evidence(executed):
     inputs, evidence = worker.fetch_inputs(job(MONTH))
-    assert {"cards", "values", "tool", "sess", "persons"} <= set(executed)
+    assert SIZING_SPECS | {"values", "tool", "sess", "persons"} <= set(executed)
     assert "ev_persons" not in executed  # the money window is the evidence window: one people read
     assert "prev_persons" not in executed  # no previous period is read
     assert _unzip(evidence)["ev_persons"] == inputs["persons"]
@@ -195,7 +196,7 @@ class SyntheticES:
         self.filtered = filtered
         self.filter_paths: list[list[str]] = []
 
-    def search(self, index, body, request_timeout, filter_path):
+    def search(self, index, body, request_timeout, filter_path, pre_filter_shard_size):
         self.filter_paths.append(list(filter_path))
         data = {"took": 1, "timed_out": False, "_shards": {"failed": 0}, "aggregations": _answer(body["aggs"])}
         if self.filtered:
@@ -220,9 +221,9 @@ def test_web_funding_is_read_for_the_money_window(monkeypatch, no_db):
     bodies: list[dict] = []
     search = client.search
 
-    def record(index, body, request_timeout, filter_path):
+    def record(index, body, request_timeout, filter_path, pre_filter_shard_size):
         bodies.append(body)
-        return search(index, body, request_timeout, filter_path)
+        return search(index, body, request_timeout, filter_path, pre_filter_shard_size)
 
     monkeypatch.setattr(client, "search", record)
     monkeypatch.setattr(worker, "_es_client", lambda concurrency: client)

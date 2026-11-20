@@ -62,7 +62,8 @@ def _convert(payload: dict, ctx: PublishContext = _CTX) -> str:
 def _xlsx_bytes() -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("[Content_Types].xml", "<Types/>")
+        # A fixed ZIP entry timestamp keeps pytest parameter IDs stable across xdist workers.
+        archive.writestr(zipfile.ZipInfo("[Content_Types].xml"), "<Types/>")
     return buffer.getvalue()
 
 

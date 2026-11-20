@@ -22,13 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import logging
 import random
 import re
 import time
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -48,7 +48,6 @@ from codemie.service.usage_attribution.constants import (
     CATEGORIES,
     EXPERIMENTS,
     LIKELY_PRODUCTION,
-    MAX_BUCKETS_DEFAULT,
     NO_REPOSITORY,
     OUTSIDE_LIMITS,
     PRODUCTION,
@@ -423,27 +422,30 @@ class UsageAttributionHandler:
         """Total, Web Platform, CLI, Charged Back and Who Pays, without the analysis (A1)."""
         facts = await app_db.project_facts()
         shared = facts["shared"]
-        fplan = funding.plan(funding.funded_intervals(facts["funding"], rng.start, rng.end), rng.start, rng.end)
-        data = await self._elastic_totals(rng, shared)
-        context = self._widget_context()
-        figures = await spend_widgets.PlatformSpend(context).read(rng.start, rng.end)
-
-        async def classify(window: Any, channel: str) -> dict[str, tuple[str, str]]:
-            return await _classify_requests(window, shared, channel, fplan)
-
-        who = await spend_widgets.WhoPaysSpend(context, classify=classify).read(
-            rng.start, rng.end, stable_hash([shared, fplan])
-        )
-        charged = None if who.cli.charged is None or who.web.charged is None else r2(who.cli.charged + who.web.charged)
+        figures = await spend_widgets.PlatformSpend(self._widget_context()).read(rng.start, rng.end)
+        data, who = await asyncio.gather(self._elastic_totals(rng, shared), self._who_pays(rng, facts))
         return {
             **data,
             "total": figures.total,
             "cli": {"total": figures.cli},
             "web": {**data["web"], "total": figures.platform, "datasource": figures.embedding},
-            "charged_back": charged,
+            "charged_back": _charged_back(who),
             "who_pays": {"web": _who_pays_bars(who.web), "cli": _who_pays_bars(who.cli)},
             "excluded": {**data["excluded"], "no_customer": who.cli.no_customer},
         }
+
+    async def _who_pays(self, rng: RangeInfo, facts: dict[str, Any] | None = None) -> spend_widgets.WhoPaysFigures:
+        if facts is None:
+            facts = await app_db.project_facts()
+        shared = facts["shared"]
+        fplan = funding.plan(funding.funded_intervals(facts["funding"], rng.start, rng.end), rng.start, rng.end)
+
+        async def classify(window: Any, channel: str, request_ids: list[str]) -> dict[str, tuple[str, str]]:
+            return await _classify_requests(window, shared, channel, fplan, request_ids)
+
+        return await spend_widgets.WhoPaysSpend(self._widget_context(), classify=classify).read(
+            rng.start, rng.end, stable_hash([shared, fplan])
+        )
 
     async def _elastic_totals(self, rng: RangeInfo, shared: list[str]) -> dict[str, Any]:
         """The Web Platform types and other proxied spend, which only Elasticsearch has; cached."""
@@ -460,7 +462,7 @@ class UsageAttributionHandler:
 
         repo = MetricsElasticRepository()
         t0 = time.perf_counter()
-        totals_resp = await _query(repo, queries.totals_body(rng.start, rng.end, shared))
+        totals_resp = await _query(repo, queries.totals_breakdown_body(rng.start, rng.end))
         totals = parsing.parse_totals(totals_resp.get("aggregations"))
         data = {
             "web": {k: r2(v) for k, v in totals["web"].items()},
@@ -483,17 +485,19 @@ class UsageAttributionHandler:
         handle = await self._analysis(rng, eff)
         sections = await self.service.load_sections(handle, [SECTION_SUMMARY, SECTION_CLI_EVIDENCE])
         summary = sections[SECTION_SUMMARY]
-        figures, cli = await _gather(
+        figures, cli, who = await _gather(
             spend_widgets.PlatformSpend(self._widget_context()).read(rng.start, rng.end),
             spend_widgets.CliUsageSpend(
                 self._widget_context(), evidence=sections[SECTION_CLI_EVIDENCE], settings=eff.values
             ).read(rng.start, rng.end, f"{handle.prefix}:{handle.meta.get('computed_at')}"),
+            self._who_pays(rng),
         )
         tiles = {
             **summary["tiles"],
             "total": figures.total,
             "cli": figures.cli,
             "web": figures.platform,
+            "charged_back": _charged_back(who),
             "web_types": {**(summary["tiles"].get("web_types") or {}), "datasource": figures.embedding},
             "cli_people": cli.people,
             "prod": cli.production,
@@ -521,7 +525,7 @@ class UsageAttributionHandler:
         return {
             "tiles": tiles,
             "pie": [dict(item, value=pie_values[item["id"]]) for item in summary["pie"]],
-            "who_pays": summary["who_pays"],
+            "who_pays": {"web": _who_pays_bars(who.web), "cli": _who_pays_bars(who.cli)},
             "categories": [
                 {
                     "category": category,
@@ -1186,12 +1190,14 @@ class UsageAttributionHandler:
 _QUERY_FAILED = "Usage data could not be read from Elasticsearch. Try again in a few minutes."
 
 
-#: Request ids per classification partition: each carries four filter sub-aggregations, so this bounds the
-#: buckets one response holds to five times it, under Elasticsearch's search.max_buckets.
-_REQUESTS_PER_PARTITION = 10_000
-
 _CLASSIFY_MAX_ROUNDS = 4
 _CLASSIFY_RETRY_PAUSE_S = 1.0
+
+
+def _charged_back(who: spend_widgets.WhoPaysFigures) -> float | None:
+    if who.cli.charged is None or who.web.charged is None:
+        return None
+    return r2(who.cli.charged + who.web.charged)
 
 
 def _who_pays_bars(split: spend_widgets.WhoPaysSplit) -> dict[str, float | None]:
@@ -1201,21 +1207,6 @@ def _who_pays_bars(split: spend_widgets.WhoPaysSplit) -> dict[str, float | None]
         PERSONAL: split.personal,
         UNCLASSIFIED: split.unclassified,
     }
-
-
-async def _classify_requests_round(
-    repo: Any, query_args: tuple[Any, list[str], str, dict[str, Any]], parts: int, size: int
-) -> dict[str, tuple[str, str]]:
-    """One full pass over every partition; raises ``ExtendedHTTPException`` if any partition's query fails."""
-    window, shared, channel, fplan = query_args
-    out: dict[str, tuple[str, str]] = {}
-    for index in range(parts):
-        part = (index, parts) if parts > 1 else None
-        body = queries.request_classification_body(window, shared, channel, (part, size), fplan)
-        resp = await _query(repo, body)
-        buckets = ((resp.get("aggregations") or {}).get("requests") or {}).get("buckets") or []
-        parsing.parse_request_classification(buckets, out, channel)
-    return out
 
 
 async def _retry_pause(channel: str, round_idx: int, parts: int) -> None:
@@ -1232,27 +1223,60 @@ async def _retry_pause(channel: str, round_idx: int, parts: int) -> None:
     await asyncio.sleep(pause)
 
 
-async def _classify_requests(
-    window: Any, shared: list[str], channel: str, fplan: dict[str, Any]
+def _can_retry_classification(exc: ExtendedHTTPException, size: int, round_idx: int) -> bool:
+    return exc.code == status.HTTP_400_BAD_REQUEST and size > 1 and round_idx < _CLASSIFY_MAX_ROUNDS - 1
+
+
+@dataclass(frozen=True)
+class _ClassificationContext:
+    window: Any
+    shared: list[str]
+    channel: str
+    fplan: dict[str, Any]
+
+
+async def _classify_request_chunks(
+    repo: Any, context: _ClassificationContext, request_ids: list[str], chunk_size: int
 ) -> dict[str, tuple[str, str]]:
-    """``request_id -> (channel, category)`` for every request id a channel's records carry in ``window``."""
+    out: dict[str, tuple[str, str]] = {}
+    for offset in range(0, len(request_ids), chunk_size):
+        body = queries.request_classification_body(
+            context.window, context.shared, context.channel, request_ids[offset : offset + chunk_size], context.fplan
+        )
+        resp = await _query(repo, body)
+        if resp.get("timed_out") or (resp.get("_shards") or {}).get("failed"):
+            raise ExtendedHTTPException(code=status.HTTP_503_SERVICE_UNAVAILABLE, message=_QUERY_FAILED)
+        buckets = ((resp.get("aggregations") or {}).get("requests") or {}).get("buckets") or []
+        parsing.parse_request_classification(buckets, out, context.channel)
+    return out
+
+
+async def _classify_request_batches(
+    repo: Any, context: _ClassificationContext, request_ids: list[str]
+) -> dict[str, tuple[str, str]]:
+    size = len(request_ids)
+    for round_idx in range(_CLASSIFY_MAX_ROUNDS):
+        try:
+            return await _classify_request_chunks(repo, context, request_ids, size)
+        except ExtendedHTTPException as exc:
+            if not _can_retry_classification(exc, size, round_idx):
+                raise
+            size = (size + 1) // 2
+            await _retry_pause(context.channel, round_idx, (len(request_ids) + size - 1) // size)
+    raise AssertionError("unreachable: the loop above always returns or raises")
+
+
+async def _classify_requests(
+    window: Any, shared: list[str], channel: str, fplan: dict[str, Any], request_ids: list[str]
+) -> dict[str, tuple[str, str]]:
+    """Classify the current ledger batch, retrying smaller chunks on overload."""
     from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 
+    if not request_ids:
+        return {}
     repo = MetricsElasticRepository()
-    count_resp = await _query(repo, queries.request_count_body(window.start, window.end, channel))
-    count = int(parsing.num(count_resp.get("aggregations") or {}, "requests"))
-    parts = max(1, math.ceil(count * 1.1 / _REQUESTS_PER_PARTITION))
-    query_args = (window, shared, channel, fplan)
-    for round_idx in range(_CLASSIFY_MAX_ROUNDS):
-        size = min(MAX_BUCKETS_DEFAULT, math.ceil(count * 1.1 / parts) + 1)
-        try:
-            return await _classify_requests_round(repo, query_args, parts, size)
-        except ExtendedHTTPException as exc:
-            if exc.code != status.HTTP_400_BAD_REQUEST or round_idx >= _CLASSIFY_MAX_ROUNDS - 1:
-                raise
-            parts *= 2
-            await _retry_pause(channel, round_idx, parts)
-    raise AssertionError("unreachable: the loop above always returns or raises")
+    context = _ClassificationContext(window, shared, channel, fplan)
+    return await _classify_request_batches(repo, context, request_ids)
 
 
 async def _query(repo: Any, body: dict[str, Any]) -> dict[str, Any]:

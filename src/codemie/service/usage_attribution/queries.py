@@ -32,6 +32,12 @@ from typing import Any, Literal
 
 from codemie.service.spend.coverage import TimeRange
 from codemie.service.usage_attribution.constants import (
+    CHANNEL_CLI,
+    CHANNEL_WEB,
+    CHARGED_BACK,
+    NO_CUSTOMER,
+    PERSONAL,
+    SHARED_NO_BUDGET,
     EDIT_TOOL_PATTERNS,
     F_ASSISTANT,
     F_BRANCH,
@@ -124,7 +130,11 @@ def money() -> dict:
 def card(field: str, precision: int | None = None) -> dict:
     body: dict[str, Any] = {"field": field}
     if precision:
+        # A0 sizing has a single bucket per metric and can reuse dictionary ordinals.
         body["precision_threshold"] = precision
+    else:
+        # Avoid session dictionary bitsets for every nested repository bucket.
+        body["execution_hint"] = "direct"
     return {"cardinality": body}
 
 
@@ -187,23 +197,23 @@ def who_pays_filters(shared: list[str]) -> dict[str, dict]:
     cust_project = {"prefix": {F_CUSTOMER: PROJECT_CUSTOMER_PREFIX}}
     personal = personal_clause(shared)
     return {
-        "charged_back": {"bool": {"filter": [cust_project], "must_not": [has_fb()]}},
-        "shared_no_budget": {
+        CHARGED_BACK: {"bool": {"filter": [cust_project], "must_not": [has_fb()]}},
+        SHARED_NO_BUDGET: {
             "bool": {
                 "should": [has_fb(), {"bool": {"filter": [cust_exists], "must_not": [cust_project, personal]}}],
                 "minimum_should_match": 1,
             }
         },
-        "personal": {"bool": {"filter": [cust_exists, personal], "must_not": [cust_project, has_fb()]}},
-        "no_customer": {"bool": {"must_not": [cust_exists, has_fb()]}},
+        PERSONAL: {"bool": {"filter": [cust_exists, personal], "must_not": [cust_project, has_fb()]}},
+        NO_CUSTOMER: {"bool": {"must_not": [cust_exists, has_fb()]}},
     }
 
 
 #: Per channel, in precedence order: a classification sub-aggregation's alias and the who-pays category it means.
 CLASSIFICATION_ALIASES = {
-    "cli": (("cb", "charged_back"), ("sh", "shared_no_budget"), ("pr", "personal"), ("nc", "no_customer")),
+    CHANNEL_CLI: (("cb", CHARGED_BACK), ("sh", SHARED_NO_BUDGET), ("pr", PERSONAL), ("nc", NO_CUSTOMER)),
     # Fallback first: a fallback record is paid inside its shared project however its project is funded.
-    "web": (("fb", "shared_no_budget"), ("fd", "charged_back"), ("sh", "shared_no_budget"), ("pr", "personal")),
+    CHANNEL_WEB: (("fb", SHARED_NO_BUDGET), ("fd", CHARGED_BACK), ("sh", SHARED_NO_BUDGET), ("pr", PERSONAL)),
 }
 
 
@@ -240,37 +250,40 @@ def _web_classification_filters(shared: list[str], fplan: dict[str, Any]) -> dic
 
 
 def _channel_query(channel: str, start: datetime, end: datetime) -> dict:
-    return cli_query(start, end) if channel == "cli" else web_query(start, end)
-
-
-def request_count_body(start: datetime, end: datetime, channel: str) -> dict:
-    """How many distinct request ids a channel's records carry: sizes the classification's partitions."""
-    return {"size": 0, "query": _channel_query(channel, start, end), "aggs": {"requests": card(F_REQUEST_ID, 40000)}}
+    return cli_query(start, end) if channel == CHANNEL_CLI else web_query(start, end)
 
 
 def request_classification_body(
-    window: TimeRange, shared: list[str], channel: str, page: tuple[Part, int], fplan: dict[str, Any] | None = None
+    window: TimeRange, shared: list[str], channel: str, request_ids: list[str], fplan: dict[str, Any]
 ) -> dict:
-    """For every ``request_id`` a channel's records carry in ``window``, which who-pays category it falls in.
-
-    ``page`` is the ``(partition, size)`` of the request-id terms aggregation.
-    """
-    part, size = page
-    if channel == "cli":
+    """Classify a bounded batch of ledger IDs, including all matching records for each ID."""
+    if channel == CHANNEL_CLI:
         filters = who_pays_filters(shared)
-        sub = {alias: {"filter": filters[key]} for alias, key in CLASSIFICATION_ALIASES["cli"]}
+        sub = {alias: {"filter": filters[key]} for alias, key in CLASSIFICATION_ALIASES[CHANNEL_CLI]}
     else:
         sub = {alias: {"filter": clause} for alias, clause in _web_classification_filters(shared, fplan or {}).items()}
+    query = _channel_query(channel, window.start, window.end)
+    query["bool"]["filter"].append({"terms": {F_REQUEST_ID: request_ids}})
     return {
         "size": 0,
-        "query": _channel_query(channel, window.start, window.end),
-        "aggs": {"requests": {"terms": terms(F_REQUEST_ID, size, part, order=None), "aggs": sub}},
+        "query": query,
+        "aggs": {
+            "requests": {
+                "terms": {
+                    "field": F_REQUEST_ID,
+                    "size": len(request_ids),
+                    "include": request_ids,
+                    "execution_hint": "map",
+                },
+                "aggs": sub,
+            }
+        },
     }
 
 
 def wp_aggs(shared: list[str], names: tuple[str, ...] = ("cb", "sh", "nc")) -> dict:
     filters = who_pays_filters(shared)
-    by_alias = {"cb": filters["charged_back"], "sh": filters["shared_no_budget"], "nc": filters["no_customer"]}
+    by_alias = {"cb": filters[CHARGED_BACK], "sh": filters[SHARED_NO_BUDGET], "nc": filters[NO_CUSTOMER]}
     return {n: {"filter": by_alias[n], "aggs": {"s": sum_money()}} for n in names}
 
 
@@ -290,24 +303,37 @@ def day_runtime_field(body: dict) -> dict:
 # ---------------------------------------------------------------------------------------------------------------------
 # A0, A1: sizes and totals
 # ---------------------------------------------------------------------------------------------------------------------
-def cards_body(start: datetime, end: datetime, shared: list[str]) -> dict:
-    cli = {
-        "users": card(F_USER_ID, 40000),
-        "repos": card(F_REPOSITORY, 40000),
-        "spend": sum_money(),
-        "shared": {"filter": shared_clause(shared), "aggs": {"projects": card(F_PROJECT, 40000)}},
+def sizing_queries(start: datetime, end: datetime, shared: list[str]) -> dict[str, dict]:
+    """Separate A0 searches so the time and metric filter narrow each cardinality at collection time."""
+
+    def sizing(query: dict, **aggs: dict) -> dict:
+        return {"size": 0, "query": query, "aggs": aggs}
+
+    return {
+        "cli": sizing(
+            cli_query(start, end),
+            users=card(F_USER_ID, 40000),
+            repos=card(F_REPOSITORY, 40000),
+            shared={"filter": shared_clause(shared), "aggs": {"projects": card(F_PROJECT, 40000)}},
+        ),
+        "tools": sizing(base(start, end, q_metric(METRIC_CLI_TOOLS)), users=card(F_USER_ID, 40000)),
+        "sessions": sizing(base(start, end, q_metric(METRIC_CLI_SESSION)), users=card(F_USER_ID, 40000)),
+        "web": sizing(web_query(start, end), users=card(F_USER_ID, 40000), projects=card(F_PROJECT, 40000)),
+        "fb": sizing(base(start, end, has_fb()), projects=card(F_FALLBACK, 40000)),
     }
-    aggs = {
-        "cli": {"filter": {"bool": {"filter": [q_metric(METRIC_CLI_PROXY), q_cli(True)]}}, "aggs": cli},
-        "tools": {"filter": q_metric(METRIC_CLI_TOOLS), "aggs": {"users": card(F_USER_ID, 40000)}},
-        "sessions": {"filter": q_metric(METRIC_CLI_SESSION), "aggs": {"users": card(F_USER_ID, 40000)}},
-        "web": {
-            "filter": q_metric(*WEB_METRICS.values()),
-            "aggs": {"users": card(F_USER_ID, 40000), "projects": card(F_PROJECT, 40000), "spend": sum_money()},
-        },
-        "fb": {"filter": has_fb(), "aggs": {"projects": card(F_FALLBACK, 40000)}},
+
+
+def totals_breakdown_body(start: datetime, end: datetime) -> dict:
+    """The spend categories that the totals endpoint still reads from Elasticsearch."""
+    sources = {
+        "other_proxy": {"bool": {"filter": [q_metric(METRIC_CLI_PROXY), q_cli(False)]}},
+        **{f"web_{kind}": q_metric(metric) for kind, metric in WEB_METRICS.items()},
     }
-    return {"size": 0, "query": base(start, end), "aggs": aggs}
+    return {
+        "size": 0,
+        "query": base(start, end, {"bool": {"should": list(sources.values()), "minimum_should_match": 1}}),
+        "aggs": {"source": {"filters": {"filters": sources}, "aggs": money()}},
+    }
 
 
 def totals_body(start: datetime, end: datetime, shared: list[str]) -> dict:

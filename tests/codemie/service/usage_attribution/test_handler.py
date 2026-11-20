@@ -507,7 +507,7 @@ class TestWebWhoPaysClassification:
 
     def test_the_funded_members_are_charged_back_inside_their_intervals(self):
         start, end, fplan = self.fplan()
-        body = h.queries.request_classification_body(TimeRange(start, end), ["budgeted"], "web", (None, 10), fplan)
+        body = h.queries.request_classification_body(TimeRange(start, end), ["budgeted"], "web", ["r"], fplan)
         sub = body["aggs"]["requests"]["aggs"]
         assert list(sub) == ["fb", "fd", "sh", "pr"]
         funded = json.dumps(sub["fd"])
@@ -516,7 +516,7 @@ class TestWebWhoPaysClassification:
     def test_without_funding_nothing_is_charged_back(self):
         start, end, _fplan = self.fplan()
         body = h.queries.request_classification_body(
-            TimeRange(start, end), [], "web", (None, 10), h.funding.plan({}, start, end)
+            TimeRange(start, end), [], "web", ["r"], h.funding.plan({}, start, end)
         )
         assert {"match_none": {}} in body["aggs"]["requests"]["aggs"]["fd"]["filter"]["bool"]["filter"]
 
@@ -646,21 +646,20 @@ def classified(channel, **ids):
 
 @pytest.mark.asyncio
 class TestClassifyRequests:
-    """The classifier the handler gives the Who Pays widget: every request id of a channel, in partitions."""
+    """The classifier the handler gives the Who Pays widget: the ledger request IDs for a channel."""
 
     WINDOW = SimpleNamespace(start=NOW - timedelta(days=30), end=NOW)
 
     async def classify(self, channel, ids, fplan=None):
         async def answer(body):
-            if "cardinality" in json.dumps(body):
-                return {"aggregations": {"requests": {"value": len(ids)}}}
-            return classified(channel, **ids)
+            batch = body["aggs"]["requests"]["terms"]["include"]
+            return classified(channel, **{rid: ids[rid] for rid in batch})
 
         repo = MagicMock()
         repo.execute_aggregation_query = AsyncMock(side_effect=answer)
         fplan = fplan or h.funding.plan({}, self.WINDOW.start, self.WINDOW.end)
         with patch("codemie.repository.metrics_elastic_repository.MetricsElasticRepository", return_value=repo):
-            out = await h._classify_requests(self.WINDOW, ["p"], channel, fplan)
+            out = await h._classify_requests(self.WINDOW, ["p"], channel, fplan, list(ids))
         return out, [c.args[0] for c in repo.execute_aggregation_query.await_args_list]
 
     async def test_every_request_id_gets_its_category(self):
@@ -668,34 +667,33 @@ class TestClassifyRequests:
         assert out == {"a": ("cli", "charged_back"), "b": ("cli", "shared_no_budget"), "c": ("cli", "personal"),
                        "d": ("cli", "no_customer")}  # fmt: skip
 
-    async def test_many_request_ids_are_read_in_partitions(self):
-        _out, bodies = await self.classify("cli", {f"r{i}": "pr" for i in range(25_000)})
-        parts = [b["aggs"]["requests"]["terms"].get("include") for b in bodies[1:]]
-        assert parts == [{"partition": i, "num_partitions": 3} for i in range(3)]
+    async def test_classification_is_scoped_to_the_ledger_batch(self):
+        _, bodies = await self.classify("cli", {"a": "pr", "b": "cb"})
+        assert len(bodies) == 1
+        assert bodies[0]["aggs"]["requests"]["terms"]["include"] == ["a", "b"]
 
     async def test_the_web_funding_reaches_the_classification(self):
         start, end = self.WINDOW.start, self.WINDOW.end
         whole = [[int(start.timestamp() * 1000), int(end.timestamp() * 1000)]]
         _out, bodies = await self.classify("web", {"w": "fd"}, h.funding.plan({"p": {"uA": whole}}, start, end))
-        assert '"uA"' in json.dumps(bodies[1]["aggs"]["requests"]["aggs"]["fd"])
+        assert '"uA"' in json.dumps(bodies[0]["aggs"]["requests"]["aggs"]["fd"])
 
     async def test_the_handler_gives_the_widget_this_classifier(self):
         handler, _eff, rng = setup({})
         await totals_with(handler, rng, ledger_groups(150.0, 50.0, 100.0, 1.0))
         with patch.object(h, "_classify_requests", AsyncMock(return_value={"r": ("cli", "personal")})) as real:
-            assert await FakeWhoPaysSpend.classify(self.WINDOW, "cli") == {"r": ("cli", "personal")}
-        real.assert_awaited_once_with(self.WINDOW, ["p"], "cli", h.funding.plan({}, rng.start, rng.end))
+            assert await FakeWhoPaysSpend.classify(self.WINDOW, "cli", ["r"]) == {"r": ("cli", "personal")}
+        real.assert_awaited_once_with(self.WINDOW, ["p"], "cli", h.funding.plan({}, rng.start, rng.end), ["r"])
 
     async def classify_with_failures(self, channel, ids, fail_codes):
         calls = {"n": -1}
 
         async def answer(body):
-            if "cardinality" in json.dumps(body):
-                return {"aggregations": {"requests": {"value": len(ids)}}}
             calls["n"] += 1
             if calls["n"] < len(fail_codes):
                 raise ExtendedHTTPException(code=fail_codes[calls["n"]], message="x", details="y")
-            return classified(channel, **ids)
+            batch = body["aggs"]["requests"]["terms"]["include"]
+            return classified(channel, **{rid: ids[rid] for rid in batch})
 
         repo = MagicMock()
         repo.execute_aggregation_query = AsyncMock(side_effect=answer)
@@ -704,7 +702,7 @@ class TestClassifyRequests:
             patch("codemie.repository.metrics_elastic_repository.MetricsElasticRepository", return_value=repo),
             patch.object(h.asyncio, "sleep", AsyncMock()) as sleep,
         ):
-            out = await h._classify_requests(self.WINDOW, ["p"], channel, fplan)
+            out = await h._classify_requests(self.WINDOW, ["p"], channel, fplan, list(ids))
         return out, sleep
 
     async def test_an_overloaded_partition_is_retried_with_more_partitions_and_succeeds(self):
@@ -721,27 +719,22 @@ class TestClassifyRequests:
         assert exc_info.value.code == 503
 
     async def test_a_connection_error_is_not_retried_and_propagates(self):
-        async def answer(body):
-            if "cardinality" in json.dumps(body):
-                return {"aggregations": {"requests": {"value": 1}}}
-            raise ConnectionError("boom")
-
         repo = MagicMock()
-        repo.execute_aggregation_query = AsyncMock(side_effect=answer)
+        repo.execute_aggregation_query = AsyncMock(side_effect=ConnectionError("boom"))
         fplan = h.funding.plan({}, self.WINDOW.start, self.WINDOW.end)
         with patch("codemie.repository.metrics_elastic_repository.MetricsElasticRepository", return_value=repo):
             with pytest.raises(ConnectionError):
-                await h._classify_requests(self.WINDOW, ["p"], "cli", fplan)
+                await h._classify_requests(self.WINDOW, ["p"], "cli", fplan, ["r"])
 
     async def test_retries_are_bounded_and_eventually_raise(self):
-        ids = {"a": "cb"}
+        ids = {str(i): "cb" for i in range(16)}
         with pytest.raises(ExtendedHTTPException) as exc_info:
             await self.classify_with_failures("cli", ids, fail_codes=[400, 400, 400, 400, 400, 400])
         assert exc_info.value.code == 400
 
 
 SUMMARY = {
-    "tiles": {"total": 148.0, "web": 53.0, "cli": 95.0, "prod": 20.0, "uncl": 1.0, "uncl_parts": {},
+    "tiles": {"charged_back": 99.0, "total": 148.0, "web": 53.0, "cli": 95.0, "prod": 20.0, "uncl": 1.0, "uncl_parts": {},
               "cli_people": 1, "prod_cb": 5.0, "prod_alloc": 0.0, "exp": 5.0, "exp_alloc": 0.0,
               "exp_parts": {}, "likely_prod": 0.0, "allocated": 0.0, "excluded": {"no_customer": 5}, "web_types": {"assistant": 40.0, "workflow": 10.0,
               "datasource": 3.0}},
@@ -757,7 +750,15 @@ class TestSummaryFromTheLedger:
         summary = json.loads(json.dumps(SUMMARY))
         evidence = {"persons": {}}
         handler, eff, rng = setup({"summary": summary, "cli_evidence": evidence})
-        LEDGER.platform = AsyncMock(return_value=ledger_groups(10.0, 4.0, 6.0, 1.0))
+        totals = await totals_with(
+            handler,
+            rng,
+            ledger_groups(10.0, 4.0, 6.0, 1.0),
+            who_pays=WhoPaysFigures(
+                web=WhoPaysSplit(charged=1, shared=1, personal=1, unclassified=1),
+                cli=WhoPaysSplit(charged=2, shared=1, personal=1, unclassified=2),
+            ),
+        )
         amounts = {"production": 2.0, "learning": 1.0, "unclassified": 3.0}
         cli = CliUsageFigures(
             total=6.0,
@@ -778,7 +779,10 @@ class TestSummaryFromTheLedger:
             analysed=6.0,
             outside_limits=0.0,
         )
-        with patch.object(h.spend_widgets.CliUsageSpend, "read", AsyncMock(return_value=cli)) as read:
+        with (
+            patch.object(h.spend_widgets.CliUsageSpend, "read", AsyncMock(return_value=cli)) as read,
+            patch.object(h.app_db, "project_facts", AsyncMock(return_value={"shared": ["p"], "funding": {}})),
+        ):
             out = await handler.cli_summary(rng, eff)
         read.assert_awaited_once_with(rng.start, rng.end, "prefix:2026-10-13T15:00:00Z")
         tiles = out["tiles"]
@@ -791,16 +795,27 @@ class TestSummaryFromTheLedger:
         assert sum(row["spend"] for row in out["categories"]) == 6.0
         assert out["reasons"][0]["spend"] == 3.0
         assert out["coverage"]["analysed"] == 6.0
+        assert out["who_pays"] == totals["who_pays"]
+        assert tiles["charged_back"] == totals["charged_back"] == 3
+        for channel in ("web", "cli"):
+            assert set(out["who_pays"][channel]) == {"charged", "shared", "personal", "unclassified"}
+            assert sum(out["who_pays"][channel].values()) == tiles[channel]
+        assert LEDGER.who_pays.await_args_list[0] == LEDGER.who_pays.await_args_list[1]
         assert summary == SUMMARY  # the cached section is not changed
 
     async def test_cli_summary_below_the_floor(self):
         handler, eff, rng = setup({"summary": json.loads(json.dumps(SUMMARY)), "cli_evidence": {"persons": {}}})
         LEDGER.platform = AsyncMock(return_value=ledger_groups())
-        with patch.object(h.spend_widgets.CliUsageSpend, "read", AsyncMock(return_value=CliUsageFigures())):
+        LEDGER.who_pays = AsyncMock(return_value=WhoPaysFigures())
+        with (
+            patch.object(h.spend_widgets.CliUsageSpend, "read", AsyncMock(return_value=CliUsageFigures())),
+            patch.object(h.app_db, "project_facts", AsyncMock(return_value={"shared": [], "funding": {}})),
+        ):
             out = await handler.cli_summary(rng, eff)
         assert (out["tiles"]["total"], out["tiles"]["cli"], out["tiles"]["web"]) == (None, None, None)
         assert out["tiles"]["web_types"]["datasource"] is None and out["pie"][0]["value"] is None
         assert set(out["tiles"]) == set(SUMMARY["tiles"])
+        assert out["tiles"]["charged_back"] is None
         assert out["tiles"]["prod"] is None and out["tiles"]["exp"] is None and out["tiles"]["uncl"] is None
         assert all(row["spend"] is None for row in out["categories"])
 

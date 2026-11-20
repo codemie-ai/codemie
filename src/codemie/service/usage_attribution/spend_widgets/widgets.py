@@ -29,6 +29,14 @@ from codemie.service.spend.ledger import CliSpendRow
 from codemie.service.usage_attribution.pipeline import Analysis
 from codemie.service.usage_attribution.constants import (
     CATEGORIES,
+    CHANNEL_CLI,
+    CHANNEL_WEB,
+    CHARGED,
+    CHARGED_BACK,
+    NO_CUSTOMER,
+    PERSONAL,
+    SHARED,
+    SHARED_NO_BUDGET,
     EXPERIMENTS,
     LIKELY_PRODUCTION,
     NO_REPOSITORY,
@@ -81,17 +89,17 @@ class WhoPaysSpend(SpendWidget[WhoPaysFigures]):
     view = "who_pays"
     output = WhoPaysFigures
     _BUCKETS: ClassVar[dict[str, str]] = {
-        "charged_back": "charged",
-        "shared_no_budget": "shared",
-        "personal": "personal",
-        "no_customer": "no_customer",
+        CHARGED_BACK: CHARGED,
+        SHARED_NO_BUDGET: SHARED,
+        PERSONAL: PERSONAL,
+        NO_CUSTOMER: NO_CUSTOMER,
     }
 
     def __init__(
         self,
         context: WidgetContext,
         *,
-        classify: Callable[[TimeRange, str], Awaitable[dict[str, tuple[str, str]]]],
+        classify: Callable[[TimeRange, str, list[str]], Awaitable[dict[str, tuple[str, str]]]],
     ):
         super().__init__(context)
         self._classify = classify
@@ -107,28 +115,26 @@ class WhoPaysSpend(SpendWidget[WhoPaysFigures]):
         if window is None:
             return WhoPaysFigures()
         cards = await PlatformSpend(self._context).read(start, end)
-        web = await self._split(window, "web", cards.platform)
-        cli = await self._split(window, "cli", cards.cli)
+        web = await self._split(window, CHANNEL_WEB, cards.platform)
+        cli = await self._split(window, CHANNEL_CLI, cards.cli)
         return WhoPaysFigures(web=web, cli=cli, complete=cards.complete)
 
     async def _split(self, window: TimeRange, channel: str, card: float | None) -> WhoPaysSplit:
         if card is None:
             return WhoPaysSplit()
-        classification = await self._classify(window, channel)
-        async with get_ledger_async_session() as session:
-            ledger = await spend_logs_repository.sum_by_request_id(
-                session, window, cli=channel == "cli", access=self._context.scope
-            )
         money = dict.fromkeys(self._BUCKETS.values(), 0.0)
-        for request_id, amount in ledger.items():
-            found = classification.get(request_id) if request_id is not None else None
-            if found is not None:
-                money[self._BUCKETS[found[1]]] += float(amount)
-        paid = {key: helpers.round_cents(money[key]) for key in ("charged", "shared", "personal")}
+        async with get_ledger_async_session() as session:
+            async for ledger in spend_logs_repository.request_spend_batches(
+                session, window, cli=channel == CHANNEL_CLI, access=self._context.scope, batch_size=4096
+            ):
+                classification = await self._classify(window, channel, list(ledger))
+                for request_id, (_, category) in classification.items():
+                    money[self._BUCKETS[category]] += float(ledger[request_id])
+        paid = {key: helpers.round_cents(money[key]) for key in (CHARGED, SHARED, PERSONAL)}
         return WhoPaysSplit(
             **paid,
             unclassified=helpers.round_cents(card - sum(paid.values())),
-            no_customer=helpers.round_cents(money["no_customer"]),
+            no_customer=helpers.round_cents(money[NO_CUSTOMER]),
         )
 
 

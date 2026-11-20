@@ -249,22 +249,22 @@ class TestQueries:
         body = queries.tools_body(S, E, None, 100, 10)
         assert "ua_day" in body["runtime_mappings"]
 
-    def test_request_classification_body_partitions_on_request_id(self):
-        body = queries.request_classification_body(TimeRange(S, E), ["p"], "cli", ((2, 7), 500))
+    def test_request_classification_body_filters_to_ledger_request_ids(self):
+        body = queries.request_classification_body(TimeRange(S, E), ["p"], "cli", ["a", "b"], {})
 
         requests = body["aggs"]["requests"]
         assert requests["terms"]["field"] == "attributes.request_id.keyword"
-        assert requests["terms"]["include"] == {"partition": 2, "num_partitions": 7}
-        assert requests["terms"]["size"] == 500
+        assert requests["terms"]["include"] == ["a", "b"]
+        assert requests["terms"]["size"] == 2
         assert set(requests["aggs"]) == {"cb", "sh", "pr", "nc"}
         assert requests["aggs"]["cb"]["filter"] == queries.who_pays_filters(["p"])["charged_back"]
 
     def test_request_classification_body_cli_vs_web_query_scope(self):
-        cli_body = queries.request_classification_body(TimeRange(S, E), [], "cli", (None, 10))
-        web_body = queries.request_classification_body(TimeRange(S, E), [], "web", (None, 10))
+        cli_body = queries.request_classification_body(TimeRange(S, E), [], "cli", ["a"], {})
+        web_body = queries.request_classification_body(TimeRange(S, E), [], "web", ["a"], {})
 
-        assert cli_body["query"] == queries.cli_query(S, E)
-        assert web_body["query"] == queries.web_query(S, E)
+        assert cli_body["query"] == queries.cli_query(S, E, {"terms": {queries.F_REQUEST_ID: ["a"]}})
+        assert web_body["query"] == queries.web_query(S, E, {"terms": {queries.F_REQUEST_ID: ["a"]}})
 
     def test_parse_request_classification_keeps_one_category_per_request_id(self):
         buckets = [
@@ -383,7 +383,8 @@ class FakeClient:
         self.overflow_rounds = overflow_rounds
         self.error = error
 
-    def search(self, index, body, request_timeout, filter_path):
+    def search(self, index, body, request_timeout, filter_path, pre_filter_shard_size):
+        assert pre_filter_shard_size == 1
         self.calls.append(body)
         if self.error:
             raise RuntimeError(self.error)
@@ -436,12 +437,13 @@ class TestFetcher:
         monkeypatch.setattr(fetch_module.time, "sleep", lambda _s: None)
 
         class Overloaded(FakeClient):
-            def search(self, index, body, request_timeout, filter_path):
+            def search(self, index, body, request_timeout, filter_path, pre_filter_shard_size):
+                assert pre_filter_shard_size == 1
                 part = body["aggs"]["users"]["terms"].get("include", {"num_partitions": 1})
                 if part["num_partitions"] < 2:
                     self.calls.append(body)
                     raise RuntimeError(error_type)
-                return super().search(index, body, request_timeout, filter_path)
+                return super().search(index, body, request_timeout, filter_path, pre_filter_shard_size)
 
         fetcher = Fetcher(Overloaded(0), "idx", 2, 0.6, 65536, 30)
         sp = self.spec()
@@ -465,7 +467,8 @@ class TestFetcher:
                 super().__init__(0)
                 self.failures = 2
 
-            def search(self, index, body, request_timeout, filter_path):
+            def search(self, index, body, request_timeout, filter_path, pre_filter_shard_size):
+                assert pre_filter_shard_size == 1
                 if self.failures:
                     self.failures -= 1
                     self.calls.append(body)
@@ -474,7 +477,7 @@ class TestFetcher:
                     if failure == "status-503":
                         raise ApiError("unavailable", meta=SimpleNamespace(status=503), body={})
                     raise failure
-                return super().search(index, body, request_timeout, filter_path)
+                return super().search(index, body, request_timeout, filter_path, pre_filter_shard_size)
 
         client = Flaky()
         fetcher = Fetcher(client, "idx", 1, 0.6, 65536, 30)
@@ -488,7 +491,8 @@ class TestFetcher:
         monkeypatch.setattr(fetch_module.time, "sleep", lambda _s: None)
 
         class Down(FakeClient):
-            def search(self, index, body, request_timeout, filter_path):
+            def search(self, index, body, request_timeout, filter_path, pre_filter_shard_size):
+                assert pre_filter_shard_size == 1
                 self.calls.append(body)
                 raise elastic_transport.ConnectionError("Connection refused")
 
@@ -498,7 +502,8 @@ class TestFetcher:
         assert len(down.calls) == 4  # the first attempt and three retries
 
         class Slow(FakeClient):
-            def search(self, index, body, request_timeout, filter_path):
+            def search(self, index, body, request_timeout, filter_path, pre_filter_shard_size):
+                assert pre_filter_shard_size == 1
                 self.calls.append(body)
                 raise elastic_transport.ConnectionTimeout("read timed out")
 
@@ -527,14 +532,15 @@ class TestFetcher:
         }
 
         class Overloaded(FakeClient):
-            def search(self, index, body, request_timeout, filter_path):
+            def search(self, index, body, request_timeout, filter_path, pre_filter_shard_size):
+                assert pre_filter_shard_size == 1
                 part = body["aggs"]["users"]["terms"].get("include", {"num_partitions": 1})
                 if part["num_partitions"] < 2:
                     self.calls.append(body)
                     raise ApiError(
                         "search_phase_execution_exception", meta=SimpleNamespace(status=400), body=error_body
                     )
-                return super().search(index, body, request_timeout, filter_path)
+                return super().search(index, body, request_timeout, filter_path, pre_filter_shard_size)
 
         client = Overloaded(0)
         sp = self.spec()
@@ -547,13 +553,14 @@ class TestFetcher:
         monkeypatch.setattr(fetch_module.time, "sleep", lambda _s: None)
 
         class PartlyFailed(FakeClient):
-            def search(self, index, body, request_timeout, filter_path):
+            def search(self, index, body, request_timeout, filter_path, pre_filter_shard_size):
+                assert pre_filter_shard_size == 1
                 part = body["aggs"]["users"]["terms"].get("include", {"num_partitions": 1})
                 if part["num_partitions"] < 2:
                     self.calls.append(body)
                     reason = {"type": error_type, "reason": "overloaded"}
                     return {"took": 1, "_shards": {"failed": 1, "failures": [{"reason": reason}]}, "aggregations": {}}
-                return super().search(index, body, request_timeout, filter_path)
+                return super().search(index, body, request_timeout, filter_path, pre_filter_shard_size)
 
         sp = self.spec()
         Fetcher(PartlyFailed(0), "idx", 2, 0.6, 65536, 30).execute([sp])
@@ -568,12 +575,13 @@ class TestFetcher:
                 super().__init__(0)
                 self.error_type = error_type
 
-            def search(self, index, body, request_timeout, filter_path):
+            def search(self, index, body, request_timeout, filter_path, pre_filter_shard_size):
+                assert pre_filter_shard_size == 1
                 part = body["aggs"]["users"]["terms"].get("include", {"num_partitions": 1})
                 if part["num_partitions"] < 2:
                     self.calls.append(body)
                     raise RuntimeError(self.error_type)
-                return super().search(index, body, request_timeout, filter_path)
+                return super().search(index, body, request_timeout, filter_path, pre_filter_shard_size)
 
         Fetcher(Overloaded("too_many_buckets_exception"), "idx", 2, 0.6, 65536, 30).execute([self.spec()])
         assert paused == []

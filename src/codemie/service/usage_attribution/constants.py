@@ -113,6 +113,11 @@ CATEGORY_LABELS = {
 }
 
 # Who pays
+CHANNEL_CLI = "cli"
+CHANNEL_WEB = "web"
+CHARGED_BACK = "charged_back"
+SHARED_NO_BUDGET = "shared_no_budget"
+NO_CUSTOMER = "no_customer"
 CHARGED = "charged"
 SHARED = "shared"
 PERSONAL = "personal"

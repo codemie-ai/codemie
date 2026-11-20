@@ -183,7 +183,7 @@ class MetricsElasticRepository:
                 {"hits": {"hits": [], "total": {"value": 0}}, "aggregations": {}}, reason=NOT_CONFIGURED_REASON
             )
         try:
-            logger.debug(f"Executing aggregation query on index {self._index}, body={body}")
+            logger.debug("Executing aggregations %s on index %s", list(body.get("aggs") or {}), self._index)
             start_time = time.time()
 
             result = await self._client.search(

@@ -46,20 +46,20 @@ def session():
 
 @pytest.fixture
 def ledger():
-    async def by_request_id(_session, _window, *, cli, access):
-        return {k: Decimal(v) for k, v in LEDGER["cli" if cli else "web"].items()}
+    async def by_request_id(_session, _window, *, cli, access, batch_size):
+        yield {k: Decimal(v) for k, v in LEDGER["cli" if cli else "web"].items() if k is not None}
 
-    read = AsyncMock(side_effect=by_request_id)
+    read = MagicMock(side_effect=by_request_id)
     with (
-        patch.object(widgets.spend_logs_repository, "sum_by_request_id", read),
+        patch.object(widgets.spend_logs_repository, "request_spend_batches", read),
         patch.object(widgets, "get_ledger_async_session", side_effect=lambda: session()),
     ):
         yield read
 
 
 def classifier():
-    async def classify(_window, channel):
-        return CLASSIFICATION[channel]
+    async def classify(_window, channel, request_ids):
+        return {rid: value for rid, value in CLASSIFICATION[channel].items() if rid in request_ids}
 
     return AsyncMock(side_effect=classify)
 
@@ -78,12 +78,14 @@ class TestWhoPaysSpend:
         with coverage():
             await WhoPaysSpend(context(), classify=classify).read(START, END, "k")
         window = TimeRange(FLOOR, END)
-        assert [c.kwargs for c in ledger.await_args_list] == [
-            {"cli": False, "access": SCOPE},
-            {"cli": True, "access": SCOPE},
+        assert [c.kwargs for c in ledger.call_args_list] == [
+            {"cli": False, "access": SCOPE, "batch_size": 4096},
+            {"cli": True, "access": SCOPE, "batch_size": 4096},
         ]
-        assert all(c.args[1] == window for c in ledger.await_args_list)
-        assert [c.args for c in classify.await_args_list] == [(window, "web"), (window, "cli")]
+        assert all(c.args[1] == window for c in ledger.call_args_list)
+        assert [c.args for c in classify.await_args_list] == [
+            (window, ch, [rid for rid in LEDGER[ch] if rid is not None]) for ch in ("web", "cli")
+        ]
 
     async def test_a_cached_answer_does_not_classify_again(self, port, ledger):
         cache, classify = FakeCache(), classifier()
@@ -99,7 +101,7 @@ class TestWhoPaysSpend:
             out = await WhoPaysSpend(context(), classify=classify).read(START, END, "k")
         assert out == WhoPaysFigures()
         classify.assert_not_awaited()
-        ledger.assert_not_awaited()
+        ledger.assert_not_called()
 
     async def test_a_card_without_a_figure_has_no_split_and_is_not_cached(self, port, ledger):
         answer = groups()

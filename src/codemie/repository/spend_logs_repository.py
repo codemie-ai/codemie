@@ -48,7 +48,7 @@ floors and readiness do that, above it.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 
@@ -1091,6 +1091,20 @@ class SpendLogsRepository:
     ) -> dict[str | None, Decimal]:
         result = await session.execute(self._sum_by_request_id_statement(period, cli=cli, access=access))
         return {request_id: Decimal(total) for request_id, total in result.tuples().all()}
+
+    async def request_spend_batches(
+        self, session: AsyncSession, period: TimeRange, *, cli: bool, access: AccessScope | None, batch_size: int
+    ) -> AsyncIterator[dict[str, Decimal]]:
+        """Stream the ledger IDs that can contribute to Who Pays, with retries grouped before batching."""
+        statement = self._sum_by_request_id_statement(period, cli=cli, access=access).where(
+            Row.codemie_request_id.is_not(None)
+        )
+        result = await session.stream(statement.execution_options(yield_per=batch_size))
+        try:
+            async for rows in result.tuples().partitions(batch_size):
+                yield {request_id: Decimal(total) for request_id, total in rows}
+        finally:
+            await result.close()
 
     async def count_requests(self, session: AsyncSession, period: TimeRange) -> int:
         """How many requests a period saw - **distinct calls, not rows**.

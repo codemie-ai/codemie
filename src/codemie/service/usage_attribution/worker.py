@@ -127,21 +127,16 @@ def _load_app_db(engine: Any, db_timings: list[dict]) -> tuple[dict, Any]:
 
 def _cards_estimate(
     fetcher: Fetcher, ev_from: datetime, ev_to: datetime, shared: Any, evidence: dict | None
-) -> tuple[Any, dict]:
-    """The A0 sizes spec (run now when there is no reused evidence) and the resulting per-section size estimate."""
-    cards_spec = Spec(
-        "cards",
-        "A0 sizes",
-        lambda part, size: queries.cards_body(ev_from, ev_to, shared),
-        parse=lambda aggs, acc: aggs,
-        new_acc=dict,
-    )
-    if evidence is None:
-        fetcher.execute([cards_spec])
-        est = _estimates(cards_spec.result or {})
-    else:
-        est = evidence["cards"]
-    return cards_spec, est
+) -> tuple[list[Spec], dict]:
+    """Read independent A0 estimates under the worker's concurrency limit, or reuse cached estimates."""
+    if evidence is not None:
+        return [], evidence["cards"]
+    specs = [
+        Spec(key, f"A0 sizes ({key})", lambda part, size, body=body: body, parse=lambda aggs, acc: aggs, new_acc=dict)
+        for key, body in queries.sizing_queries(ev_from, ev_to, shared).items()
+    ]
+    fetcher.execute(specs)
+    return specs, _estimates({sp.key: sp.result for sp in specs})
 
 
 def _money_specs(
@@ -324,12 +319,12 @@ def _fetch_meta(
     db_ms: float,
     db_timings: list[dict],
     specs: list[Any],
-    cards_spec: Any,
+    cards_specs: list[Spec],
     evidence_blob: bytes | None,
     fplan: Any,
     ev_window: dict[str, Any],
 ) -> dict[str, Any]:
-    es_query_specs = ([cards_spec] if evidence_blob is not None else []) + specs
+    es_query_specs = cards_specs + specs
     return {
         "requests": fetcher.requests,
         "max_buckets": max_buckets,
@@ -420,7 +415,7 @@ def fetch_inputs(job: dict[str, Any]) -> tuple[dict[str, Any], bytes | None]:
         max_buckets,
         ES_REQUEST_TIMEOUT_S,
     )
-    cards_spec, est = _cards_estimate(fetcher, ev_from, ev_to, shared, evidence)
+    cards_specs, est = _cards_estimate(fetcher, ev_from, ev_to, shared, evidence)
 
     persons_spec = _persons_spec(money_from, money_to, shared, per_person, est)
     money_specs = _money_specs(money_from, money_to, shared, per_project, fplan, est)
@@ -452,7 +447,9 @@ def fetch_inputs(job: dict[str, Any]) -> tuple[dict[str, Any], bytes | None]:
         est,
         static,
         people,
-        _fetch_meta(fetcher, max_buckets, es_ms, db_ms, db_timings, specs, cards_spec, evidence_blob, fplan, ev_window),
+        _fetch_meta(
+            fetcher, max_buckets, es_ms, db_ms, db_timings, specs, cards_specs, evidence_blob, fplan, ev_window
+        ),
     )
     if merge_failed:
         # The parent does not store these Elasticsearch-only inputs and evidence for the hour.

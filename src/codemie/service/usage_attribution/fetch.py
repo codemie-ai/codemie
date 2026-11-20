@@ -163,6 +163,7 @@ class Fetcher:
         resp = self.client.search(
             index=self.index,
             body={"track_total_hits": False, **body},
+            pre_filter_shard_size=1,
             request_timeout=self.timeout_s,
             filter_path=_FILTER_PATH,
         )

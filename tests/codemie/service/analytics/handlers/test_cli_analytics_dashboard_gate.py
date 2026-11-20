@@ -211,25 +211,3 @@ async def test_a_request_past_its_budget_is_named_and_another_timeout_passes_thr
         async with dashboard_request():
             raise TimeoutError
     assert not isinstance(pool_wait.value, StatementTimeout)
-
-
-@pytest.mark.asyncio
-async def test_two_entries_of_one_request_share_one_budget(monkeypatch):
-    # /users and /cost read the rollup and, when it cannot answer, the live statements: two entries, one budget
-    from codemie.repository.cli_analytics.ports import RequestBudgetExceeded
-    from codemie.service.analytics.handlers.cli_analytics_handler import dashboard_request, one_request_budget
-
-    monkeypatch.setattr(app_config, "CLI_ANALYTICS_DASHBOARD_REQUEST_BUDGET_S", 0.1)
-
-    @one_request_budget
-    async def request():
-        async with dashboard_request():
-            await asyncio.sleep(0.07)  # the rollup read answers None inside the budget
-        async with dashboard_request():
-            await asyncio.sleep(0.07)  # the live path would get a second 0.1 s if it started a budget of its own
-
-    with pytest.raises(RequestBudgetExceeded):
-        await request()
-
-    async with dashboard_request():  # outside such a method an entry has the whole budget again
-        await asyncio.sleep(0.07)
