@@ -47861,13 +47861,13 @@
             }
           },
           {
-            "description": "Return only the caller's own Personal sessions (always on for non-admins)",
+            "description": "Return only Personal sessions: the caller's own, or every user's for an admin or auditor",
             "in": "query",
             "name": "personal_only",
             "required": false,
             "schema": {
               "default": false,
-              "description": "Return only the caller's own Personal sessions (always on for non-admins)",
+              "description": "Return only Personal sessions: the caller's own, or every user's for an admin or auditor",
               "title": "Personal Only",
               "type": "boolean"
             }

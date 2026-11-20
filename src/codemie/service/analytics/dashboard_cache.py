@@ -85,7 +85,14 @@ def dashboard_key(endpoint: str, f: LocalAnalyticsFilter, *extra: Any, now: date
     now = now or datetime.now(timezone.utc)
     return (
         endpoint,
-        (scope.viewer_email, scope.unrestricted, tuple(sorted(scope.admin_projects)), scope.mode),
+        (
+            scope.viewer_email,
+            scope.unrestricted,
+            tuple(sorted(scope.admin_projects)),
+            scope.mode,
+            scope.sees_private,
+            scope.own_shared,
+        ),
         _window_key(f, now),
         _sorted(f.users),
         _sorted(f.projects),

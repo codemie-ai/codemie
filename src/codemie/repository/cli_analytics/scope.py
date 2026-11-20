@@ -25,7 +25,12 @@ owner never turns a row into Personal and never matches a viewer.
     own_only  P and owned
     detail    (P and owned) or ((N or M) and authNP)
 
-authNP: unrestricted, or a non-empty project_name in admin_projects. Fails closed: an absent or
+owned = the viewer is the row's owner, or the scope `sees_private` (set for an admin, maintainer and auditor, by
+product decision EPMCDME-17657: they read every private Personal row in own_only and detail; exclude never lists
+Personal).
+
+authNP: unrestricted, or a non-empty project_name in admin_projects, or `own_shared` and the viewer is the row's
+owner (a regular user reads their own shared sessions, never anyone else's). Fails closed: an absent or
 malformed scope, or an unknown mode / row class, allows nothing.
 `allowed` is the reference; the SQL builders express the same table as parameterised conditions.
 """
@@ -67,6 +72,8 @@ class ViewerScope:
     unrestricted: bool
     admin_projects: frozenset[str]
     mode: Mode
+    sees_private: bool = False
+    own_shared: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "viewer_email", normalise_email(self.viewer_email))
@@ -78,6 +85,8 @@ def _valid(scope: Any) -> bool:
         and scope.mode in _MODES
         and isinstance(scope.unrestricted, bool)
         and isinstance(scope.admin_projects, frozenset)
+        and isinstance(scope.sees_private, bool)
+        and isinstance(scope.own_shared, bool)
     )
 
 
@@ -85,9 +94,12 @@ def allowed(scope: Any, row_class: RowClass, owner_email: str | None, project_na
     if not _valid(scope) or row_class not in ("P", "N", "M"):
         return False
     owner = normalise_email(owner_email)
-    owned = row_class == "P" and scope.viewer_email is not None and owner == scope.viewer_email
+    is_owner = scope.viewer_email is not None and owner == scope.viewer_email
+    owned = row_class == "P" and (scope.sees_private or is_owner)
     project = project_name or ""
-    auth_np = scope.unrestricted or (project != "" and project in scope.admin_projects)
+    auth_np = (
+        scope.unrestricted or (project != "" and project in scope.admin_projects) or (scope.own_shared and is_owner)
+    )
     if scope.mode == "exclude":
         return row_class == "N" and auth_np
     if scope.mode == "own_only":
@@ -113,27 +125,47 @@ def sql_personal_billed(a: str) -> str:
     return f"({sql_norm(f'{a}.subscription_type')} = 'personal')"
 
 
+def _owned_sql(scope: ViewerScope, a: str, params: dict[str, Any]) -> str:
+    """Class P rows the viewer may read: every one for `sees_private`, else the viewer's own."""
+    is_p = sql_private(a)
+    if scope.sees_private:
+        return is_p
+    if not scope.viewer_email:
+        return DENY
+    owner = sql_norm(f"{a}.owner_email")
+    params["scope_viewer"] = scope.viewer_email
+    return f"({is_p} AND {owner} <> '' AND {owner} = $scope_viewer::text)"
+
+
+def _non_personal_sql(scope: ViewerScope, a: str, params: dict[str, Any]) -> str:
+    """Non-private rows the viewer may read: all (unrestricted), those of the admin projects, and the viewer's own
+    (`own_shared`); DENY when none applies."""
+    if scope.unrestricted:
+        auth_np = "true"
+    else:
+        clauses = []
+        projects = sorted(p for p in scope.admin_projects if p)
+        if projects:
+            params["scope_projects"] = projects
+            clauses.append(f"coalesce({a}.project_name, '') = ANY($scope_projects::text[])")
+        if scope.own_shared and scope.viewer_email:
+            owner = sql_norm(f"{a}.owner_email")
+            params["scope_viewer"] = scope.viewer_email
+            clauses.append(f"({owner} <> '' AND {owner} = $scope_viewer::text)")
+        if not clauses:
+            return DENY
+        auth_np = f"({' OR '.join(clauses)})"
+    return f"(NOT {sql_private(a)} AND {auth_np})"
+
+
 def _condition(scope: Any, a: str) -> tuple[str, dict[str, Any]]:
     """The truth table over the columns of alias `a` (owner_email, project_name, subscription_type,
     project_origin); a LEFT-JOINed alias with no row has NULL columns, which makes it class M."""
     if not _valid(scope):
         return DENY, {}
     params: dict[str, Any] = {}
-    is_p = sql_private(a)
-    owned = DENY
-    owner = sql_norm(f"{a}.owner_email")
-    if scope.viewer_email:
-        params["scope_viewer"] = scope.viewer_email
-        owned = f"({is_p} AND {owner} <> '' AND {owner} = $scope_viewer::text)"
-    projects = sorted(p for p in scope.admin_projects if p)
-    if scope.unrestricted:
-        auth_np = "true"
-    elif projects:
-        params["scope_projects"] = projects
-        auth_np = f"coalesce({a}.project_name, '') = ANY($scope_projects::text[])"
-    else:
-        auth_np = DENY
-    non_personal = DENY if auth_np == DENY else f"(NOT {is_p} AND {auth_np})"
+    owned = _owned_sql(scope, a, params)
+    non_personal = _non_personal_sql(scope, a, params)
 
     if scope.mode == "own_only":
         sql = owned

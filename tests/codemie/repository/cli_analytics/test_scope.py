@@ -33,6 +33,8 @@ ROLES = {
     "super": {"unrestricted": True, "admin_projects": frozenset()},
     "admin": {"unrestricted": False, "admin_projects": frozenset({"proj"})},
     "ordinary": {"unrestricted": False, "admin_projects": frozenset()},
+    # A regular user (EPMCDME-17657): no admin project, but their own shared sessions are readable.
+    "regular": {"unrestricted": False, "admin_projects": frozenset(), "own_shared": True},
 }
 
 
@@ -44,7 +46,16 @@ def _expected(mode, role, cls, owner, project, viewer):
         and normalise_email(OWNERS[owner]) == normalise_email(viewer)
     )
     unrestricted = ROLES[role]["unrestricted"]
-    auth = unrestricted or (PROJECTS[project] != "" and PROJECTS[project] in ROLES[role]["admin_projects"])
+    is_owner = (
+        viewer is not None
+        and normalise_email(OWNERS[owner]) is not None
+        and normalise_email(OWNERS[owner]) == normalise_email(viewer)
+    )
+    auth = (
+        unrestricted
+        or (PROJECTS[project] != "" and PROJECTS[project] in ROLES[role]["admin_projects"])
+        or (ROLES[role].get("own_shared", False) and is_owner)
+    )
     non_personal = cls in ("N", "M") and auth
     return {
         "exclude": cls == "N" and auth,
@@ -144,3 +155,94 @@ def test_private_classes_truth_table(version, consent, expected):
     from codemie.repository.cli_analytics.scope import private_classes
 
     assert private_classes(version, consent) == expected
+
+
+def _private_scope(mode, sees_private, **kw):
+    base = {"viewer_email": "aud@x.io", "unrestricted": True, "admin_projects": frozenset()}
+    base.update(kw)
+    return ViewerScope(mode=mode, sees_private=sees_private, **base)
+
+
+@pytest.mark.parametrize("mode", ["own_only", "detail"])
+def test_sees_private_reads_foreign_personal_rows(mode):
+    assert allowed(_private_scope(mode, True), "P", "other@x.io", "") is True
+    assert allowed(_private_scope(mode, False), "P", "other@x.io", "") is False
+
+
+def test_sees_private_does_not_widen_exclude_or_non_personal_own_only():
+    assert allowed(_private_scope("exclude", True), "P", "other@x.io", "p") is False
+    assert allowed(_private_scope("own_only", True), "N", "other@x.io", "p") is False
+    assert allowed(_private_scope("detail", True), "N", "other@x.io", "p") is True
+
+
+@pytest.mark.parametrize("bad", [1, "yes", None])
+def test_non_bool_sees_private_fails_closed(bad):
+    scope = _private_scope("detail", bad)
+    assert allowed(scope, "N", None, "p") is False
+    assert sql_list_condition(scope) == ("false", {})
+
+
+def test_sql_sees_private_conditions():
+    from codemie.repository.cli_analytics.scope import sql_private
+
+    own, params = sql_list_condition(_private_scope("own_only", True, viewer_email=None))
+    assert own == sql_private("x") and params == {}
+    det, _ = sql_list_condition(_private_scope("detail", True))
+    assert det == f"({sql_private('x')} OR (NOT {sql_private('x')} AND true))"
+    excl, _ = sql_list_condition(_private_scope("exclude", True))
+    assert excl == sql_list_condition(_private_scope("exclude", False))[0]
+    plain = sql_list_condition(_private_scope("own_only", False))
+    assert "$scope_viewer" in plain[0]
+
+
+def _shared_scope(mode, **kw):
+    base = {"viewer_email": "me@x.io", "unrestricted": False, "admin_projects": frozenset(), "own_shared": True}
+    base.update(kw)
+    return ViewerScope(mode=mode, **base)
+
+
+@pytest.mark.parametrize("mode", ["exclude", "detail"])
+def test_own_shared_reads_only_the_viewers_own_shared_rows(mode):
+    scope = _shared_scope(mode)
+    assert allowed(scope, "N", "me@x.io", "any-project") is True
+    assert allowed(scope, "N", "me@x.io", "") is True  # a session without a project is still the viewer's own
+    assert allowed(scope, "N", "other@x.io", "any-project") is False
+    assert allowed(scope, "N", None, "any-project") is False  # a missing owner never matches a viewer
+
+
+def test_own_shared_never_reads_private_rows_of_others_or_widens_own_only():
+    assert allowed(_shared_scope("detail"), "P", "other@x.io", "p") is False
+    assert allowed(_shared_scope("exclude"), "P", "me@x.io", "p") is False  # exclude never lists Personal
+    assert allowed(_shared_scope("own_only"), "N", "me@x.io", "p") is False
+
+
+def test_own_shared_without_a_viewer_email_allows_nothing():
+    scope = _shared_scope("exclude", viewer_email=None)
+    assert allowed(scope, "N", "me@x.io", "p") is False
+    assert sql_list_condition(scope) == ("false", {})
+
+
+def test_own_shared_combines_with_admin_projects():
+    scope = _shared_scope("exclude", admin_projects=frozenset({"p1"}))
+    assert allowed(scope, "N", "other@x.io", "p1") is True
+    assert allowed(scope, "N", "me@x.io", "p2") is True
+    assert allowed(scope, "N", "other@x.io", "p2") is False
+
+
+@pytest.mark.parametrize("bad", [1, "yes", None])
+def test_non_bool_own_shared_fails_closed(bad):
+    scope = _shared_scope("exclude", own_shared=bad)
+    assert allowed(scope, "N", "me@x.io", "p") is False
+    assert sql_list_condition(scope) == ("false", {})
+
+
+def test_sql_own_shared_conditions():
+    excl, params = sql_list_condition(_shared_scope("exclude"))
+    assert "NOT" in excl and "x.owner_email" in excl and "$scope_viewer" in excl
+    assert "$scope_projects" not in excl and params == {"scope_viewer": "me@x.io"}
+    both, params = sql_list_condition(_shared_scope("exclude", admin_projects=frozenset({"p1"})))
+    assert "$scope_projects" in both and "$scope_viewer" in both and params["scope_projects"] == ["p1"]
+    own, _ = sql_list_condition(_shared_scope("own_only"))
+    assert sql_list_condition(_shared_scope("own_only", own_shared=False))[0] == own  # own_only ignores the flag
+    # without the flag a regular user selects nothing in exclude mode
+    assert sql_list_condition(_shared_scope("exclude", own_shared=False)) == ("false", {})

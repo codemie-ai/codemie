@@ -116,7 +116,6 @@ def refused_client():
     app = FastAPI()
     app.include_router(router_module.router)
     app.dependency_overrides[authenticate] = _authenticate
-    app.dependency_overrides[router_module._admin_gate] = lambda: None
 
     @app.exception_handler(ExtendedHTTPException)
     async def _extended(request, exc: ExtendedHTTPException):  # as the application registers it
@@ -185,7 +184,6 @@ def test_a_storage_that_cannot_be_reached_answers_503(error):
     app = FastAPI()
     app.include_router(router_module.router)
     app.dependency_overrides[authenticate] = _authenticate
-    app.dependency_overrides[router_module._admin_gate] = lambda: None
 
     @app.exception_handler(ExtendedHTTPException)
     async def _extended(request, exc: ExtendedHTTPException):  # as the application registers it
@@ -339,21 +337,24 @@ def test_filter_params_normalizes_naive_dates_to_utc():
 
 
 @pytest.mark.asyncio
-async def test_project_admin_without_projects_gets_a_deny_all_filter_without_nul():
+async def test_viewer_without_admin_projects_is_limited_by_the_scope_to_their_own_sessions():
     params = _filter_params()
     f = await params.resolve(_viewer(is_admin=False, admin_projects=[]))
 
-    assert f.deny_all is True
+    # EPMCDME-17657: no deny-all; the scope (no admin project, own_shared) selects only the viewer's own sessions.
+    assert f.deny_all is False
     assert f.projects is None
+    assert (f.scope.unrestricted, f.scope.admin_projects, f.scope.own_shared) == (False, frozenset(), True)
 
 
 @pytest.mark.asyncio
-async def test_project_admin_filter_is_limited_to_administered_projects():
+async def test_project_admin_selector_only_narrows_and_the_scope_keeps_the_administered_projects():
     params = _filter_params(projects="p1,p2")
     f = await params.resolve(_viewer(is_admin=False, admin_projects=["p2"]))
 
     assert f.deny_all is False
-    assert f.projects == ["p2"]
+    assert f.projects == ["p1", "p2"]  # the selector is passed on as sent; the scope decides what is readable
+    assert f.scope.admin_projects == frozenset({"p2"})
 
 
 @pytest.mark.asyncio

@@ -46,7 +46,6 @@ def test_a_statement_past_the_time_limit_answers_504_naming_the_limit(method, er
     app = FastAPI()
     app.include_router(router_module.router)
     app.dependency_overrides[authenticate] = _authenticate
-    app.dependency_overrides[router_module._admin_gate] = lambda: None
 
     @app.exception_handler(ExtendedHTTPException)
     async def _extended(request, exc: ExtendedHTTPException):  # as the application registers it
@@ -80,7 +79,6 @@ def test_a_request_past_its_budget_is_a_504_and_a_pool_timeout_stays_a_503(metho
     app = FastAPI()
     app.include_router(router_module.router)
     app.dependency_overrides[authenticate] = _authenticate
-    app.dependency_overrides[router_module._admin_gate] = lambda: None
 
     @app.exception_handler(ExtendedHTTPException)
     async def _extended(request, exc: ExtendedHTTPException):  # as the application registers it

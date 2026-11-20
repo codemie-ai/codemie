@@ -109,11 +109,12 @@ PROJECT_ADMIN = lambda: _user("pa@example.com", admin_projects=["p1"])  # noqa: 
 SUPER = lambda: _user("root@example.com", is_admin=True)  # noqa: E731
 
 
-def test_non_admin_gets_200_on_sessions_and_403_on_overview(make):
+def test_non_admin_gets_200_on_sessions_and_on_overview(make):
     client, _ = make(ORDINARY())
 
     assert client.get(f"{BASE}/sessions").status_code == 200
-    assert client.get(f"{BASE}/overview").status_code == 403
+    # EPMCDME-17657: every role reaches the dashboard. The fake overview payload is empty, so a body error may follow.
+    assert client.get(f"{BASE}/overview").status_code != 403
 
 
 def test_non_admin_can_reach_session_detail_route_past_the_gate(make):
@@ -125,8 +126,25 @@ def test_non_admin_can_reach_session_detail_route_past_the_gate(make):
     assert resp.status_code != 403
 
 
+def test_non_admin_default_list_is_their_own_shared_sessions_and_selectors_cannot_widen_it(make):
+    client, env = make(ORDINARY())
+
+    resp = client.get(
+        f"{BASE}/sessions",
+        params={"projects": "p1,p2", "users": "other@example.com", "is_project_unattributed": "true"},
+    )
+
+    f = env.sessions_filter()
+    assert resp.status_code == 200
+    scope = f.scope
+    assert (scope.mode, scope.viewer_email, scope.own_shared) == ("exclude", "dev@example.com", True)
+    # The scope is the restriction: no admin project, not unrestricted, so only the viewer's own rows match.
+    assert (scope.unrestricted, scope.admin_projects, scope.sees_private) == (False, frozenset(), False)
+    assert f.deny_all is True  # sessions without a project are for unrestricted viewers only
+
+
 @pytest.mark.parametrize("personal_only", ["true", "false"])
-def test_non_admin_is_always_own_only_and_supplied_filters_cannot_widen_it(make, personal_only):
+def test_non_admin_personal_only_is_own_only_and_supplied_filters_cannot_widen_it(make, personal_only):
     client, env = make(ORDINARY())
 
     resp = client.get(
@@ -141,12 +159,18 @@ def test_non_admin_is_always_own_only_and_supplied_filters_cannot_widen_it(make,
 
     f = env.sessions_filter()
     assert resp.status_code == 200
-    assert f.scope.mode == "own_only"
+    if personal_only == "true":
+        assert f.scope.mode == "own_only"
+        assert (f.users, f.projects, f.deny_all, f.project_unattributed) == (None, None, False, False)
+    else:
+        assert f.scope.mode == "exclude"
     assert f.scope.viewer_email == "dev@example.com"
-    assert (f.users, f.projects, f.deny_all, f.project_unattributed) == (None, None, False, False)
+    assert f.scope.sees_private is False
 
 
-def test_non_admin_without_email_gets_an_empty_list_and_an_own_only_scope_that_matches_nothing(make):
+def test_non_admin_without_email_gets_an_empty_list_and_a_scope_that_matches_nothing(make):
+    from codemie.repository.cli_analytics.scope import sql_list_condition
+
     client, env = make(ORDINARY(email=""))
 
     resp = client.get(f"{BASE}/sessions")
@@ -154,7 +178,8 @@ def test_non_admin_without_email_gets_an_empty_list_and_an_own_only_scope_that_m
     f = env.sessions_filter()
     assert resp.status_code == 200
     assert resp.json()["data"]["sessions"] == []
-    assert (f.scope.mode, f.scope.viewer_email) == ("own_only", None)
+    assert f.scope.viewer_email is None
+    assert sql_list_condition(f.scope) == ("false", {})
 
 
 @pytest.mark.parametrize("make_user", [SUPER, PROJECT_ADMIN])
@@ -182,7 +207,7 @@ def test_admin_personal_only_is_own_only_and_ignores_projects_users_and_unattrib
     assert f.subscription_types == ["personal"]
 
 
-def test_admin_default_stays_exclude_with_todays_project_scope(make):
+def test_admin_default_stays_exclude_and_the_scope_keeps_the_admin_projects(make):
     client, env = make(PROJECT_ADMIN())
 
     resp = client.get(f"{BASE}/sessions", params={"projects": "p1,p2"})
@@ -190,7 +215,8 @@ def test_admin_default_stays_exclude_with_todays_project_scope(make):
     f = env.sessions_filter()
     assert resp.status_code == 200
     assert f.scope.mode == "exclude"
-    assert f.projects == ["p1"]
+    assert f.scope.admin_projects == frozenset({"p1"})
+    assert f.projects == ["p1", "p2"]  # a selector only narrows; the scope decides what is readable
 
 
 def test_personal_only_on_an_aggregate_route_is_ignored(make):
@@ -226,10 +252,10 @@ def _role(**kw) -> User:
 @pytest.mark.parametrize(
     ("user", "admin", "projects", "mode"),
     [
-        (_role(), False, [], "own_only"),  # ordinary
-        (_role(is_auditor=True), False, [], "own_only"),  # auditor: read-only elsewhere, no CLI shared-session right
+        (_role(), False, [], "exclude"),  # ordinary: their own shared sessions through the scope
+        (_role(is_auditor=True), True, [], "exclude"),  # auditor: unrestricted read-only (EPMCDME-17657)
         (_role(admin_project_names=["p1"]), False, ["p1"], "exclude"),  # CR-003: real property keeps the list
-        (_role(is_auditor=True, admin_project_names=["p1"]), False, ["p1"], "exclude"),  # auditor does not erase them
+        (_role(is_auditor=True, admin_project_names=["p1"]), True, ["p1"], "exclude"),  # auditor is unrestricted
         (_role(is_admin=True), True, [], "exclude"),
         (_role(is_auditor=True, is_admin=True), True, [], "exclude"),
         (_role(is_maintainer=True, is_admin=True), True, [], "exclude"),  # the User validator sets is_admin
@@ -248,18 +274,24 @@ def test_sessions_role_matrix_on_the_real_user_for_list_and_detail(make, user, a
     assert (default.mode, default.viewer_email, default.unrestricted) == (mode, "r@example.com", admin)
     assert default.admin_projects == frozenset(projects)
 
+    sees_private = bool(user.is_admin or user.is_auditor)  # admin, maintainer and auditor (EPMCDME-17657)
+    assert default.sees_private is sees_private
+    assert default.own_shared is True
+
     client.get(f"{BASE}/sessions", params={"personal_only": "true"})
-    assert env.sessions_filter().scope.mode == "own_only"
+    personal = env.sessions_filter().scope
+    assert (personal.mode, personal.sees_private) == ("own_only", sees_private)
 
     client.get(f"{BASE}/sessions/s1")
     detail = env.handler.get_session_detail.await_args.kwargs["scope"]
     assert (detail.mode, detail.viewer_email, detail.unrestricted) == ("detail", "r@example.com", admin)
     assert detail.admin_projects == frozenset(projects)
+    assert (detail.sees_private, detail.own_shared) == (sees_private, True)
 
 
-def test_an_ordinary_auditor_detail_runs_the_executor_with_own_private_only_and_a_denied_read_is_a_404(make):
-    """The scope the route builds is what the authorize executor receives: an auditor is not unrestricted and has no
-    admin project, so a shared or foreign session is denied; the response is the same 404 as a missing session."""
+def test_an_ordinary_auditor_detail_runs_the_executor_with_an_unrestricted_private_scope(make):
+    """The scope the route builds is what the authorize executor receives: an auditor is unrestricted and sees
+    private Personal sessions; a denied read is still the same 404 as a missing session."""
     client, env = make(_role(is_auditor=True))
     reader = router_module.get_cli_analytics_storage().reader
     reader.authorize_session = AsyncMock(return_value=False)
@@ -268,32 +300,46 @@ def test_an_ordinary_auditor_detail_runs_the_executor_with_own_private_only_and_
     resp = client.get(f"{BASE}/sessions/foreign")
 
     scope = reader.authorize_session.await_args.args[1]
-    assert (scope.mode, scope.unrestricted, scope.admin_projects) == ("detail", False, frozenset())
+    assert (scope.mode, scope.unrestricted, scope.sees_private) == ("detail", True, True)
     assert resp.status_code == 404
     env.handler.get_session_detail.assert_not_awaited()
 
 
-def test_an_auditor_with_a_project_admin_role_sees_only_the_administered_projects_on_the_aggregates(make):
-    """The aggregate `_resolve` path: the gate admits the auditor-project-admin; the filter is limited to their own
-    projects instead of being widened to unrestricted by the shared AccessFilter."""
+def test_an_auditor_with_a_project_admin_role_is_unrestricted_on_the_aggregates(make):
+    """The aggregate `_resolve` path: the auditor-project-admin is unrestricted, so selected projects pass through."""
     client, env = make(_role(is_auditor=True, admin_project_names=["p1"]))
 
-    client.get(f"{BASE}/overview", params={"projects": "p1,other"})  # the empty fake payload is not the point
+    client.get(f"{BASE}/overview", params={"projects": "p1,other"})
 
     f = env.handler.get_overview.await_args.args[0]
-    assert (f.projects, f.deny_all, f.scope.unrestricted, f.scope.admin_projects) == (
-        ["p1"],
+    assert (sorted(f.projects), f.deny_all, f.scope.unrestricted, f.scope.sees_private) == (
+        ["other", "p1"],
         False,
-        False,
-        frozenset({"p1"}),
+        True,
+        True,
     )
 
 
-def test_an_ordinary_auditor_stays_out_of_the_aggregates(make):
+def test_an_ordinary_auditor_reads_the_aggregates_unrestricted(make):
     client, env = make(_role(is_auditor=True))
 
-    assert client.get(f"{BASE}/overview").status_code == 403
-    env.handler.get_overview.assert_not_awaited()
+    # The fake overview payload is empty, so the response may be a 400; the gate and the scope are the point.
+    assert client.get(f"{BASE}/overview").status_code != 403
+    f = env.handler.get_overview.await_args.args[0]
+    assert (f.scope.unrestricted, f.deny_all, f.scope.sees_private) == (True, False, True)
+
+
+@pytest.mark.parametrize(
+    ("make_user", "denied"),
+    [(lambda: _role(is_auditor=True), False), (PROJECT_ADMIN, True)],
+    ids=["auditor-allowed", "project-admin-denied"],
+)
+def test_project_unattributed_is_allowed_for_the_auditor_and_denied_for_a_project_admin(make, make_user, denied):
+    client, env = make(make_user())
+
+    client.get(f"{BASE}/sessions", params={"is_project_unattributed": "true"})
+
+    assert env.sessions_filter().deny_all is denied
 
 
 def test_the_sessions_sort_choices_are_exactly_the_sorts_the_database_pages():

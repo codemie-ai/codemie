@@ -141,28 +141,19 @@ def _handler() -> LocalAnalyticsHandler:
 
 
 def viewer_access(user: User) -> tuple[bool, frozenset[str]]:
-    """(unrestricted, admin projects) under the CLI privilege policy, the one `_admin_gate` and `/sessions` use.
+    """(unrestricted, admin projects) under the CLI privilege policy, the one every route here uses.
 
-    Only a super admin is unrestricted and only the user's own admin projects widen the scope. The shared
-    `AccessFilter` also treats an auditor as unrestricted (and drops their admin projects), which would let an
-    auditor read other users' shared sessions here although they cannot list them.
+    A super admin (a maintainer is one too) and an auditor are unrestricted (the auditor is read-only: no write route
+    exists); a project admin reads their own admin projects. Every viewer, whatever the role, also reads their own
+    sessions (`ViewerScope.own_shared`), so a regular user sees their own data and nothing else (EPMCDME-17657).
     """
-    return bool(user.is_admin), frozenset(user.admin_project_names or [])
+    return bool(user.is_admin or user.is_auditor), frozenset(user.admin_project_names or [])
 
 
-async def _admin_gate(request: Request, _: User = Depends(authenticate)) -> None:
-    """Allow Local Analytics only for super admins and project admins."""
-    user = request.state.user
-    if user.is_admin or user.is_applications_admin:
-        return
-
-    logger.warning("access_denied_cli_analytics: actor_user_id=%s", user.id)
-    raise ExtendedHTTPException(
-        code=status.HTTP_403_FORBIDDEN,
-        message="Access denied",
-        details="This action requires administrator or project administrator privileges.",
-        help="If you believe you should have access, please contact your system administrator.",
-    )
+def sees_private(user: User) -> bool:
+    """Whether the viewer reads other users' private Personal sessions: admin, maintainer and auditor
+    (product-owner decision EPMCDME-17657). Every other role reads its own private sessions only."""
+    return bool(user.is_admin or user.is_auditor)
 
 
 router = APIRouter(
@@ -421,13 +412,9 @@ class FilterParams:
     async def resolve_sessions(
         self, user: User, project_unattributed: bool = False, personal_only: bool = False
     ) -> LocalAnalyticsFilter:
-        """The `/sessions` variant: the viewer's own Personal sessions only (never widened) or today's scope.
-
-        An ordinary non-admin is always own_only; an admin is own_only when `personal_only` is set, and then
-        projects, users and is_project_unattributed are ignored. Other filters only narrow.
-        """
-        privileged = user.is_admin or user.is_applications_admin
-        return await self._resolve(user, project_unattributed, own_only=personal_only or not privileged)
+        """The `/sessions` variant: the viewer's private Personal sessions (`personal_only`, never widened by a
+        project, user or unattributed selector) or today's scope. Other filters only narrow."""
+        return await self._resolve(user, project_unattributed, own_only=personal_only)
 
     async def _resolve(self, user: User, project_unattributed: bool, *, own_only: bool) -> LocalAnalyticsFilter:
         start_dt, end_dt = TimeParser.parse(self.time_period, self.start_date, self.end_date)
@@ -456,20 +443,17 @@ class FilterParams:
             emails = [r["user"] for r in rows]
 
         projects = self._split(self.projects)
-        deny_all = False
         unrestricted, admin_projects = viewer_access(user)
         if own_only:
             # The scope's owner match is the restriction; no project/user selector may apply on top of it.
             emails, projects, project_unattributed = None, None, False
-        elif not unrestricted:
-            visible = set(admin_projects)
-            projects = list(set(projects) & visible) if projects else list(visible)
-            # No visible admin project: select nothing rather than all data.
-            deny_all = not projects
+        # Authorization is the scope's (unrestricted, admin projects, or the viewer's own sessions); the project and
+        # user selectors only narrow what the scope already allows.
+        deny_all = False
         if project_unattributed and not own_only:
-            # Sessions without a project are visible to super admins only.
+            # Sessions without a project are visible to unrestricted viewers only (super admin, auditor).
             projects = None
-            deny_all = deny_all or not unrestricted
+            deny_all = not unrestricted
 
         return LocalAnalyticsFilter(
             start_dt=start_dt,
@@ -487,6 +471,8 @@ class FilterParams:
                 unrestricted=unrestricted,
                 admin_projects=admin_projects,
                 mode="own_only" if own_only else "exclude",
+                sees_private=sees_private(user),
+                own_shared=True,
             ),
         )
 
@@ -604,7 +590,6 @@ def _statement_timeout_as_504(what: str):
     "/overview",
     response_model=LocalAnalyticsOverviewResponse,
     summary="Local analytics overview",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics overview")
 async def get_overview(
@@ -636,7 +621,6 @@ async def get_overview(
     "/cost",
     response_model=LocalAnalyticsCostResponse,
     summary="Local analytics cost breakdown",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics cost", timeout_504=_ERR_DASHBOARD_TIMEOUT)
 async def get_cost(
@@ -671,7 +655,6 @@ async def get_cost(
     "/users",
     response_model=LocalAnalyticsUsersResponse,
     summary="Local analytics user leaderboard",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics users", timeout_504=_ERR_DASHBOARD_TIMEOUT)
 async def get_users(
@@ -723,7 +706,6 @@ async def get_users(
     "/user-charts",
     response_model=LocalAnalyticsUsersResponse,
     summary="Local analytics user chart data (unpaginated)",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics user charts", timeout_504=_ERR_DASHBOARD_TIMEOUT)
 async def get_user_charts(
@@ -766,7 +748,6 @@ async def _attach_user_ids(rows: list[dict]) -> None:
     "/repositories",
     response_model=LocalAnalyticsRepositoriesResponse,
     summary="Local analytics repository breakdown",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics repositories")
 async def get_repositories(  # noqa: PLR0913 - FastAPI route: one parameter per query parameter
@@ -806,7 +787,6 @@ async def get_repositories(  # noqa: PLR0913 - FastAPI route: one parameter per 
     "/branches",
     response_model=LocalAnalyticsBranchesResponse,
     summary="Local analytics branches of one repository",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics branches")
 async def get_branches(
@@ -832,7 +812,6 @@ async def get_branches(
     "/projects",
     response_model=LocalAnalyticsProjectsResponse,
     summary="Local analytics project breakdown",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics projects")
 async def get_projects(  # noqa: PLR0913 - FastAPI route: one parameter per query parameter
@@ -865,7 +844,6 @@ async def get_projects(  # noqa: PLR0913 - FastAPI route: one parameter per quer
     "/tools",
     response_model=LocalAnalyticsToolsResponse,
     summary="Local analytics tools and models",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics tools")
 async def get_tools(
@@ -909,7 +887,6 @@ def _activity_zone(tz: str | None) -> timezone | ZoneInfo:
     "/activity",
     response_model=LocalAnalyticsActivityResponse,
     summary="Local analytics activity heatmap",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics activity")
 async def get_activity(
@@ -937,7 +914,6 @@ async def get_activity(
     "/efficiency",
     response_model=LocalAnalyticsEfficiencyResponse,
     summary="Local analytics efficiency",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics efficiency")
 async def get_efficiency(
@@ -957,7 +933,6 @@ async def get_efficiency(
     "/frameworks",
     response_model=LocalAnalyticsFrameworksResponse,
     summary="Available delivery frameworks",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics frameworks")
 async def get_frameworks(user: User = Depends(authenticate)) -> JSONResponse:
@@ -986,10 +961,11 @@ async def get_sessions(  # noqa: PLR0913 - FastAPI route: one parameter per quer
     ),
     is_project_unattributed: bool = Query(False, description=_PROJECT_UNATTRIBUTED_DESCRIPTION),
     personal_only: bool = Query(
-        False, description="Return only the caller's own Personal sessions (always on for non-admins)"
+        False,
+        description="Return only Personal sessions: the caller's own, or every user's for an admin or auditor",
     ),
 ) -> JSONResponse:
-    # No _admin_gate: any authenticated user may list; a non-admin is forced to own Personal by the scope.
+    # Any authenticated user may list; the scope decides what each role reads.
     _ensure_enabled()
     if is_branch_unattributed and (branch or not filters._split(filters.repositories)):
         raise ExtendedHTTPException(
@@ -1019,7 +995,7 @@ async def get_session_detail(
     user: User = Depends(authenticate),
     trace_id: str = Path(..., description="Session id"),
 ) -> JSONResponse:
-    # No _admin_gate: the reader's detail predicate lets a non-admin see only their own Personal session.
+    # Any authenticated user may open a session; the reader's detail predicate decides which.
     # An unavailable ClickHouse is indistinguishable from a missing trace here; preserve the 404 contract.
     _ensure_enabled()
     start_ns = time.monotonic_ns()
@@ -1027,7 +1003,12 @@ async def get_session_detail(
     # or an admin allowed to see the non-Personal session's project. Nothing is fetched before it.
     unrestricted, admin_projects = viewer_access(user)
     scope = ViewerScope(
-        viewer_email=user.email, unrestricted=unrestricted, admin_projects=admin_projects, mode="detail"
+        viewer_email=user.email,
+        unrestricted=unrestricted,
+        admin_projects=admin_projects,
+        mode="detail",
+        sees_private=sees_private(user),
+        own_shared=True,
     )
     detail = None
     if await get_cli_analytics_storage().reader.authorize_session(trace_id, scope):

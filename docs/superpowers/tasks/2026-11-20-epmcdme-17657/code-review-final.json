@@ -1,0 +1,86 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Approve; CR-001 accepted (audit trail question)"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Approve; CR-001 accepted (audit trail question)"
+    }
+  ],
+  "reviewed_head": "cf9bd22a8f5b0fa2469bd969654cd9a8f731bd03",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No spec supplied (acceptance n/a), so confidence is low; no blocking defects found. 1 advisory question (no audit trail for auditor reads of private sessions), 0 deferred, 9 dismissed as noise or intended per the PO decision (see code-review-dismissed.local.md).",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [
+    "security",
+    "auth"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "type": "question",
+      "file": "src/codemie/rest_api/routers/cli_analytics.py",
+      "title": "No audit trail for auditor private-session reads",
+      "problem": "The auditor can now read every user's private Personal sessions via /sessions and session detail, but only the denial path (access_denied_cli_analytics) logs; successful privileged reads leave no record.",
+      "impact": "No documented rule requires it and the read is read-only by PO decision; the consequence is reduced traceability of a privacy exception, not a functional defect.",
+      "recommendation": "Question: is an access log for auditor reads of other users' private sessions wanted? If so, log actor id and trace_id on the auditor branch.",
+      "status": "wont-fix",
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "accept"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "4 subjects in range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "changes to scope.py and cli_analytics.py are typed, use modern hints, and stay in the modules that own the concern; no documented Rules or Constraints broken"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "guide security-practices.md absent; adjudicated against security-patterns.md. Fails closed on malformed scope; auditor private read is a documented product decision."
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "No spec supplied (acceptance n/a), so confidence is low; no blocking defects found. 1 advisory question (no audit trail for auditor reads of private sessions), 0 deferred, 9 dismissed as noise or intended per the PO decision (see code-review-dismissed.local.md).",
+    "confidence": "low",
+    "risk_flags": [
+      "security",
+      "auth"
+    ]
+  }
+}

@@ -56,8 +56,11 @@ ROLES = {
     "admin+auditor": _user(is_admin=True, is_auditor=True),
     "project-admin": _user(admin_project_names=["demo"]),
     "project-admin+auditor": _user(admin_project_names=["demo"], is_auditor=True),
+    "auditor": _user(is_auditor=True),  # EPMCDME-17657: an auditor reads all CLI analytics, read-only
 }
-NO_DASHBOARD = {"auditor": _user(is_auditor=True), "ordinary": _user()}
+NO_DASHBOARD = {"ordinary": _user()}
+# The sessions routes are open to every viewer, the auditor included.
+SESSION_VIEWERS = {**NO_DASHBOARD, "auditor": ROLES["auditor"]}
 
 _PRICED = {"cost_incomplete": False, "unpriced_models": [], "cost_unknown": False}
 _PARTIAL = {"cost_incomplete": True, "unpriced_models": [NAME], "cost_unknown": False}
@@ -312,14 +315,15 @@ def test_responses_keep_pricing_names_in_cached_data(env):
 
 @pytest.mark.parametrize("path", DASHBOARD)
 @pytest.mark.parametrize("role", NO_DASHBOARD)
-def test_the_dashboard_access_gate_is_unchanged(env, role, path):
-    assert _get(env, NO_DASHBOARD[role], path).status_code == 403
+def test_an_ordinary_viewer_reaches_the_dashboard_routes(env, role, path):
+    # EPMCDME-17657: the gate is gone, every role reads the data its scope allows.
+    assert _get(env, NO_DASHBOARD[role], path).status_code == 200
 
 
 @pytest.mark.parametrize("path", ["sessions", "sessions/t1"])
-@pytest.mark.parametrize("role", NO_DASHBOARD)
+@pytest.mark.parametrize("role", SESSION_VIEWERS)
 def test_an_ordinary_viewer_keeps_session_access_and_receives_model_names(env, role, path):
-    response = _get(env, NO_DASHBOARD[role], path)
+    response = _get(env, SESSION_VIEWERS[role], path)
 
     assert response.status_code == 200
     assert [NAME] in _names(response.json())
