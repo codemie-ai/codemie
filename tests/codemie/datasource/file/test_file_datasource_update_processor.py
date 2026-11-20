@@ -418,8 +418,9 @@ class TestOnProcessEnd:
 # ---------------------------------------------------------------------------
 
 
-def _run_process_with_exception(proc, mock_index, exception):
-    """Context manager: run process() with _process() rigged to raise *exception*."""
+def _run_process_with_exception(proc, mock_index, exception=None, loader=None):
+    """Context manager: run process() with _process() rigged to raise *exception*,
+    or, when *loader* is given, to drain that real loader."""
     from contextlib import contextmanager
 
     @contextmanager
@@ -437,17 +438,22 @@ def _run_process_with_exception(proc, mock_index, exception):
             patch("codemie.datasource.file.file_datasource_update_processor.propagated_span") as mock_span,
             patch("codemie.datasource.file.file_datasource_update_processor.DatasourceMonitoringCallback"),
             patch("codemie.datasource.file.file_datasource_update_processor.record_exception_on_span"),
-            patch.object(proc, "_init_loader", return_value=MagicMock()),
+            patch.object(proc, "_init_loader", return_value=loader or MagicMock()),
+            patch.object(
+                proc,
+                "_process",
+                side_effect=(lambda: list(loader.lazy_load())) if loader is not None else exception,
+            ),
             patch.object(proc, "_on_process_start"),
-            patch.object(proc, "_process", side_effect=exception),
             patch.object(proc, "_persist_load_stats", return_value={}),
             patch.object(proc, "_on_process_end") as mock_on_end,
             patch.object(proc, "client") as mock_client,
         ):
             mock_span.return_value.__enter__ = MagicMock(return_value=None)
             mock_span.return_value.__exit__ = MagicMock(return_value=False)
-            proc.loader = MagicMock()
-            proc.loader.fetch_remote_stats.return_value = {}
+            if loader is None:
+                proc.loader = MagicMock()
+                proc.loader.fetch_remote_stats.return_value = {}
             yield mock_client, mock_on_end
 
     return _ctx()
@@ -503,6 +509,46 @@ class TestProcessExceptionHandlers:
 
         mock_index.set_error.assert_called_once()
         mock_on_end.assert_called_once()
+
+
+class TestUpdateWhereEveryNewFileTimesOut:
+    def test_ends_in_error_with_timeout_message_and_keeps_old_index(self, make_processor, mock_index):
+        from codemie.datasource.exceptions import AllFilesTimedOutError, FileParsingTimeoutError
+        from codemie.datasource.loader.file_loader import FilesDatasourceLoader
+        from codemie_tools.base.file_object import FileObject
+
+        new_files = [
+            FILE_PATH_DATA_NT(name="new_a.txt", owner="user1"),
+            FILE_PATH_DATA_NT(name="new_b.txt", owner="user1"),
+        ]
+        proc = make_processor(new_files_paths=new_files)
+        loader = FilesDatasourceLoader(
+            total_count_of_documents=len(new_files),
+            files_paths=new_files,
+            csv_separator=",",
+            request_uuid="uuid-1",
+        )
+        loader.file_repo = MagicMock()
+        loader.file_repo.read_file.side_effect = lambda name, owner: FileObject(
+            name=name, content=b"x", owner=owner, mime_type="txt"
+        )
+
+        with (
+            patch("codemie.datasource.loader.file_loader.config") as loader_config,
+            patch(
+                "codemie.datasource.loader.file_loader.maybe_pool_submit",
+                side_effect=FileParsingTimeoutError(1800),
+            ),
+            _run_process_with_exception(proc, mock_index, loader=loader) as (mock_client, mock_on_end),
+        ):
+            loader_config.ENABLE_FILE_MULTIPROCESSING = True
+            with pytest.raises(AllFilesTimedOutError):
+                proc.process()
+
+        mock_index.set_error.assert_called_once_with("File parsing timed out for 2 file(s); nothing was indexed")
+        mock_client.indices.delete.assert_not_called()
+        mock_on_end.assert_called_once()
+        assert loader.get_load_stats()["failed_documents"] == 2
 
 
 class TestSpendOrigin:

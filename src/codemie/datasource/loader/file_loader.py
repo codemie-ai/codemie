@@ -21,7 +21,12 @@ from typing import Any, Union, List, Optional
 from codemie_tools.base.file_object import FileObject
 from langchain_core.documents import Document
 
-from codemie.datasource.exceptions import SkippedFileException, UnreadableWorkbookError
+from codemie.datasource.exceptions import (
+    AllFilesTimedOutError,
+    FileParsingTimeoutError,
+    SkippedFileException,
+    UnreadableWorkbookError,
+)
 from codemie.datasource.loader.base_datasource_loader import BaseDatasourceLoader
 from codemie.datasource.loader.file_extraction_utils import extract_documents_from_bytes
 from codemie.repository.repository_factory import FileRepositoryFactory
@@ -80,6 +85,7 @@ class FilesDatasourceLoader(BaseDatasourceLoader):
         self._csv_separator = csv_separator
         self._include_email_attachments = include_email_attachments
         self._skipped_count = 0
+        self._timed_out_count = 0
         self.datasource_id = datasource_id
 
     def fetch_remote_stats(self) -> dict[str, Any]:
@@ -110,6 +116,7 @@ class FilesDatasourceLoader(BaseDatasourceLoader):
                 yield self._lazy_load_documents(file)
 
     def _load_docs_parallel(self):
+        produced_documents = False
         for file_data in self.files_paths:
             file = self.file_repo.read_file(file_data.name, file_data.owner)
             try:
@@ -124,10 +131,15 @@ class FilesDatasourceLoader(BaseDatasourceLoader):
                 )
                 if not docs:
                     self._skipped_count += 1
+                else:
+                    produced_documents = True
                 yield docs
             except SkippedFileException:
                 self._skipped_count += 1
                 yield []
+            except FileParsingTimeoutError as e:
+                self._timed_out_count += 1
+                logger.error(f"Failed to extract documents from file {file_data.name}: {e}")
             except UnreadableWorkbookError:
                 # A corrupt/encrypted workbook is a genuine failure, not a skip. Propagate it
                 # (like the serial path) so the actionable error surfaces instead of the file
@@ -135,6 +147,9 @@ class FilesDatasourceLoader(BaseDatasourceLoader):
                 raise
             except Exception as e:
                 logger.error(f"Failed to extract documents from file {file_data.name}: {e}")
+
+        if self._timed_out_count and not produced_documents:
+            raise AllFilesTimedOutError(self._timed_out_count)
 
     def _lazy_load_documents(self, file: FileObject) -> List[Document]:
         """
@@ -163,4 +178,4 @@ class FilesDatasourceLoader(BaseDatasourceLoader):
             return []
 
     def get_load_stats(self) -> dict[str, int]:
-        return {self.SKIPPED_DOCUMENTS_KEY: self._skipped_count}
+        return {self.SKIPPED_DOCUMENTS_KEY: self._skipped_count, self.FAILED_DOCUMENTS_KEY: self._timed_out_count}

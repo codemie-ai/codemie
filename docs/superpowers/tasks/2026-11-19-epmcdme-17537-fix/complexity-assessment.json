@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Fix the file-parsing process pool deadlock by running nested parsing inline in pool workers, routing SharePoint through the shared pool helper, adding per-caller wait limits plus stuck-pool detection that recreates the pool and terminates old workers, counting every per-file parse failure in multi-file datasources with a clear all-failed error, and logging the real start method.",
+  "generated": "2026-11-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base L: FileProcessPoolManager / maybe_pool_submit, FilesDatasourceLoader per-file failure accounting, SharePointLoader multiprocess path, assistant file-analysis tool callers (xlsx/docx/pdf/file_analysis_tool) needing a shorter limit, and FileConfig/config settings, spanning the datasource loader and codemie_tools subsystems. Bumped to XL because maybe_pool_submit is a core shared utility used by both datasource indexing and agent tools." },
+    { "dimension": "technical_risk", "reason": "Closest patterns are the code-datasource _run_in_subprocess join(timeout)+terminate and usage-attribution spawn+kill, plus the existing BrokenProcessPool reinit-and-retry; none covers stuck-pool detection over a ProcessPoolExecutor (nothing completed within the limit while work waits), terminating workers of an executor whose manager thread is blocked, or in-worker process-identity detection that must not misfire in code-datasource forks and usage-attribution spawns. Timeout choice must cover LLM-backed PDF image parsing. Rollback is cheap via ENABLE_FILE_MULTIPROCESSING=false and error-path mock tests exist for the pool, so no further bump; held at L." },
+    { "dimension": "file_change_estimate", "reason": "Source: file_processor_pool.py, file_loader.py, sharepoint_loader.py, datasources_config.py and/or config.py, exceptions.py, file-analysis tool callers (file_analysis_tool.py, xlsx/tools.py, possibly docx/pdf processors), possibly base_datasource_processor.py for the all-failed error. Tests: test_file_processor_pool.py, test_file_loader.py, file_analysis tool tests, plus a new SharePoint multiprocess test. Roughly 11-14 modified and 1-3 new across datasource/loader, datasource core, configs, codemie_tools/file_analysis and tests." },
+    { "dimension": "requirements_clarity", "reason": "Story defines AC1-AC11 with decisions D1-D7 recorded (inline-in-worker, SharePoint routing, which setting drives the datasource limit, shorter tool limit, stuck-pool detection semantics, failure counting). Minor details only." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utility maybe_pool_submit / FileProcessPoolManager used by datasource indexing and assistant file-analysis tools"
+  ],
+  "split_recommendation": null
+}

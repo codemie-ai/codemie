@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-11-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 22,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the shared file_processor_pool helper (in-worker inline execution, bounded waits), FilesDatasourceLoader (timed-out files counted as failed), SharePoint loader routing, new exception types, datasource config, and the docx/file_analysis tool layer that must not relabel the timeout error." },
+    { "dimension": "technical_risk", "reason": "Process-pool deadlock fix with worker-detection flag, timeout semantics across process boundaries (exception pickling via __reduce__), pool reinitialisation and start-method behaviour. Concurrency-sensitive, with a real-process test needed. Closest pattern is the existing maybe_pool_submit helper, which did not cover nested submits." },
+    { "dimension": "file_change_estimate", "reason": "22 files per diffstat (about 10 source, 12 test including a new pool_worker_helpers module and a real-process test), which maps to XXL by file count even though roughly half of the files are tests." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk held at L: concurrency and timeout handling in a shared process pool (performance and scalability concern)",
+    "Component Scope held at L: touches a core shared utility (file_processor_pool) used by multiple loaders and tools"
+  ],
+  "split_recommendation": null
+}

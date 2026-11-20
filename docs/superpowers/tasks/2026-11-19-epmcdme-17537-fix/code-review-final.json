@@ -1,0 +1,243 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Check round approved; CR-001 resolved, CR-002 waived by user (no wrapping handler at processor.py:237)"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "CR-001 fix-now; CR-002 accepted (no wrapping handler at processor.py:237)"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Check round approved; CR-001 resolved, CR-002 waived by user (no wrapping handler at processor.py:237)"
+    }
+  ],
+  "reviewed_head": "a10dad29f4a6e9cb461a1797ede390c628a713e5",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "CR-001 (the only id in the fix set) is resolved: the test now drives the real FilesDatasourceLoader._load_docs_parallel with maybe_pool_submit raising FileParsingTimeoutError, and the loader's AllFilesTimedOutError reaches process() error handling (set_error message, no index delete, _on_process_end once, failed_documents == 2). CR-002 was outside fix_set_ids (waived by the user) and is not graded; the test was read, not run.",
+  "confidence": "high",
+  "check_confidence": "high",
+  "risk_flags": [
+    "shared utility maybe_pool_submit",
+    "concurrency/multiprocessing"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 1
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/datasource/file/test_file_datasource_update_processor.py",
+      "line": 508,
+      "title": "Update-flow all-timed-out test bypasses loader",
+      "problem": "The spec Verification requires an update-flow test where an existing index gets only timing-out new files. TestUpdateWhereEveryNewFileTimesOut raises a pre-built AllFilesTimedOutError from a mocked step, so the path loader -> AllFilesTimedOutError -> update processor error handling is never exercised end to end.",
+      "impact": "A regression in the loader's all-timed-out detection or in the update processor's handling of a loader-raised error would not be caught; the AC6 behaviour for updates is asserted only against an injected exception.",
+      "recommendation": "Drive the real FilesDatasourceLoader._load_docs_parallel with maybe_pool_submit patched to raise FileParsingTimeoutError for every file in the update flow with an existing index, and assert set_error gets the timeout message, the old index is kept and _on_process_end runs.",
+      "status": "resolved",
+      "check_notes": "Test at test_file_datasource_update_processor.py:515-549 builds a real FilesDatasourceLoader, patches maybe_pool_submit to raise FileParsingTimeoutError, drains lazy_load via _process; file_loader.py:151-152 raises AllFilesTimedOutError; asserts set_error message, indices.delete not called, _on_process_end once, failed_documents == 2.",
+      "fix": {
+        "change": "Update-flow all-timed-out test now drives the real FilesDatasourceLoader (maybe_pool_submit patched to raise FileParsingTimeoutError for every file) through process(); asserts set_error message, old index kept, _on_process_end and failed_documents == 2",
+        "test": "tests/codemie/datasource/file/test_file_datasource_update_processor.py::TestUpdateWhereEveryNewFileTimesOut"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie_tools/file_analysis/pdf/test_pdf_processor_error_handling.py",
+      "line": 212,
+      "title": "PDF timeout test stops short of tool boundary",
+      "problem": "The spec Verification requires an AC8 test at each tool boundary, including the PDF tool. The added test calls PdfProcessor.extract_text_as_markdown directly with maybe_pool_submit patched, not the PDF tool's execute path. Reachability read: processor.py:237 has no wrapping except, so the production path is believed correct.",
+      "impact": "If a handler is later added between the tool and the processor, a pool timeout would be relabelled as a generic read error with no test failing; the stated spec verification for PDF is unmet.",
+      "recommendation": "Add a test that runs the PDF tool's execute path with maybe_pool_submit patched to raise FileParsingTimeoutError and asserts the timeout error surfaces (ToolException or FileParsingTimeoutError with the fixed message), not a generic read error.",
+      "status": "wont-fix",
+      "disposition": {
+        "rationale": "processor.py:237 has no wrapping except, so the production path propagates the timeout; the processor-level test is enough",
+        "source": "hitl",
+        "action": "accept"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1: pool helper called inside a pool worker runs directly in the same worker, no process started",
+      "status": "pass",
+      "notes": "_in_pool_worker flag set by _pool_worker_initializer; maybe_pool_submit runs inline when set; TestWorkerFlag covers it"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: worker past its task limit, incl. .xlsb nested, still completes; later datasources keep indexing; worker replaced at limit",
+      "status": "pending-stage-7",
+      "notes": "Implementation present; real-process spawn test with negative control added; its execution is Stage 7 evidence"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: non-worker processes (main, uvicorn --reload child, code subprocess) still go through the pool",
+      "status": "pass",
+      "notes": "Flag set only by pool initializer, no parent_process() check; test_flag_unset_keeps_pool_path"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: wait past timeout ends with dedicated error, unstarted work cancelled, pool not recreated",
+      "status": "pass",
+      "notes": "_wait_for cancels then raises FileParsingTimeoutError; test asserts cancel and no reinit"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: one timed-out file counted failed under stats, logged with file name, others indexed, datasource completes",
+      "status": "pass",
+      "notes": "_load_docs_parallel counts timeouts and logs name; get_load_stats reports FAILED_DOCUMENTS_KEY"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: no file indexed and at least one timeout ends in error status with timeout message, slot released",
+      "status": "pass",
+      "notes": "AllFilesTimedOutError raised after loop; base processor except path sets error; update flow tested only with injected error"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: SharePoint timeout counts in existing failed-files count, others indexed, goes through shared helper",
+      "status": "pass",
+      "notes": "_extract_documents_from_bytes_multiprocess calls maybe_pool_submit; catch-all counts file as failed"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8: file-analysis tool on spreadsheet/PDF/Word returns clear timeout error, not fallback or generic read error",
+      "status": "pass",
+      "notes": "Re-raise guards added at file_analysis_tool, docx reader/processor/tools; PDF has no relabelling handler"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9: Git/SVN/Azure DevOps timeout skips the file via existing per-file error handling",
+      "status": "pass",
+      "notes": "No code change needed per spec; per-file handlers taken from spec, no test in diff"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC10: with multiprocessing off behaviour unchanged, no timeout",
+      "status": "pass",
+      "notes": "maybe_pool_submit runs fn inline when multiprocessing disabled or pool uninitialized"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC11: timeout -1 means no limit",
+      "status": "pass",
+      "notes": "_wait_for passes timeout=None when processing_timeout <= 0; test covers 0 and -1"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC12: existing behaviours unchanged (unreadable workbook, other parse errors dropped, broken-pool retry once, worker error type preserved)",
+      "status": "pass",
+      "notes": "UnreadableWorkbookError branch, generic except and BrokenProcessPool retry kept; tests assert pass-through"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC13: startup log shows the start method the pool actually uses",
+      "status": "pass",
+      "notes": "initialize() logs ctx.get_start_method(); TestInitializeStartMethod"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach 1: initializer sets flag first, then calls configure_pyroscope; passed as initializer=",
+      "status": "pass",
+      "notes": "_pool_worker_initializer implemented and wired; order and pyroscope-raises tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach 2: timeout from FILE_CONFIG read at call time, <=0 no limit, yaml sets 1800, note on the field",
+      "status": "pass",
+      "notes": "Read inside _wait_for; yaml 1800; Field description added; shipped-config test"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach 2: expiry decided from future.done(), late result returned or worker exception re-raised, error outside OSError/TimeoutError with __reduce__",
+      "status": "pass",
+      "notes": "_wait_for checks done() on TimeoutError; exception derives Exception with __reduce__; pickle test"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach 2: retry after BrokenProcessPool gets its own full bounded wait",
+      "status": "pass",
+      "notes": "Retry wrapped in _wait_for; dedicated test"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach 4: loader tracks whether any file produced documents, raises datasource-level error after loop, no new stats key",
+      "status": "pass",
+      "notes": "produced_documents flag and AllFilesTimedOutError; only existing FAILED_DOCUMENTS_KEY used"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach 5: timeout re-raised unchanged at each listed handler; xlsx handlers keep returning text; handler-less routes raise",
+      "status": "pass",
+      "notes": "Guards in file_analysis_tool and docx modules; xlsx tools unchanged and tested"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals: no new env var or second timeout setting, no pool recreation on timeout, no default changes",
+      "status": "pass",
+      "notes": "No new setting; _reinitialize_pool only on BrokenProcessPool"
+    },
+    {
+      "kind": "spec",
+      "item": "Verification: AC8 tests at each tool boundary and update-flow all-timed-out test",
+      "status": "partial",
+      "notes": "PDF test targets PdfProcessor not the tool; update-flow test injects AllFilesTimedOutError instead of driving the loader"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 8 commit subjects in bf8733e8..HEAD match the documented EPMCDME-####: Description format in git-workflow.md"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new files carry the Apache license header; new code is typed and exceptions follow the neighbouring __reduce__ pattern; sharepoint_loader.py gets only a small wiring change"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no security-practices.md exists; adjudicated against security-patterns.md; new log lines log no credentials and no new auth, input-parsing or path surface found"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "All four lenses and standards ran; implementation matches the spec, but two spec Verification items are only partially met (PDF tool-boundary test, update-flow all-timed-out test with real loader). 19 candidates dismissed as noise (hung-worker recycling, queue-time, retry doubling are story non-goals/decisions); 0 deferred, 0 advisory.",
+    "confidence": "high",
+    "risk_flags": [
+      "shared utility maybe_pool_submit",
+      "concurrency/multiprocessing"
+    ]
+  }
+}

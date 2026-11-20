@@ -25,6 +25,13 @@ from typing import Any, Callable, Optional
 from codemie.configs import logger
 from codemie.configs import config
 from codemie.configs.pyroscope_config import configure_pyroscope
+from codemie.datasource.datasources_config import FILE_CONFIG
+from codemie.datasource.exceptions import FileParsingTimeoutError
+
+
+def _pool_worker_initializer(pyroscope_settings: dict) -> None:
+    FileProcessPoolManager._in_pool_worker = True
+    configure_pyroscope(pyroscope_settings)
 
 
 class FileProcessPoolManager:
@@ -39,6 +46,7 @@ class FileProcessPoolManager:
     _executor: Optional[ProcessPoolExecutor] = None
     _max_workers: int = 4
     _initialized: bool = False
+    _in_pool_worker: bool = False
 
     def __new__(cls):
         if cls._instance is None:
@@ -64,10 +72,12 @@ class FileProcessPoolManager:
 
         if max_tasks_per_child < 0:
             max_tasks_per_child = None
+        ctx = multiprocessing.get_context("spawn") if max_tasks_per_child is not None else multiprocessing.get_context()
         cls._executor = ProcessPoolExecutor(
             max_workers=max_workers,
+            mp_context=ctx,
             max_tasks_per_child=max_tasks_per_child,
-            initializer=configure_pyroscope,
+            initializer=_pool_worker_initializer,
             initargs=({"process_type": "subprocess", "process_pool": cls.__name__},),
         )
         cls._initialized = True
@@ -75,8 +85,7 @@ class FileProcessPoolManager:
         # Register shutdown on exit
         atexit.register(cls.shutdown)
 
-        start_method = multiprocessing.get_start_method()
-        logger.info(f"Initialized file process pool with {max_workers} workers, start_method={start_method}")
+        logger.info(f"Initialized file process pool with {max_workers} workers, start_method={ctx.get_start_method()}")
 
     @classmethod
     def get_executor(cls) -> ProcessPoolExecutor:
@@ -135,14 +144,25 @@ def _reinitialize_pool() -> None:
         )
 
 
+def _wait_for(future: Any) -> Any:
+    timeout = FILE_CONFIG.processing_timeout
+    try:
+        return future.result(timeout=timeout if timeout > 0 else None)
+    except TimeoutError:
+        if future.done():
+            return future.result()
+        future.cancel()
+        raise FileParsingTimeoutError(timeout) from None
+
+
 def maybe_pool_submit(fn: Callable, *args: Any, **kwargs: Any) -> Any:
-    if not (config.ENABLE_FILE_MULTIPROCESSING and file_process_pool.is_initialized()):
+    if FileProcessPoolManager._in_pool_worker or not (
+        config.ENABLE_FILE_MULTIPROCESSING and file_process_pool.is_initialized()
+    ):
         return fn(*args, **kwargs)
     try:
-        return file_process_pool.get_executor().submit(fn, *args, **kwargs).result()
+        return _wait_for(file_process_pool.get_executor().submit(fn, *args, **kwargs))
     except BrokenProcessPool:
         logger.warning("Process pool broken; reinitializing and retrying", exc_info=True)
         _reinitialize_pool()
-        return file_process_pool.get_executor().submit(fn, *args, **kwargs).result()
-    except Exception:
-        raise
+        return _wait_for(file_process_pool.get_executor().submit(fn, *args, **kwargs))

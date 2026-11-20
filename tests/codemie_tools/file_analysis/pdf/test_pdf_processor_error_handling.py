@@ -209,3 +209,14 @@ def test_extract_text_as_markdown_closes_pdf_obj_not_bytes():
     assert "Page text" in result
     # The opened pdf object must be closed — not the raw bytes
     mock_pdf_obj.close.assert_called_once()
+
+
+def test_extract_text_as_markdown_raises_file_parsing_timeout():
+    from codemie.datasource.exceptions import FileParsingTimeoutError
+
+    with patch(
+        "codemie_tools.file_analysis.pdf.processor.maybe_pool_submit",
+        side_effect=FileParsingTimeoutError(1800),
+    ):
+        with pytest.raises(FileParsingTimeoutError, match="File parsing timed out after 1800s"):
+            PdfProcessor.extract_text_as_markdown(b"fake-pdf-content")

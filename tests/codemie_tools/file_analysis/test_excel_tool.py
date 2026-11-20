@@ -677,3 +677,59 @@ class TestXlsxToolFileExtThreading:
 
         args = mock_pool.call_args[0]
         assert args[-1] == ".xlsx"
+
+
+class TestFileParsingTimeoutAtToolBoundary:
+    TIMEOUT_TEXT = "file parsing timed out"
+
+    @pytest.fixture
+    def timeout_in_tool_pool(self, mock_maybe_pool_submit):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        mock_maybe_pool_submit.side_effect = FileParsingTimeoutError(1800)
+        return mock_maybe_pool_submit
+
+    @pytest.fixture
+    def timeout_in_processor_pool(self):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        with patch(
+            "codemie_tools.file_analysis.xlsx.processor.maybe_pool_submit",
+            side_effect=FileParsingTimeoutError(1800),
+        ) as mock_pool:
+            yield mock_pool
+
+    def test_default_read_returns_text_with_timeout_message(self, excel_tool, timeout_in_tool_pool):
+        result = excel_tool.execute(query="read")
+
+        assert self.TIMEOUT_TEXT in result.lower()
+
+    def test_get_sheet_names_returns_text_with_timeout_message(self, excel_tool, timeout_in_processor_pool):
+        result = excel_tool.execute(query="names", get_sheet_names=True)
+
+        assert self.TIMEOUT_TEXT in result.lower()
+
+    def test_get_stats_returns_text_with_timeout_message(self, excel_tool, timeout_in_processor_pool):
+        result = excel_tool.execute(query="stats", get_stats=True)
+
+        assert self.TIMEOUT_TEXT in result.lower()
+
+    def test_filter_values_route_raises_timeout(self, excel_tool, timeout_in_processor_pool):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        with pytest.raises(FileParsingTimeoutError, match="File parsing timed out after 1800s"):
+            excel_tool.execute(query="filter", filter_values=["x"])
+
+    def test_sheet_index_route_raises_timeout(self, excel_tool, timeout_in_processor_pool):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        with pytest.raises(FileParsingTimeoutError, match="File parsing timed out after 1800s"):
+            excel_tool.execute(query="index", sheet_index=0)
+
+    def test_get_sheet_by_index_called_directly_returns_text_with_timeout_message(
+        self, excel_tool, excel_file_object, timeout_in_processor_pool
+    ):
+        message, sheet_name = excel_tool._get_sheet_by_index(excel_file_object, 0)
+
+        assert self.TIMEOUT_TEXT in message.lower()
+        assert sheet_name is None

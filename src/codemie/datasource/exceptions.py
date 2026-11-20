@@ -115,6 +115,32 @@ class UnreadableWorkbookError(Exception):
         return (self.__class__, (self.file_name, self.details))
 
 
+class FileParsingTimeoutError(Exception):
+    """Raised when a file parse submitted to the shared process pool exceeds the configured timeout."""
+
+    ERROR_MSG = "File parsing timed out after {timeout_seconds}s"
+
+    def __init__(self, timeout_seconds: float = 0, *args, **kwargs):
+        self.timeout_seconds = timeout_seconds
+        super().__init__(self.ERROR_MSG.format(timeout_seconds=timeout_seconds), *args, **kwargs)
+
+    def __reduce__(self):
+        return (self.__class__, (self.timeout_seconds,))
+
+
+class AllFilesTimedOutError(Exception):
+    """Raised when file parsing timed out for at least one file and no file of the run produced documents."""
+
+    ERROR_MSG = "File parsing timed out for {timed_out_count} file(s); nothing was indexed"
+
+    def __init__(self, timed_out_count: int = 0, *args, **kwargs):
+        self.timed_out_count = timed_out_count
+        super().__init__(self.ERROR_MSG.format(timed_out_count=timed_out_count), *args, **kwargs)
+
+    def __reduce__(self):
+        return (self.__class__, (self.timed_out_count,))
+
+
 class NoChunksImportedException(Exception):
     """Exception raised when datasource processing completes but no chunks were imported."""
 

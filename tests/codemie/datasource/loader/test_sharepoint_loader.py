@@ -2733,3 +2733,46 @@ class TestCountDocuments:
         assert observed == [scope_filter]
         # After counting the original files_filter is restored
         assert loader.files_filter == "/Shared Documents/Team/*.json"
+
+
+class TestMultiprocessExtraction:
+    def test_extract_goes_through_maybe_pool_submit_not_the_executor(self, loader):
+        from codemie.datasource.loader.sharepoint_loader import extract_documents_from_bytes
+
+        loader.request_uuid = "req-1"
+        loader.datasource_id = "ds-1"
+
+        with (
+            patch("codemie.datasource.loader.sharepoint_loader.maybe_pool_submit", return_value=["doc"]) as mock_submit,
+            patch("codemie.datasource.loader.file_processor_pool.FileProcessPoolManager.get_executor") as mock_get,
+        ):
+            result = loader._extract_documents_from_bytes_multiprocess(b"bytes", "file.docx")
+
+        assert result == ["doc"]
+        mock_submit.assert_called_once_with(
+            extract_documents_from_bytes, b"bytes", "file.docx", "req-1", ",", True, datasource_id="ds-1"
+        )
+        mock_get.assert_not_called()
+
+    def test_parse_timeout_returns_empty_and_counts_file_as_failed(self, loader):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        response = MagicMock()
+        response.content = b"bytes"
+        item = {"id": "item-1", "name": "slow.xlsb", "size": 10}
+
+        with (
+            patch("codemie.datasource.loader.sharepoint_loader.requests.get", return_value=response),
+            patch.object(loader, "_get_headers", return_value={}),
+            patch("codemie.datasource.loader.sharepoint_loader.config") as mock_config,
+            patch(
+                "codemie.datasource.loader.sharepoint_loader.maybe_pool_submit",
+                side_effect=FileParsingTimeoutError(1800),
+            ),
+        ):
+            mock_config.ENABLE_FILE_MULTIPROCESSING = True
+            assert loader._download_and_extract_file("site", "drive", "item-1", "slow.xlsb") == []
+            failed_before = loader._total_files_failed
+            assert list(loader._process_file_item("site", "drive", item)) == []
+
+        assert loader._total_files_failed == failed_before + 1

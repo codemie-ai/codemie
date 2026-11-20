@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "branch": "epmcdme-17537-fix",
+  "head": "a10dad29f4a6e9cb461a1797ede390c628a713e5",
+  "runner": "poetry",
+  "started_at": "2026-11-19T12:27:36Z",
+  "completed_at": "2026-11-19T12:32:28Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "docker info failed: Docker unavailable; start Docker (or Podman) to run gitleaks locally. Pre-commit hook codemie-gitleaks has the same requirement."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 263000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "7 failed, 36474 passed; all 7 are tests/codemie/rest_api/routers/test_conversation_pagination.py [pdf] cases failing with 'OSError: no library called \"cairo-2\" was found' (missing libcairo on this machine; none touch files changed on this branch)."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "pre-push hook always-on step; make check-alembic itself fails locally because 'python' is not on PATH (only python3)."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Skip if credentials unavailable: no SONAR* env vars and no .env.local; also pre-push runs it only when CODEMIE_PREPUSH_ENABLED=true. CI (.gitlab-ci.yml) only runs pre-ci-guard contexts (ci-pipeline, compliance-report) that cannot be run locally."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Not requested."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "MR-only gate; requires docker stack."
+    }
+  ],
+  "failures": {
+    "unit": "\ntests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_reads_stay_fast_during_a_running_audit\ntests/codemie/rest_api/routers/test_marketplace_management_security.py::test_detail_response_model_declares_the_projection\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/.venv/lib/python3.12/site-packages/fastapi/openapi/utils.py:254: UserWarning: Duplicate Operation ID get_tools_configs_v1_tools_configs_get for function get_tools_configs at /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/tool.py\n    warnings.warn(message, stacklevel=1)\n\ntests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_reads_stay_fast_during_a_running_audit\ntests/codemie/rest_api/routers/test_marketplace_management_security.py::test_detail_response_model_declares_the_projection\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/.venv/lib/python3.12/site-packages/fastapi/openapi/utils.py:254: UserWarning: Duplicate Operation ID get_tool_schema_v1_tools__tool_name__schema_get for function get_tool_schema at /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/tool.py\n    warnings.warn(message, stacklevel=1)\n\ntests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_reads_stay_fast_during_a_running_audit\ntests/codemie/rest_api/routers/test_marketplace_management_security.py::test_detail_response_model_declares_the_projection\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/.venv/lib/python3.12/site-packages/fastapi/openapi/utils.py:254: UserWarning: Duplicate Operation ID invoke_tool_v1_tools__tool_name__invoke_post for function invoke_tool at /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/tool.py\n    warnings.warn(message, stacklevel=1)\n\ntests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApproveCriticalGate::test_approve_blocked_when_critical_finding_present\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/marketplace_management.py:1470: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise critical_gate_blocked_error(\n\ntests/codemie/rest_api/routers/test_permission.py::test_create_permission_unprocessable_entity\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/permission.py:63: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise_unprocessable_entity(action=\"create\", resource=\"permission\", exc=e)\n\ntests/codemie/rest_api/routers/test_permission.py::test_delete_permission_unprocessable_entity\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/permission.py:79: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise_unprocessable_entity(action=\"delete\", resource=\"permission\", exc=e)\n\ntests/codemie/rest_api/routers/test_project_settings.py::test_create_git_integrity_error_maps_to_generic_422\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/project_settings.py:130: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise _map_integrity_error(request, e) from e\n\ntests/codemie/service/provider/test_provider_service.py::test_create\ntests/codemie/service/provider/test_provider_service.py::test_create_allow_user_context_defaults_true\ntests/codemie/service/provider/test_provider_service.py::test_create_allow_user_context_explicit_true\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/.venv/lib/python3.12/site-packages/pydantic/main.py:475: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `<class 'pydantic.networks.HttpUrl'>` but got `<class 'str'>` with value `'http://path1.com/'` - serialized value may not be as expected.)\n    return self.__pydantic_serializer__.to_python(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_explicit_false_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_full_mode_keeps_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[&include_tool_outputs=true-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_passes_format_specific_pandoc_args[pdf-expected_args0-absent_args0]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_list_table_link_content_survives_concise_filtering_end_to_end[pdf]\n= 7 failed, 36474 passed, 731 skipped, 5 xfailed, 644 warnings in 256.38s (0:04:16) =\nmake: *** [test] Error 1"
+  }
+}

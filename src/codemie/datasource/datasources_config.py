@@ -84,7 +84,10 @@ class FileConfig(BaseModel):
     chunk_overlap: int
     enable_multiprocessing: bool = False
     max_subprocesses: int = 1
-    processing_timeout: int = -1
+    processing_timeout: int = Field(
+        default=1800,
+        description="Seconds to wait for a file parse in the shared pool; values <= 0 mean no limit",
+    )
 
 
 class AzureDevOpsWikiConfig(BaseModel):

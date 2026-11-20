@@ -333,3 +333,15 @@ class TestFileAnalysisToolkitCSVSupport:
 
         csv_tool = next((t for t in tools if isinstance(t, CSVTool)), None)
         assert csv_tool is not None, "No CSVTool found"
+
+
+class TestFileParsingTimeoutIsNotRelabelled:
+    def test_process_single_file_raises_timeout_instead_of_fallback_text(self, mock_maybe_pool_submit):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        file_obj = FileObject(name="notes.txt", content=b"plain text", mime_type="text/plain", owner="user1")
+        tool = FileAnalysisTool(config=FileAnalysisConfig(input_files=[file_obj], preconverted_content={}))
+        mock_maybe_pool_submit.side_effect = FileParsingTimeoutError(1800)
+
+        with pytest.raises(FileParsingTimeoutError, match="File parsing timed out after 1800s"):
+            tool._process_single_file(file_obj)

@@ -17,6 +17,7 @@ from typing import Optional, List, Dict, Any, Union, Set
 
 from langchain_core.language_models import BaseChatModel
 
+from codemie.datasource.exceptions import FileParsingTimeoutError
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.file_analysis.docx.analyzer import DocxAnalyzer
 from codemie_tools.file_analysis.docx.exceptions import (
@@ -82,9 +83,8 @@ class DocxProcessor:
             if pages and pages.lower() != "all":
                 return self._filter_content_by_pages(content, pages)
             return content
-        except InvalidPageSelectionError as e:
-            # Re-raise without wrapping
-            raise e
+        except (InvalidPageSelectionError, FileParsingTimeoutError):
+            raise
         except Exception as e:
             logger.error(f"Error reading document {file_path}: {str(e)}")
             raise DocumentReadError(f"Failed to read document: {str(e)}") from e
@@ -119,9 +119,8 @@ class DocxProcessor:
             if pages and pages.lower() != "all":
                 return self._filter_content_by_pages(doc_content, pages)
             return doc_content
-        except InvalidPageSelectionError as e:
-            # Re-raise without wrapping
-            raise e
+        except (InvalidPageSelectionError, FileParsingTimeoutError):
+            raise
         except Exception as e:
             logger.error(f"Error reading document from bytes {file_name}: {str(e)}")
             raise DocumentReadError(f"Failed to read document from bytes: {str(e)}") from e

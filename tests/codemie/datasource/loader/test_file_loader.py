@@ -125,7 +125,7 @@ def test_fetch_remote_stats_keys_match_count(sample_files_datasource_loader):
 
 def test_get_load_stats_returns_zero_skipped_initially(sample_files_datasource_loader):
     stats = sample_files_datasource_loader.get_load_stats()
-    assert stats == {"skipped_documents": 0}
+    assert stats == {"skipped_documents": 0, "failed_documents": 0}
 
 
 def test_get_load_stats_increments_on_skipped_file(sample_files_datasource_loader):
@@ -141,7 +141,7 @@ def test_get_load_stats_increments_on_skipped_file(sample_files_datasource_loade
     ):
         sample_files_datasource_loader._lazy_load_documents(file)
 
-    assert sample_files_datasource_loader.get_load_stats() == {"skipped_documents": 1}
+    assert sample_files_datasource_loader.get_load_stats() == {"skipped_documents": 1, "failed_documents": 0}
 
 
 def test_get_load_stats_counts_multiple_skips(sample_files_datasource_loader):
@@ -159,7 +159,7 @@ def test_get_load_stats_counts_multiple_skips(sample_files_datasource_loader):
         sample_files_datasource_loader._lazy_load_documents(file)
         sample_files_datasource_loader._lazy_load_documents(file)
 
-    assert sample_files_datasource_loader.get_load_stats() == {"skipped_documents": 3}
+    assert sample_files_datasource_loader.get_load_stats() == {"skipped_documents": 3, "failed_documents": 0}
 
 
 def test_lazy_load_documents_counts_empty_extract_as_skipped(sample_files_datasource_loader):
@@ -175,7 +175,7 @@ def test_lazy_load_documents_counts_empty_extract_as_skipped(sample_files_dataso
         result = sample_files_datasource_loader._lazy_load_documents(file)
 
     assert result == []
-    assert sample_files_datasource_loader.get_load_stats() == {"skipped_documents": 1}
+    assert sample_files_datasource_loader.get_load_stats() == {"skipped_documents": 1, "failed_documents": 0}
 
 
 def test_lazy_load_documents_does_not_double_count_skipped_exception(sample_files_datasource_loader):
@@ -191,7 +191,7 @@ def test_lazy_load_documents_does_not_double_count_skipped_exception(sample_file
     ):
         sample_files_datasource_loader._lazy_load_documents(file)
 
-    assert sample_files_datasource_loader.get_load_stats() == {"skipped_documents": 1}
+    assert sample_files_datasource_loader.get_load_stats() == {"skipped_documents": 1, "failed_documents": 0}
 
 
 def test_lazy_load_documents_returns_empty_list_on_skip(sample_files_datasource_loader):
@@ -287,7 +287,7 @@ class TestLoadDocsParallel:
             results = list(loader._load_docs_parallel())
 
         assert results == [[]]
-        assert loader.get_load_stats() == {"skipped_documents": 1}
+        assert loader.get_load_stats() == {"skipped_documents": 1, "failed_documents": 0}
 
     def test_skipped_file_exception_counted_as_skipped(self):
         """_load_docs_parallel counts SkippedFileException as skipped."""
@@ -308,7 +308,7 @@ class TestLoadDocsParallel:
             results = list(loader._load_docs_parallel())
 
         assert results == [[]]
-        assert loader.get_load_stats() == {"skipped_documents": 1}
+        assert loader.get_load_stats() == {"skipped_documents": 1, "failed_documents": 0}
 
     def test_unreadable_workbook_error_propagates(self):
         """A corrupt/unreadable workbook must NOT be swallowed by the parallel path's
@@ -333,4 +333,93 @@ class TestLoadDocsParallel:
 
         assert "report.xlsb" in str(exc_info.value)
         # A failed workbook is accounted as failed, not silently counted as skipped.
-        assert loader.get_load_stats() == {"skipped_documents": 0}
+        assert loader.get_load_stats() == {"skipped_documents": 0, "failed_documents": 0}
+
+
+class TestLoadDocsParallelTimeouts:
+    def _make_loader(self, names):
+        file_datas = []
+        for name in names:
+            fd = MagicMock()
+            fd.name = name
+            fd.owner = "u1"
+            file_datas.append(fd)
+        loader = FilesDatasourceLoader(
+            total_count_of_documents=len(file_datas),
+            files_paths=file_datas,
+            csv_separator=",",
+            request_uuid="uuid-1",
+        )
+        loader.file_repo.read_file = MagicMock(
+            side_effect=lambda name, owner: FileObject(name=name, content=b"x", owner=owner, mime_type="txt")
+        )
+        return loader
+
+    def test_timed_out_file_is_counted_as_failed_and_others_are_yielded(self):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        loader = self._make_loader(["a.txt", "slow.xlsb", "c.txt"])
+        docs_a = [Document(page_content="a")]
+        docs_c = [Document(page_content="c")]
+
+        with (
+            patch(
+                "codemie.datasource.loader.file_loader.maybe_pool_submit",
+                side_effect=[docs_a, FileParsingTimeoutError(1800), docs_c],
+            ),
+            patch("codemie.datasource.loader.file_loader.logger") as mock_logger,
+        ):
+            results = list(loader._load_docs_parallel())
+
+        assert results == [docs_a, docs_c]
+        assert loader.get_load_stats() == {"skipped_documents": 0, "failed_documents": 1}
+        mock_logger.error.assert_called_once()
+        assert "slow.xlsb" in str(mock_logger.error.call_args)
+
+    def test_all_files_timing_out_raises_all_files_timed_out_error(self):
+        from codemie.datasource.exceptions import AllFilesTimedOutError, FileParsingTimeoutError
+
+        loader = self._make_loader(["a.xlsb", "b.xlsb"])
+
+        with patch(
+            "codemie.datasource.loader.file_loader.maybe_pool_submit",
+            side_effect=FileParsingTimeoutError(1800),
+        ):
+            with pytest.raises(AllFilesTimedOutError) as exc_info:
+                list(loader._load_docs_parallel())
+
+        assert str(exc_info.value) == "File parsing timed out for 2 file(s); nothing was indexed"
+        assert loader.get_load_stats() == {"skipped_documents": 0, "failed_documents": 2}
+
+    def test_timeout_with_other_files_skipped_still_raises(self):
+        from codemie.datasource.exceptions import AllFilesTimedOutError, FileParsingTimeoutError
+
+        loader = self._make_loader(["a.gif", "b.xlsb"])
+
+        with patch(
+            "codemie.datasource.loader.file_loader.maybe_pool_submit",
+            side_effect=[[], FileParsingTimeoutError(1800)],
+        ):
+            with pytest.raises(AllFilesTimedOutError):
+                list(loader._load_docs_parallel())
+
+    def test_other_file_errors_do_not_raise_all_timed_out(self):
+        loader = self._make_loader(["a.txt"])
+
+        with patch(
+            "codemie.datasource.loader.file_loader.maybe_pool_submit",
+            side_effect=RuntimeError("boom"),
+        ):
+            assert list(loader._load_docs_parallel()) == []
+
+        assert loader.get_load_stats() == {"skipped_documents": 0, "failed_documents": 0}
+
+    def test_all_files_timed_out_error_is_picklable(self):
+        import pickle
+
+        from codemie.datasource.exceptions import AllFilesTimedOutError
+
+        restored = pickle.loads(pickle.dumps(AllFilesTimedOutError(3)))
+
+        assert str(restored) == "File parsing timed out for 3 file(s); nothing was indexed"
+        assert restored.timed_out_count == 3

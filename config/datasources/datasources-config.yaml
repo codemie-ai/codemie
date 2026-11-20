@@ -141,6 +141,7 @@ loaders:
   file_loader:
     chunk_size: 1500
     chunk_overlap: 100
+    processing_timeout: 1800
 
   azure_devops_wiki_loader:
     chunk_size: 1000

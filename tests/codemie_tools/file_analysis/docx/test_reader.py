@@ -219,3 +219,29 @@ def test_read_with_actual_docx_file(
 
     for part in content.text.split("\n"):
         assert part in expected_text_parts
+
+
+class TestFileParsingTimeoutIsNotRelabelled:
+    def test_read_with_markitdown_raises_timeout_itself(self, docx_reader, tmp_path):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        docx_path = tmp_path / "slow.docx"
+        docx_path.write_bytes(b"docx")
+
+        with patch(
+            "codemie_tools.file_analysis.docx.reader.maybe_pool_submit",
+            side_effect=FileParsingTimeoutError(1800),
+        ):
+            with pytest.raises(FileParsingTimeoutError, match="File parsing timed out after 1800s"):
+                docx_reader.read_with_markitdown(str(docx_path), query=QueryType.TEXT)
+
+    @pytest.mark.parametrize("query", [QueryType.TEXT, QueryType.TEXT_WITH_IMAGES])
+    def test_read_from_bytes_raises_timeout_itself(self, docx_reader, query):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        with patch(
+            "codemie_tools.file_analysis.docx.reader.maybe_pool_submit",
+            side_effect=FileParsingTimeoutError(1800),
+        ):
+            with pytest.raises(FileParsingTimeoutError, match="File parsing timed out after 1800s"):
+                docx_reader.read_from_bytes(b"docx", "slow.docx", query=query)

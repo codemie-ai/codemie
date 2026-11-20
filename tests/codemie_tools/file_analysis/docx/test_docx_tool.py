@@ -295,3 +295,24 @@ class TestDocxToolPreconvertedCache:
             result = tool.execute(query=QueryType.TEXT)
         assert result == "proc"
         mock_proc.assert_called_once()
+
+
+class TestFileParsingTimeoutIsNotRelabelled:
+    def test_execute_raises_timeout_instead_of_docx_processing_error(self):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+        from codemie_tools.file_analysis.models import FileAnalysisConfig
+
+        file_obj = FileObject(
+            name="slow.docx",
+            content=b"docx",
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            owner="user1",
+        )
+        tool = DocxTool(config=FileAnalysisConfig(input_files=[file_obj]))
+
+        with patch(
+            "codemie_tools.file_analysis.docx.reader.maybe_pool_submit",
+            side_effect=FileParsingTimeoutError(1800),
+        ):
+            with pytest.raises(FileParsingTimeoutError, match="File parsing timed out after 1800s"):
+                tool.execute(query=QueryType.TEXT)

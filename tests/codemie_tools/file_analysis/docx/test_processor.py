@@ -256,3 +256,19 @@ class TestProcessorEdgeCases:
             assert len(result) == 1
             assert result[0]["rows"] == [["A", "B"], ["C", "D"]]
             assert result[0]["headers"] == ["A", "B"]
+
+
+class TestFileParsingTimeoutIsNotRelabelled:
+    def test_read_document_raises_timeout_itself(self, docx_processor, temp_docx_file):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        with patch.object(docx_processor.reader, "read_with_markitdown", side_effect=FileParsingTimeoutError(1800)):
+            with pytest.raises(FileParsingTimeoutError, match="File parsing timed out after 1800s"):
+                docx_processor.read_document(str(temp_docx_file), QueryType.TEXT)
+
+    def test_read_document_from_bytes_raises_timeout_itself(self, docx_processor):
+        from codemie.datasource.exceptions import FileParsingTimeoutError
+
+        with patch.object(docx_processor.reader, "read_from_bytes", side_effect=FileParsingTimeoutError(1800)):
+            with pytest.raises(FileParsingTimeoutError, match="File parsing timed out after 1800s"):
+                docx_processor.read_document_from_bytes(b"docx", "slow.docx", QueryType.TEXT)

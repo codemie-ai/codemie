@@ -17,6 +17,7 @@ from typing import Type, Optional, Set
 
 from pydantic import BaseModel, Field
 
+from codemie.datasource.exceptions import FileParsingTimeoutError
 from codemie.datasource.loader.file_processor_pool import maybe_pool_submit
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.constants import SOURCE_DOCUMENT_KEY, SOURCE_FIELD_KEY, FILE_CONTENT_FIELD_KEY
@@ -162,6 +163,8 @@ class FileAnalysisTool(CodeMieTool, FileToolMixin):
                 file_object.bytes_content(),
                 file_object.name,
             )
+        except FileParsingTimeoutError:
+            raise
         except FileNotFoundError as e:
             return f"File not found: {str(e)}"
         except Exception as e:

@@ -41,7 +41,7 @@ from codemie.datasource.exceptions import (
 )
 from codemie.datasource.loader.base_datasource_loader import BaseDatasourceLoader
 from codemie.datasource.loader.file_extraction_utils import extract_documents_from_bytes
-from codemie.datasource.loader.file_processor_pool import file_process_pool
+from codemie.datasource.loader.file_processor_pool import maybe_pool_submit
 
 _MAX_RETRY_AFTER_SECONDS = 60
 
@@ -1074,9 +1074,7 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
             return []
 
     def _extract_documents_from_bytes_multiprocess(self, file_bytes: bytes, file_name: str):
-        executor = file_process_pool.get_executor()
-
-        return executor.submit(
+        return maybe_pool_submit(
             extract_documents_from_bytes,
             file_bytes,
             file_name,
@@ -1084,7 +1082,7 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
             ",",
             True,
             datasource_id=self.datasource_id,
-        ).result()
+        )
 
     def _extract_documents_from_bytes(self, file_bytes: bytes, file_name: str) -> list[Document]:
         """

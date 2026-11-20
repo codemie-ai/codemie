@@ -22,6 +22,7 @@ from docx import Document
 from langchain_core.language_models import BaseChatModel
 
 from codemie.configs import config
+from codemie.datasource.exceptions import FileParsingTimeoutError
 from codemie.datasource.loader.file_processor_pool import maybe_pool_submit
 from codemie_tools.file_analysis.docx.exceptions import (
     DocumentReadError,
@@ -148,6 +149,8 @@ class DocxReader:
                 images=images,
             )
 
+        except FileParsingTimeoutError:
+            raise
         except ValueError as e:
             logger.error(f"Document format error: {str(e)}")
             raise UnsupportedFormatError(f"Unsupported document format: {str(e)}") from e
@@ -206,6 +209,8 @@ class DocxReader:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
 
+        except FileParsingTimeoutError:
+            raise
         except Exception as e:
             logger.error(f"Error reading document from bytes: {str(e)}")
             raise DocumentReadError(f"Failed to process document content: {str(e)}") from e

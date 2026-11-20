@@ -17,6 +17,7 @@ from typing import Optional, Type, Any, List, Union, Dict
 
 from pydantic import BaseModel
 
+from codemie.datasource.exceptions import FileParsingTimeoutError
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_tool_mixin import FileToolMixin
 from codemie_tools.file_analysis.models import FileAnalysisConfig
@@ -230,6 +231,9 @@ class DocxTool(CodeMieTool, FileToolMixin):
 
             # Handle unknown query type
             raise ValueError(f"Unknown query type: {query}")
+
+        except FileParsingTimeoutError:
+            raise
 
         except ValueError as e:
             # Pass through value errors for input validation
