@@ -55,6 +55,8 @@ EVENT_TAXONOMY: dict[str, tuple[str, str]] = {
     "user.project.assigned": ("User Project Assigned", "Members"),
     "user.project.removed": ("User Project Removed", "Members"),
     "user.project.role_updated": ("User Project Role Updated", "Members"),
+    "user.model_override.set": ("User Model Override Set", "Members"),
+    "user.model_override.removed": ("User Model Override Removed", "Members"),
     # --- UserManagementEvent (account lifecycle) -> Account ---
     "user.created": ("User Created", "Account"),
     "user.updated": ("User Updated", "Account"),

@@ -60,7 +60,7 @@ from codemie.service.assistant.agent_build_policy import (
 )
 from codemie.service.assistant.assistant_user_mapping_service import assistant_user_mapping_service
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
-from codemie.service.llm.model_availability_service import resolve_assistant_model
+from codemie.service.llm.model_availability_service import ModelAvailabilityService, resolve_assistant_model
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.mcp.server_instructions import (
     MCPServerInstructions,
@@ -144,13 +144,24 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         return request.llm_model
 
     @classmethod
-    def resolve_execution_model(cls, assistant: Assistant, request: AssistantChatRequest) -> str | None:
+    def resolve_execution_model(
+        cls, assistant: Assistant, request: AssistantChatRequest, user: User | None = None
+    ) -> str | None:
         """The model build_agent runs ``assistant`` on for ``request`` (its agent.llm_model), without building it.
 
-        Silent: build_agent reports a substitution, so this pre-build resolution does not log or count it again.
+        Applies the caller's user-level override first, like build_agent. Silent: build_agent reports a
+        substitution, so this pre-build resolution does not log or count it again.
         """
         conversation = Conversation.find_by_id(request.conversation_id) if request.conversation_id else None
-        return resolve_assistant_model(assistant, cls._user_model_pick(request, conversation), report_fallback=False)
+        user_pick = cls._user_model_pick(request, conversation)
+        user_override_model = ModelAvailabilityService.resolve_user_override_model(
+            user_pick or assistant.llm_model_type,
+            getattr(user, "id", None),
+            assistant.project,
+            is_global=assistant.is_global,
+            report=False,
+        )
+        return user_override_model or resolve_assistant_model(assistant, user_pick, report_fallback=False)
 
     @classmethod
     def get_tools_info(cls, user: User, show_for_ui: bool = False):
@@ -666,7 +677,17 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         # Calling the guard unconditionally during inference would break existing conversations
         # whose model was deprecated after the conversation was created.
         is_builtin_clone = LangGraphAssistantBuilder._safe_get_runtime_attr(assistant, "_runtime_builtin_subagent")
-        llm_model = resolve_assistant_model(assistant, user_pick, report_fallback=is_builtin_clone is None)
+        requested_llm_model = user_pick or assistant.llm_model_type
+        user_override_model = ModelAvailabilityService.resolve_user_override_model(
+            requested_llm_model,
+            getattr(user, "id", None),
+            assistant.project,
+            is_global=assistant.is_global,
+            report=is_builtin_clone is None,
+        )
+        llm_model = user_override_model or resolve_assistant_model(
+            assistant, user_pick, report_fallback=is_builtin_clone is None
+        )
         llm_model = llm_service.resolve_disabled_model(llm_model, assistant.project, is_global=assistant.is_global)
         # The LiteLLM budget scope is decided for the model the agent actually runs on: a conversation override can
         # move it to another budget category than the saved model, and models built below fix their billing headers.
@@ -951,6 +972,16 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             assistant = assistant.model_copy(update={"is_global": True})
             if not workflow_assistant.assistant_id:
                 billing_asset = assistant
+
+        # The user's model override (feature-flag gated) wins over whatever the node or project resolved,
+        # same as chat. LangGraphAgent uses llm_model as given, so it must be settled before the agent is built.
+        from codemie.service.llm.model_availability_service import ModelAvailabilityService
+
+        user_override_model = ModelAvailabilityService.resolve_user_override_model(
+            assistant.llm_model_type, getattr(user, "id", None), project_name, is_global=is_global
+        )
+        if user_override_model:
+            assistant.llm_model_type = user_override_model
 
         llm_model = llm_service.resolve_disabled_model(
             assistant.llm_model_type, assistant.project, is_global=assistant.is_global

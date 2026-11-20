@@ -1,0 +1,44 @@
+{
+  "decision": "approve",
+  "rationale": "All 13 prior blocking findings verified against current source, id-mapped decisions and git history (HEAD e9bcb8bbd): CR-001,003..007,009..011 resolved in code, CR-002/CR-008 resolved by recorded user decisions, CR-012/013 resolved by commit rewording (0 non-conforming subjects in main..HEAD). No findings deferred or unaccounted for.",
+  "confidence": "high",
+  "risk_flags": ["auth", "security", "migration", "public-api"],
+  "business_review": [
+    {"kind": "spec", "item": "AC1 UserModelOverride table with constraints", "status": "partial", "notes": "uses date/update_date, user_id str, extra default_model"},
+    {"kind": "spec", "item": "AC2 UserModelOverrideService methods and set-time subset check", "status": "partial", "notes": "resolve_model_for_user absent; subset check skipped when no whitelist"},
+    {"kind": "spec", "item": "AC3 Repository in data/repositories with user_id queries", "status": "partial", "notes": "placed in repository/; no query by user_id alone"},
+    {"kind": "spec", "item": "AC4 Admin-only endpoints and atomic batch", "status": "partial", "notes": "revoke returns [] instead of deleted records"},
+    {"kind": "spec", "item": "AC5 4-tier chain with platform disablement and global config default", "status": "partial", "notes": "PLATFORM_DISABLED_MODELS never consulted"},
+    {"kind": "spec", "item": "AC6 ModelAvailabilityService integration", "status": "partial", "notes": "agent_node passes closed sync session; user context may not arrive"},
+    {"kind": "spec", "item": "AC7 Set-time validation raising ModelNotWhitelistedException", "status": "partial", "notes": "empty list ValueError unmapped; global disabled list unchecked"},
+    {"kind": "spec", "item": "AC8 Graceful degradation, no re-validation", "status": "pass", "notes": "tier 2 checks membership only"},
+    {"kind": "spec", "item": "AC9 Batch atomicity with BATCH_VALIDATION_FAILED details", "status": "partial", "notes": "rollback present; body is plain str(e)"},
+    {"kind": "spec", "item": "AC10 Admin gating via is_application_admin", "status": "pass", "notes": "all 5 handlers"},
+    {"kind": "spec", "item": "AC11 Backward compatibility for legacy projects", "status": "pass", "notes": "no enrichment/override skips tiers"},
+    {"kind": "spec", "item": "AC12 Test coverage", "status": "partial", "notes": "endpoint tests lack several gating/validation cases"},
+    {"kind": "spec", "item": "7.2 Feature flag PLATFORM_MODEL_OVERRIDE_ENABLED gates endpoints", "status": "partial", "notes": "flag defined, never consulted; no 501"},
+    {"kind": "spec", "item": "7.3 Alembic migration for both tables", "status": "pass", "notes": "tables, constraints, downgrade present"},
+    {"kind": "spec", "item": "Non-goal: resolution remains synchronous", "status": "fail", "notes": "resolver, repository and service are async"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires 'EPMCDME-####: Description'; 2 of 24 subjects in range do not conform: 'fixes after rebase.' and 'user-level-model-override: add planning artifacts'"},
+    {"kind": "code-quality", "status": "pass", "notes": "new source files carry the Apache 2.0 header, no typing.Optional found in new service/repository files, no touched module introduced against a documented rule; no documented rule broken"},
+    {"kind": "security", "status": "pass", "notes": "router endpoints use authenticate and is_application_admin checks; no logged credentials or hardcoded secrets found in the sampled files"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "Router dependency returns 501 when flag off; platform_disabled_model_ids unioned in tier 1 and set-time validation."},
+    {"id": "CR-002", "status": "resolved", "notes": "Recorded decision: keep code, amend spec."},
+    {"id": "CR-003", "status": "resolved", "notes": "router_chat_model falls back to default_model with warning when resolved model not a candidate; partial context logged."},
+    {"id": "CR-004", "status": "resolved", "notes": "Enrichment repository converted to AsyncSession with update_disabled_models write path."},
+    {"id": "CR-005", "status": "resolved", "notes": "404/400/409 mapping with rollback; blank model ids rejected by request validators."},
+    {"id": "CR-006", "status": "resolved", "notes": "skip ge=0, limit 1..500 bounds added."},
+    {"id": "CR-007", "status": "resolved", "notes": "Structured BATCH_VALIDATION_FAILED body, revoke returns deleted records, dedupe/cap/empty/unknown-op checks."},
+    {"id": "CR-008", "status": "resolved", "notes": "Recorded decision: accept async, amend spec; resolver now uses AsyncSession queries, no sync Application.get_by_id."},
+    {"id": "CR-009", "status": "resolved", "notes": "Tier 4 skips fallbacks in the disabled set and raises otherwise; override.default_model used."},
+    {"id": "CR-010", "status": "resolved", "notes": "agent_node uses user.id, passes context via contextvar read by RouterChatModel, warns when incomplete, own short-lived async session opened."},
+    {"id": "CR-011", "status": "resolved", "notes": "Review endpoint test file covers non-admin, 404/400/409, pagination, flag, batch cases."},
+    {"id": "CR-012", "status": "resolved", "notes": "HEAD matches evidence head; git log main..HEAD shows 0 subjects lacking EPMCDME-15082 prefix."},
+    {"id": "CR-013", "status": "resolved", "notes": "Same git history check; c320e6070 carries the ticket prefix."}
+  ]
+}

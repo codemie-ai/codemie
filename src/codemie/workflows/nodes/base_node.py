@@ -123,6 +123,36 @@ class BaseNode(ABC, Generic[StateSchemaType]):
         self.args = args
         self.kwargs = kwargs
 
+    def resolve_user_override_model(self, requested_model: str | None, fail_open: bool = False) -> str | None:
+        """The requested model if the user's override allows it, else its fallback; None if no override applies.
+
+        Args:
+            fail_open: Same contract as resolve_execution_model. When True, a ModelAvailabilityException/
+                NotFoundException from resolution is logged and swallowed, and None is returned so the
+                caller continues with project-level resolution instead of aborting the workflow run.
+        """
+        if not self.workflow_config:
+            return None
+        user = self.kwargs.get("user")
+        try:
+            return ModelAvailabilityService.resolve_user_override_model(
+                requested_model=requested_model,
+                user_id=getattr(user, "id", None),
+                project_name=self.workflow_config.project,
+                is_global=self.workflow_config.is_global,
+            )
+        except (ModelAvailabilityException, NotFoundException) as e:
+            if not fail_open:
+                raise
+            logger.warning(
+                f"user_model_override=resolution_failed "
+                f"requested_model={requested_model or 'None'} "
+                f"project={self.workflow_config.project} "
+                f"execution_id={self.execution_id} "
+                f"error={e}"
+            )
+            return None
+
     def resolve_execution_model(
         self, requested_model: Optional[str], fallback_model: str = "", fail_open: bool = False
     ) -> tuple[str, bool]:

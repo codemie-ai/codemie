@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from codemie.rest_api.routers.projects import crud, management, membership, repositories
+from codemie.rest_api.routers.projects import crud, management, membership, repositories, user_model_overrides
 
 
 router = APIRouter(
@@ -29,5 +29,6 @@ router.include_router(crud.router)
 router.include_router(management.router)
 router.include_router(membership.router)
 router.include_router(repositories.router)
+router.include_router(user_model_overrides.router)
 
 __all__ = ["router"]

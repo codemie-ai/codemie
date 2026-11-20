@@ -263,7 +263,7 @@ def test_historical_assistant_version_may_keep_its_existing_model(selection_api,
 @pytest.mark.parametrize("path", ASK_PATHS)
 def test_project_whitelist_does_not_hide_a_new_deprecated_selection(selection_api, path):
     with patch(
-        "codemie.rest_api.routers.assistant._ask.resolve_assistant_model",
+        "codemie.service.llm.model_availability_service.ProjectModelPolicy.choose",
         return_value="active-model",
     ) as resolve_project_model:
         response = selection_api.client.post(path, json={"text": "Switch", "llm_model": "old-model"})

@@ -1,0 +1,79 @@
+{
+  "decision": "request-changes",
+  "rationale": "Spec 3.5 tiering matches the code, but 2 decision_needed items remain (spec 5.1 vs 4.1 on non-member user 404 vs 400; stale override after project membership removal) plus a router fail-open and an AgentNode.init_assistant test gap. Reachability confirmed only for the router and service windows; 0 deferred, 18 filtered as noise or unrelated/style.",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [
+    {"kind": "spec", "item": "AC1 UserModelOverride table (fields, unique constraint, non-empty check)", "status": "pass", "notes": "core/models.py and alembic a0b1c2d3e4f5"},
+    {"kind": "spec", "item": "AC2 UserModelOverrideService set/get/delete/get_by_project/batch", "status": "pass", "notes": "set-time validation only non-empty + project exists"},
+    {"kind": "spec", "item": "AC3 Async UserModelOverride repository", "status": "pass", "notes": "repository and tests present"},
+    {"kind": "spec", "item": "AC4 Admin-only single endpoints and batch grant/revoke, atomic", "status": "pass", "notes": "router registered in main.py"},
+    {"kind": "spec", "item": "AC5 3-tier precedence chain, no platform disablement", "status": "pass", "notes": "_pick_from_override and async resolver"},
+    {"kind": "spec", "item": "AC6 ModelAvailabilityService integration; legacy resolver unchanged", "status": "pass", "notes": "router, assistant and workflow nodes wired"},
+    {"kind": "spec", "item": "AC7 Set-time validation (empty models, project missing, default in allowed)", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "AC8 Graceful degradation, no re-validation vs project whitelist", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "AC9 Batch atomicity with failed user details", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "AC10 Admin gating", "status": "pass", "notes": "403 tests present"},
+    {"kind": "spec", "item": "AC11 Backward compatibility without overrides", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "AC12 Test coverage (service, endpoints, precedence)", "status": "pass", "notes": "AgentNode.init_assistant override path untested (see findings)"},
+    {"kind": "spec", "item": "3.5 Model listing honours override", "status": "pass", "notes": "_filter_models_by_user_override replaces project filter; 400/404 access check"},
+    {"kind": "spec", "item": "5.1 Set-time validation: user exists and is project member (NotFoundException)", "status": "partial", "notes": "non-member raises ValueError -> 400; spec 5.1/test plan say NotFoundException, 4.1 says 400"},
+    {"kind": "spec", "item": "7.2 Feature flag userModelOverride off by default, 501 on endpoints", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "7.3 Alembic migration", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "8 Non-goal: no platform disablement", "status": "pass", "notes": ""}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All commit subjects in the review range use the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "New source files carry the Apache header, are typed, and the concern lives in its own router/service/repository modules; model_availability_service.py is under 500 lines"},
+    {"kind": "security", "status": "pass", "notes": "Override endpoints authenticate and enforce admin checks; no credentials logged; inputs validated, batch size capped"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/router_chat_model.py",
+      "line": 226,
+      "title": "Router fallback can leave override allowed set",
+      "problem": "When user-scoped resolution raises NotFoundException/ModelNotWhitelistedException, or the resolved model is not a router candidate, _agenerate silently switches to router default_model, which is not checked against the user's override allowed_models. Other exceptions (DB errors from the self-opened session) are not caught at all.",
+      "impact": "A user restricted by an override can be served a model outside override.allowed_models on router calls. Reachability of the candidate-miss branch was not confirmed (depends on router candidates vs override lists).",
+      "recommendation": "On fallback pick the first router candidate that is in the override's allowed_models (preferring override.default_model), and only use router default_model when no override applies; add tests for both branches."
+    },
+    {
+      "id": "CR-002",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/service/user/user_model_override_service.py",
+      "line": 52,
+      "title": "Override outlives project membership",
+      "problem": "Membership is checked only at grant time in set_override. If the user is later removed from the project, the override row remains and still applies at resolution and listing; delete_all_by_project exists but nothing removes a single user's rows on membership removal.",
+      "impact": "Stale override re-applies and can widen model access if the user is re-added, or persist unnoticed. Spec does not state the intended lifecycle. Reachability unconfirmed.",
+      "recommendation": "Decide intent: delete override on UserProject removal, ignore overrides for non-members at resolve time, or accept and document admin manual cleanup in the spec."
+    },
+    {
+      "id": "CR-003",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/service/user/user_model_override_service.py",
+      "line": 87,
+      "title": "Non-member user error contract inconsistent",
+      "problem": "set_override raises ValueError (HTTP 400) for a user who is not a project member and has no user-existence check. Spec 4.1 asks for 400 for user-not-in-project, while spec 5.1 and the test plan list NotFoundException('User not found') (404).",
+      "impact": "Spec criterion 5.1 is partially met; clients cannot rely on one status code. The spec is internally inconsistent, so the correct behaviour needs a human decision.",
+      "recommendation": "Pick one contract and align spec and code: either update 5.1/test plan to 400, or add a user-existence check raising NotFoundException('User not found') (404) before the membership check."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/workflows/test_agent_node_context.py",
+      "title": "AgentNode.init_assistant override path untested",
+      "problem": "No test makes resolve_user_override_model return a model in AgentNode.init_assistant and asserts the assistant is built with it and project resolution skipped, nor the None case. The only init_assistant test was weakened to model_copy.assert_not_called().",
+      "impact": "Workflow agent nodes could ignore the user's override (dropped arguments, inverted precedence, removed branch) and tests would still pass.",
+      "recommendation": "Add tests patching ModelAvailabilityService.resolve_user_override_model to return 'override-model' (assert initialize_assistant gets model_copy(update={'model': 'override-model'}) and resolve_execution_model not called) and to return None (project resolution used)."
+    }
+  ]
+}

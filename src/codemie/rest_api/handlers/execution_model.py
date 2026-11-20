@@ -21,6 +21,7 @@ from typing import Any
 from codemie.core.exceptions import ModelNotWhitelistedException, NoDefaultModelException
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant, AssistantType
+from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 
@@ -33,8 +34,9 @@ class RequestExecutionModel:
     A2A and Bedrock assistants run no platform model, so they keep the raw pick.
     """
 
-    def __init__(self, assistant: Assistant) -> None:
+    def __init__(self, assistant: Assistant, user: User | None = None) -> None:
         self._assistant = assistant
+        self._user = user
         self._model: str | None = None
 
     def record_agent(self, agent: Any) -> None:
@@ -58,7 +60,7 @@ class RequestExecutionModel:
         )
         if runs_platform_agent:
             try:
-                return AssistantService.resolve_execution_model(self._assistant, request)
+                return AssistantService.resolve_execution_model(self._assistant, request, self._user)
             except (ModelNotWhitelistedException, NoDefaultModelException):
                 pass
         return request.llm_model or self._assistant.llm_model_type

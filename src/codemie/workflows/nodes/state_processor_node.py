@@ -118,6 +118,10 @@ class StateProcessorNode(BaseNode[AgentMessages]):
         """Resolve the model to use, falling back to the project default when needed."""
         # An unset node model selects the project default for project workflows.
         requested_model = custom_node.model or None
+        # The user's model override takes precedence over project-level resolution.
+        user_model = self.resolve_user_override_model(requested_model)
+        if user_model:
+            return user_model
         actual_model, _ = self.resolve_execution_model(requested_model, llm_service.default_llm_model)
         return actual_model
 

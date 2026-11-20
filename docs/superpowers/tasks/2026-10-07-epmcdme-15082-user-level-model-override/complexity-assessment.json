@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "task": "Implement user-level model override enforcement for project admins to configure and enforce model access overrides for individual or bulk-selected users, with precedence over project settings, fallback logic, and platform disablement hard stops.",
+  "generated": "2026-09-18T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 5,
+      "label": "XL",
+      "reason": "5 components across 2–3 layers: new API endpoints (admin CRUD), UserModelOverrideService, UserModelOverride repository, ModelAvailabilityService extension with new precedence logic, and invocation resolver integration point. New abstractions (UserModelOverrideService, 4-tier precedence chain) span Service and Repository layers."
+    },
+    "requirements_clarity": {
+      "score": 3,
+      "label": "M",
+      "reason": "Core requirements clear: admin-scoped override, 4-tier precedence (platform disable → user override → project whitelist → default), bulk operations, validation against project constraints. Minor implementation unknowns: platform disablement integration point (config file vs. database table), bulk operation atomicity semantics, API endpoint naming and structure. These are 1–2 light questions, not fundamental gaps."
+    },
+    "technical_risk": {
+      "score": 6,
+      "label": "XXL",
+      "reason": "Security-sensitive precedence chain (user override must not grant access to project-disallowed models); validation required at two points: set-time (prevent creation of invalid override) and invocation-time (catch project whitelist changes after override creation). No existing codebase pattern for 4-tier fallback chain; current ModelAvailabilityService implements only 2–3 tiers. No existing parameterized test template for edge cases of multi-level precedence. Invocation-time model lookup adds database query per LLM call; performance implications if not cached. Rollback via feature flag mitigates but does not eliminate deployment risk."
+    },
+    "file_change_estimate": {
+      "score": 5,
+      "label": "XL",
+      "reason": "Estimated 8–10 modified files: ModelAvailabilityService (precedence chain integration), Application model (possibly platform_disabled_models), Router/API security helpers, User Management Service (validation), RouterChatModel (invocation integration point), Config module (feature flags), ModelAvailabilityService test suite (4-tier edge cases), API response models (new UserModelOverride schema). Estimated 4–6 new files: UserModelOverride SQLModel table definition, UserModelOverrideService, UserModelOverride repository, API router (or router extension), Alembic migration, test_user_model_override_service.py, test_user_model_override_endpoints.py. Total 12–16 files across 4+ directories (service/llm, core, rest_api/routers, data/repositories, external/alembic/versions, tests)."
+    },
+    "dependencies": {
+      "score": 2,
+      "label": "S",
+      "reason": "No new third-party packages required. SQLModel, SQLAlchemy, FastAPI already in use. Database access patterns established. Configuration only: new environment variables (PLATFORM_MODEL_OVERRIDE_ENABLED, PLATFORM_DISABLED_MODELS) are simple strings/booleans, no version changes. Alembic already in project; no version updates."
+    },
+    "affected_layers": {
+      "score": 4,
+      "label": "L",
+      "reason": "4 distinct layers: API (new endpoints for override CRUD, admin gating), Service (UserModelOverrideService, ModelAvailabilityService extension), DB-Persistence (new UserModelOverride table with foreign keys to users and applications, Alembic migration), Invocation/Core (RouterChatModel or model resolver integration). Schema migration required. Not cross-system (internal feature only)."
+    }
+  },
+  "total": 25,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "5 components across 2–3 layers with 2 new abstractions (UserModelOverrideService, 4-tier precedence chain) maps to XL: new service orchestration layer required to coordinate user override, project whitelist, and platform disablement."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "XXL: Security-sensitive precedence chain with validation required at two distinct points (set-time and invocation-time). No existing codebase pattern for 4-tier fallback; current ModelAvailabilityService covers 2–3 tiers. No parameterized test template for multi-level precedence edge cases (security red flag: validation gap across two points). Performance implications per-invocation (database lookup) if not cached. Pattern exists (ModelAvailabilityService) but security validation gap is a divergence."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "XL: Estimated 12–16 total files (8–10 modified + 4–6 new) across 4+ directories. Modified: existing service, models, routers, tests. New: service implementation, repository, API router, migration, dedicated test files. Scope matches XL threshold (11–15 files)."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "L: 4 distinct layers (API, Service, DB-Persistence, Invocation/Core) with schema migration (new table + foreign keys). Not cross-system; internal integration only."
+    }
+  ],
+  "red_flags_applied": [
+    "Security red flag (access control): User override must not grant access to project-disallowed models. Validation required at set-time (prevent creation) and invocation-time (catch project whitelist changes). Existing ModelAvailabilityService pattern does not cover user-scope override security; validation gap is a divergence. Technical Risk bumped from L (4) to XXL (6).",
+    "Technical red flag (defensive pattern): No existing test template covers 4-tier precedence chain (platform disable → user override → project whitelist → default) with all combinations. Acceptance criteria enumerate this specific edge case coverage, and current test suite covers only 2–3 tiers. Technical Risk bumped again from XL (5) to XXL (6)."
+  ],
+  "split_recommendation": null
+}

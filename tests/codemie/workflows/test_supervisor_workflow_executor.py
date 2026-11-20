@@ -22,6 +22,8 @@ from unittest.mock import patch, MagicMock
 from codemie.core.workflow_models import WorkflowConfig
 from codemie.rest_api.security.user import User
 from codemie.workflows.constants import SUPERVISOR_NODE
+from codemie.workflows.nodes.result_finalizer_node import ResultFinalizerNode
+from codemie.workflows.nodes.summarize_conversation_node import SummarizeConversationNode
 from codemie.workflows.supervisor_workflow import SupervisorWorkflowExecutor
 
 
@@ -68,3 +70,64 @@ class TestSupervisorWorkflowExecutor(unittest.TestCase):
         state_graph = self.executor.init_state_graph()
         self.executor.build_workflow(state_graph)
         self.assertIn(SUPERVISOR_NODE, state_graph.nodes)
+
+    @patch('codemie.service.workflow_execution.WorkflowExecutionService._refresh_workflow_execution')
+    def test_build_workflow_passes_user_to_fallback_nodes(self, _mock_refresh):
+        self.workflow_config.enable_summarization_node = True
+        with (
+            patch('codemie.workflows.supervisor_workflow.ResultFinalizerNode') as finalizer_cls,
+            patch('codemie.workflows.supervisor_workflow.SummarizeConversationNode') as summarize_cls,
+        ):
+            self.executor.build_workflow(self.executor.init_state_graph())
+
+        self.assertIs(finalizer_cls.call_args.kwargs["user"], self.user)
+        self.assertIs(summarize_cls.call_args.kwargs["user"], self.user)
+
+    @patch('codemie.service.workflow_execution.WorkflowExecutionService._refresh_workflow_execution')
+    def test_build_workflow_passes_user_to_summarize_node_without_finalizer(self, _mock_refresh):
+        self.workflow_config.enable_summarization_node = False
+        with (
+            patch('codemie.workflows.supervisor_workflow.ResultFinalizerNode') as finalizer_cls,
+            patch('codemie.workflows.supervisor_workflow.SummarizeConversationNode') as summarize_cls,
+        ):
+            self.executor.build_workflow(self.executor.init_state_graph())
+
+        finalizer_cls.assert_not_called()
+        self.assertIs(summarize_cls.call_args.kwargs["user"], self.user)
+
+    @patch('codemie.service.workflow_execution.WorkflowExecutionService._refresh_workflow_execution')
+    def test_fallback_nodes_resolve_user_override_default_for_executing_user(self, _mock_refresh):
+        self.workflow_config.enable_summarization_node = True
+        self.workflow_config.project = "proj-1"
+        built = {}
+
+        def capture(name, node_cls):
+            def factory(*args, **kwargs):
+                built[name] = node_cls(*args, **kwargs)
+                return built[name]
+
+            return factory
+
+        with (
+            patch(
+                'codemie.workflows.supervisor_workflow.ResultFinalizerNode',
+                side_effect=capture("finalizer", ResultFinalizerNode),
+            ),
+            patch(
+                'codemie.workflows.supervisor_workflow.SummarizeConversationNode',
+                side_effect=capture("summarize", SummarizeConversationNode),
+            ),
+            patch(
+                'codemie.workflows.nodes.base_node.ModelAvailabilityService.resolve_user_override_model',
+                return_value="override-default",
+            ) as get_default,
+        ):
+            self.executor.build_workflow(self.executor.init_state_graph())
+
+            self.assertEqual(built["finalizer"].resolve_user_override_model("requested"), "override-default")
+            self.assertEqual(built["summarize"].resolve_user_override_model("requested"), "override-default")
+
+        for call in get_default.call_args_list:
+            self.assertEqual(call.kwargs["user_id"], "test_user")
+            self.assertEqual(call.kwargs["project_name"], "proj-1")
+            self.assertFalse(call.kwargs["is_global"])

@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ApplicationEnrichment and ApplicationEnrichmentRepository were replaced by
-# ProjectEnrichment and ProjectEnrichmentRepository.
-# Tests are in test_project_enrichment_repository.py.
+from unittest.mock import patch
+
+import pytest
+
+
+@pytest.fixture
+def model_override_features_off():
+    """Run with the project/user model override features off, whatever customer-config.yaml says."""
+    with patch("codemie.service.llm.model_availability_service.customer_config") as config:
+        config.is_feature_enabled.return_value = False
+        yield config

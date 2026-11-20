@@ -19,9 +19,9 @@ Tests that AssistantService.build_agent and build_agent_for_workflow properly pa
 request_headers to the ToolkitService for MCP header propagation.
 """
 
+import pytest
 from unittest.mock import Mock, patch
 
-import pytest
 
 from codemie.service.tools.agent_tools_result import AgentToolsResult
 from codemie.core.models import AssistantChatRequest
@@ -29,10 +29,16 @@ from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
 
+pytestmark = pytest.mark.usefixtures("model_override_features_off")
+
 
 class TestAssistantServiceBuildAgentWithHeaders:
     """Test cases for AssistantService.build_agent with request_headers."""
 
+    @patch(
+        'codemie.service.llm.model_availability_service.ModelAvailabilityService.resolve_user_override_model',
+        return_value=None,
+    )
     @patch('codemie.service.llm.model_availability_service.Application.get_by_id')
     @patch('codemie.service.assistant_service.Conversation.find_by_id')
     @patch('codemie.service.assistant_service.AIToolsAgent')
@@ -57,6 +63,7 @@ class TestAssistantServiceBuildAgentWithHeaders:
         mock_aitools_agent,
         mock_find_by_id,
         mock_get_application_by_id,
+        mock_resolve_user_override_model,
     ):
         """
         TC-2.3.1: Verify build_agent passes headers to toolkit service.
@@ -123,6 +130,10 @@ class TestAssistantServiceBuildAgentWithHeaders:
         assert 'request_headers' in call_kwargs
         assert call_kwargs['request_headers'] == test_headers
 
+    @patch(
+        'codemie.service.llm.model_availability_service.ModelAvailabilityService.resolve_user_override_model',
+        return_value=None,
+    )
     @patch('codemie.service.llm.model_availability_service.Application.get_by_id')
     @patch('codemie.service.assistant_service.Conversation.find_by_id')
     @patch('codemie.service.assistant_service.AIToolsAgent')
@@ -151,6 +162,7 @@ class TestAssistantServiceBuildAgentWithHeaders:
         mock_aitools_agent,
         mock_find_by_id,
         mock_get_application_by_id,
+        _mock_resolve_user_override_model,
         requested_model,
         resolved_model,
     ):
@@ -214,6 +226,10 @@ class TestAssistantServiceBuildAgentWithHeaders:
         assert mock_aitools_agent.call_args.kwargs['llm_model'] == resolved_model
         assert mock_aitools_agent.call_args.kwargs['request'].llm_model == requested_model
 
+    @patch(
+        'codemie.service.llm.model_availability_service.ModelAvailabilityService.resolve_user_override_model',
+        return_value=None,
+    )
     @patch('codemie.service.llm.model_availability_service.Application.get_by_id')
     @patch('codemie.service.assistant_service.Conversation.find_by_id')
     @patch('codemie.service.assistant_service.AIToolsAgent')
@@ -238,6 +254,7 @@ class TestAssistantServiceBuildAgentWithHeaders:
         mock_aitools_agent,
         mock_find_by_id,
         mock_get_application_by_id,
+        mock_resolve_user_override_model,
     ):
         """
         TC-2.3.2: Verify build_agent without request_headers (backward compatibility).

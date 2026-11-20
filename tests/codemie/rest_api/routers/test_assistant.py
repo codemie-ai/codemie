@@ -831,7 +831,16 @@ class TestAssistantMcpGovernance:
         user = MagicMock(spec=User)
         user.id = "u1"
         user.is_admin_or_maintainer = True
-        with patch("codemie.service.mcp.access_control.customer_config", mode):
+        # This test is about MCP governance (Stage 2+), not model whitelisting (Stage 1) -
+        # stub Stage 1 out so the test's outcome never depends on the real projectModelOverride
+        # customer-config flag or on the "demo" project's actual DB-configured allowed_models.
+        with (
+            patch("codemie.service.mcp.access_control.customer_config", mode),
+            patch(
+                "codemie.service.llm.model_availability_service.ModelAvailabilityService."
+                "validate_model_for_asset_creation"
+            ),
+        ):
             with pytest.raises(ValidationException, match="rogue") as exc:
                 create_assistant(request, user=user)
             assert "mcp_config_id" not in str(exc.value)
@@ -850,7 +859,14 @@ class TestAssistantMcpGovernance:
         user.is_admin = True
         user.is_maintainer = True
         user.is_admin_or_maintainer = True
-        with patch("codemie.service.mcp.access_control.customer_config", mode):
+        # Same isolation from Stage 1 model whitelisting as the test above.
+        with (
+            patch("codemie.service.mcp.access_control.customer_config", mode),
+            patch(
+                "codemie.service.llm.model_availability_service.ModelAvailabilityService."
+                "validate_model_for_asset_creation"
+            ),
+        ):
             with pytest.raises(ValidationException, match="rogue") as exc:
                 create_assistant(request, user=user)
             assert "mcp_config_id" not in str(exc.value)
@@ -904,6 +920,13 @@ class TestAssistantMcpGovernance:
             with (
                 patch("codemie.service.mcp.access_control.customer_config", mode),
                 patch.object(Assistant, "save", new=lambda self, *a, **kw: None),
+                # Isolate from Stage 1 model whitelisting (not under test here) the same way
+                # as the restricted-mode tests above - the real projectModelOverride flag/DB
+                # state must never decide whether this MCP-governance test passes.
+                patch(
+                    "codemie.service.llm.model_availability_service.ModelAvailabilityService."
+                    "validate_model_for_asset_creation"
+                ),
             ):
                 user = MagicMock(spec=User, id="u1", username="u1")
                 user.name = "u1"
@@ -1099,7 +1122,7 @@ class TestAssistantDetailEnrichment:
             ),
             patch(
                 "codemie.service.llm.model_availability_service.customer_config",
-                is_feature_enabled=MagicMock(return_value=True),
+                is_feature_enabled=MagicMock(side_effect=lambda feature: feature != "userModelOverride"),
             ),
         ]
 
@@ -1114,6 +1137,7 @@ class TestAssistantDetailEnrichment:
         mock_ability.return_value.list.return_value = [Action.READ, Action.WRITE, Action.DELETE]
 
         user = MagicMock(spec=User)
+        user.id = "user-1"
 
         context_managers = self._enrichment_patches()
         for cm in context_managers:
@@ -1368,6 +1392,14 @@ class TestResolveModelProjectLookup:
     restrictions were never applied when resolving the effective/chosen model. Application.id
     is set equal to Application.name on save(), so get_by_id(assistant.project) is correct."""
 
+    @pytest.fixture(autouse=True)
+    def _no_user_model_override(self):
+        with patch(
+            "codemie.service.llm.model_availability_service.ModelAvailabilityService.resolve_user_override_model",
+            return_value=None,
+        ):
+            yield
+
     def _build_assistant(self, project="test-project", is_global=False, llm_model_type="gpt-4"):
         return Assistant(
             id="assistant-123",
@@ -1388,7 +1420,7 @@ class TestResolveModelProjectLookup:
         with (
             patch(
                 "codemie.service.llm.model_availability_service.customer_config",
-                is_feature_enabled=MagicMock(return_value=True),
+                is_feature_enabled=MagicMock(side_effect=lambda feature: feature != "userModelOverride"),
             ),
             patch(
                 "codemie.service.llm.model_availability_service.Application.get_by_id",
@@ -1399,13 +1431,29 @@ class TestResolveModelProjectLookup:
             ) as mock_send_metric,
         ):
             response_data = {}
-            model, source = _resolve_effective_llm_model(assistant, response_data)
+            model, source = _resolve_effective_llm_model(assistant, response_data, MagicMock(id="user-1"))
 
         assert model == "gpt-4"
         assert source == "project_default"
         assert response_data["llm_model_type"] == "gpt-4"
         # Display-only: the detail page must not count a fallback.
         mock_send_metric.assert_not_called()
+
+    def test_resolve_effective_llm_model_shows_own_model_when_override_leaves_no_model(self):
+        from codemie.core.exceptions import ModelNotWhitelistedException
+        from codemie.rest_api.routers.assistant.catalog import _resolve_effective_llm_model
+
+        assistant = self._build_assistant(llm_model_type="own-model")
+
+        with patch(
+            "codemie.rest_api.routers.assistant.catalog.ModelAvailabilityService.resolve_user_override_model",
+            side_effect=ModelNotWhitelistedException("own-model", "proj"),
+        ):
+            response_data = {}
+            model, source = _resolve_effective_llm_model(assistant, response_data, MagicMock(id="user-1"))
+
+        assert (model, source) == ("own-model", "assistant")
+        assert response_data == {}
 
     def test_resolve_effective_llm_model_empty_whitelist_shows_own_model_without_marker(self):
         from codemie.rest_api.routers.assistant.catalog import _resolve_effective_llm_model
@@ -1424,7 +1472,7 @@ class TestResolveModelProjectLookup:
             ),
         ):
             response_data = {}
-            model, source = _resolve_effective_llm_model(assistant, response_data)
+            model, source = _resolve_effective_llm_model(assistant, response_data, MagicMock(id="user-1"))
 
         assert model == "own-model"
         assert source == "assistant"
@@ -1438,14 +1486,14 @@ class TestResolveModelProjectLookup:
         with (
             patch(
                 "codemie.service.llm.model_availability_service.customer_config",
-                is_feature_enabled=MagicMock(return_value=True),
+                is_feature_enabled=MagicMock(side_effect=lambda feature: feature != "userModelOverride"),
             ),
             patch(
                 "codemie.service.llm.model_availability_service.Application.get_by_id",
                 side_effect=KeyError("not found"),
             ),
         ):
-            model, source = _resolve_effective_llm_model(assistant, {})
+            model, source = _resolve_effective_llm_model(assistant, {}, MagicMock(id="user-1"))
 
         assert model == "gpt-4"
         assert source == "assistant"

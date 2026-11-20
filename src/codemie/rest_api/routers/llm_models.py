@@ -19,12 +19,14 @@ from typing import Dict, List, Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from codemie.clients.postgres import get_session
+from codemie.configs.customer_config import customer_config
 from codemie.configs.llm_config import LLMModel, LlmRouterOption, ModelCategory, ModelStatus
 from codemie.core.models import Application
 from codemie.enterprise.litellm import proxy_router, register_proxy_endpoints  # noqa: F401 (proxy_router used by main.py)
 from codemie.repository.application_repository import application_repository
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.llm.model_availability_service import USER_MODEL_OVERRIDE_FEATURE
 from codemie.service.llm_service.llm_service import llm_service
 
 router = APIRouter(
@@ -41,16 +43,28 @@ def _get_accessible_chat_choices(user: User, include_all: bool, project: Applica
     models: list[ChatChoice] = list(llm_service.get_allowed_chat_models(user, include_all=include_all, project=project))
     models.extend(llm_service.get_allowed_router_options(include_all=include_all, project=project, user=user))
 
-    if project and project.default_model:
-        return _apply_project_default(models, project.default_model)
+    # Default chain: the user override's default, then the project's default, then the platform default.
+    # A model disabled at platform level is not selectable, so it is skipped to the next link.
+    user_override = llm_service.get_user_model_override(user, project)
+    override_default = user_override.default_model if user_override else None
+    project_default = project.default_model if project else None
+    if override_default or project_default:
+        return _apply_project_default(models, override_default, project_default)
     return models
 
 
-def _apply_project_default(models: list[ChatChoice], default_name: str) -> list[ChatChoice]:
-    """Give models and routers one consistent effective project default."""
+def _apply_project_default(models: list[ChatChoice], *default_names: str | None) -> list[ChatChoice]:
+    """Give models and routers one consistent effective default: the first selectable of default_names,
+    else the platform default."""
     selectable = [m for m in models if m.enabled and m.status in (None, ModelStatus.ENABLED)]
     selected = next(
-        (m for m in selectable if default_name in (m.base_name, getattr(m, "deployment_name", None))),
+        (
+            m
+            for default_name in default_names
+            if default_name
+            for m in selectable
+            if default_name in (m.base_name, getattr(m, "deployment_name", None))
+        ),
         None,
     ) or _default_for_category(selectable, ModelCategory.GLOBAL)
     return [
@@ -79,16 +93,30 @@ def _default_for_category(choices: list[ChatChoice], category: ModelCategory) ->
     return global_default or next(iter(selectable), None)
 
 
-def get_project_from_id(project_id: str | None = Query(None)) -> Application | None:
-    """Fetch Application by name, or return None if not provided. Raises 404 if name provided but not found."""
+def get_project_from_id(
+    project_id: str | None = Query(None),
+    user: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency injection
+) -> Application | None:
+    """Fetch Application by name, or return None if not provided.
+
+    With the userModelOverride feature on, raises 403 if the user has no access to the project and 404 if an
+    authorized user's project is not found. Access is checked first so callers without access cannot tell
+    existing project names from missing ones. With the feature off the check is skipped and a missing project
+    is a 404, as before the feature.
+    """
     if not project_id:
         return None
+
+    if customer_config.is_feature_enabled(USER_MODEL_OVERRIDE_FEATURE) and not user.has_access_to_application(
+        project_id
+    ):
+        raise HTTPException(status_code=403, detail=f"User has no access to project {project_id}")
 
     with get_session() as session:
         project = application_repository.get_by_name(session, project_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-        return project
+    return project
 
 
 @router.get(

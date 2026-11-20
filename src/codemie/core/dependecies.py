@@ -40,7 +40,7 @@ from codemie.core.constants import (
 )
 from codemie.core.models import ElasticSearchKwargs, GitRepo, SVNRepo, CodeFields, Application
 from codemie.core.prompt_caching import enable_prompt_caching, should_cache_prompts
-from codemie.service.llm.model_availability_service import ProjectModelPolicy
+from codemie.service.llm.model_availability_service import ModelAvailabilityService, ProjectModelPolicy
 from codemie.rest_api.models.settings import DialCredentials, LiteLLMContext
 from codemie.service.llm_service.llm_service import llm_service, LLMService
 
@@ -340,16 +340,24 @@ def _resolve_username(username: str | None) -> str | None:
 def enforce_allowed_model(
     requested_model: str,
     project: Application | None = None,
+    user_id: str | None = None,
 ) -> str:
-    """Enforce project-level model constraints. Return the model to use.
+    """Enforce model constraints for the project and, when known, the user. Return the model to use.
 
-    If project has allowed_models configured, enforce the constraint:
+    The user's model override comes first: once the user has one for this project it is their whole
+    model set, so a model it grants is kept even when the project whitelist excludes it.
+
+    Otherwise, if project has allowed_models configured, enforce the constraint:
      - Return the model if not blank and in the whitelist
      - Return the project default otherwise
      - Hardened: fallback to first allowed model if default is missing
 
     Backward compatible: if project is None or has no whitelist, return requestedModel unchanged.
     """
+    if project is not None and user_id:
+        override_model = ModelAvailabilityService.resolve_user_override_model(requested_model, user_id, project.id)
+        if override_model:
+            return override_model
     policy = ProjectModelPolicy.for_project(project)
     return policy.choose([requested_model], context="enforce_allowed_model") or ""
 
@@ -381,15 +389,15 @@ def get_llm_by_credentials(  # noqa: PLR0913 - effort joins a signature that was
     fallback_to_default: bool = False,
     effort: str | None = None,
 ):
-    # Enforce project-level model restrictions before any provider calls
-    llm_model = enforce_allowed_model(llm_model, project)
+    user_id = logging_user_id.get(None)
+    # Enforce project-level and user-level model restrictions before any provider calls
+    llm_model = enforce_allowed_model(llm_model, project, user_id)
     from codemie.enterprise.litellm import get_litellm_chat_model
 
     llm_model, llm_model_details = _resolve_chat_model_details(llm_model, project, fallback_to_default)
 
     context = litellm_context.get(None)
     username = _resolve_username(current_username.get())
-    user_id = logging_user_id.get(None)
 
     # `request_id` reaches a header for the first time here. It was previously consumed only to
     # build the token callback below, so no per-request value ever left this function - which is

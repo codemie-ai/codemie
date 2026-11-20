@@ -23,6 +23,8 @@ from __future__ import annotations
 from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
+import pytest
+
 from codemie.core.models import AssistantChatRequest, ToolCallPolicy
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
@@ -31,6 +33,15 @@ from codemie.service.subagents.builtin_subagents import BuiltinSubagent
 from codemie.service.tools.agent_tools_result import AgentToolsResult
 
 SERVICE = "codemie.service.assistant_service"
+
+
+@pytest.fixture(autouse=True)
+def _no_user_model_override():
+    with patch(
+        "codemie.service.llm.model_availability_service.ModelAvailabilityService.resolve_user_override_model",
+        return_value=None,
+    ):
+        yield
 
 
 class _ChildStopped(Exception):

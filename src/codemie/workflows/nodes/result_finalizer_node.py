@@ -73,7 +73,10 @@ class ResultFinalizerNode(BaseNode[AgentMessages]):
         if self.workflow_config:
             requested_model_from_config = getattr(self.workflow_config, "default_model", None)
 
-        resolved_model, _ = self.resolve_execution_model(requested_model_from_config, llm_service.default_llm_model)
+        # The user's model override takes precedence; otherwise project-level resolution applies.
+        resolved_model = self.resolve_user_override_model(requested_model_from_config)
+        if not resolved_model:
+            resolved_model, _ = self.resolve_execution_model(requested_model_from_config, llm_service.default_llm_model)
 
         logger.info(
             f"result_finalizer_model_selected "

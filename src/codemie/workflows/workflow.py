@@ -447,6 +447,7 @@ class WorkflowExecutor:
                     self.workflow_config,
                     node_name=SUMMARIZE_MEMORY_NODE,
                     execution_id=self.execution_id,
+                    user=self.user,
                 )
             )
             logger.info(
@@ -467,6 +468,7 @@ class WorkflowExecutor:
                         workflow_config=self.workflow_config,
                         execution_id=self.execution_id,
                         node_name=RESULT_FINALIZER_NODE,
+                        user=self.user,
                     )
                 )
 
@@ -575,6 +577,7 @@ class WorkflowExecutor:
                 self.workflow_config,
                 node_name=SUMMARIZE_MEMORY_NODE,
                 execution_id=self.execution_id,
+                user=self.user,
             ),
         )
         if workflow_config.enable_summarization_node:
@@ -588,6 +591,7 @@ class WorkflowExecutor:
                     workflow_config=self.workflow_config,
                     execution_id=self.execution_id,
                     node_name=RESULT_FINALIZER_NODE,
+                    user=self.user,
                 ),
             )
 
@@ -674,6 +678,7 @@ class WorkflowExecutor:
                         custom_node=node,
                         workflow_state=state,
                         execution_id=self.execution_id,
+                        user=self.user,
                     )
                     return instance
 

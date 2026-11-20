@@ -1,0 +1,45 @@
+{
+  "decision": "request-changes",
+  "rationale": "One major test gap: the SummarizeConversationNode user-override default branch is untested. Per user decisions, the RouterChatModel fallback and batch 404 for unknown users were not flagged; 20 candidates dismissed as noise, by-spec, or handled; 0 deferred. Reachability was checked for the top candidates only.",
+  "confidence": "medium",
+  "risk_flags": ["security", "auth", "migration", "public-api"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1 UserModelOverride table (fields, unique, check constraint, no enabled flag)", "status": "pass", "notes": "model and alembic migration present"},
+    {"kind": "story-ac", "item": "AC2 UserModelOverrideService methods and set-time validation", "status": "pass", "notes": "no subset check per spec"},
+    {"kind": "story-ac", "item": "AC3 Async UserModelOverride repository", "status": "pass", "notes": "all methods async"},
+    {"kind": "story-ac", "item": "AC4 Admin-only POST/GET/DELETE single and POST /batch endpoints", "status": "pass", "notes": "router registered"},
+    {"kind": "story-ac", "item": "AC5 3-tier precedence chain (override, project whitelist, default)", "status": "pass", "notes": "no platform tier"},
+    {"kind": "story-ac", "item": "AC6 ModelAvailabilityService integration", "status": "pass", "notes": "wired in router model, assistant, workflow nodes"},
+    {"kind": "story-ac", "item": "AC7 Set-time validation", "status": "pass", "notes": "maps to 400/404"},
+    {"kind": "story-ac", "item": "AC8 Graceful degradation, no re-validation against project whitelist", "status": "pass", "notes": "override checked first"},
+    {"kind": "story-ac", "item": "AC9 Batch atomicity: rollback all, 400 with failed user details", "status": "pass", "notes": "unknown user returns 404 per user decision and updated spec"},
+    {"kind": "story-ac", "item": "AC10 Admin gating", "status": "pass", "notes": "_require_admin on every handler"},
+    {"kind": "story-ac", "item": "AC11 Backward compatibility for projects without overrides", "status": "pass", "notes": "flag default off, falls through"},
+    {"kind": "story-ac", "item": "AC12 Test coverage", "status": "pending-stage-7", "notes": "suite execution owned by Stage 7"},
+    {"kind": "spec", "item": "3.5 Model listing honours override; project_id access check", "status": "pass", "notes": "llm_service and llm_models"},
+    {"kind": "spec", "item": "4.1 Single-user endpoints and error codes", "status": "pass", "notes": "404 User not found allowed"},
+    {"kind": "spec", "item": "5.1 Set-time validation order", "status": "pass", "notes": "non-member yields 400 ValueError; spec lists no explicit exception for it"},
+    {"kind": "spec", "item": "7.2 Feature flag userModelOverride disabled by default", "status": "pass", "notes": "501 when off"},
+    {"kind": "spec", "item": "7.3 Alembic migration", "status": "pass", "notes": "unique and check constraints"},
+    {"kind": "spec", "item": "6.x Tests per spec test plan", "status": "pending-stage-7", "notes": "execution owned by Stage 7"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All commit subjects in the review range use the EPMCDME-15082: Description format required by git-workflow.md"},
+    {"kind": "code-quality", "status": "pass", "notes": "New modules carry the Apache header and are typed; no touched file crossing the 500-line cohesion threshold with a non-core concern found"},
+    {"kind": "security", "status": "pass", "notes": "Override router uses authenticate plus a project-scoped admin check on every endpoint, feature-flag gated; no secrets logged"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/nodes/summarize_conversation_node.py",
+      "line": 155,
+      "title": "SummarizeConversationNode user-default branch untested",
+      "problem": "SummarizeConversationNode now prefers resolve_user_default_model() over project resolution (lines 152-158), but tests/codemie/workflows/test_nodes_user_model_override.py covers only ResultFinalizerNode, StateProcessorNode and SummarizeConversationCommandNode. No test constructs SummarizeConversationNode.",
+      "impact": "If the user-default line is dropped or inverted, summaries would use the project/workflow default instead of the user's override default, possibly a model the user is restricted from, and no test would fail.",
+      "recommendation": "Add a test building SummarizeConversationNode with workflow_config set, patching ModelAvailabilityService.get_user_override_default_model to return 'user-default', asserting the LLM is created with that model and resolve_model_for_execution is not called; add the inverse case returning None."
+    }
+  ]
+}

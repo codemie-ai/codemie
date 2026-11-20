@@ -123,6 +123,7 @@ def test_assistant_execution_passes_resolved_model_to_llm(fallback_context, is_g
 
     agent = object.__new__(AIToolsAgent)
     agent.assistant = SimpleNamespace(project="project", is_global=is_global)
+    agent.user = None
     agent.llm_model = "dep-disabled"
     agent._resolved_llm_model = None
     agent.temperature = None

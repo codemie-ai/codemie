@@ -14,12 +14,19 @@
 
 """Tests for get_indexed_repo and get_repo_from_fields in dependecies.py."""
 
+import contextvars
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from codemie.core.constants import CodeIndexType
-from codemie.core.dependecies import enforce_allowed_model, get_indexed_repo, get_repo_from_fields
+from codemie.configs.logger import logging_user_id
+from codemie.core.dependecies import (
+    enforce_allowed_model,
+    get_indexed_repo,
+    get_llm_by_credentials,
+    get_repo_from_fields,
+)
 from codemie.core.exceptions import ModelNotWhitelistedException
 from codemie.core.models import CodeFields
 from codemie.service.llm.model_availability_service import PolicyMode, ProjectModelPolicy
@@ -247,6 +254,68 @@ class TestEnforceAllowedModel:
             is_feature_enabled=MagicMock(return_value=False),
         ):
             assert enforce_allowed_model("gpt-4", project) == "gpt-4"
+
+    _OVERRIDE = "codemie.core.dependecies.ModelAvailabilityService.resolve_user_override_model"
+
+    def test_user_override_model_wins_over_the_project_whitelist(self):
+        """A model the override grants outside the whitelist is kept, not replaced by the project default."""
+        with self._whitelist(["gpt-4"], "gpt-4"), patch(self._OVERRIDE, return_value="o3-mini") as override:
+            assert enforce_allowed_model("o3-mini", self._project(), "u1") == "o3-mini"
+
+        override.assert_called_once_with("o3-mini", "u1", "my-project")
+
+    def test_override_fallback_is_returned_instead_of_the_project_default(self):
+        with self._whitelist(["gpt-4"], "gpt-4"), patch(self._OVERRIDE, return_value="claude"):
+            assert enforce_allowed_model("o3-mini", self._project(), "u1") == "claude"
+
+    def test_project_policy_applies_when_the_user_has_no_override(self):
+        with self._whitelist(["gpt-4"], "gpt-4"), patch(self._OVERRIDE, return_value=None):
+            assert enforce_allowed_model("o3-mini", self._project(), "u1") == "gpt-4"
+
+    def test_project_deny_all_still_rejects_when_the_user_has_no_override(self):
+        with self._policy(PolicyMode.DENY_ALL, default="gpt-4"), patch(self._OVERRIDE, return_value=None):
+            with pytest.raises(ModelNotWhitelistedException):
+                enforce_allowed_model("gpt-4", self._project(), "u1")
+
+    def test_override_is_not_looked_up_without_a_user(self):
+        with self._whitelist(["gpt-4"], "gpt-4"), patch(self._OVERRIDE) as override:
+            assert enforce_allowed_model("o3-mini", self._project()) == "gpt-4"
+            assert enforce_allowed_model("o3-mini", self._project(), None) == "gpt-4"
+
+        override.assert_not_called()
+
+    def test_override_is_not_looked_up_without_a_project(self):
+        with patch(self._OVERRIDE) as override:
+            assert enforce_allowed_model("o3-mini", None, "u1") == "o3-mini"
+
+        override.assert_not_called()
+
+    def test_get_llm_by_credentials_passes_the_request_user(self):
+        """The user comes from the request context, so no caller has to thread it through."""
+        project = self._project()
+        token = logging_user_id.set("u1")
+        try:
+            with patch("codemie.core.dependecies.enforce_allowed_model", side_effect=RuntimeError("stop")) as enforce:
+                with pytest.raises(RuntimeError, match="stop"):
+                    get_llm_by_credentials("gpt-4", project=project)
+        finally:
+            logging_user_id.reset(token)
+
+        enforce.assert_called_once_with("gpt-4", project, "u1")
+
+    def test_get_llm_by_credentials_passes_no_user_outside_a_request(self):
+        """Run in an empty context: other tests leave logging_user_id set, and a context variable cannot be unset."""
+        project = self._project()
+
+        def call():
+            with patch("codemie.core.dependecies.enforce_allowed_model", side_effect=RuntimeError("stop")) as enforce:
+                with pytest.raises(RuntimeError, match="stop"):
+                    get_llm_by_credentials("gpt-4", project=project)
+            return enforce
+
+        enforce = contextvars.Context().run(call)
+
+        enforce.assert_called_once_with("gpt-4", project, None)
 
 
 class TestNativeEmbeddingsRequestTimeout:

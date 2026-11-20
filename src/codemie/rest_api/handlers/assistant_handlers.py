@@ -136,7 +136,7 @@ class AssistantRequestHandler(ToolCallResumeMixin, ABC):
         self.request_uuid = request_uuid
         self.background_tasks: BackgroundTasks | None = None
         self.client_source = get_client_source()
-        self._execution_model = RequestExecutionModel(assistant)
+        self._execution_model = RequestExecutionModel(assistant, user)
 
     @abstractmethod
     def process_request(

@@ -53,6 +53,7 @@ from codemie.repository.llm_model_status_repository import LLMModelStatusReposit
 if TYPE_CHECKING:
     from codemie.core.models import Application
     from codemie.rest_api.models.admin_global_default import AdminGlobalDefault
+    from codemie.rest_api.models.user_model_override import UserModelOverride
     from codemie.rest_api.security.user import User
 
 
@@ -187,7 +188,7 @@ class LLMService:
             ),
         ]
 
-    def get_llm_routers(self) -> list[LLMRouter]:
+    def get_llm_routers(self, models: list[LLMModel] | None = None) -> list[LLMRouter]:
         """Return the effective Switchyard router catalog.
 
         Built from the same model source as every other catalog view (get_all_llm_model_info):
@@ -195,8 +196,10 @@ class LLMService:
         YAML declaration otherwise. No merge between the two — mixing a live capable/efficient
         model with a stale YAML one (or vice versa) would let a router pair models that never
         coexist in the same catalog view.
+
+        A caller that already holds that catalog passes it as models, so it is not read again.
         """
-        return build_switchyard_routers(self.get_all_llm_model_info())
+        return build_switchyard_routers(self.get_all_llm_model_info() if models is None else models)
 
     def _find_router(self, name: str) -> LLMRouter | None:
         return next((r for r in self.get_llm_routers() if r.base_name == name and r.enabled), None)
@@ -387,8 +390,13 @@ class LLMService:
     def get_allowed_router_options(
         self, include_all: bool = False, project: Application | None = None, user: User | None = None
     ) -> list[LlmRouterOption]:
+        """Router options, narrowed like the chat models: by the user's override when they have one for
+        the project (it is their whole model set, so no router outside it is offered and one it grants
+        is offered even if the project whitelist excludes it), otherwise by the project whitelist."""
         from codemie.enterprise.litellm.dependencies import is_premium_models_enabled
         from codemie.service.llm.model_availability_service import PROJECT_MODEL_OVERRIDE_FEATURE
+
+        user_override = self.get_user_model_override(user, project) if user else None
 
         if project and not customer_config.is_feature_enabled(PROJECT_MODEL_OVERRIDE_FEATURE):
             project = None
@@ -412,7 +420,10 @@ class LLMService:
             self._build_litellm_auto_router_option(model, by_name, include_all, premium_enabled) for model in all_models
         )
         options = [option for option in (*switchyard_options, *litellm_auto_options) if option is not None]
-        options = self._filter_router_options_by_project(options, project)
+        if user_override:
+            options = self._filter_router_options_by_user_override(options, user_override)
+        else:
+            options = self._filter_router_options_by_project(options, project)
         return [
             option.model_copy(
                 update=self._global_default_fields(option.default_for_categories, option.base_name == selected_name)
@@ -421,6 +432,19 @@ class LLMService:
             else option
             for option in options
         ]
+
+    @staticmethod
+    def _filter_router_options_by_user_override(
+        options: list[LlmRouterOption], override: UserModelOverride
+    ) -> list[LlmRouterOption]:
+        """Keep only routers listed in the user's override, by base_name (a router has no deployment name).
+
+        An override that lists no router yields none; unlike the chat models there is no fallback to the
+        project set, because "this user has no router" is a normal override.
+        """
+        from codemie.service.llm.model_availability_service import model_in_override
+
+        return [option for option in options if model_in_override(override.allowed_models, option.base_name)]
 
     @staticmethod
     def _filter_router_options_by_project(
@@ -621,7 +645,7 @@ class LLMService:
         if not found_model:
             return self._resolve_model_not_found(model_name, active_llm_models, project, fallback_to_default)
 
-        if self._is_disabled_for_execution(model_name, active_llm_models):
+        if self.is_disabled_for_execution(model_name, active_llm_models):
             return self._execution_fallback(model_name, active_llm_models, execution_project)
 
         # Check project narrowing
@@ -630,7 +654,10 @@ class LLMService:
 
         return found_model
 
-    def _is_disabled_for_execution(self, model_name: str | None, models: list[LLMModel]) -> bool:
+    @staticmethod
+    def is_disabled_for_execution(model_name: str | None, models: list[LLMModel]) -> bool:
+        """Whether a model, or a Switchyard router through its capable or efficient model, is disabled at
+        platform level in the given catalog. A name the catalog does not know is not disabled."""
         model_name = model_name.strip() if model_name else model_name
         model = next((m for m in models if model_name in (m.base_name, m.deployment_name)), None)
         if model is not None:
@@ -701,7 +728,7 @@ class LLMService:
         Newly chosen defaults and fallbacks must also exclude deprecated models.
         """
         models = self.get_all_llm_model_info()
-        needs_fallback = self._is_disabled_for_execution(model_name, models)
+        needs_fallback = self.is_disabled_for_execution(model_name, models)
         if not needs_fallback and not allow_deprecated:
             try:
                 self.assert_model_selectable(model_name)
@@ -1345,6 +1372,8 @@ class LLMService:
         """
         from codemie.service.llm.model_availability_service import PROJECT_MODEL_OVERRIDE_FEATURE
 
+        user_override = self.get_user_model_override(user, project)
+
         if project and not customer_config.is_feature_enabled(PROJECT_MODEL_OVERRIDE_FEATURE):
             project = None
 
@@ -1352,7 +1381,9 @@ class LLMService:
 
         chat_models = [m for m in user_models.chat_models if not m.is_declared_litellm_router()]
         models = self._filter_models_by_visibility(chat_models, include_all)
-        models = self._filter_models_by_project(models, project)
+        override_models = self._filter_models_by_user_override(models, user_override) if user_override else []
+        # An override whose models all left the catalog must not leave the user with nothing to select.
+        models = override_models or self._filter_models_by_project(models, project)
 
         candidates = self._filter_models_by_visibility(user_models.chat_models, include_all)
         selected = self.resolve_global_default(candidates).model
@@ -1364,6 +1395,26 @@ class LLMService:
             for model in models
         ]
         return self._apply_premium_flags(projected)
+
+    @staticmethod
+    def get_user_model_override(user: User, project: Application | None) -> UserModelOverride | None:
+        """Return the user's model override for the project, or None when the feature is off or none exists."""
+        from codemie.service.llm.user_override_cache import load_user_override
+
+        if not project or not customer_config.is_feature_enabled("userModelOverride"):
+            return None
+        return load_user_override(user.id, project.id)
+
+    @staticmethod
+    def _filter_models_by_user_override(models: list[LLMModel], override: UserModelOverride) -> list[LLMModel]:
+        """Keep only models listed in the user's override; takes precedence over the project whitelist."""
+        from codemie.service.llm.model_availability_service import model_in_override
+
+        return [
+            model
+            for model in models
+            if model_in_override(override.allowed_models, model.base_name, model.deployment_name)
+        ]
 
     @staticmethod
     def _apply_premium_flags(models: list[LLMModel]) -> list[LLMModel]:

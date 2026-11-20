@@ -313,10 +313,17 @@ class AIToolsAgent(WorkspaceAwareAgent):
             self._resolved_llm_model = self.llm_model
             return self._resolved_llm_model
 
-        from codemie.service.llm.model_availability_service import ProjectModelPolicy
+        from codemie.service.llm.model_availability_service import ModelAvailabilityService, ProjectModelPolicy
 
-        policy = ProjectModelPolicy.for_project(self.assistant.project, self.assistant.is_global)
-        resolved_model = policy.choose([self.llm_model], context="assistant_agent") or self.llm_model
+        resolved_model = ModelAvailabilityService.resolve_user_override_model(
+            requested_model=self.llm_model,
+            user_id=getattr(self.user, "id", None),
+            project_name=self.assistant.project,
+            is_global=self.assistant.is_global,
+        )
+        if not resolved_model:
+            policy = ProjectModelPolicy.for_project(self.assistant.project, self.assistant.is_global)
+            resolved_model = policy.choose([self.llm_model], context="assistant_agent") or self.llm_model
         resolved_model = llm_service.resolve_disabled_model(
             resolved_model, self.assistant.project, is_global=self.assistant.is_global
         )

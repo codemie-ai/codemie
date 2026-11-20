@@ -14,7 +14,7 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import sys
 from pathlib import Path
 
@@ -572,3 +572,183 @@ def test_llm_models_status_serialization(mock_llm_service):
     assert payload[0]["status"] == "deprecated"
     # No persisted status falls back to the field default (enabled).
     assert payload[1]["status"] == "enabled"
+
+
+class TestDefaultModelFromOverrides:
+    """The `default` flag follows the user override's default model first, then the project's."""
+
+    @staticmethod
+    def _models():
+        return [
+            LLMModel(base_name="model-a", deployment_name="model-a", enabled=True, label="Model A"),
+            LLMModel(base_name="model-b", deployment_name="model-b", enabled=True, label="Model B"),
+        ]
+
+    @pytest.fixture
+    def project(self):
+        from codemie.core.models import Application
+        from codemie.rest_api.routers import llm_models as llm_models_router
+
+        project = Application(id="proj-1", name="proj-1", default_model="model-a")
+        app.dependency_overrides[llm_models_router.get_project_from_id] = lambda: project
+        return project
+
+    @staticmethod
+    def _defaults(response):
+        return {m["base_name"]: m["default"] for m in response.json()}
+
+    @pytest.fixture(autouse=True)
+    def default_projection(self, mock_llm_service):
+        """The response projection is a pure helper; keep it real on the mocked service."""
+        from codemie.service.llm_service.llm_service import LLMService
+
+        mock_llm_service._global_default_fields.side_effect = LLMService._global_default_fields
+        mock_llm_service.get_allowed_router_options.return_value = []
+
+    def test_a_disabled_override_default_falls_back_to_project_default(self, mock_llm_service, project):
+        from codemie.configs.llm_config import ModelStatus
+
+        models = self._models()
+        models[1].status = ModelStatus.DISABLED
+        mock_llm_service.get_allowed_chat_models.return_value = models
+        mock_llm_service.get_user_model_override.return_value = type("O", (), {"default_model": "model-b"})()
+
+        response = client.get("/v1/llm_models", params={"project_id": "proj-1"})
+
+        assert response.status_code == 200
+        assert self._defaults(response) == {"model-a": True, "model-b": False}
+
+    def test_disabled_override_and_project_defaults_fall_back_to_platform_default(self, mock_llm_service, project):
+        from codemie.configs.llm_config import ModelStatus
+
+        models = [
+            *self._models(),
+            LLMModel(base_name="model-c", deployment_name="model-c", enabled=True, label="Model C", default=True),
+        ]
+        models[0].status = ModelStatus.DISABLED
+        models[1].status = ModelStatus.DISABLED
+        mock_llm_service.get_allowed_chat_models.return_value = models
+        mock_llm_service.get_user_model_override.return_value = type("O", (), {"default_model": "model-b"})()
+
+        response = client.get("/v1/llm_models", params={"project_id": "proj-1"})
+
+        assert response.status_code == 200
+        assert self._defaults(response) == {"model-a": False, "model-b": False, "model-c": True}
+
+    def test_user_override_default_wins_over_project_default(self, mock_llm_service, project):
+        mock_llm_service.get_allowed_chat_models.return_value = self._models()
+        mock_llm_service.get_user_model_override.return_value = type("O", (), {"default_model": "model-b"})()
+
+        response = client.get("/v1/llm_models", params={"project_id": "proj-1"})
+
+        assert response.status_code == 200
+        assert self._defaults(response) == {"model-a": False, "model-b": True}
+
+    def test_project_default_used_without_override(self, mock_llm_service, project):
+        mock_llm_service.get_allowed_chat_models.return_value = self._models()
+        mock_llm_service.get_user_model_override.return_value = None
+
+        response = client.get("/v1/llm_models", params={"project_id": "proj-1"})
+
+        assert response.status_code == 200
+        assert self._defaults(response) == {"model-a": True, "model-b": False}
+
+    def test_override_without_default_falls_back_to_project_default(self, mock_llm_service, project):
+        mock_llm_service.get_allowed_chat_models.return_value = self._models()
+        mock_llm_service.get_user_model_override.return_value = type("O", (), {"default_model": None})()
+
+        response = client.get("/v1/llm_models", params={"project_id": "proj-1"})
+
+        assert response.status_code == 200
+        assert self._defaults(response) == {"model-a": True, "model-b": False}
+
+
+class TestProjectAccessCheck:
+    """With userModelOverride on, project_id must reference a project the user can access; otherwise 403."""
+
+    @pytest.fixture(autouse=True)
+    def plain_user(self, user):
+        user.is_admin = False
+        user.is_maintainer = False
+
+    @pytest.fixture(autouse=True)
+    def user_override_feature(self):
+        with patch(
+            "codemie.rest_api.routers.llm_models.customer_config",
+            is_feature_enabled=MagicMock(return_value=True),
+        ) as config:
+            yield config
+
+    @pytest.fixture
+    def project_lookup(self):
+        from codemie.core.models import Application
+
+        with (
+            patch("codemie.rest_api.routers.llm_models.get_session"),
+            patch("codemie.rest_api.routers.llm_models.application_repository") as repo,
+        ):
+            repo.get_by_name.return_value = Application(id="proj-1", name="proj-1")
+            yield repo
+
+    def test_member_gets_models(self, mock_llm_service, project_lookup, user):
+        user.project_names = ["proj-1"]
+        mock_llm_service.get_allowed_chat_models.return_value = []
+
+        response = client.get("/v1/llm_models", params={"project_id": "proj-1"})
+
+        assert response.status_code == 200
+
+    def test_non_member_gets_forbidden(self, mock_llm_service, project_lookup, user):
+        user.project_names = ["other"]
+
+        response = client.get("/v1/llm_models", params={"project_id": "proj-1"})
+
+        assert response.status_code == 403
+        mock_llm_service.get_allowed_chat_models.assert_not_called()
+
+    def test_project_admin_gets_models(self, mock_llm_service, project_lookup, user):
+        user.project_names = []
+        user.admin_project_names = ["proj-1"]
+        mock_llm_service.get_allowed_chat_models.return_value = []
+
+        response = client.get("/v1/llm_models", params={"project_id": "proj-1"})
+
+        assert response.status_code == 200
+
+    def test_non_member_gets_forbidden_for_default_model(self, mock_llm_service, project_lookup, user):
+        user.project_names = ["other"]
+
+        response = client.get("/v1/default_models/global", params={"project_id": "proj-1"})
+
+        assert response.status_code == 403
+
+    def test_non_member_gets_models_with_the_feature_off(
+        self, mock_llm_service, project_lookup, user, user_override_feature
+    ):
+        """With userModelOverride off the endpoints behave as before the feature: no access check."""
+        user_override_feature.is_feature_enabled.return_value = False
+        user.project_names = ["other"]
+        mock_llm_service.get_allowed_chat_models.return_value = []
+
+        response = client.get("/v1/llm_models", params={"project_id": "proj-1"})
+
+        assert response.status_code == 200
+
+    def test_missing_project_is_404_with_the_feature_off(
+        self, mock_llm_service, project_lookup, user, user_override_feature
+    ):
+        user_override_feature.is_feature_enabled.return_value = False
+        user.project_names = ["other"]
+        project_lookup.get_by_name.return_value = None
+
+        response = client.get("/v1/llm_models", params={"project_id": "proj-1"})
+
+        assert response.status_code == 404
+
+    def test_without_project_id_no_check(self, mock_llm_service, user):
+        user.project_names = []
+        mock_llm_service.get_allowed_chat_models.return_value = []
+
+        response = client.get("/v1/llm_models")
+
+        assert response.status_code == 200

@@ -103,6 +103,7 @@ def _run(
     executor.workflow_execution_service = Mock(start_state=Mock(return_value="state_id"))
     executor.thought_queue = Mock()
     executor.execution_id = "exec_id"
+    executor.user = None
 
     map_states = executor.find_map_nodes()
     states = [s for s in workflow_config.states if s.id in run_states]

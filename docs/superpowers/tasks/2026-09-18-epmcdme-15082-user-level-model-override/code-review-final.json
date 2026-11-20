@@ -1,0 +1,156 @@
+{
+  "decision": "request-changes",
+  "rationale": "Diff incomplete: Alembic migration missing (blocker—cannot deploy without schema), user context not wired to invocation (critical regression—feature disabled at runtime), UserProject query UUID/string type mismatch (blocker—runtime error on set_override). Additionally, 6 commit format violations and 1 missing license header violate standards gates. Acceptance criteria 12/13 present and pass; migration and invocation wiring must be added before deployment.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "UserModelOverride table",
+      "status": "pass",
+      "notes": "Table defined in src/codemie/core/models.py with id, user_id FK, project_name FK, allowed_models ARRAY, override_enabled, timestamps, unique and check constraints"
+    },
+    {
+      "kind": "story-ac",
+      "item": "ApplicationEnrichment table",
+      "status": "pass",
+      "notes": "Table defined with id, project_name unique FK, disabled_model_ids ARRAY, timestamps"
+    },
+    {
+      "kind": "story-ac",
+      "item": "UserModelOverrideService methods",
+      "status": "partial",
+      "notes": "set_override, get_override, delete_override, batch_set_overrides present; resolve_model_for_user delegated to ModelAvailabilityService.resolve_model_for_execution_with_user_context"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Repository queries",
+      "status": "pass",
+      "notes": "UserModelOverrideRepository supports get_by_user_and_project, get_by_project, delete_all_by_project"
+    },
+    {
+      "kind": "story-ac",
+      "item": "API endpoints (admin-only CRUD)",
+      "status": "pass",
+      "notes": "Single user POST/GET/DELETE and batch POST endpoints in user_model_override_router.py with is_application_admin checks"
+    },
+    {
+      "kind": "story-ac",
+      "item": "4-tier precedence chain",
+      "status": "pass",
+      "notes": "Platform disablement (tier 1) → user override if enabled (tier 2) → project whitelist (tier 3) → default model (tier 4) implemented in resolve_model_for_execution_with_user_context"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Validation at set-time",
+      "status": "pass",
+      "notes": "UserModelOverrideService._validate_override_models checks allowed_models subset of project whitelist and not in platform-disabled list"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Graceful degradation",
+      "status": "pass",
+      "notes": "Override not re-validated at invocation; current 4-tier chain applies against live project/platform state"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Batch atomicity",
+      "status": "pass",
+      "notes": "Batch validates all models upfront, then iterates users; any failure rolls back transaction via session.rollback() in endpoint error handler"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Admin authorization",
+      "status": "pass",
+      "notes": "All endpoints require User.is_application_admin(project_name); non-admin requests return 403"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Backward compatibility",
+      "status": "pass",
+      "notes": "ApplicationEnrichment query safe (returns None if not found); legacy invocations without user context fall back to project whitelist"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Test coverage",
+      "status": "pending-stage-7",
+      "notes": "Test files created (test_user_model_override_service.py, test_user_model_override_endpoints.py, test_model_availability_service.py, etc.); Stage 7 will verify execution and full precedence coverage"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "partial",
+      "notes": "15 of 21 commits follow EPMCDME-####: format; 6 violate: 'EPMCDME-14349: Added enforcements;' (trailing semicolon), 'Latest changes' (no prefix), 'Fix: Merge...' (wrong format), and 3 others with trailing punctuation"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "src/codemie/data/repositories/application_enrichment_repository.py missing Apache 2.0 license header; other sampled files have correct headers and explicit type hints"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No secrets or credentials in sampled API routes and services; input validation present (admin checks, model validation); exception handling sanitizes error messages"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/external/alembic/versions",
+      "title": "Alembic migration file missing",
+      "problem": "Plan describes schema migration task to create UserModelOverride and ApplicationEnrichment tables, but diff contains no migration file in src/external/alembic/versions/. Without the actual migration, database schema cannot be created.",
+      "impact": "Feature cannot be deployed. Schema migration is a deployment blocker; the new tables do not exist in the database and all user override endpoints fail with OperationalError (table does not exist).",
+      "recommendation": "Create src/external/alembic/versions/<timestamp>_add_user_model_override_and_enrichment_tables.py with op.create_table operations for UserModelOverride (id, user_id FK, project_name FK, allowed_models ARRAY, override_enabled BOOLEAN, created_at, updated_at) and ApplicationEnrichment (id, project_name unique FK, disabled_model_ids ARRAY, created_at, updated_at), with all constraints and indexes."
+    },
+    {
+      "id": "CR-002",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/workflows/nodes/agent_node.py",
+      "title": "User context not passed to model invocation (regression gap)",
+      "problem": "RouterChatModel._agenerate() accepts user_id, project_name, session kwargs to apply user overrides via 4-tier precedence. No callers in agent_node.py, langgraph_agent.py, or assistant_agent.py pass these parameters. User context never flows to invocation.",
+      "impact": "User model overrides created via API endpoints are never applied during LLM invocations. Users always get project-level or default resolution, never their configured overrides. Feature is silently disabled despite implementation being present—a critical regression from spec intent.",
+      "recommendation": "Decide whether invocation-time override resolution must ship in v1 or defer to v2. If v1: wire user_id, project_name, session from execution context (available in AgentNode) into RouterChatModel._agenerate kwargs. If v2: document scope limitation and mark feature as API-only in this release. This requires architectural sign-off."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/user/user_model_override_service.py",
+      "line": 3748,
+      "title": "UserProject query UUID/string type mismatch",
+      "problem": "Line 3748 calls session.query(UserProject).filter(UserProject.user_id == str(user_id)). If UserProject.user_id column stores UUID (not string), the filter compares a UUID column to a string value, causing type mismatch in SQL. Query returns no results even when user is in project.",
+      "impact": "set_override always raises NotFoundException('User {user_id} not found in project {project_name}') on first admin call, even for valid users. Feature is broken on first use—any attempt to create an override fails.",
+      "recommendation": "Verify UserProject.user_id column type (UUID or string). If UUID, remove str() conversion or use explicit UUID coercion. Ensure type consistency across UserProject creation and queries. Add integration test: create actual UserProject row, call set_override, verify it succeeds (not mocked)."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit messages",
+      "title": "Commit format violations (6 of 21 commits)",
+      "problem": "git-workflow.md requires commits to follow EPMCDME-####: Description format. Six commits violate this: 'EPMCDME-14349: Added enforcements;' (trailing semicolon), 'Latest changes' (no ticket), 'Fix: Merge Alembic...' (wrong prefix), 'EPMCDME-14349: Updated logic...;' (trailing semicolon), 'EPMCDME-14349: Fixed merge...;' (trailing semicolon), and one more.",
+      "impact": "Violates documented repository standard. Commit format gate will reject this MR. Audit trails and automated tooling depend on consistent EPMCDME-####: format for ticket routing.",
+      "recommendation": "Amend or rebase commits to match EPMCDME-####: Description format. Remove all trailing punctuation (semicolons, periods). Add EPMCDME ticket prefix to unprefixed commits, or exclude them if outside review scope. Use git rebase -i to fix commit messages before push."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/data/repositories/application_enrichment_repository.py",
+      "line": 1,
+      "title": "Missing Apache 2.0 license header",
+      "problem": "File is missing the required Apache 2.0 copyright and license notice. code-quality.md requires lines 1–13 (copyright, license URL, warranty disclaimer) on all Python source files.",
+      "impact": "Licensing compliance violation. CI license check will fail. Project's open-source obligation not satisfied for this file.",
+      "recommendation": "Add Apache 2.0 header: copy lines 1–13 from user_model_override_repository.py, update copyright year to 2026, insert at file top before any imports."
+    }
+  ]
+}

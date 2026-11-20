@@ -405,7 +405,7 @@ async def test_update_conversation_with_image_generation_fields(user):
     )
 
     with (
-        patch("codemie.rest_api.routers.conversation.crud.Conversation.get_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.crud.Conversation.find_by_id", return_value=conversation),
         patch("codemie.rest_api.routers.conversation.crud.Ability.can", return_value=True),
         patch(
             "codemie.rest_api.routers.conversation.crud.ConversationService.update_conversation",
@@ -561,6 +561,23 @@ async def test_update_conversation_can_clear_deprecated_selections(conversation_
     assert stored.llm_model is None
     assert stored.image_generation_model is None
     persist.assert_called_once_with(touch_timestamp=False)
+
+
+@pytest.mark.asyncio
+async def test_update_conversation_not_found_returns_404():
+    """Conversation.get_by_id raises a bare KeyError on a missing row, which has no global
+    FastAPI exception handler and previously surfaced as an unhandled 500. find_by_id returns
+    None instead, so the endpoint can translate it into a proper 404."""
+    with patch("codemie.rest_api.routers.conversation.crud.Conversation.find_by_id", return_value=None):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                "/v1/conversations/does-not-exist",
+                json={"enable_image_generation": True},
+                headers={"Authorization": "Bearer testtoken"},
+            )
+
+    assert response.status_code == 404
 
 
 CONVETSATION_MSG_EXPORT_PATH = "/v1/conversations/123/history/0/0/export?export_format=pdf"

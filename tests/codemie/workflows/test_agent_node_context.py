@@ -37,7 +37,7 @@ from langgraph.types import Command
 from codemie.rest_api.models.assistant import Assistant
 from codemie.workflows.nodes.agent_node import AgentNode
 from codemie.agents.assistant_agent import TaskResult
-from codemie.core.exceptions import TaskException
+from codemie.core.exceptions import ModelNotWhitelistedException, NotFoundException, TaskException
 from codemie.workflows.constants import (
     CONTEXT_STORE_VARIABLE,
     MESSAGES_VARIABLE,
@@ -730,5 +730,183 @@ def test_init_assistant_fails_open_when_model_resolution_raises(
     node.init_assistant()
 
     # Assert: the assistant is initialized with the originally requested model unchanged.
-    workflow_assistant.model_copy.assert_called_once_with(update={"model": "gpt-4"})
+    workflow_assistant.model_copy.assert_not_called()
+    assert mock_initialize_assistant.call_args.kwargs["workflow_assistant"] is workflow_assistant
     mock_initialize_assistant.assert_called_once()
+
+
+def _init_assistant_with_user_override(
+    override_result,
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_workflow_config,
+    mock_user,
+):
+    from codemie.core.workflow_models import WorkflowAssistant
+
+    workflow_assistant = Mock(spec=WorkflowAssistant)
+    workflow_assistant.model = "gpt-4"
+    copied = Mock(spec=WorkflowAssistant)
+    workflow_assistant.model_copy.return_value = copied
+
+    workflow_state = WorkflowState(
+        id="agent_node",
+        task="Test task",
+        next=WorkflowNextState(state_id="next"),
+        assistant_id="assistant_1",
+    )
+    node = AgentNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+        assistant=None,
+    )
+
+    with (
+        patch("codemie.workflows.nodes.agent_node.find_assistant_by_id", return_value=workflow_assistant),
+        patch("codemie.workflows.nodes.agent_node.initialize_assistant") as mock_initialize,
+        patch(
+            "codemie.workflows.nodes.base_node.ModelAvailabilityService.resolve_user_override_model",
+            return_value=override_result,
+        ) as mock_override,
+        patch.object(AgentNode, "resolve_execution_model", return_value=(None, False)) as mock_project,
+    ):
+        node.init_assistant()
+
+    return workflow_assistant, copied, mock_initialize, mock_override, mock_project
+
+
+def test_init_assistant_uses_user_override_model_and_skips_project_resolution(
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_workflow_config,
+    mock_user,
+):
+    assistant, copied, mock_initialize, mock_override, mock_project = _init_assistant_with_user_override(
+        "override-model",
+        mock_workflow_execution_service,
+        mock_thought_queue,
+        mock_callbacks,
+        mock_workflow_config,
+        mock_user,
+    )
+
+    mock_override.assert_called_once()
+    assert mock_override.call_args.kwargs["user_id"] == mock_user.id
+    assistant.model_copy.assert_called_once_with(update={"model": "override-model"})
+    mock_project.assert_not_called()
+    assert mock_initialize.call_args.kwargs["workflow_assistant"] is copied
+
+
+def test_init_assistant_without_user_override_uses_project_resolution(
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_workflow_config,
+    mock_user,
+):
+    assistant, _, mock_initialize, _, mock_project = _init_assistant_with_user_override(
+        None,
+        mock_workflow_execution_service,
+        mock_thought_queue,
+        mock_callbacks,
+        mock_workflow_config,
+        mock_user,
+    )
+
+    mock_project.assert_called_once()
+    assistant.model_copy.assert_not_called()
+    assert mock_initialize.call_args.kwargs["workflow_assistant"] is assistant
+
+
+def _node_with_failing_user_override(
+    mock_workflow_execution_service, mock_thought_queue, mock_callbacks, mock_workflow_config, mock_user
+):
+    workflow_state = WorkflowState(
+        id="agent_node",
+        task="Test task",
+        next=WorkflowNextState(state_id="next"),
+        assistant_id="assistant_1",
+    )
+    return AgentNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+        assistant=None,
+    )
+
+
+@pytest.mark.parametrize("error", [ModelNotWhitelistedException("gpt-4", "proj"), NotFoundException("no project")])
+def test_init_assistant_fails_open_when_user_override_resolution_raises(
+    error,
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_workflow_config,
+    mock_user,
+):
+    """The user-override step runs before BaseNode's own error handling, like the project step: a
+    model-availability failure must not abort the whole workflow run, and project resolution still applies."""
+    from codemie.core.workflow_models import WorkflowAssistant
+
+    workflow_assistant = Mock(spec=WorkflowAssistant)
+    workflow_assistant.model = "gpt-4"
+    node = _node_with_failing_user_override(
+        mock_workflow_execution_service, mock_thought_queue, mock_callbacks, mock_workflow_config, mock_user
+    )
+
+    with (
+        patch("codemie.workflows.nodes.agent_node.find_assistant_by_id", return_value=workflow_assistant),
+        patch("codemie.workflows.nodes.agent_node.initialize_assistant") as mock_initialize,
+        patch(
+            "codemie.workflows.nodes.base_node.ModelAvailabilityService.resolve_user_override_model",
+            side_effect=error,
+        ),
+        patch.object(AgentNode, "resolve_execution_model", return_value=("project-default", True)) as mock_project,
+    ):
+        node.init_assistant()
+
+    mock_project.assert_called_once_with("gpt-4", fail_open=True)
+    workflow_assistant.model_copy.assert_called_once_with(update={"model": "project-default"})
+    mock_initialize.assert_called_once()
+
+
+def test_resolve_user_override_model_raises_without_fail_open(
+    mock_workflow_execution_service, mock_thought_queue, mock_callbacks, mock_workflow_config, mock_user
+):
+    node = _node_with_failing_user_override(
+        mock_workflow_execution_service, mock_thought_queue, mock_callbacks, mock_workflow_config, mock_user
+    )
+
+    with patch(
+        "codemie.workflows.nodes.base_node.ModelAvailabilityService.resolve_user_override_model",
+        side_effect=ModelNotWhitelistedException("gpt-4", "proj"),
+    ):
+        with pytest.raises(ModelNotWhitelistedException):
+            node.resolve_user_override_model("gpt-4")
+        assert node.resolve_user_override_model("gpt-4", fail_open=True) is None
+
+
+def test_resolve_user_override_model_does_not_swallow_unrelated_errors_even_when_failing_open(
+    mock_workflow_execution_service, mock_thought_queue, mock_callbacks, mock_workflow_config, mock_user
+):
+    node = _node_with_failing_user_override(
+        mock_workflow_execution_service, mock_thought_queue, mock_callbacks, mock_workflow_config, mock_user
+    )
+
+    with patch(
+        "codemie.workflows.nodes.base_node.ModelAvailabilityService.resolve_user_override_model",
+        side_effect=RuntimeError("db down"),
+    ):
+        with pytest.raises(RuntimeError):
+            node.resolve_user_override_model("gpt-4", fail_open=True)

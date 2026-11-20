@@ -119,6 +119,7 @@ from codemie.rest_api.routers import gitlab_oauth
 from codemie.rest_api.routers import jira_oauth
 from codemie.rest_api.routers import confluence_oauth
 from codemie.rest_api.routers.provisioning import mount_provisioning_api
+from codemie.service.llm.user_override_cache import request_override_cache
 from codemie.service.oauth_security import (
     assert_oauth_state_signing_secret_configured,
     assert_token_vault_available,
@@ -1643,6 +1644,13 @@ async def add_disconnect_handler(request: Request, call_next):
     request.state.on_disconnect = on_disconnect
 
     return await call_next(request)
+
+
+@app.middleware("http")
+async def remember_user_model_overrides_per_request(request: Request, call_next):
+    """Let a request read a user's model override once, however many times the model is resolved."""
+    with request_override_cache():
+        return await call_next(request)
 
 
 @app.middleware("http")

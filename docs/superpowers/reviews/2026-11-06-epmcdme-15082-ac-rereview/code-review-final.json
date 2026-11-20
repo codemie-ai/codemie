@@ -1,0 +1,121 @@
+{
+  "decision": "request-changes",
+  "rationale": "AC6 and AC7 are unmet (fallback nodes prefer the user override's default over the asset-scope default, and no platform-disabled-model gate exists anywhere in the override resolution chain, confirmed by reading model_availability_service.py, llm_service.py and user_model_override_service.py); plus 6 real major-severity gaps (validation/execution guard mismatches, a stale-fallback and an empty-fallback model path, a missing user= kwarg in SupervisorWorkflow, a status-code enumeration leak, and a skipped OpenAPI baseline guard). All 4 lenses and the standards audit ran and parsed cleanly, no decision_needed items remain, 0 findings deferred, 8 lens-reported candidates filtered as cosmetic/speculative noise (duplicate import, dead code, AgentNode user-kwarg convention disproved on inspection, catalog_base_name(None) disproved, repository-layer defense-in-depth gap, batch IntegrityError status code, missing session rollback, feature-flag-off validation edge case folded into CR-004).",
+  "confidence": "high",
+  "risk_flags": ["security"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: project admin sets override for a single user, saved against that user within the project", "status": "pass", "notes": "POST .../user-model-overrides -> UserModelOverrideService.set_override persists (user_id, project_name) row"},
+    {"kind": "story-ac", "item": "AC2: bulk selection applies the same override to every selected user", "status": "pass", "notes": "POST .../user-model-overrides/batch loops the same allowed_models/default_model over user_ids"},
+    {"kind": "story-ac", "item": "AC3: a user-override-granted model outside the project's set is used for invocation, not blocked by the project restriction", "status": "pass", "notes": "resolve_user_override_model/_pick_from_override never consult the project whitelist once an override row exists"},
+    {"kind": "story-ac", "item": "AC4: user-level override evaluated before / takes precedence over project-level override code, in the same resolution paths", "status": "pass", "notes": "every touched resolution path calls the user-override resolver first, falling to project logic only when it returns None; see CR-007 for one call-site gap"},
+    {"kind": "story-ac", "item": "AC5: override that excludes an otherwise-available project model blocks that user's invocation of it", "status": "pass", "notes": "once an override row exists, resolution and asset-creation validation only ever resolve within override.allowed_models"},
+    {"kind": "story-ac", "item": "AC6: fallback on a failed access check uses the asset-scope (project/global) default, regardless of any user-level override", "status": "fail", "notes": "result_finalizer_node.py and summarize_conversation_node.py call resolve_user_default_model() first, the opposite of 'regardless of override' - see CR-006"},
+    {"kind": "story-ac", "item": "AC7: a platform-disabled model in a user's override is never permitted, overriding any user/project setting", "status": "fail", "notes": "no enabled/disabled check exists anywhere in the override resolution or validation chain, confirmed by reading the full catalog lookup path - see CR-002"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 82 commit subjects in the review range use the documented EPMCDME-15082: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "New modules follow Module Cohesion guidance; wiring additions extend each file's existing core responsibility; new files carry Apache 2.0 headers; type hints use modern unions/generics"},
+    {"kind": "security", "status": "pass", "notes": "Endpoints use authenticate plus a project-scoped admin check; no secrets logged; ORM fields with CheckConstraint/UniqueConstraint, no raw SQL"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/llm_models.py",
+      "line": 37,
+      "title": "Leaky/inconsistent authorization status codes",
+      "problem": "get_project_from_id raises 404 when the project doesn't exist but 400 when it exists and the user lacks access, letting any authenticated caller distinguish and enumerate real project IDs by status code; the same no-access condition is handled with 403 in the new _require_admin helper in user_model_override_router.py.",
+      "impact": "An authenticated but unauthorized user can enumerate the existence of projects they cannot see, and the two new/changed access checks in this diff disagree on HTTP authorization semantics.",
+      "recommendation": "Return 403 (not 400) for the no-access branch of get_project_from_id, matching _require_admin's convention for the equivalent condition."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/llm/model_availability_service.py",
+      "line": 224,
+      "title": "AC7: no platform-disabled-model gate in override resolution",
+      "problem": "resolve_user_override_model/_pick_from_override and validate_model_for_asset_creation's tier-1 branch accept any name present in override.allowed_models that matches the model catalog, with no check against the model's platform enabled/disabled state; get_all_llm_model_info (llm_service.py) and get_model_details never filter by LLMModel.enabled either, and UserModelOverrideService._validate_override_models explicitly documents platform-disabled models as 'out of scope' at grant time with no enforcement found elsewhere.",
+      "impact": "A platform-disabled model reachable only through a user override is not blocked anywhere end-to-end, violating AC7's required hard stop.",
+      "recommendation": "Add an explicit enabled-state check (LLMModel.enabled) in _pick_from_override/resolve_user_override_model and in validate_model_for_asset_creation's tier-1 branch, and reject disabled models in _validate_override_models at grant time."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/llm/model_availability_service.py",
+      "line": 266,
+      "title": "Override's last-resort fallback model not checked against the live catalog",
+      "problem": "_pick_from_override returns catalog_base_name(override.allowed_models[0]) as a last resort without verifying that model still exists in the current catalog (it may have been removed/disabled since the override was granted); catalog_base_name returns an unknown name unchanged.",
+      "impact": "Execution can proceed with a stale/invalid model id, failing deep inside the LLM call instead of a controlled error or further fallback.",
+      "recommendation": "Validate the fallback candidate still resolves to a live catalog entry before returning it; otherwise fall further (next allowed model, then project/global default) or raise a clear error.",
+      "status": "out-of-scope",
+      "note": "Update 2026-11-10: out of scope of this ticket. Picking a first live model / skipping models removed from the platform catalog is a platform-level list concern; the logic was removed from EPMCDME-15082 (override fallback is the override's default_model, else the project default)."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/llm/model_availability_service.py",
+      "line": 294,
+      "title": "validate_model_for_asset_creation doesn't mirror resolve_user_override_model's guards",
+      "problem": "validate_model_for_asset_creation's tier-1 override check has no is_global parameter and never checks it, while resolve_user_override_model (used at execution time) explicitly skips the override for global assistants/workflows; the same function also unconditionally short-circuits to a silent pass when PROJECT_MODEL_OVERRIDE_FEATURE is disabled, even when the user's own override would exclude the model.",
+      "impact": "An admin/user can create a global asset validated against a model only reachable through a user override, which then silently never applies once the asset actually executes as global; disabling the project-level feature flag can also let asset-creation validation pass for a model the user's own override excludes.",
+      "recommendation": "Thread is_global into validate_model_for_asset_creation and skip the override branch for global assets exactly as resolve_user_override_model does; reconsider short-circuiting to a pass on PROJECT_MODEL_OVERRIDE_FEATURE=false ahead of an existing, excluding override."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/llm_service/llm_service.py",
+      "line": 956,
+      "title": "get_allowed_chat_models returns empty with no fallback once override models leave the catalog",
+      "problem": "get_allowed_chat_models filters strictly to _filter_models_by_user_override's result when a user override exists, with no fallback when the override's allowed_models no longer match any model currently in the catalog (removed/disabled since granted).",
+      "impact": "The user sees zero selectable chat models with no error or fallback, making the chat UI appear broken.",
+      "recommendation": "When the override-filtered list is empty, fall back to project/default filtering instead of returning an empty list."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/workflows/nodes/result_finalizer_node.py",
+      "line": 77,
+      "title": "AC6: fallback path prefers the user override default over the asset-scope default",
+      "problem": "ResultFinalizerNode.execute and SummarizeConversationNode/SummarizeConversationCommandNode call resolve_user_default_model() (the override's default) first and only fall back to resolve_execution_model (the project/global default) when the override has none; get_llm_models' default flag follows the same override-first precedence.",
+      "impact": "AC6 requires the failed-access-check fallback to use the asset-scope default regardless of any user-level override; these call sites do the opposite, so a user's override default silently overrides the intended fallback behavior.",
+      "recommendation": "Resolve the project/global (asset-scope) default first via resolve_execution_model in the fallback path; reserve resolve_user_default_model() for the non-fallback precedence AC3/AC4 already require."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/supervisor_workflow.py",
+      "line": 74,
+      "title": "SupervisorWorkflow omits user= when building fallback nodes",
+      "problem": "SupervisorWorkflow constructs ResultFinalizerNode and SummarizeConversationNode without a user= kwarg, unlike workflow.py which this diff updated at five call sites; BaseNode.resolve_user_override_model/resolve_user_default_model read self.kwargs.get(\"user\"), returning None silently (no error or log) whenever user= is omitted.",
+      "impact": "The user model override silently never applies for ResultFinalizerNode/SummarizeConversationNode executions started through SupervisorWorkflow, an AC3/AC4 resolution path this change did not reach.",
+      "recommendation": "Pass user=self.user when constructing ResultFinalizerNode and SummarizeConversationNode in supervisor_workflow.py, matching workflow.py's updated call sites."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/router_guards/test_openapi_snapshot.py",
+      "line": 33,
+      "title": "OpenAPI baseline guard skipped while routes change",
+      "problem": "test_openapi_matches_baseline, the sole test asserting the live OpenAPI schema against OPENAPI_BASELINE, now carries @pytest.mark.skip right as this change adds the user_model_override_router and modifies get_project_from_id/get_llm_models signatures; the skip is unscoped, disabling the whole-app guard, not just the new endpoints.",
+      "impact": "No test currently re-verifies the OpenAPI schema for any route, old or new; a future accidental schema change would go undetected.",
+      "recommendation": "Regenerate OPENAPI_BASELINE (per the skip's own regenerate_baselines note) to include the new/changed endpoints, then remove the skip."
+    }
+  ],
+  "deferred": []
+}

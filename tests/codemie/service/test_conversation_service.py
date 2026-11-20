@@ -898,6 +898,74 @@ def test_upsert_chat_history_persists_an_in_progress_turn_as_pending_until_it_co
     )
 
 
+@patch(
+    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
+)
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.update")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.update")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.rest_api.models.conversation.Conversation.update_chat_history")
+def test_upsert_chat_history_reports_resolved_model_not_stale_request_model(
+    mock_update_chat_history,
+    mock_metrics_get,
+    mock_conv_find,
+    mock_conv_update,
+    mock_metrics_save,
+    mock_metrics_update,
+    mock_calculate_metrics,
+    mock_send_conversation_metric,
+):
+    """build_agent resolves the model (project/user-override fallback) without changing the assistant
+    or the caller's request, and passes it as params.llm_model. The usage metric must report that
+    resolved model, not request.llm_model (the stale, possibly no-longer-allowed originally asked model)."""
+    mock_assistant = MagicMock()
+    mock_assistant.id = "assistant-id"
+    mock_assistant.project = "test-project"
+    mock_assistant.llm_model_type = "gpt-4.1-mini"  # resolved fallback, set by build_agent
+
+    mock_admin_user = MagicMock()
+    mock_admin_user.id = "user-id"
+    mock_admin_user.name = "user-name"
+
+    conversation = Conversation(id="test-id", conversation_id="test-id", history=[])
+    conversation_metrics = ConversationMetrics(conversation_id="test-id")
+
+    mock_conv_find.return_value = conversation
+    mock_metrics_get.return_value = conversation_metrics
+    mock_conv_update.return_value = True
+    mock_metrics_update.return_value = True
+
+    # The client's original request still carries the stale, now-disallowed model - this is
+    # the caller's own request object, untouched by build_agent's internal deep copy.
+    request = AssistantChatRequest(
+        conversation_id="test-id",
+        text="What's the weather like?",
+        history=[],
+        llm_model="o4-mini-2025-04-16",
+    )
+
+    ConversationService.upsert_chat_history(
+        UpsertChatHistoryParams(
+            assistant_response="It's sunny today!",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+            status=None,
+            user=mock_admin_user,
+            assistant=mock_assistant,
+            request=request,
+            llm_model="gpt-4.1-mini",
+        )
+    )
+
+    mock_send_conversation_metric.assert_called_once()
+    reported_llm_model = mock_send_conversation_metric.call_args.args[5]
+    assert reported_llm_model == "gpt-4.1-mini"
+
+
 @patch("codemie.rest_api.models.assistant.Assistant.get_by_ids")
 def test_build_new_conversation_with_assistant(
     mock_get_by_ids,

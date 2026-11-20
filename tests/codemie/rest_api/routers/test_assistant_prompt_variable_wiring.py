@@ -144,6 +144,10 @@ def detail_collaborators():
                 "codemie.service.llm.model_availability_service.customer_config",
                 is_feature_enabled=MagicMock(return_value=True),
             ),
+            patch(
+                "codemie.service.llm.model_availability_service.UserModelOverride.get_by_fields",
+                return_value=None,
+            ),
         ):
             stack.enter_context(collaborator)
         yield

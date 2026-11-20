@@ -24,6 +24,14 @@ from codemie.rest_api.models.assistant import Assistant, Context, ContextType
 from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
 
+
+@pytest.fixture(autouse=True)
+def _model_override_features_off():
+    with patch("codemie.service.llm.model_availability_service.customer_config") as customer_config:
+        customer_config.is_feature_enabled.return_value = False
+        yield
+
+
 KB = Context(context_type=ContextType.KNOWLEDGE_BASE, name="kb-alive")
 CODE_GONE = Context(context_type=ContextType.CODE, name="repo-deleted")
 

@@ -152,7 +152,9 @@ class SummarizeConversationNode(BaseNode[AgentMessages]):
         if self.workflow_config:
             # Use the project default when no workflow model is configured.
             requested_model = getattr(self.workflow_config, "default_model", None)
-            resolved_model, _ = self.resolve_execution_model(requested_model, fallback_model="gpt-3.5-turbo")
+            resolved_model = self.resolve_user_override_model(requested_model)
+            if not resolved_model:
+                resolved_model, _ = self.resolve_execution_model(requested_model, fallback_model="gpt-3.5-turbo")
             actual_model = resolved_model
 
         logger.info(
@@ -256,8 +258,8 @@ class SummarizeConversationCommandNode(BaseNode[AgentMessages]):
 
     def _resolve_model_for_summarization(self, requested_model: str | None) -> str | None:
         """Resolve the requested model against project availability."""
-        resolved_model = None
-        if requested_model:
+        resolved_model = self.resolve_user_override_model(requested_model)
+        if not resolved_model and requested_model:
             resolved_model, _ = self.resolve_execution_model(requested_model)
 
         logger.info(

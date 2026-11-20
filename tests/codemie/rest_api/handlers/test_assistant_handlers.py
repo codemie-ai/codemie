@@ -775,7 +775,7 @@ class TestExecutionModelReaders:
         ):
             mode = handler._resolve_history_projection_mode(request)
 
-        resolve.assert_called_once_with(handler.assistant, request)
+        resolve.assert_called_once_with(handler.assistant, request, handler.user)
         assert mode == "text_ledger"
 
     def test_save_chat_history_passes_resolved_model(self, handler):
@@ -912,7 +912,7 @@ class TestExecutionModelReaders:
             handler.save_chat_history(data)
             handler.save_chat_history(data)
 
-        resolve.assert_called_once_with(handler.assistant, request)
+        resolve.assert_called_once_with(handler.assistant, request, handler.user)
 
     def test_saved_turn_uses_the_built_agent_model(self, handler):
         request = AssistantChatRequest(text="Hello", llm_model="picked-model")

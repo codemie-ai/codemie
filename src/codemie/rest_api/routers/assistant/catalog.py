@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 
 from codemie.configs import logger
 from codemie.core.ability import Ability, Action
-from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
+from codemie.core.exceptions import ExtendedHTTPException, ModelAvailabilityException, ModelNotSelectableError
 from codemie.core.search_ranking import rank_by_search
 from codemie.rest_api.models.guardrail import GuardrailEntity
 from codemie.rest_api.models.assistant import (
@@ -32,7 +32,7 @@ from codemie.rest_api.models.assistant import (
     ToolKitDetails,
     AssistantSortBy,
 )
-from codemie.service.llm.model_availability_service import PolicyMode, ProjectModelPolicy
+from codemie.service.llm.model_availability_service import ModelAvailabilityService, PolicyMode, ProjectModelPolicy
 from codemie.rest_api.models.index import SortOrder
 from codemie.rest_api.models.prebuilt_assistants import PrebuiltAssistant
 from codemie.rest_api.routers.assistant._shared import (
@@ -188,17 +188,27 @@ def _get_skills_data(assistant: Assistant, user: User) -> list[dict]:
     return [skill.to_basic_info().model_dump() for skill in skills]
 
 
-def _resolve_effective_llm_model(assistant: Assistant, response_data: dict) -> tuple[str | None, str]:
-    """Resolve the effective LLM model for an assistant, honoring project restrictions and platform fallbacks."""
+def _resolve_effective_llm_model(assistant: Assistant, response_data: dict, user: User) -> tuple[str | None, str]:
+    """Resolve the effective LLM model for an assistant, honoring the user's model override, project
+    restrictions and platform fallbacks."""
     effective_llm_model = assistant.llm_model_type
-    policy = ProjectModelPolicy.for_project(assistant.project, is_global=assistant.is_global)
-    if policy.mode != PolicyMode.WHITELIST:
-        # Unrestricted, or deny-all: display-only, so show the assistant's own model with no marker.
-        picked, overridden = effective_llm_model, False
-    else:
+    try:
         # Display-only: no execution falls back here, so the substitution is not logged or counted.
-        picked = policy.choose([effective_llm_model], context="assistant_detail", report=False)
-        overridden = picked != effective_llm_model
+        picked = ModelAvailabilityService.resolve_user_override_model(
+            effective_llm_model, user.id, assistant.project, is_global=assistant.is_global, report=False
+        )
+    except ModelAvailabilityException:
+        # Display-only: the override leaves the user no model; execution rejects it, the detail view does not.
+        return effective_llm_model, "assistant"
+    if not picked:
+        policy = ProjectModelPolicy.for_project(assistant.project, is_global=assistant.is_global)
+        if policy.mode != PolicyMode.WHITELIST:
+            # Unrestricted, or deny-all: display-only, so show the assistant's own model with no marker.
+            picked = effective_llm_model
+        else:
+            # Display-only: no execution falls back here, so the substitution is not logged or counted.
+            picked = policy.choose([effective_llm_model], context="assistant_detail", report=False)
+    overridden = picked != effective_llm_model
 
     try:
         resolved = llm_service.resolve_disabled_model(picked, assistant.project, is_global=assistant.is_global)
@@ -264,8 +274,8 @@ def _build_assistant_detail_response(assistant: Assistant, user: User) -> JSONRe
     response_data = jsonable_encoder(assistant)
     response_data["skills"] = skills_data
 
-    # Add the effective model and explain any project or platform fallback.
-    effective_llm_model, effective_llm_model_source = _resolve_effective_llm_model(assistant, response_data)
+    # Add the effective model and explain any user override, project or platform fallback.
+    effective_llm_model, effective_llm_model_source = _resolve_effective_llm_model(assistant, response_data, user)
     response_data["effective_llm_model"] = effective_llm_model
     response_data["effective_llm_model_source"] = effective_llm_model_source
 

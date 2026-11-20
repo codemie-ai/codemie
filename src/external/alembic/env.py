@@ -99,6 +99,7 @@ from codemie.rest_api.models.feedback import FeedbackEntry
 from codemie.rest_api.models.settings import Settings
 from codemie.rest_api.models.provider import Provider
 from codemie.core.models import Application, GitRepo
+from codemie.rest_api.models.user_model_override import UserModelOverride
 from codemie.rest_api.models.usage.assistant_user_interaction import AssistantUserInterationSQL
 from codemie.rest_api.models.usage.assistant_user_mapping import AssistantUserMappingSQL
 from codemie.rest_api.models.usage.assistant_prompt_variable_mapping import AssistantPromptVariableMappingSQL

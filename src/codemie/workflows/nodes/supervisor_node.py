@@ -86,8 +86,10 @@ class SupervisorNode(BaseNode[SupervisorAgentMessages]):
             ]
         ).partial(options=str(options), members=", ".join(self.members), team=self.team_details)
 
-        # Stage 2: Resolve model availability - fallback to project default if needed
-        supervisor_model, _ = self.resolve_execution_model(LLMService.BASE_NAME_GPT_41)
+        # Stage 2: Resolve model availability - the user's override first, then the project default if needed
+        supervisor_model = self.resolve_user_override_model(LLMService.BASE_NAME_GPT_41)
+        if not supervisor_model:
+            supervisor_model, _ = self.resolve_execution_model(LLMService.BASE_NAME_GPT_41)
 
         llm = get_llm_by_credentials(llm_model=supervisor_model, request_id=self.execution_id)
         logger.info(f"SupervisorNode: using {llm.model_name}")

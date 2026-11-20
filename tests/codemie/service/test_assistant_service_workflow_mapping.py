@@ -23,11 +23,20 @@ _apply_marketplace_tool_mappings) only for nodes backed by a real standalone ass
 
 from unittest.mock import Mock, patch
 
-from codemie.service.tools.agent_tools_result import AgentToolsResult
+import pytest
+
 from codemie.core.workflow_models import WorkflowAssistant
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
+from codemie.service.tools.agent_tools_result import AgentToolsResult
+
+
+@pytest.fixture(autouse=True)
+def _model_override_features_off():
+    with patch("codemie.service.llm.model_availability_service.customer_config") as customer_config:
+        customer_config.is_feature_enabled.return_value = False
+        yield
 
 
 def _build_agent_for_workflow(workflow_assistant, mock_assistant, get_tools_spy=None, agent_class=None):

@@ -281,6 +281,11 @@ components:
       name: "Project Model Override"
       description: "Enable Project model override configuration."
 
+  - id: "features:userModelOverride"
+    settings:
+      enabled: false
+      name: "User Model Override"
+      description: "Enable user-level model override configuration and enforcement for project admins."
 
   - id: "mcpAuthTimeoutSeconds"
     settings:

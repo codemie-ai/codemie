@@ -24,6 +24,15 @@ from codemie.service.tools.agent_tools_result import AgentToolsResult
 from codemie.service.tools.assistant_factory import AssistantFactory, create_assistant_executors
 
 
+@pytest.fixture(autouse=True)
+def _no_user_model_override():
+    with patch(
+        "codemie.service.llm.model_availability_service.ModelAvailabilityService.resolve_user_override_model",
+        return_value=None,
+    ):
+        yield
+
+
 class TestAssistantFactory:
     """Test suite for AssistantFactory."""
 

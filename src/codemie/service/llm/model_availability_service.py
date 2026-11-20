@@ -14,12 +14,17 @@
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
+from uuid import UUID
+
 
 from codemie.configs import logger
 from codemie.configs.customer_config import customer_config
 from codemie.core.exceptions import ModelNotWhitelistedException, NoDefaultModelException, NotFoundException
 from codemie.core.models import Application
+from codemie.rest_api.models.user_model_override import UserModelOverride
+from codemie.service.llm.user_override_cache import load_user_override
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
 from codemie.service.monitoring.metrics_constants import (
     MODEL_AVAILABILITY_FALLBACKS_TOTAL_METRIC,
@@ -31,6 +36,7 @@ if TYPE_CHECKING:
     from codemie.rest_api.models.assistant import Assistant
 
 PROJECT_MODEL_OVERRIDE_FEATURE = "projectModelOverride"
+USER_MODEL_OVERRIDE_FEATURE = "userModelOverride"
 
 
 class PolicyMode(StrEnum):
@@ -52,6 +58,18 @@ def model_aliases(model: str) -> set[str]:
     return {model} | {name for name in (entry.base_name, entry.deployment_name) if name}
 
 
+def model_in_override(allowed_models: Iterable[str], *names: str | None) -> bool:
+    """Whether a model, named by any of the given names, is in a user override's model list.
+
+    The one rule behind every "does the override allow this model" question (resolution, asset creation,
+    the OCR model and the model and router lists). Callers pass the names the model can be referred to by:
+    model_aliases() for a name taken from a request, base_name and deployment_name for a catalog entry,
+    base_name alone for a router.
+    """
+    allowed = set(allowed_models)
+    return any(name in allowed for name in names if name)
+
+
 def catalog_base_name(model: str | None) -> str | None:
     """The base_name of the catalog model a name refers to; an unknown name (a router) is returned as is.
 
@@ -64,11 +82,42 @@ def catalog_base_name(model: str | None) -> str | None:
     return entry.base_name if entry is not None and entry.base_name else model
 
 
-def _catalog_entry(model: str):
-    """The one catalog model a name refers to: by base_name first, then by deployment_name."""
+def is_known_model(model: str) -> bool:
+    """Whether a name refers to a catalog model (by base_name or deployment_name) or an enabled router
+    that is not disabled at platform level.
+
+    This is also the liveness check: a model removed from the catalog, or disabled by an administrator
+    in platform model management, after it was saved in an override or a project is not known. The
+    catalog keeps a disabled model with status DISABLED, so presence alone is not enough.
+    """
     from codemie.service.llm_service.llm_service import llm_service
 
+    # One catalog read per check: the resolution chain calls this at every tier, and each read re-merges
+    # the persisted model status under a lock.
     catalog = llm_service.get_all_llm_model_info()
+    known = _catalog_entry(model, catalog) is not None or any(
+        r.base_name == model and r.enabled for r in llm_service.get_llm_routers(catalog)
+    )
+    return known and not llm_service.is_disabled_for_execution(model, catalog)
+
+
+def _is_live_for_override(model: str, tier: str) -> bool:
+    """is_known_model, logging the fallback tier a disabled model is skipped at."""
+    if is_known_model(model):
+        return True
+    logger.info(f"user_model_override=model_not_live tier={tier} model={model!r}; skipping to the next fallback tier")
+    return False
+
+
+def _catalog_entry(model: str, catalog: list | None = None):
+    """The one catalog model a name refers to: by base_name first, then by deployment_name.
+
+    A caller that already holds the catalog passes it, so it is not read again.
+    """
+    if catalog is None:
+        from codemie.service.llm_service.llm_service import llm_service
+
+        catalog = llm_service.get_all_llm_model_info()
     return next((m for m in catalog if m.base_name == model), None) or next(
         (m for m in catalog if m.deployment_name == model), None
     )
@@ -218,26 +267,180 @@ class ModelAvailabilityService:
     """Validates and resolves model availability against project constraints."""
 
     @staticmethod
+    def resolve_user_override_model(
+        requested_model: str | None,
+        user_id: str | UUID | None,
+        project_name: str | None,
+        is_global: bool = False,
+        *,
+        report: bool = True,
+    ) -> str | None:
+        """Resolve a model through the user's override, or None when the override does not apply.
+
+        A substitution is logged and counted unless report=False, which a caller sets when the
+        resolution is display-only or the same resolution is reported elsewhere in the request
+        (the same contract as ProjectModelPolicy.choose).
+
+        Applies only when the userModelOverride feature is on and the user has an override row for
+        the project. Once an override row exists it is the user's whole model set - the project
+        whitelist is never consulted, so a user an override excludes a model for cannot reach that
+        model through the project whitelist either (see EPMCDME-15082 review). Precedence: the
+        requested model if the override allows it; else the override's default_model if allowed;
+        else the project's default (the override still excludes the requested model); else the
+        platform default model. At every tier a model disabled at platform level is skipped to the
+        next tier rather than returned (EPMCDME-15082 Context: a disabled model is a hard stop
+        that moves resolution on, not an error). A project that denies all models rejects the
+        request with ModelNotWhitelistedException. None means "no override applies - use the
+        project-level logic": no override row exists.
+        """
+        if is_global or not user_id or not project_name:
+            logger.info(
+                f"user_model_override=skipped reason=is_global_or_missing_ids "
+                f"is_global={is_global} user_id={user_id!r} project_name={project_name!r}"
+            )
+            return None
+        if not customer_config.is_feature_enabled(USER_MODEL_OVERRIDE_FEATURE):
+            logger.info("user_model_override=skipped reason=feature_disabled")
+            return None
+
+        override = load_user_override(user_id, project_name)
+        if not override:
+            logger.info(
+                f"user_model_override=none_found user_id={user_id!r} project_name={project_name!r} "
+                f"requested_model={requested_model!r}"
+            )
+            return None
+        resolved = ModelAvailabilityService._pick_from_override(override, requested_model)
+        if resolved is None:
+            project_default = ProjectModelPolicy.for_project(project_name, require_default=False).choose(
+                [], context="user_override_default"
+            )
+            if project_default and _is_live_for_override(project_default, "project_default"):
+                resolved = project_default
+        if resolved is None:
+            from codemie.service.llm_service.llm_service import llm_service
+
+            # The last tier: default_llm_model already prefers an enabled platform default.
+            resolved = llm_service.default_llm_model
+        logger.info(
+            f"user_model_override=applied user_id={user_id!r} project_name={project_name!r} "
+            f"requested_model={requested_model!r} allowed_models={override.allowed_models!r} "
+            f"default_model={override.default_model!r} resolved_model={resolved!r}"
+        )
+        if report and requested_model and resolved != requested_model:
+            ModelAvailabilityService._report_override_fallback(project_name, requested_model, resolved)
+        return resolved
+
+    @staticmethod
+    def _report_override_fallback(project_name: str, requested_model: str, resolved_model: str) -> None:
+        """Log and count a substitution made by a user override, on the counter the project policy uses.
+
+        Until the user is told (EPMCDME-16924) this is the only signal that a user's run was substituted.
+        The fallback_source label tells these apart from the project policy's own substitutions.
+        """
+        logger.info(
+            f"model_availability_event=fallback_applied project={project_name!r} "
+            f"requested_model={requested_model!r} fallback_model={resolved_model!r} context='user_override'"
+        )
+        BaseMonitoringService.send_count_metric(
+            name=MODEL_AVAILABILITY_FALLBACKS_TOTAL_METRIC,
+            attributes={
+                MetricsAttributes.PROJECT: project_name,
+                MetricsAttributes.LLM_MODEL: requested_model,
+                MetricsAttributes.FALLBACK_SOURCE: "user_override",
+            },
+        )
+
+    @staticmethod
+    def _pick_from_override(override: UserModelOverride, requested_model: str | None) -> str | None:
+        """Once an override row exists it is the user's whole model set: the requested model if
+        allowed, else the override's default_model if allowed. The project whitelist is deliberately
+        not consulted here - see resolve_user_override_model.
+
+        The requested model keeps the name it was given. The override's default_model comes from
+        override settings, which may hold a deployment name, so it is returned as a base name, like
+        ProjectModelPolicy.choose does for the project's settings. Either model is skipped when it has
+        been disabled at platform level since the override was saved. None means the override has no
+        live default to fall back to; resolve_user_override_model then uses the project default."""
+        if (
+            requested_model
+            and model_in_override(override.allowed_models, *model_aliases(requested_model))
+            and _is_live_for_override(requested_model, "requested")
+        ):
+            return requested_model
+        default_model = override.default_model
+        if (
+            default_model
+            and model_in_override(override.allowed_models, *model_aliases(default_model))
+            and _is_live_for_override(default_model, "user_override_default")
+        ):
+            return catalog_base_name(default_model)
+        return None
+
+    @staticmethod
+    def user_override_allows_model(model: str, user_id: str | UUID | None, project_name: str | None) -> bool | None:
+        """Whether the user's override allows the model, for callers that reject instead of falling back.
+
+        None means no override applies (feature off, missing ids, or no row) - use the project-level check.
+        """
+        if not user_id or not project_name or not customer_config.is_feature_enabled(USER_MODEL_OVERRIDE_FEATURE):
+            return None
+        override = load_user_override(user_id, project_name)
+        if not override:
+            return None
+        return model_in_override(override.allowed_models, *model_aliases(model))
+
+    @staticmethod
     def validate_model_for_asset_creation(
         model_id: str,
         project_name: str,
+        user_id: str | UUID | None = None,
     ) -> None:
         """
-        Validate that a model is whitelisted for the project.
+        Validate that a model is whitelisted for the project, honoring the requesting
+        user's model override first.
 
         Called at asset (assistant/workflow) creation time to prevent users from
         creating assets with models not in the project's whitelist.
+
+        Tier 1: when `user_id` is given, the userModelOverride feature is on, and the user
+        has an override row for the project, the override alone decides - mirroring execution,
+        where it is the user's whole model set: a model it lists passes regardless of the
+        project whitelist, and a model it leaves out is rejected even if the project allows it.
+        Tier 2 (the only tier when no user_id is given, or the user has no override): enforce
+        the project's allowed_models whitelist, as before.
 
         Backward compatibility: If a project has not been configured with allowed_models
         or default_model, validation is skipped (silent pass). This allows existing
         projects created before this feature to continue operating normally.
 
         Raises:
+            ModelNotWhitelistedException: if the user's override leaves the model out
             ModelNotWhitelistedException: if model not in allowed list (only if whitelist is configured)
             ModelNotWhitelistedException: if project has empty whitelist (configured but empty)
             NoDefaultModelException: if whitelist is configured but default_model is not
             NotFoundException: if project doesn't exist
         """
+        override_allows = ModelAvailabilityService.user_override_allows_model(model_id, user_id, project_name)
+        if override_allows:
+            ModelAvailabilityService._send_validation_metric(project_name, model_id, "allowed")
+            logger.info(
+                f"model_availability_event=validation_allowed_by_user_override "
+                f"project={project_name!r} model={model_id!r} user_id={user_id!r}"
+            )
+            return
+        if override_allows is False:
+            ModelAvailabilityService._send_validation_metric(project_name, model_id, "blocked")
+            logger.info(
+                f"model_availability_event=validation_blocked_by_user_override "
+                f"project={project_name!r} model={model_id!r} user_id={user_id!r}"
+            )
+            raise ModelNotWhitelistedException(
+                model_id,
+                project_name,
+                details="Model is not in the user's model override. Please use available models.",
+            )
+
         if not customer_config.is_feature_enabled(PROJECT_MODEL_OVERRIDE_FEATURE):
             return
 

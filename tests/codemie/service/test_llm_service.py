@@ -330,6 +330,29 @@ class TestModelVisibilityFiltering:
 
         assert not any(m.base_name == 'disabled-provider-deprecated-status-model' for m in filtered_models)
 
+    def test_get_allowed_chat_models_user_override_with_no_catalog_match_falls_back_to_project(self, llm_service):
+        from unittest.mock import Mock, patch
+
+        user = Mock(is_external_user=False)
+        stale_override = Mock(allowed_models=["removed-model"])
+
+        with patch.object(llm_service, "get_user_model_override", return_value=stale_override):
+            result = llm_service.get_allowed_chat_models(user)
+
+        assert len(result) == 2
+
+    def test_get_allowed_chat_models_user_override_narrows_when_models_match(self, llm_service):
+        from unittest.mock import Mock, patch
+
+        user = Mock(is_external_user=False)
+        all_names = [m.base_name for m in llm_service.get_allowed_chat_models(user)]
+        override = Mock(allowed_models=[all_names[0]])
+
+        with patch.object(llm_service, "get_user_model_override", return_value=override):
+            result = llm_service.get_allowed_chat_models(user)
+
+        assert [m.base_name for m in result] == [all_names[0]]
+
     def test_get_allowed_image_generation_models_ignores_forbidden_for_web(self, llm_service):
         """Image generation models should be returned even if hidden from the web chat picker."""
         from unittest.mock import Mock
@@ -1020,6 +1043,93 @@ class TestLiteLLMAutoRouterCatalog:
 
         assert service.get_allowed_router_options(include_all=False) == []
         assert service.get_allowed_router_options(include_all=True)[0].status == ModelStatus.DISABLED
+
+    def _options_for_user(self, override, *, project_allowed, routers=("smart-router",), user=True):
+        """Router options for a project whose whitelist is `project_allowed`, with the user's override `override`."""
+        from unittest.mock import MagicMock, patch
+
+        from codemie.core.models import Application
+
+        service = LLMService(self._config([self._router_model(base_name=name) for name in routers]))
+        project = Application(name="test-proj", id="proj-1", allowed_models=project_allowed)
+        caller = Mock(is_external_user=False) if user else None
+
+        with (
+            patch(
+                "codemie.service.llm_service.llm_service.customer_config",
+                is_feature_enabled=MagicMock(return_value=True),
+            ),
+            patch.object(service, "get_user_model_override", return_value=override) as lookup,
+        ):
+            options = service.get_allowed_router_options(project=project, user=caller)
+        return [o.base_name for o in options], lookup, caller, project
+
+    def test_user_override_offers_a_router_the_project_whitelist_excludes(self):
+        names, _, _, _ = self._options_for_user(
+            Mock(allowed_models=["smart-router"]), project_allowed=["some-other-model"]
+        )
+
+        assert names == ["smart-router"]
+
+    def test_user_override_hides_a_router_the_project_whitelist_allows(self):
+        names, _, _, _ = self._options_for_user(Mock(allowed_models=["gpt-4o"]), project_allowed=["smart-router"])
+
+        assert names == []
+
+    def test_user_override_keeps_only_the_routers_it_lists(self):
+        names, _, _, _ = self._options_for_user(
+            Mock(allowed_models=["router-b"]),
+            project_allowed=["router-a", "router-b"],
+            routers=("router-a", "router-b"),
+        )
+
+        assert names == ["router-b"]
+
+    def test_override_without_routers_does_not_fall_back_to_the_project_set(self):
+        """Unlike the chat models, an override that lists only chat models means the user has no router."""
+        names, _, _, _ = self._options_for_user(Mock(allowed_models=["gpt-4o"]), project_allowed=None)
+
+        assert names == []
+
+    def test_project_whitelist_applies_when_the_user_has_no_override(self):
+        names, lookup, caller, project = self._options_for_user(None, project_allowed=["smart-router"])
+
+        assert names == ["smart-router"]
+        lookup.assert_called_once_with(caller, project)
+
+    def test_project_whitelist_still_excludes_when_the_user_has_no_override(self):
+        names, _, _, _ = self._options_for_user(None, project_allowed=["some-other-model"])
+
+        assert names == []
+
+    def test_override_is_not_looked_up_without_a_user(self):
+        names, lookup, _, _ = self._options_for_user(
+            Mock(allowed_models=["gpt-4o"]), project_allowed=["smart-router"], user=False
+        )
+
+        assert names == ["smart-router"]
+        lookup.assert_not_called()
+
+    def test_user_override_applies_even_when_the_project_override_feature_is_off(self):
+        """The user feature has its own flag: with the project one off the project whitelist is ignored,
+        but the user's override still decides."""
+        from unittest.mock import MagicMock, patch
+
+        from codemie.core.models import Application
+
+        service = LLMService(self._config([self._router_model(base_name="smart-router")]))
+        project = Application(name="test-proj", id="proj-1", allowed_models=["smart-router"])
+
+        with (
+            patch(
+                "codemie.service.llm_service.llm_service.customer_config",
+                is_feature_enabled=MagicMock(return_value=False),
+            ),
+            patch.object(service, "get_user_model_override", return_value=Mock(allowed_models=["gpt-4o"])),
+        ):
+            options = service.get_allowed_router_options(project=project, user=Mock(is_external_user=False))
+
+        assert options == []
 
     def test_plain_model_untouched(self):
         """A regular model (no litellm_router) must still appear only in the chat-model

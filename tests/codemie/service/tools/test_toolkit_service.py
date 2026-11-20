@@ -33,6 +33,8 @@ from codemie_tools.data_management.workspace.tools_vars import GENERATE_WORKSPAC
 from codemie.service.skill_workspace_preparation import _is_tool_selected
 from codemie.service.tools.toolkit_service import ToolkitService
 
+pytestmark = pytest.mark.usefixtures("model_override_features_off")
+
 
 class TestToolkitService:
     """Test suite for the ToolkitService class."""
@@ -2644,7 +2646,54 @@ class TestBuildOcrModelProjectWhitelist:
             )
         tool.ocr_model_factory("vision-x")
 
-        mock_build.assert_called_once_with("vision-x", "r", "project-x")
+        mock_build.assert_called_once_with("vision-x", "r", "project-x", "u")
+
+
+class TestBuildOcrModelUserOverride:
+    """A user's model override is their whole model set for the OCR model too; it rejects, never falls back."""
+
+    _SERVICE = 'codemie.service.tools.toolkit_service.ModelAvailabilityService.user_override_allows_model'
+
+    def _build(self, override_allows, name='vision-ok'):
+        with (
+            patch('codemie.service.tools.toolkit_service.llm_service') as svc,
+            patch('codemie.service.tools.toolkit_service.get_llm_by_credentials') as build,
+            patch(self._SERVICE, return_value=override_allows) as allows,
+            patch.object(ToolkitService, '_ensure_project_allows_model') as project_check,
+        ):
+            svc.get_multimodal_llm_names.return_value = {'vision-ok', 'vision-other'}
+            try:
+                result = ToolkitService._build_ocr_model(name, 'req', 'proj', 'u1')
+            finally:
+                self.build, self.allows, self.project_check = build, allows, project_check
+        return result
+
+    def test_override_allowing_the_model_builds_it_without_the_project_whitelist(self):
+        assert self._build(True) is self.build.return_value
+
+        self.allows.assert_called_once_with('vision-ok', 'u1', 'proj')
+        self.project_check.assert_not_called()
+        self.build.assert_called_once_with(llm_model='vision-ok', streaming=False, request_id='req')
+
+    def test_override_excluding_the_model_rejects_it(self):
+        with pytest.raises(ModelNotWhitelistedException) as info:
+            self._build(False)
+
+        assert info.value.code == 400
+        self.project_check.assert_not_called()
+        self.build.assert_not_called()
+
+    def test_without_an_override_the_project_whitelist_applies(self):
+        assert self._build(None) is self.build.return_value
+
+        self.project_check.assert_called_once_with('vision-ok', 'proj')
+
+    def test_model_outside_the_multimodal_allowlist_is_rejected_before_the_override_is_read(self):
+        with pytest.raises(ValueError):
+            self._build(True, name='text-only')
+
+        self.allows.assert_not_called()
+        self.build.assert_not_called()
 
 
 class TestAgentWorkspaceScriptToolSelection:

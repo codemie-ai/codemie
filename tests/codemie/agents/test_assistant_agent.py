@@ -296,6 +296,7 @@ class TestResolveLlmModel:
         agent = AIToolsAgent.__new__(AIToolsAgent)
         agent.assistant = MagicMock(project=project, is_global=is_global)
         agent.llm_model = llm_model
+        agent.user = None
         agent._resolved_llm_model = None
         return agent
 

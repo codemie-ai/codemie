@@ -1,0 +1,48 @@
+{
+  "decision": "request-changes",
+  "rationale": "Blind and edge-case lenses spent their budget (blind covered ~2250 of 4666 diff lines, test hunks unreviewed), so coverage is partial. One decision_needed: tier 3 of the precedence chain deviates from spec 3.5 (falls back to first allowed model rather than raising). 19 candidates dismissed as handled, stale or below the emission floor; 0 deferred.",
+  "confidence": "low",
+  "risk_flags": ["security", "auth", "migration", "public-api"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1 UserModelOverride table (fields, unique (user_id, project_name), non-empty check)", "status": "pass", "notes": "model and migration match"},
+    {"kind": "story-ac", "item": "AC2 UserModelOverrideService set/get/delete/get_by_project/batch", "status": "pass", "notes": "validation limited to emptiness and project existence"},
+    {"kind": "story-ac", "item": "AC3 Async UserModelOverride repository", "status": "pass", "notes": "all methods async"},
+    {"kind": "story-ac", "item": "AC4 Admin-only POST/GET/DELETE single-user endpoints and POST /batch", "status": "pass", "notes": "router registered, admin check on all handlers"},
+    {"kind": "story-ac", "item": "AC5 3-tier precedence chain (spec 3.5: raise ModelNotWhitelistedException when no default)", "status": "partial", "notes": "_pick_from_override falls back to override.allowed_models[0] instead of raising"},
+    {"kind": "story-ac", "item": "AC6 ModelAvailabilityService integration, existing method unchanged", "status": "pass", "notes": "new async context method added"},
+    {"kind": "story-ac", "item": "AC7 Set-time validation", "status": "pass", "notes": "blank/empty, project, default_model in allowed_models"},
+    {"kind": "story-ac", "item": "AC8 Graceful degradation, no re-validation against project whitelist", "status": "pass", "notes": "tier 1 checks override only"},
+    {"kind": "story-ac", "item": "AC9 Batch atomicity with failed-user details", "status": "pass", "notes": "rollback and 400 BATCH_VALIDATION_FAILED"},
+    {"kind": "story-ac", "item": "AC10 Admin gating", "status": "pass", "notes": "_require_admin on all 5 endpoints"},
+    {"kind": "story-ac", "item": "AC11 Backward compatibility for projects without overrides", "status": "pass", "notes": "falls back to project whitelist"},
+    {"kind": "story-ac", "item": "AC12 Test coverage", "status": "pending-stage-7", "notes": "tests added; execution is Stage 7"},
+    {"kind": "spec", "item": "3.1 UserModelOverride definition and migration", "status": "pass", "notes": "single alembic head, down_revision f88ad134467d"},
+    {"kind": "spec", "item": "3.2/8 Platform disablement out of scope", "status": "pass", "notes": "no such table/config/tier"},
+    {"kind": "spec", "item": "3.5 Model listing honours user override", "status": "pass", "notes": "override replaces project filter"},
+    {"kind": "spec", "item": "3.5 project_id accessibility (400) and 404; default flag", "status": "pass", "notes": "get_project_from_id check added"},
+    {"kind": "spec", "item": "7.2 Feature flag userModelOverride off by default, 501", "status": "pass", "notes": "resolve and listing check the flag"},
+    {"kind": "spec", "item": "5.1 Validation order and user-not-in-project error", "status": "partial", "notes": "spec 5.1 (404) conflicts with 4.1 (400); code follows 4.1"},
+    {"kind": "spec", "item": "4.2 Batch request validation", "status": "pass", "notes": "adds 500-entry cap and dedupe"},
+    {"kind": "spec", "item": "4.1 DELETE 204 / 404, GET 404", "status": "pass", "notes": "implemented"},
+    {"kind": "spec", "item": "7.1 resolve_model_for_execution unchanged; new context method used", "status": "pass", "notes": "RouterChatModel uses new method"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All commit subjects in diff_base..HEAD use the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "New override modules carry Apache headers, use modern typing, and no touched module crossed the ~500 line cohesion threshold; Ruff/license gates were not run by this reviewer"},
+    {"kind": "security", "status": "pass", "notes": "user_model_override_router.py uses the authenticate dependency with a project-scoped admin check on every endpoint, gated by a feature flag; only the router was read in full"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/service/llm/model_availability_service.py",
+      "line": 194,
+      "title": "Tier 3 falls back to first allowed model instead of raising",
+      "problem": "_pick_from_override returns override.default_model or project default or override.allowed_models[0]. Spec 3.5 tier 3 says use the override default, else Application.default_model, and raise ModelNotWhitelistedException if neither is set. The code never raises in this case, in both the sync resolver and resolve_model_for_execution_with_user_context.",
+      "impact": "When an override has no default_model and the project has no default, a requested model outside the override and project whitelist silently resolves to the first allowed model instead of failing as specified. Behavior differs from the approved spec; whether the graceful fallback is intended needs human intent.",
+      "recommendation": "Decide intent: keep the fallback and amend spec 3.5 tier 3, or raise ModelNotWhitelistedException when neither override nor project default is set."
+    }
+  ]
+}

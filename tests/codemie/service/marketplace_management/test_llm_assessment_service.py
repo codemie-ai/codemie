@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Iterator
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -329,25 +330,41 @@ def test_model_options_respect_what_the_model_declares() -> None:
     per-request `timeout` for the same reason: its client takes `read_timeout`
     at construction (`dependecies.py:185`) and rejects unknown parameters.
     """
-    from codemie.service.llm_service.llm_service import llm_service
+    from types import SimpleNamespace
 
-    for name in ("gpt-4.1", "claude-4-5-haiku"):
-        details = llm_service.get_model_details(name)
-        options = svc._model_options(name)
+    catalog = {
+        "rejects-max-tokens": SimpleNamespace(
+            provider=SimpleNamespace(value="azure_openai"),
+            features=SimpleNamespace(max_tokens=False),
+            max_output_tokens=None,
+        ),
+        "accepts-max-tokens": SimpleNamespace(
+            provider=SimpleNamespace(value="aws_bedrock"),
+            features=SimpleNamespace(max_tokens=True),
+            max_output_tokens=2048,
+        ),
+    }
 
-        if details.features.max_tokens is False:
-            assert "max_tokens" not in options, f"{name} rejects max_tokens"
-        else:
-            assert 0 < options["max_tokens"] <= svc.LLM_MAX_TOKENS
+    def fake_details(name: str):
+        if name not in catalog:
+            raise KeyError(name)
+        return catalog[name]
 
-        if details.provider.value in svc._TIMEOUT_CAPABLE_PROVIDERS:
-            assert options["timeout"] == _expected_timeout()
-        else:
-            assert "timeout" not in options
+    with patch.object(svc.llm_service, "get_model_details", side_effect=fake_details):
+        rejecting = svc._model_options("rejects-max-tokens")
+        accepting = svc._model_options("accepts-max-tokens")
+        unknown = svc._model_options("no-such-model-xyz")
+
+    assert "max_tokens" not in rejecting
+    assert rejecting["timeout"] == _expected_timeout()
+
+    assert 0 < accepting["max_tokens"] <= svc.LLM_MAX_TOKENS
+    assert accepting["max_tokens"] <= 2048
+    assert "timeout" not in accepting
 
     # An unknown model still gets both bounds rather than none.
-    unknown = svc._model_options("no-such-model-xyz")
     assert unknown["timeout"] == _expected_timeout()
+    assert 0 < unknown["max_tokens"] <= svc.LLM_MAX_TOKENS
 
 
 def test_transient_error_is_retried_once(chain: FakeChain, one_assistant, no_cache) -> None:

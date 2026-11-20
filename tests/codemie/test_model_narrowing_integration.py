@@ -30,7 +30,7 @@ class TestModelNarrowingIntegration:
         projectModelOverride feature flag (disabled by default in customer config)."""
         with patch(
             "codemie.service.llm_service.llm_service.customer_config",
-            is_feature_enabled=MagicMock(return_value=True),
+            is_feature_enabled=MagicMock(side_effect=lambda feature: feature == "projectModelOverride"),
         ):
             yield
 
@@ -149,3 +149,105 @@ class TestModelNarrowingIntegration:
         default = llm_service._select_default_model(available, project)
 
         assert default is None
+
+
+class TestUserModelOverrideNarrowing:
+    """User-level override takes priority over the project whitelist when listing chat models."""
+
+    @staticmethod
+    def _flags(**enabled):
+        return patch(
+            "codemie.service.llm_service.llm_service.customer_config",
+            is_feature_enabled=MagicMock(side_effect=lambda feature: enabled.get(feature, False)),
+        )
+
+    @pytest.fixture
+    def llm_service(self):
+        llm_config = LLMConfig(
+            yaml_file=Path('tests/service/llm_test_config.yaml'),
+            llm_models=[
+                LLMModel(label='GPT-4', base_name='gpt-4', deployment_name='gpt-4-deployment', enabled=True),
+                LLMModel(
+                    label='Claude Opus', base_name='claude-opus', deployment_name='claude-opus-deployment', enabled=True
+                ),
+                LLMModel(
+                    label='Gemini Pro', base_name='gemini-pro', deployment_name='gemini-pro-deployment', enabled=True
+                ),
+            ],
+            embeddings_models=[],
+        )
+        return LLMService(llm_config)
+
+    @pytest.fixture
+    def project(self):
+        return Application(id="proj-1", name="proj-1", allowed_models=["gpt-4"], default_model="gpt-4")
+
+    @pytest.fixture
+    def user(self):
+        return MagicMock(id="user-1")
+
+    @staticmethod
+    def _override(allowed_models, default_model=None):
+        return MagicMock(allowed_models=allowed_models, default_model=default_model)
+
+    def test_override_takes_priority_over_project_whitelist(self, llm_service, project, user):
+        override = self._override(["claude-opus", "gemini-pro"])
+        with (
+            self._flags(projectModelOverride=True, userModelOverride=True),
+            patch(
+                "codemie.rest_api.models.user_model_override.UserModelOverride.get_by_fields", return_value=override
+            ) as lookup,
+        ):
+            models = llm_service.get_allowed_chat_models(user, project=project)
+
+        assert {m.base_name for m in models} == {"claude-opus", "gemini-pro"}
+        lookup.assert_called_once_with({"user_id": "user-1", "project_name": "proj-1"})
+
+    def test_override_matches_deployment_name(self, llm_service, project, user):
+        override = self._override(["claude-opus-deployment"])
+        with (
+            self._flags(projectModelOverride=True, userModelOverride=True),
+            patch("codemie.rest_api.models.user_model_override.UserModelOverride.get_by_fields", return_value=override),
+        ):
+            models = llm_service.get_allowed_chat_models(user, project=project)
+
+        assert [m.base_name for m in models] == ["claude-opus"]
+
+    def test_override_applies_when_project_override_flag_is_off(self, llm_service, project, user):
+        override = self._override(["gemini-pro"])
+        with (
+            self._flags(userModelOverride=True),
+            patch("codemie.rest_api.models.user_model_override.UserModelOverride.get_by_fields", return_value=override),
+        ):
+            models = llm_service.get_allowed_chat_models(user, project=project)
+
+        assert [m.base_name for m in models] == ["gemini-pro"]
+
+    def test_no_override_falls_back_to_project_whitelist(self, llm_service, project, user):
+        with (
+            self._flags(projectModelOverride=True, userModelOverride=True),
+            patch("codemie.rest_api.models.user_model_override.UserModelOverride.get_by_fields", return_value=None),
+        ):
+            models = llm_service.get_allowed_chat_models(user, project=project)
+
+        assert [m.base_name for m in models] == ["gpt-4"]
+
+    def test_feature_flag_off_ignores_override(self, llm_service, project, user):
+        with (
+            self._flags(projectModelOverride=True),
+            patch("codemie.rest_api.models.user_model_override.UserModelOverride.get_by_fields") as lookup,
+        ):
+            models = llm_service.get_allowed_chat_models(user, project=project)
+
+        assert [m.base_name for m in models] == ["gpt-4"]
+        lookup.assert_not_called()
+
+    def test_no_project_skips_lookup(self, llm_service, user):
+        with (
+            self._flags(projectModelOverride=True, userModelOverride=True),
+            patch("codemie.rest_api.models.user_model_override.UserModelOverride.get_by_fields") as lookup,
+        ):
+            models = llm_service.get_allowed_chat_models(user)
+
+        assert len(models) == 3
+        lookup.assert_not_called()

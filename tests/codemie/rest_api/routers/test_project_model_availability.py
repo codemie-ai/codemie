@@ -310,6 +310,26 @@ class TestModelFilteringByProject:
         assert all(m.base_name in ["gpt-4", "claude-3-sonnet", "gpt-3.5-turbo"] for m in response)
 
     @patch("codemie.rest_api.routers.llm_models.llm_service")
+    def test_get_llm_models_narrows_router_options_for_the_calling_user(
+        self,
+        mock_llm_service,
+        regular_user,
+        mock_project,
+        mock_llm_models,
+    ):
+        """The router options are narrowed like the chat models, so the caller is passed to both."""
+        from codemie.rest_api.routers.llm_models import get_llm_models
+
+        mock_llm_service.get_allowed_chat_models.return_value = mock_llm_models
+        mock_llm_service.get_allowed_router_options.return_value = []
+
+        get_llm_models(user=regular_user, include_all=False, project=mock_project)
+
+        mock_llm_service.get_allowed_router_options.assert_called_once_with(
+            include_all=False, project=mock_project, user=regular_user
+        )
+
+    @patch("codemie.rest_api.routers.llm_models.llm_service")
     def test_get_llm_models_returns_all_when_no_project_restriction(
         self,
         mock_llm_service,
@@ -868,25 +888,80 @@ class TestEdgeCases:
         result = ProjectService.validate_allowed_models(None)
         assert result is None
 
-    @patch("codemie.rest_api.routers.llm_models.llm_service")
+    @staticmethod
+    def _user_override_feature(enabled: bool):
+        return patch(
+            "codemie.rest_api.routers.llm_models.customer_config",
+            is_feature_enabled=MagicMock(return_value=enabled),
+        )
+
     @patch("codemie.rest_api.routers.llm_models.application_repository")
-    def test_get_llm_models_with_nonexistent_project_returns_404(
-        self,
-        mock_app_repo,
-        mock_llm_service,
-        regular_user,
-    ):
-        """Test that requesting models for non-existent project returns 404."""
+    def test_get_project_from_id_without_access_returns_403_even_if_project_missing(self, mock_app_repo, regular_user):
         from fastapi import HTTPException
+
+        from codemie.rest_api.routers.llm_models import get_project_from_id
 
         mock_app_repo.get_by_name.return_value = None
 
-        with pytest.raises(HTTPException) as exc_info:
-            from codemie.rest_api.routers.llm_models import get_project_from_id
+        with self._user_override_feature(True):
+            with patch.object(type(regular_user), "has_access_to_application", return_value=False):
+                with pytest.raises(HTTPException) as exc_info:
+                    get_project_from_id("nonexistent-project", regular_user)
 
-            get_project_from_id("nonexistent-project")
+        assert exc_info.value.status_code == 403
+        mock_app_repo.get_by_name.assert_not_called()
+
+    @patch("codemie.rest_api.routers.llm_models.application_repository")
+    def test_get_project_from_id_missing_project_returns_404_with_access(self, mock_app_repo, regular_user):
+        from fastapi import HTTPException
+
+        from codemie.rest_api.routers.llm_models import get_project_from_id
+
+        mock_app_repo.get_by_name.return_value = None
+
+        with self._user_override_feature(True):
+            with patch.object(type(regular_user), "has_access_to_application", return_value=True):
+                with pytest.raises(HTTPException) as exc_info:
+                    get_project_from_id("nonexistent-project", regular_user)
 
         assert exc_info.value.status_code == 404
+
+    @patch("codemie.rest_api.routers.llm_models.application_repository")
+    def test_get_project_from_id_skips_the_access_check_with_the_feature_off(self, mock_app_repo, regular_user):
+        """With userModelOverride off the endpoint behaves as before the feature: any caller gets the project."""
+        from codemie.rest_api.routers.llm_models import get_project_from_id
+
+        mock_project = MagicMock()
+        mock_app_repo.get_by_name.return_value = mock_project
+
+        with self._user_override_feature(False):
+            with patch.object(type(regular_user), "has_access_to_application", return_value=False) as access:
+                assert get_project_from_id("someone-elses-project", regular_user) is mock_project
+
+        access.assert_not_called()
+
+    @patch("codemie.rest_api.routers.llm_models.application_repository")
+    def test_get_project_from_id_missing_project_is_404_with_the_feature_off(self, mock_app_repo, regular_user):
+        from fastapi import HTTPException
+
+        from codemie.rest_api.routers.llm_models import get_project_from_id
+
+        mock_app_repo.get_by_name.return_value = None
+
+        with self._user_override_feature(False):
+            with pytest.raises(HTTPException) as exc_info:
+                get_project_from_id("nonexistent-project", regular_user)
+
+        assert exc_info.value.status_code == 404
+
+    @patch("codemie.rest_api.routers.llm_models.application_repository")
+    def test_get_project_from_id_without_a_project_id_checks_nothing(self, mock_app_repo, regular_user):
+        from codemie.rest_api.routers.llm_models import get_project_from_id
+
+        with self._user_override_feature(True):
+            assert get_project_from_id(None, regular_user) is None
+
+        mock_app_repo.get_by_name.assert_not_called()
 
     @patch("codemie.rest_api.routers.projects.management._ensure_user_management_enabled")
     @patch("codemie.rest_api.routers.projects.management.project_service")

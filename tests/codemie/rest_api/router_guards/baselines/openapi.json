@@ -4713,6 +4713,54 @@
         "title": "BaseResponseWithData",
         "type": "object"
       },
+      "BatchUserModelOverrideRequest": {
+        "description": "Request body for batch override operations (operation and user_ids are validated by the handler).",
+        "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
+          "default_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Model"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "user_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "User Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operation",
+          "user_ids"
+        ],
+        "title": "BatchUserModelOverrideRequest",
+        "type": "object"
+      },
       "BedrockAgentData": {
         "properties": {
           "bedrock_agent_alias_id": {
@@ -27726,6 +27774,36 @@
         "title": "SecurityScheme",
         "type": "object"
       },
+      "SetUserModelOverrideRequest": {
+        "description": "Request body for setting (replacing) a user's model override; the user comes from the path.",
+        "properties": {
+          "allowed_models": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Allowed Models",
+            "type": "array"
+          },
+          "default_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Model"
+          }
+        },
+        "required": [
+          "allowed_models"
+        ],
+        "title": "SetUserModelOverrideRequest",
+        "type": "object"
+      },
       "SettingDeclarationResponse": {
         "properties": {
           "component_id": {
@@ -34481,6 +34559,72 @@
           "mark"
         ],
         "title": "UserMark",
+        "type": "object"
+      },
+      "UserModelOverrideResponse": {
+        "description": "Response model for UserModelOverride.",
+        "properties": {
+          "allowed_models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Models",
+            "type": "array"
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "default_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Model"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "project_name": {
+            "title": "Project Name",
+            "type": "string"
+          },
+          "update_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Update Date"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "project_name",
+          "allowed_models"
+        ],
+        "title": "UserModelOverrideResponse",
         "type": "object"
       },
       "UserPreferencesResponse": {
@@ -80201,6 +80345,328 @@
           }
         ],
         "summary": "Register Repository",
+        "tags": [
+          "Projects"
+        ]
+      }
+    },
+    "/v1/projects/{projectName}/user-model-overrides": {
+      "get": {
+        "description": "List all model overrides for a project (admin only).",
+        "operationId": "list_user_model_overrides_v1_projects__projectName__user_model_overrides_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectName",
+            "required": true,
+            "schema": {
+              "title": "Projectname",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "skip",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Skip",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UserModelOverrideResponse"
+                  },
+                  "title": "Response List User Model Overrides V1 Projects  Projectname  User Model Overrides Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "List User Model Overrides",
+        "tags": [
+          "Projects"
+        ]
+      }
+    },
+    "/v1/projects/{projectName}/user-model-overrides/batch": {
+      "post": {
+        "description": "Batch grant/revoke model overrides (admin only, atomic). Revoke returns the deleted overrides.",
+        "operationId": "batch_user_model_overrides_v1_projects__projectName__user_model_overrides_batch_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectName",
+            "required": true,
+            "schema": {
+              "title": "Projectname",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchUserModelOverrideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UserModelOverrideResponse"
+                  },
+                  "title": "Response Batch User Model Overrides V1 Projects  Projectname  User Model Overrides Batch Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Batch User Model Overrides",
+        "tags": [
+          "Projects"
+        ]
+      }
+    },
+    "/v1/projects/{projectName}/user-model-overrides/{userId}": {
+      "delete": {
+        "description": "Delete model override for a user (admin only); 404 when the user has none.",
+        "operationId": "delete_user_model_override_v1_projects__projectName__user_model_overrides__userId__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectName",
+            "required": true,
+            "schema": {
+              "title": "Projectname",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "userId",
+            "required": true,
+            "schema": {
+              "title": "Userid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Delete User Model Override",
+        "tags": [
+          "Projects"
+        ]
+      },
+      "get": {
+        "description": "Fetch model override for a specific user (admin only).",
+        "operationId": "get_user_model_override_v1_projects__projectName__user_model_overrides__userId__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectName",
+            "required": true,
+            "schema": {
+              "title": "Projectname",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "userId",
+            "required": true,
+            "schema": {
+              "title": "Userid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserModelOverrideResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get User Model Override",
+        "tags": [
+          "Projects"
+        ]
+      },
+      "put": {
+        "description": "Set (replace) the model override of a user in a project (admin only); creates it when there is none.",
+        "operationId": "set_user_model_override_v1_projects__projectName__user_model_overrides__userId__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectName",
+            "required": true,
+            "schema": {
+              "title": "Projectname",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "userId",
+            "required": true,
+            "schema": {
+              "title": "Userid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetUserModelOverrideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserModelOverrideResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Set User Model Override",
         "tags": [
           "Projects"
         ]

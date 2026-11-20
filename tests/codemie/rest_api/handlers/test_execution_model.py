@@ -38,19 +38,20 @@ def request_() -> AssistantChatRequest:
     return AssistantChatRequest(text="Hello", llm_model="picked-model")
 
 
-def _tracker(assistant: Mock, bedrock: bool = False):
+def _tracker(assistant: Mock, bedrock: bool = False, user=None):
     patcher = patch(f"{MODULE}.BedrockOrchestratorService.is_bedrock_assistant", return_value=bedrock)
     patcher.start()
-    return RequestExecutionModel(assistant), patcher
+    return RequestExecutionModel(assistant, user), patcher
 
 
 def test_resolves_through_the_policy_once_per_request(assistant, request_):
-    tracker, bedrock = _tracker(assistant)
+    user = Mock(id="user-1")
+    tracker, bedrock = _tracker(assistant, user=user)
     try:
         with patch(f"{MODULE}.AssistantService.resolve_execution_model", return_value="resolved") as resolve:
             assert tracker.for_request(request_) == "resolved"
             assert tracker.for_request(request_) == "resolved"
-        resolve.assert_called_once_with(assistant, request_)
+        resolve.assert_called_once_with(assistant, request_, user)
     finally:
         bedrock.stop()
 

@@ -104,6 +104,7 @@ class ScriptEstimateSide:
 
 
 class MetricsAttributes:
+    FALLBACK_SOURCE = "fallback_source"
     DIRECTION = "direction"
     SIDE = "side"
     ESTIMATOR = "estimator"

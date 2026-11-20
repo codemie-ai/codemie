@@ -121,7 +121,9 @@ class TestGetLlmByCredentialsPromptCaching:
     def _build(*, cache_disabled: bool = False) -> tuple[LiteLLMChatOpenAI, Mock, Mock]:
         litellm_model = _litellm_model()
         with (
-            patch("codemie.core.dependecies.enforce_allowed_model", side_effect=lambda model, _project: model),
+            patch(
+                "codemie.core.dependecies.enforce_allowed_model", side_effect=lambda model, _project, _user_id: model
+            ),
             patch("codemie.core.dependecies.llm_service.get_model_details", return_value=_model_details()),
             patch("codemie.enterprise.litellm.get_litellm_chat_model", return_value=litellm_model),
             patch("codemie.core.dependecies.get_disable_prompt_cache", return_value=cache_disabled),

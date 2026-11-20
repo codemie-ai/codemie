@@ -1,0 +1,134 @@
+{
+  "decision": "request-changes",
+  "rationale": "Edge-case lens spent its budget (diff tail past line 2217 of 2633 untraced); 1 decision_needed item (CR-008, plus CR-002 spec deviations) remains; the user-context path from agent_node is broken and the platform config flags are unused. 14 candidates dismissed as noise or already covered by the spec (e.g. AC8 no re-validation); 0 deferred; reachability verified for the key findings within budget.",
+  "confidence": "low",
+  "risk_flags": ["auth", "security", "migration", "public-api"],
+  "business_review": [
+    {"kind": "spec", "item": "AC1 UserModelOverride table with constraints", "status": "partial", "notes": "uses date/update_date, user_id str, extra default_model"},
+    {"kind": "spec", "item": "AC2 UserModelOverrideService methods and set-time subset check", "status": "partial", "notes": "resolve_model_for_user absent; subset check skipped when no whitelist"},
+    {"kind": "spec", "item": "AC3 Repository in data/repositories with user_id queries", "status": "partial", "notes": "placed in repository/; no query by user_id alone"},
+    {"kind": "spec", "item": "AC4 Admin-only endpoints and atomic batch", "status": "partial", "notes": "revoke returns [] instead of deleted records"},
+    {"kind": "spec", "item": "AC5 4-tier chain with platform disablement and global config default", "status": "partial", "notes": "PLATFORM_DISABLED_MODELS never consulted"},
+    {"kind": "spec", "item": "AC6 ModelAvailabilityService integration", "status": "partial", "notes": "agent_node passes closed sync session; user context may not arrive"},
+    {"kind": "spec", "item": "AC7 Set-time validation raising ModelNotWhitelistedException", "status": "partial", "notes": "empty list ValueError unmapped; global disabled list unchecked"},
+    {"kind": "spec", "item": "AC8 Graceful degradation, no re-validation", "status": "pass", "notes": "tier 2 checks membership only"},
+    {"kind": "spec", "item": "AC9 Batch atomicity with BATCH_VALIDATION_FAILED details", "status": "partial", "notes": "rollback present; body is plain str(e)"},
+    {"kind": "spec", "item": "AC10 Admin gating via is_application_admin", "status": "pass", "notes": "all 5 handlers"},
+    {"kind": "spec", "item": "AC11 Backward compatibility for legacy projects", "status": "pass", "notes": "no enrichment/override skips tiers"},
+    {"kind": "spec", "item": "AC12 Test coverage", "status": "partial", "notes": "endpoint tests lack several gating/validation cases"},
+    {"kind": "spec", "item": "7.2 Feature flag PLATFORM_MODEL_OVERRIDE_ENABLED gates endpoints", "status": "partial", "notes": "flag defined, never consulted; no 501"},
+    {"kind": "spec", "item": "7.3 Alembic migration for both tables", "status": "pass", "notes": "tables, constraints, downgrade present"},
+    {"kind": "spec", "item": "Non-goal: resolution remains synchronous", "status": "fail", "notes": "resolver, repository and service are async"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires 'EPMCDME-####: Description'; 2 of 24 subjects in range do not conform: 'fixes after rebase.' and 'user-level-model-override: add planning artifacts'"},
+    {"kind": "code-quality", "status": "pass", "notes": "new source files carry the Apache 2.0 header, no typing.Optional found in new service/repository files, no touched module introduced against a documented rule; no documented rule broken"},
+    {"kind": "security", "status": "pass", "notes": "router endpoints use authenticate and is_application_admin checks; no logged credentials or hardcoded secrets found in the sampled files"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001", "kind": "code", "severity": "critical", "triage": "patch",
+      "file": "src/codemie/configs/config.py", "line": 254,
+      "title": "Platform override flag and disabled list unused",
+      "problem": "PLATFORM_MODEL_OVERRIDE_ENABLED and PLATFORM_DISABLED_MODELS are defined (os.getenv at class-definition time) but grep of src finds no consumer. Tier 1 reads only ApplicationEnrichment.disabled_model_ids, set-time validation ignores the global list, and endpoints never return 501 when the flag is false (spec 7.2, AC5, AC7).",
+      "impact": "Operators setting the documented env vars see no effect; globally disabled models can still be granted and served, violating the hard-stop tier.",
+      "recommendation": "Gate the router/endpoints on PLATFORM_MODEL_OVERRIDE_ENABLED (501 when false), union PLATFORM_DISABLED_MODELS into the tier-1 check and into _validate_override_models, and load the settings as pydantic fields."
+    },
+    {
+      "id": "CR-002", "kind": "decision", "severity": "major", "triage": "decision_needed",
+      "file": "src/codemie/core/models.py", "line": 106,
+      "title": "Model and repository deviate from spec",
+      "problem": "UserModelOverride uses date/update_date instead of created_at/updated_at (also in the API response), user_id is str not UUID, adds an unused default_model column; repository lives in src/codemie/repository/ instead of data/repositories/ and has no query by user_id alone; resolve_model_for_user is absent from the service; set-time subset check is skipped when the project has no whitelist.",
+      "impact": "API contract and package layout differ from the approved spec; a maintainer must decide whether the spec or the code is authoritative.",
+      "recommendation": "Decide whether to align code with spec (rename columns, move repository, add methods) or amend the spec; then apply consistently, including the no-whitelist subset behavior."
+    },
+    {
+      "id": "CR-003", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie/core/router_chat_model.py", "line": 230,
+      "title": "KeyError when resolved model not a candidate",
+      "problem": "selected = self.candidates[resolved_model] is unguarded; the resolver may return project.default_model, which need not be a router candidate. Enforcement is also truthiness-gated on user_id/project_name/session, so partial context silently skips it.",
+      "impact": "LLM call aborts with KeyError for projects whose default is outside the router's candidates; partial context bypasses enforcement without a log.",
+      "recommendation": "Fall back to self.default_model (with a warning log) when resolved_model is not in self.candidates, and log when user context is partial."
+    },
+    {
+      "id": "CR-004", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie/data/repositories/application_enrichment_repository.py",
+      "title": "Enrichment repository sync and has no caller",
+      "problem": "ApplicationEnrichmentRepository uses sync Session.query while the resolver reads ApplicationEnrichment via AsyncSession; nothing in src calls it and its tests use only MagicMock chains. No code path can populate disabled_model_ids.",
+      "impact": "Tier-1 platform disablement can never trigger in practice; calling the repo with an AsyncSession raises AttributeError.",
+      "recommendation": "Convert to AsyncSession with select()/await (matching UserModelOverrideRepository), provide a write path for disabled_model_ids, and add an async-session test."
+    },
+    {
+      "id": "CR-005", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie/rest_api/routers/user_model_override_router.py", "line": 103,
+      "title": "Error mapping returns wrong status codes",
+      "problem": "Handlers catch only (ModelNotWhitelistedException, NotFoundException) and map both to 400; ValueError from the service (blank models) and IntegrityError from concurrent inserts fall into the generic except and become 500.",
+      "impact": "Client errors and races surface as 500; missing users/projects return 400 instead of 404.",
+      "recommendation": "Map NotFoundException to 404, ValueError to 400 and IntegrityError to 409, with rollback; validate model ids as non-blank in the request model."
+    },
+    {
+      "id": "CR-006", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie/rest_api/routers/user_model_override_router.py", "line": 114,
+      "title": "List endpoint pagination unbounded",
+      "problem": "skip and limit are plain ints with no bounds and the query has no order_by.",
+      "impact": "Negative skip causes DB errors, huge limit dumps the table, and pagination is unstable.",
+      "recommendation": "Use Query(0, ge=0) and Query(100, ge=1, le=500) and add a deterministic order_by."
+    },
+    {
+      "id": "CR-007", "kind": "code", "severity": "critical", "triage": "patch",
+      "file": "src/codemie/rest_api/routers/user_model_override_router.py", "line": 188,
+      "title": "Batch failure body and revoke result off-spec",
+      "problem": "Batch failure returns HTTPException(400, str(e)) instead of the BATCH_VALIDATION_FAILED body with failed_user_id, reason, operation and user_ids (AC9); revoke returns an empty list instead of the deleted records (AC4); empty user_ids yields 422 rather than 400.",
+      "impact": "Admins cannot identify which user failed a batch, and a revoke is indistinguishable from a no-op; required acceptance criteria are unmet.",
+      "recommendation": "Return the structured BATCH_VALIDATION_FAILED error body, return the deleted overrides from revoke, dedupe and cap user_ids, and reject unknown operations."
+    },
+    {
+      "id": "CR-008", "kind": "decision", "severity": "major", "triage": "decision_needed",
+      "file": "src/codemie/service/llm/model_availability_service.py", "line": 306,
+      "title": "Async resolution contradicts spec non-goal",
+      "problem": "The spec lists synchronous, non-async model resolution as a non-goal, yet resolve_model_for_execution_with_user_context, the service and repository are all async. It also calls the sync Application.get_by_id inside the async function.",
+      "impact": "Behavior contradicts the approved spec; mixing a sync DB call into async code blocks the event loop and uses another session.",
+      "recommendation": "Decide whether the async conversion is accepted (amend spec) or reverted; either way remove the sync Application.get_by_id call from the async path."
+    },
+    {
+      "id": "CR-009", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie/service/llm/model_availability_service.py", "line": 345,
+      "title": "Tier 4 default model not checked for disablement",
+      "problem": "Tier 4 returns project.default_model without checking ApplicationEnrichment.disabled_model_ids; the user override's own default_model is stored but never used.",
+      "impact": "A platform-disabled model can be served as the fallback, violating the hard-stop tier.",
+      "recommendation": "Check project.default_model against the disabled list (and the global list) before returning it, raising ModelNotWhitelistedException if disabled; decide how override.default_model is used."
+    },
+    {
+      "id": "CR-010", "kind": "code", "severity": "critical", "triage": "patch",
+      "file": "src/codemie/workflows/nodes/agent_node.py", "line": 111,
+      "title": "User context never reaches model resolver",
+      "problem": "invoke_args uses hasattr(self.user, 'user_id') but the security User exposes only 'id'; the session is taken from 'with get_session()' and used after the block closes it, and is a sync Session passed to code that awaits session.execute; failures are logged at debug. invoke_task merges args into executor inputs, so delivery to RouterChatModel._agenerate kwargs is unconfirmed. Reachability of the closed-session path was confirmed in source; the kwargs delivery stayed unconfirmed.",
+      "impact": "Overrides and platform disablement are silently never enforced in workflow execution, or a closed sync session breaks resolution at runtime.",
+      "recommendation": "Use the correct user id attribute, provide an AsyncSession that stays open for the invoke, ensure the kwargs reach _agenerate, log a warning when context is missing, and add a test asserting invoke_task args."
+    },
+    {
+      "id": "CR-011", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_user_model_override_endpoints.py",
+      "title": "Endpoint tests miss gating and validation cases",
+      "problem": "No non-admin tests for GET/DELETE/batch, no single-POST validation 400, project 404, empty user_ids/allowed_models for batch, or delete-not-found; resolver tests patch Application.get_by_id and AgentNode args are never asserted.",
+      "impact": "AC12 unmet; regressions in gating and error mapping would not fail any test.",
+      "recommendation": "Add the missing endpoint cases and an AgentNode test asserting invoke_task receives user_id, project_name and a live session."
+    },
+    {
+      "id": "CR-012", "kind": "evidence", "severity": "major", "triage": "patch",
+      "file": "unknown",
+      "title": "Commit 'fixes after rebase.' breaks format",
+      "problem": "git-workflow.md requires 'EPMCDME-####: Description'; this subject has no ticket prefix.",
+      "impact": "Blocking commit-format standard violated.",
+      "recommendation": "Reword (or squash on merge) to 'EPMCDME-15082: Fix issues after rebase'."
+    },
+    {
+      "id": "CR-013", "kind": "evidence", "severity": "major", "triage": "patch",
+      "file": "unknown",
+      "title": "Commit 'user-level-model-override: add planning artifacts' breaks format",
+      "problem": "git-workflow.md requires 'EPMCDME-####: Description'; this subject uses a feature-name prefix instead of the ticket.",
+      "impact": "Blocking commit-format standard violated.",
+      "recommendation": "Reword (or squash on merge) to 'EPMCDME-15082: Add planning artifacts'."
+    }
+  ]
+}

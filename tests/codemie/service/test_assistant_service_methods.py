@@ -471,6 +471,29 @@ class TestApplyConversationRuntimeOverrides:
         mock_resolve.assert_called_once_with(assistant, "conversation-model", report_fallback=False)
         assert request.llm_model is None
 
+    @patch('codemie.service.assistant_service.ModelAvailabilityService.resolve_user_override_model')
+    @patch('codemie.service.assistant_service.resolve_assistant_model', return_value="project-model")
+    def test_resolve_execution_model_prefers_the_user_override(self, mock_resolve, mock_override):
+        mock_override.return_value = "override-model"
+        assistant = Mock(spec=Assistant, llm_model_type="own-model", project="proj", is_global=False)
+        request = AssistantChatRequest(text='Test', llm_model='picked')
+
+        result = AssistantService.resolve_execution_model(assistant, request, Mock(id="user-1"))
+
+        assert result == "override-model"
+        # Pre-build resolution is silent: build_agent reports the substitution.
+        mock_override.assert_called_once_with("picked", "user-1", "proj", is_global=False, report=False)
+        mock_resolve.assert_not_called()
+
+    @patch('codemie.service.assistant_service.ModelAvailabilityService.resolve_user_override_model', return_value=None)
+    @patch('codemie.service.assistant_service.resolve_assistant_model', return_value="project-model")
+    def test_resolve_execution_model_without_override_uses_the_project_policy(self, mock_resolve, mock_override):
+        assistant = Mock(spec=Assistant, llm_model_type="own-model", project="proj", is_global=False)
+        request = AssistantChatRequest(text='Test', llm_model='picked')
+
+        assert AssistantService.resolve_execution_model(assistant, request, Mock(id="user-1")) == "project-model"
+        mock_resolve.assert_called_once_with(assistant, "picked", report_fallback=False)
+
     @patch('codemie.service.assistant_service.Conversation.find_by_id')
     def test_explicit_none_model_does_not_pick_up_conversation_model(self, mock_find_by_id):
         conversation = Mock()

@@ -14,11 +14,12 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 
 from codemie.configs import logger
 from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException, ModelNotSelectableError
+from codemie.rest_api.routers.conversation._common import CONVERSATION_NOT_FOUND_MSG
 from codemie.core.models import (
     CreateConversationRequest,
     UpdateConversationRequest,
@@ -55,7 +56,13 @@ def update_conversation(
     """
     Create a conversation document
     """
-    conversation = Conversation.get_by_id(conversation_id)
+    conversation = Conversation.find_by_id(conversation_id)
+    if not conversation:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message=CONVERSATION_NOT_FOUND_MSG,
+            details=f"Conversation {conversation_id} was not found.",
+        )
 
     if not Ability(user).can(Action.WRITE, conversation):
         raise_access_denied("write")

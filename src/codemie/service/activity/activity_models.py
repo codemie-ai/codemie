@@ -106,6 +106,8 @@ class UserManagementEvent:
     USER_PROJECT_REMOVED = "user.project.removed"
     USER_PROJECT_ROLE_UPDATED = "user.project.role_updated"
     USER_REMAPPED = "user.remapped"
+    USER_MODEL_OVERRIDE_SET = "user.model_override.set"
+    USER_MODEL_OVERRIDE_REMOVED = "user.model_override.removed"
 
 
 class BudgetManagementEvent:

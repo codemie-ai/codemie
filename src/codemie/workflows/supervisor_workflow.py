@@ -79,6 +79,7 @@ class SupervisorWorkflowExecutor(WorkflowExecutor):
                     self.workflow_execution_service,
                     self.thought_queue,
                     workflow_config=self.workflow_config,
+                    user=self.user,
                 ),
             )
         workflow.add_node(
@@ -88,6 +89,7 @@ class SupervisorWorkflowExecutor(WorkflowExecutor):
                 self.workflow_execution_service,
                 self.thought_queue,
                 workflow_config=self.workflow_config,
+                user=self.user,
             ),
         )
 

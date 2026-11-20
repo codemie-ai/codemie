@@ -1,0 +1,3 @@
+{"ts":"2026-09-21T13:56:33Z","gate_id":"spec.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"Spec requirements accepted","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-09-21T16:19:54Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"Plan approved for implementation","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-09-21T18:00:48Z","gate_id":"code-review.final","mode":"hitl","verdict":{"decision":"approve","rationale":"All 5 blockers fixed: migration verified, user context wired, UUID type correct, commits formatted, license header added","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

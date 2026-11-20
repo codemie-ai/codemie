@@ -73,6 +73,9 @@ OPEN_BY_DESIGN = {
     ("PUT", "/v1/admin/users/{user_id}/budgets"),
     ("PATCH", "/v1/projects/{projectName}"),
     ("PATCH", "/v1/projects/{projectName}/allowed-models"),
+    ("PUT", "/v1/projects/{projectName}/user-model-overrides/{userId}"),
+    ("DELETE", "/v1/projects/{projectName}/user-model-overrides/{userId}"),
+    ("POST", "/v1/projects/{projectName}/user-model-overrides/batch"),
 }
 
 

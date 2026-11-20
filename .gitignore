@@ -33,6 +33,7 @@ node_modules/
 devbox.*
 codemie-storage/
 .codemie-storage/
+docs/codemie/analytics/
 codemie-repos/
 swebench/output/
 .dapr
@@ -136,6 +137,9 @@ docs/superpowers/qa-tasks/*/**/*.local.*
 docs/superpowers/tasks/*/**/*.local/**
 docs/superpowers/runs/*/**/*.local/**
 docs/superpowers/qa-tasks/*/**/*.local/**
+# Any other Factory folder (reviews/, or one added later): the same two shapes, so a folder does not need its own rule
+docs/superpowers/**/*.local.*
+docs/superpowers/**/*.local/**
 credentials.json
 .code-graph/
 standalone/*.log

@@ -318,6 +318,7 @@ def create_assistant(request: AssistantRequest, user: User = Depends(authenticat
             ModelAvailabilityService.validate_model_for_asset_creation(
                 request.llm_model_type,
                 request.project,
+                user_id=user.id,
             )
         except ModelNotWhitelistedException as e:
             raise ExtendedHTTPException(

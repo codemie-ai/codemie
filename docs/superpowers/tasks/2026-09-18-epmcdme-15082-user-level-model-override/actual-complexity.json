@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "generated": "2026-09-21T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 5,
+      "label": "XL",
+      "detail": "6+ components across 3–4 layers: UserModelOverrideService (new), UserModelOverrideRepository (new), UserModelOverrideRouter (new), ModelAvailabilityService (extended with resolve_model_for_execution_with_user_context), UserModelOverride model (new), ApplicationEnrichment model (new). New abstractions span Service, Repository, and Core layers with cross-cutting precedence logic."
+    },
+    "requirements_clarity": {
+      "score": 3,
+      "label": "M",
+      "detail": "Core requirements fully implemented as specified: 4-tier precedence chain (platform disable → user override → project whitelist → default), admin-scoped endpoints, validation at set-time and invocation-time. Implementation evidence confirms all key acceptance criteria were met without scope ambiguity."
+    },
+    "technical_risk": {
+      "score": 6,
+      "label": "XXL",
+      "detail": "Security-sensitive precedence chain fully implemented. Platform disablement hard stop enforced at Tier 1. User override validated against project whitelist at set-time (prevent invalid override creation) and invocation-time (catch project config changes). Validation gap closure confirms XXL: ModelAvailabilityService pattern was extended to cover user-scope override security—not a pure reuse. No parameterized edge-case test template existed for 4-tier chain; implementation includes comprehensive test coverage (test_user_model_override_service.py, test_endpoints, test_repository, test_model tests) with mock validation of all precedence tiers. Database checks (CheckConstraint, UniqueConstraint, FK) reinforce logic at schema layer."
+    },
+    "file_change_estimate": {
+      "score": 6,
+      "label": "XXL",
+      "detail": "126 files changed per diffstat. Core implementation files (excluding tests/fixtures/config): UserModelOverrideService, UserModelOverrideRepository, UserModelOverrideRouter, ModelAvailabilityService (extended), 2 new models (UserModelOverride, ApplicationEnrichment), migration file, main.py (router registration), test suite (4 test files), plus supporting configuration and documentation. Actual 20+ distinct implementation/test files across 5+ directories (service/user, rest_api/routers, repository, core, external/alembic/versions, tests) with two new tables and multiple indices."
+    },
+    "dependencies": {
+      "score": 2,
+      "label": "S",
+      "detail": "No new third-party packages. SQLModel, FastAPI, SQLAlchemy already in use. Configuration additions only: new environment variables tracked in config. Alembic already present; no version updates. Database schema change via migration only."
+    },
+    "affected_layers": {
+      "score": 4,
+      "label": "L",
+      "detail": "4 layers: API (POST/GET/DELETE endpoints for override CRUD, admin gating via is_application_admin), Service (UserModelOverrideService orchestration + ModelAvailabilityService extension), DB-Persistence (new user_model_overrides table + application_enrichment table with FKs to users and applications, indexes on user_id and project_name, unique constraint on (user_id, project_name), migration in alembic/versions), Invocation/Core (new resolve_model_for_execution_with_user_context method in ModelAvailabilityService, new models with SQLModel support). Schema migration required. Internal integration only (no cross-system)."
+    }
+  },
+  "total": 26,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 126,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "XL (5): 6+ components with 2 new tables (UserModelOverride, ApplicationEnrichment) and 3 new service/repo abstractions spanning Service, Repository, and Core layers. New 4-tier precedence chain requires coordination between invocation time and override set-time validation."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "XXL (6): Security-sensitive, multi-tier validation chain with validation required at two distinct points (set-time and invocation-time) to prevent invalid overrides created due to subsequent project config changes. Platform disablement hard stop enforced at Tier 1. No pre-existing pattern covered user-scoped override security—security gap is a divergence requiring defensive test coverage (4-tier precedence chain tests with all combinations). Tests cover precedence logic and constraint enforcement."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "XXL (6): 126 files changed (22,869 insertions, 127 deletions). Core files include new UserModelOverrideService, UserModelOverrideRepository, UserModelOverrideRouter, extended ModelAvailabilityService, 2 new SQLModel tables, Alembic migration, 4 new test files, configuration, and supporting modules across 5+ directories."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "L (4): Spans 4 distinct layers (API with admin-gated endpoints, Service with precedence orchestration, DB-Persistence with 2 new tables + constraints + indexes + migration, Invocation/Core with new resolve method). Schema migration required."
+    }
+  ],
+  "red_flags_applied": [
+    "Security/Compliance red flag (access control, validation gap): User override must not grant access to project-disallowed models; validation required at both set-time (prevent creation of invalid override) and invocation-time (catch project whitelist changes after override creation). Existing ModelAvailabilityService pattern did not cover user-scope override security—this is a divergence. Defensive test coverage for 4-tier precedence chain edge cases added. Technical Risk floor elevated to XXL (6).",
+    "Technical red flag (precedence chain, no existing test template): 4-tier fallback chain (platform disable → user override → project whitelist → default) with defensive pattern coverage enumerated in acceptance criteria. No existing parameterized test suite covered multi-tier edge cases. Implementation includes comprehensive test coverage (test_user_model_override_service.py with grant/revoke/validation scenarios, test_endpoints with admin access control, test_repository with get/create/update/delete, test_model with table instantiation). Defensive tests confirm XXL."
+  ],
+  "split_recommendation": null
+}

@@ -51,10 +51,11 @@ from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
 from codemie.core.constants import CodeIndexType, ToolType
 from codemie.core.dependecies import get_llm_by_credentials
+from codemie.core.exceptions import ModelNotWhitelistedException
 from codemie.core.models import AssistantChatRequest, CodeFields, IdeChatRequest, ToolConfig
 from codemie.core.thread import MessageQueue
 from codemie.service.file_service.markdown_cache_service import MarkdownCacheService
-from codemie.service.llm.model_availability_service import ProjectModelPolicy
+from codemie.service.llm.model_availability_service import ModelAvailabilityService, ProjectModelPolicy
 from codemie.service.provider.provider_header_context import ProviderHeaderContext
 from codemie.core.utils import build_unique_file_objects_list
 from codemie.rest_api.models.assistant import (
@@ -870,7 +871,7 @@ class ToolkitService:
         # failed chat_model injection must not drop it. Models are built lazily, only when a name is given.
         extra: dict[str, Any] = {}
         if 'ocr_model_factory' in tool_fields:
-            extra['ocr_model_factory'] = lambda name: cls._build_ocr_model(name, request_uuid, project_name)
+            extra['ocr_model_factory'] = lambda name: cls._build_ocr_model(name, request_uuid, project_name, user_id)
 
         # Pass chat_model at construction time for tools that declare it.
         # Use a multimodal LLM (needed for image/OCR), falling back to the main model.
@@ -891,15 +892,26 @@ class ToolkitService:
         return tool_definition.tool_class(config=stored_config, **extra)
 
     @staticmethod
-    def _build_ocr_model(name: str, request_uuid: Any, project_name: Optional[str] = None) -> Any:
+    def _build_ocr_model(
+        name: str, request_uuid: Any, project_name: str | None = None, user_id: str | None = None
+    ) -> Any:
         """Build an OCR chat model; the name is LLM-supplied, so it must be an allowed multimodal model.
 
-        Under project model override the project's whitelist applies too. It rejects rather than falls back
-        (unlike get_llm_by_credentials): a silent swap could land on a model that cannot read images.
+        The user's model override, when one exists, is their whole model set; otherwise the project's
+        whitelist applies. It rejects rather than falls back (unlike get_llm_by_credentials): a silent
+        swap could land on a model that cannot read images.
         """
         if name not in llm_service.get_multimodal_llm_names():
             raise ValueError("OCR model is not an allowed multimodal model")
-        ToolkitService._ensure_project_allows_model(name, project_name)
+        override_allows = ModelAvailabilityService.user_override_allows_model(name, user_id, project_name)
+        if override_allows is None:
+            ToolkitService._ensure_project_allows_model(name, project_name)
+        elif not override_allows:
+            raise ModelNotWhitelistedException(
+                name,
+                project_name or "",
+                details="Model is not in the user's model override. Please use available models.",
+            )
         return get_llm_by_credentials(llm_model=name, streaming=False, request_id=request_uuid)
 
     @staticmethod

@@ -253,10 +253,7 @@ class AgentNode(BaseNode[AgentMessages]):
         # before its own try/except block starts. fail_open=True keeps a resolution
         # failure here from escaping uncaught and aborting the whole workflow execution
         # instead of just this node.
-        if workflow_assistant and workflow_assistant.model:
-            resolved_model, _ = self.resolve_execution_model(workflow_assistant.model, fail_open=True)
-            # Create a copy of the workflow_assistant with the resolved model
-            workflow_assistant = workflow_assistant.model_copy(update={"model": resolved_model})
+        workflow_assistant = self._resolve_workflow_assistant_model(workflow_assistant)
 
         # Retrieve workflow trace context for trace unification
         trace_context = None
@@ -287,6 +284,24 @@ class AgentNode(BaseNode[AgentMessages]):
                 is_global=self.workflow_config.is_global,
             ),
         )
+
+    def _resolve_workflow_assistant_model(self, workflow_assistant):
+        """Resolve the assistant's model against availability rules, returning a copy with
+        the resolved model when it differs (or the assistant unchanged otherwise).
+
+        The user's model override, when it applies, takes precedence over the project
+        whitelist (same order as assistant chat); falls back to the project default
+        (fail_open), with disabled models replaced, only when no user override applies.
+        """
+        if not (workflow_assistant and workflow_assistant.model):
+            return workflow_assistant
+
+        resolved_model = self.resolve_user_override_model(workflow_assistant.model, fail_open=True)
+        if not resolved_model:
+            resolved_model, _ = self.resolve_execution_model(workflow_assistant.model, fail_open=True)
+        if resolved_model and resolved_model != workflow_assistant.model:
+            return workflow_assistant.model_copy(update={"model": resolved_model})
+        return workflow_assistant
 
     def get_node_name(self, state_schema: Type[AgentMessages]):
         """Get the display name for this agent node.
