@@ -866,3 +866,65 @@ async def test_the_sql_model_normalization_equals_the_python_pricer_on_the_same_
                 assert await conn.fetchval(sql, raw) == normalize_model(raw), raw
     finally:
         await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_a_single_file_copilot_patch_is_classified_by_its_header():
+    engine = await _get_engine()
+    t = _now()
+    patches = {
+        "/r/new.ts": ("apply_patch", "*** Begin Patch\n*** Add File: /r/new.ts\n+x\n*** End Patch"),
+        "/r/old.ts": (
+            "apply_patch",
+            json.dumps(
+                {
+                    "patch": (
+                        "*** Begin Patch\n*** Update File: /r/old.ts\n"
+                        "@@\n-a\n+*** Add File: this is content, not an operation\n*** End Patch"
+                    )
+                }
+            ),
+        ),
+        "/r/gone.ts": ("apply_patch", "*** Begin Patch\n*** Delete File: /r/gone.ts\n*** End Patch"),
+        "/r/made.ts": ("str_replace_editor", '{"command": "create", "path": "/r/made.ts"}'),
+        "/r/changed.ts": (
+            "str_replace_editor",
+            json.dumps(
+                {
+                    "command": "str_replace",
+                    "old_str": '"command": "create"',
+                    "new_str": '"command": "edit"',
+                    "path": "/r/changed.ts",
+                }
+            ),
+        ),
+    }
+    try:
+        await _cleanup(engine)
+        async with engine.acquire() as conn:
+            for i, (path, (tool, tool_input)) in enumerate(patches.items()):
+                tu = f"tc-{i}"
+                await conn.execute(
+                    "INSERT INTO hook_events (ts, session_id, event_type, user_email, tool_name, tool_use_id, "
+                    "tool_input, attrs) VALUES ($1, $2, 'agent.tool.start', $3, $4, $5, $6, $7::jsonb)",
+                    t + timedelta(seconds=i), _COPILOT, _EMAIL, tool, tu, tool_input,
+                    json.dumps({"platform": "copilot-cli", "file_path": path}),
+                )  # fmt: skip
+                await _hook(conn, t + timedelta(seconds=i + 10), _COPILOT, "agent.tool.end", tool, tu, "copilot-cli")
+        await _refresh(engine, t.date())
+        async with engine.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT file_path, is_written, is_edited FROM session_files_daily WHERE session_id = $1", _COPILOT
+            )
+        assert {r["file_path"]: (r["is_written"], r["is_edited"]) for r in rows} == {
+            "/r/new.ts": (True, False),
+            "/r/old.ts": (False, True),
+            "/r/gone.ts": (False, False),
+            "/r/made.ts": (True, False),
+            "/r/changed.ts": (False, True),
+        }
+    finally:
+        async with engine.acquire() as conn:
+            await conn.execute("DELETE FROM session_files_daily WHERE session_id = $1", _COPILOT)
+        await _cleanup(engine)
+        await engine.close()

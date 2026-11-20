@@ -90,11 +90,13 @@ from codemie.repository.cli_analytics.vocabulary import (
     ACTIVITY_HOOK_TYPES,
     BUILTIN_COMMAND_NAMES,
     CLAUDE_CODE_AUTO_PROMPT_PREFIXES,
+    CREATE_COMMAND_TOOL,
     DIMENSION_HOOK_TYPES,
     START_HOOK_TYPES,
     EDIT_TOOLS,
     LINES_METRICS,
     PASTED_CONTENT_TAG_SQL,
+    PATCH_TOOL,
     SENTINEL_EXACT,
     SENTINEL_PREFIX_RAW,
     SENTINEL_PREFIX_TRIMMED,
@@ -1873,6 +1875,25 @@ _COUNTED_SKILL_HOOK = (
 )
 # file_path of agent.tool.start has no typed hook column: it is kept in attrs.
 _HOOK_FILE_PATH = _json_text("h.attrs", "file_path")
+# A single-file call is classified by its tool name; a Copilot apply_patch by the header of its patch
+# (*** Add File: / *** Update File:, a Delete File counts as neither) and a str_replace_editor `create` command
+# as a write only, since the CLI sends no per-file type for one file.
+_PATCH_IS = f"h.tool_name = {_literal(PATCH_TOOL)}"
+_CREATE_COMMAND_RE = r'[,{]\s*"command"\s*:\s*"create"\s*[,}]'
+_CREATE_IS = (
+    f"(h.tool_name = {_literal(CREATE_COMMAND_TOOL)} "
+    f"AND coalesce(h.tool_input, '') ~ {_literal(_CREATE_COMMAND_RE)})"
+)
+_PATCH_ADD_RE = r'(^|\\n|\n)[*]{3} Add File:'
+_PATCH_UPDATE_RE = r'(^|\\n|\n)[*]{3} Update File:'
+_HOOK_IS_WRITE = (
+    f"(h.tool_name = ANY({_text_array(WRITE_TOOLS)}) OR {_CREATE_IS} "
+    f"OR ({_PATCH_IS} AND coalesce(h.tool_input, '') ~ {_literal(_PATCH_ADD_RE)}))"
+)
+_HOOK_IS_EDIT = (
+    f"((h.tool_name = ANY({_text_array(EDIT_TOOLS)}) AND NOT {_CREATE_IS}) "
+    f"OR ({_PATCH_IS} AND coalesce(h.tool_input, '') ~ {_literal(_PATCH_UPDATE_RE)}))"
+)
 
 
 def _carries_lines(alias: str) -> str:
@@ -2019,18 +2040,29 @@ RECOMPUTE: list[str] = [
         WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> '' AND s.span_kind = {_TOOL} AND s.file_path <> ''
         GROUP BY 1, 2, 3
         UNION ALL
-        SELECT k.day, k.session_id, {_HOOK_FILE_PATH},
-               coalesce(bool_or(h.tool_name = ANY({_text_array(WRITE_TOOLS)}) AND e.ended), false),
-               coalesce(bool_or(h.tool_name = ANY({_text_array(EDIT_TOOLS)}) AND e.ended), false)
+        SELECT k.day, k.session_id, f.file_path,
+               coalesce(bool_or(f.is_write AND e.ended), false),
+               coalesce(bool_or(f.is_edit AND e.ended), false)
         {_in_day("h", "hook_events")}
         LEFT JOIN LATERAL (
-            SELECT true AS ended FROM hook_events x
+            SELECT true AS ended, {_json_typed("x.attrs", "files", "array")} AS files FROM hook_events x
             WHERE x.session_id = k.session_id AND x.event_type = {_literal(_TOOL_END)} AND x.tool_use_id = h.tool_use_id
               AND x.ts >= h.ts - interval '1 hour' AND x.ts < h.ts + interval '1 day'
             LIMIT 1
         ) e ON h.tool_use_id <> ''
+        -- A multi-file call (Copilot apply_patch) lists its files on the agent.tool.end, each with its own type
+        -- (write / edit / delete): one row per file, classified by that type. Every other call is the single
+        -- attrs.file_path of its start, classified by the tool name.
+        CROSS JOIN LATERAL (
+            SELECT {_json_text("fe.v", "file_path")} AS file_path,
+                   fe.v->>'type' = 'write' AS is_write, fe.v->>'type' = 'edit' AS is_edit
+            FROM jsonb_array_elements(e.files) AS fe(v)
+            UNION ALL
+            SELECT {_HOOK_FILE_PATH}, {_HOOK_IS_WRITE}, {_HOOK_IS_EDIT}
+            WHERE e.files IS NULL OR jsonb_array_length(e.files) = 0
+        ) f
         WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> '' AND {_IS_TOOL_START}
-          AND {_hook_key(_HOOK_FILE_PATH, MAX_PATH_BYTES)} AND {_NO_SPAN_OF_KIND}
+          AND {_hook_key("f.file_path", MAX_PATH_BYTES)} AND {_NO_SPAN_OF_KIND}
         GROUP BY 1, 2, 3""",
     ),
     # Hourly invocations: kinds 1-3 come from spans (hooks on a fallback pair), kind 4 (slash commands)

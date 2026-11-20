@@ -71,9 +71,14 @@ LINES_METRICS: tuple[str, ...] = ("claude_code.lines_of_code.count", "cursor.lin
 ACTIVE_TIME_METRICS: tuple[str, ...] = ("claude_code.active_time.total", "cursor.active_time.total")
 ROLLUP_METRICS: tuple[str, ...] = LINES_METRICS + ACTIVE_TIME_METRICS
 
-# Tool names whose file_path counts as written / edited (session_files_daily).
-WRITE_TOOLS: tuple[str, ...] = ("Write",)
-EDIT_TOOLS: tuple[str, ...] = ("Edit", "MultiEdit", "NotebookEdit")
+# Tool names whose file_path counts as written / edited (session_files_daily): Claude Code (Write, Edit, MultiEdit,
+# NotebookEdit) and GitHub Copilot (create, edit, str_replace_editor). Copilot's apply_patch is in neither list: a
+# multi-file call is classified per file by the `type` of its `files` entries, a single-file call by the header of
+# its patch (Add / Update / Delete File), and str_replace_editor by its `command` (see session_files_daily).
+WRITE_TOOLS: tuple[str, ...] = ("Write", "create")
+EDIT_TOOLS: tuple[str, ...] = ("Edit", "MultiEdit", "NotebookEdit", "edit", "str_replace_editor")
+PATCH_TOOL = "apply_patch"
+CREATE_COMMAND_TOOL = "str_replace_editor"
 
 # The hook types that count as dimension events: they set a session's start and its other dimensions. The end and
 # "last active" follow ACTIVITY_HOOK_TYPES below, a subset of these (plus the skill dispatch).
