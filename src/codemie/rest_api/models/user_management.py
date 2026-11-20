@@ -253,7 +253,7 @@ class UserUpdateRequest(BaseModel):
     picture: Optional[str] = None
     email: Optional[str] = None  # str for IDP identifiers (not EmailStr); Story 8: local mode only
     username: Optional[str] = None  # Story 8: Immutable - always rejected if provided
-    user_type: Optional[str] = None  # Story 8: 'regular' or 'external'; local mode only
+    user_type: Optional[str] = None  # Story 8: 'regular' | 'external' | 'service_account'; local mode only
     is_admin: Optional[bool] = None
     is_maintainer: Optional[bool] = None
     is_auditor: Optional[bool] = None

@@ -1,0 +1,75 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved review: 0 findings, 1 deferred (existing personal project kept on user_type change, pre-existing)"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved review: 0 findings, 1 deferred (existing personal project kept on user_type change, pre-existing)"
+    }
+  ],
+  "reviewed_head": "9b9e36c73ce4e58bc3f75e363cd89dbe4213a7f1",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "All lenses ran; acceptance skipped (no spec), so confidence is low. No blocking findings after reachability checks: IDP first-login now skips the email-named project for excluded accounts, matching the existing exclusion helper. 1 deferred (personal project retained when an existing user is switched to service_account via update; see code-review-deferred.local.md), 10 dismissed as noise or below the emission floor.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [
+    "auth"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/service/user/user_management_service.py",
+      "line": 1388,
+      "title": "Existing personal project kept on user_type change",
+      "problem": "Switching an existing regular user to service_account via update_user_fields leaves their already-created email-named project; the exclusion applies only at creation time.",
+      "preexisting": "The update path never managed personal projects; the task scopes creation of new personal projects only."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "3 subjects in diff_base..HEAD all match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "8 changed files checked against code-quality.md; small edits to existing modules, no untyped public functions, no new source files needing license headers"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "no security-practices.md guide in repo; absent standard. Ad-hoc scan of changed src hunks found no issue"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "All lenses ran; acceptance skipped (no spec), so confidence is low. No blocking findings after reachability checks: IDP first-login now skips the email-named project for excluded accounts, matching the existing exclusion helper. 1 deferred (personal project retained when an existing user is switched to service_account via update; see code-review-deferred.local.md), 10 dismissed as noise or below the emission floor.",
+    "confidence": "low",
+    "risk_flags": [
+      "auth"
+    ]
+  }
+}

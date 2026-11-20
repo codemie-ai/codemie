@@ -609,6 +609,133 @@ class TestCreateUserFromIdp:
             created_user = call_args[1]
             assert created_user.user_type == "service_account"
 
+    @staticmethod
+    async def _create_and_capture_ensure_call(idp_user, extra_patches=()):
+        session = AsyncMock()
+        db_user_holder = {}
+
+        def _acreate(sess, user):
+            db_user_holder["user"] = user
+            return user
+
+        with (
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+            patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
+            patch("codemie.service.user.authentication_service.user_kb_repository"),
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService._ensure_projects_exist",
+                new_callable=AsyncMock,
+            ) as mock_ensure,
+            patch("codemie.service.user.authentication_service.config") as mock_config,
+        ):
+            mock_config.IDP_PROVIDER = "keycloak"
+            mock_config.IDP_MANAGED_ENABLED = False
+            mock_config.ADMIN_USER_ID = "other-id"
+            mock_config.ADMIN_ROLE_NAME = "SuperAdmin"
+            mock_user_repo.acreate = AsyncMock(side_effect=_acreate)
+            mock_proj_repo.aadd_project = AsyncMock()
+
+            for ctx in extra_patches:
+                ctx.__enter__()
+            try:
+                await AuthenticationService.create_user_from_idp(session, idp_user)
+            finally:
+                for ctx in reversed(extra_patches):
+                    ctx.__exit__(None, None, None)
+
+            return mock_ensure, mock_proj_repo
+
+    @staticmethod
+    def _idp_user(user_type, user_id=None, project_names=None):
+        return security_user.User(
+            id=user_id or str(uuid4()),
+            username="acct",
+            name="Account",
+            email="acct@example.com",
+            user_type=user_type,
+            roles=[],
+            project_names=["project1"] if project_names is None else project_names,
+            admin_project_names=[],
+            knowledge_bases=[],
+            is_admin=False,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user_type", ["service_account", "external"])
+    async def test_create_user_from_idp_skips_email_project_for_excluded_type(self, user_type):
+        idp_user = self._idp_user(user_type)
+
+        mock_ensure, _ = await self._create_and_capture_ensure_call(idp_user)
+
+        mock_ensure.assert_called_once_with(["project1"])
+
+    @pytest.mark.asyncio
+    async def test_create_user_from_idp_skips_email_project_for_provisioning_client(self):
+        idp_user = self._idp_user("regular", user_id=CLIENT_USER_ID)
+
+        mock_ensure, _ = await self._create_and_capture_ensure_call(
+            idp_user, extra_patches=(registered_clients(make_client()),)
+        )
+
+        mock_ensure.assert_called_once_with(["project1"])
+
+    @pytest.mark.asyncio
+    async def test_create_user_from_idp_ensures_email_project_for_regular(self):
+        idp_user = self._idp_user("regular")
+
+        mock_ensure, _ = await self._create_and_capture_ensure_call(idp_user)
+
+        mock_ensure.assert_called_once_with(["project1", "acct@example.com"])
+
+    @pytest.mark.asyncio
+    async def test_create_user_from_idp_service_account_email_in_project_names(self):
+        idp_user = self._idp_user("service_account", project_names=["acct@example.com"])
+
+        mock_ensure, mock_proj_repo = await self._create_and_capture_ensure_call(idp_user)
+
+        mock_ensure.assert_called_once_with(["acct@example.com"])
+        mock_proj_repo.aadd_project.assert_called_once()
+        assert mock_proj_repo.aadd_project.call_args[0][2] == "acct@example.com"
+
+
+class TestEnsureProjectsExist:
+    """Tests for _ensure_projects_exist() method"""
+
+    @pytest.mark.asyncio
+    async def test_creates_each_name_and_commits(self):
+        mock_session = AsyncMock()
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.application_repository") as mock_app_repo,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_app_repo.aget_or_create = AsyncMock()
+
+            await AuthenticationService._ensure_projects_exist(["a", "b"])
+
+        assert mock_app_repo.aget_or_create.await_count == 2
+        mock_app_repo.aget_or_create.assert_any_await(mock_session, "a")
+        mock_app_repo.aget_or_create.assert_any_await(mock_session, "b")
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_per_name_failure_is_swallowed(self):
+        mock_session = AsyncMock()
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.application_repository") as mock_app_repo,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_app_repo.aget_or_create = AsyncMock(side_effect=[RuntimeError("boom"), None])
+
+            await AuthenticationService._ensure_projects_exist(["a", "b"])
+
+        assert mock_app_repo.aget_or_create.await_count == 2
+        mock_app_repo.aget_or_create.assert_any_await(mock_session, "b")
+        mock_session.commit.assert_awaited_once()
+
 
 class TestSyncIdpUserProfile:
     """Tests for sync_idp_user_profile() method"""

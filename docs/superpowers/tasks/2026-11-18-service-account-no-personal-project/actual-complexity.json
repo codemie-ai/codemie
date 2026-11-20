@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-11-18T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 8,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "8 files per diffstat (194 insertions, 8 deletions), but only 4 are source files (user_management model, router, authentication_service, user_management_service) and the rest are 3 test files plus the regenerated openapi.json baseline. Diffstat mapping of 7-10 files gives L, though the changes are shallow and mostly tests." },
+    { "dimension": "technical_risk", "reason": "The change touches authentication and user-type handling (service_account vs regular/external), so Technical Risk is raised one step from S to M. The source edits are small: user_type documentation and validation naming, plus the service-account guard. The existing is_service_account validator is reused and the work is covered by regression tests." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: affects authentication / user-type handling for service accounts"
+  ],
+  "split_recommendation": null
+}

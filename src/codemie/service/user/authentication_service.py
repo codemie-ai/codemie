@@ -238,10 +238,12 @@ class AuthenticationService:
         # See authenticate_persistent_user for actual call (after session.commit())
 
         # Ensure Application records exist for user's projects (first login only)
+        from codemie.rest_api.security.user_type_validator import is_personal_project_excluded_account
+
         # In IDP managed mode personal project (email) is not created — projects come from Keycloak.
-        projects_to_ensure = (
-            idp_user.project_names if config.IDP_MANAGED_ENABLED else idp_user.project_names + [db_user.email]
-        )
+        projects_to_ensure = list(idp_user.project_names)
+        if not config.IDP_MANAGED_ENABLED and not is_personal_project_excluded_account(db_user.id, db_user.user_type):
+            projects_to_ensure.append(db_user.email)
         await AuthenticationService._ensure_projects_exist(projects_to_ensure)
 
         logger.info(

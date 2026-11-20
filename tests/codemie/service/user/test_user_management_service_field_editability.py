@@ -397,6 +397,59 @@ def test_user_type_update_local_mode_accepts_service_account(mock_get_session, m
     assert update_call["user_type"] == "service_account"
 
 
+@pytest.mark.parametrize("user_type", ["regular", "external"])
+@patch("codemie.service.user.user_management_service.config.IDP_PROVIDER", "local")
+@patch("codemie.service.user.user_management_service.user_repository")
+@patch("codemie.clients.postgres.get_session")
+def test_user_type_update_local_mode_accepts_regular_and_external(mock_get_session, mock_repo, local_user, user_type):
+    mock_session = MagicMock()
+    mock_get_session.return_value.__enter__.return_value = mock_session
+
+    super_admin = UserDB(
+        id="super-admin-1",
+        username="superadmin",
+        email="superadmin@example.com",
+        name="Super Admin",
+        user_type="regular",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        email_verified=True,
+        project_limit=None,
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+
+    mock_repo.get_by_id.side_effect = [super_admin, local_user]
+    updated_user = UserDB(**local_user.model_dump())
+    updated_user.user_type = user_type
+    mock_repo.update.return_value = updated_user
+
+    mock_detail = MagicMock(user_type=user_type)
+
+    with patch.object(UserManagementService, "get_user_with_relationships", return_value=mock_detail):
+        result = UserManagementService.update_user_fields(
+            user_id="user-local-1", actor_user_id="super-admin-1", user_type=user_type
+        )
+
+    assert result.user_type == user_type
+    assert mock_repo.update.call_args[1]["user_type"] == user_type
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Service_Account ", "service_account"),
+        ("REGULAR", "regular"),
+        ("external", "external"),
+        (None, None),
+    ],
+)
+def test_validate_user_type_normalises_and_accepts_all_valid_types(raw, expected):
+    assert UserManagementService._validate_user_type(raw) == expected
+
+
 # ===========================================
 # AC-10: user_type validation
 # ===========================================
@@ -423,6 +476,7 @@ def test_user_type_invalid_value_rejected(mock_get_session):
     assert "Invalid user_type" in exc_info.value.message
     assert "regular" in exc_info.value.details
     assert "external" in exc_info.value.details
+    assert "service_account" in exc_info.value.details
 
 
 @patch("codemie.service.user.user_management_service.config.IDP_PROVIDER", "local")

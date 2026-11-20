@@ -334,7 +334,7 @@ class TestProjectServiceCreateSharedProject:
 @pytest.fixture
 def service_account() -> User:
     with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
-        return User(id="svc-1", username="svc", email="svc@example.com", is_admin=False)
+        return User(id="svc-1", username="svc", email="svc@example.com", is_admin=False, user_type="service_account")
 
 
 @patch("codemie.service.project.project_service.llm_service")
@@ -374,6 +374,7 @@ class TestCreateSharedProjectInSession:
 
         result = ProjectService.create_shared_project_in_session(session, actor=service_account, name="epm-aimf")
 
+        assert service_account.user_type == "service_account"
         assert result is project
         mock_application_repository.create.assert_called_once()
         assert mock_application_repository.create.call_args.kwargs["created_by"] == service_account.id

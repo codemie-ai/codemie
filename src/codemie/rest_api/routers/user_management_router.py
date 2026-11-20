@@ -254,7 +254,7 @@ def update_user(
     - name, picture: Always editable
     - email: Local mode only (IDP mode rejects)
     - username: Immutable (always rejected)
-    - user_type: Admin-only, editable in all auth modes
+    - user_type: Admin-only, editable in all auth modes; 'regular', 'external', or 'service_account'
     - is_maintainer, is_auditor: Platform roles, always editable by admin
     - is_admin: editable by a maintainer, except in IDP managed mode where the identity provider owns it
     - project_limit: Subject to validation rules

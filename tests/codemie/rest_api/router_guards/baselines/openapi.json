@@ -43634,7 +43634,7 @@
         ]
       },
       "put": {
-        "description": "Update user details\n\nSuperAdmin only.\n\nField editability rules (Story 8):\n- name, picture: Always editable\n- email: Local mode only (IDP mode rejects)\n- username: Immutable (always rejected)\n- user_type: Admin-only, editable in all auth modes\n- is_maintainer, is_auditor: Platform roles, always editable by admin\n- is_admin: editable by a maintainer, except in IDP managed mode where the identity provider owns it\n- project_limit: Subject to validation rules",
+        "description": "Update user details\n\nSuperAdmin only.\n\nField editability rules (Story 8):\n- name, picture: Always editable\n- email: Local mode only (IDP mode rejects)\n- username: Immutable (always rejected)\n- user_type: Admin-only, editable in all auth modes; 'regular', 'external', or 'service_account'\n- is_maintainer, is_auditor: Platform roles, always editable by admin\n- is_admin: editable by a maintainer, except in IDP managed mode where the identity provider owns it\n- project_limit: Subject to validation rules",
         "operationId": "update_user_v1_admin_users__user_id__put",
         "parameters": [
           {

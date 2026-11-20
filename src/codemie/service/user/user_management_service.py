@@ -37,7 +37,7 @@ from codemie.enterprise.mcp_auth.dependencies import enqueue_mcp_auth_cleanup
 from codemie.repository.user_repository import user_repository
 from codemie.rest_api.security.permissions import is_admin_or_maintainer
 from codemie.rest_api.security.user import User, resolve_membership_default
-from codemie.rest_api.security.user_type_validator import VALID_USER_TYPES
+from codemie.rest_api.security.user_type_validator import VALID_USER_TYPES, _describe_valid_user_types
 from codemie.service.user.active_user import require_active_user
 from codemie.service.user.authentication_service import invalidate_user_from_cache
 from codemie.rest_api.models.user_management import (
@@ -1283,7 +1283,7 @@ class UserManagementService:
             raise ExtendedHTTPException(
                 code=400,
                 message="Invalid user_type",
-                details="user_type must be either 'regular' or 'external'",
+                details=f"user_type must be one of {_describe_valid_user_types()}",
             )
 
         return normalized
@@ -1351,7 +1351,7 @@ class UserManagementService:
             picture: New picture URL
             email: New email (Story 8: local mode only)
             username: Username cannot be changed (Story 8: always rejected)
-            user_type: New user type (Story 8: local mode only, 'regular' or 'external')
+            user_type: New user type (Story 8: local mode only, 'regular', 'external', or 'service_account')
             is_admin: New admin status
             is_maintainer: New maintainer status
             is_auditor: New auditor status

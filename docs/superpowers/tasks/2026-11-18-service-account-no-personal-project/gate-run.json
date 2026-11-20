@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17053",
+  "head": "9b9e36c73ce4e58bc3f75e363cd89dbe4213a7f1",
+  "runner": "poetry",
+  "started_at": "2026-11-18T12:04:41Z",
+  "completed_at": "2026-11-18T12:11:29Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 11000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 34000,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 317000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "15 failed, 36217 passed. 7 pdf export tests in test_conversation_pagination.py fail on missing cairo library (environment); 8 tests in test_reader_live_copilot_detail.py fail with LocalAnalyticsFilter missing 'scope' (files untouched by this branch diff, from base a01605f354)."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "pre-push hook runs this; 'make check-alembic' itself fails locally because bare 'python' is not on PATH (hook picks python3)."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 500,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "'[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN (env or .env.local) and install sonar-scanner. Also pre-push hook runs this only when CODEMIE_PREPUSH_ENABLED=true."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "notes": "Not requested."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Not opening an MR in this run; needs docker stack and fixtures."
+    },
+    {
+      "id": "commit-msg-hook",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "scripts/git-hooks/commit_msg.sh",
+      "notes": "Runs at commit time only."
+    }
+  ],
+  "failures": {
+    "unit": "  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/permission.py:79: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise_unprocessable_entity(action=\"delete\", resource=\"permission\", exc=e)\n\ntests/codemie/rest_api/routers/test_project_settings.py::test_create_git_integrity_error_maps_to_generic_422\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/project_settings.py:130: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise _map_integrity_error(request, e) from e\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_combined_kept_and_new_over_limit_raises\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:297: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    FileDatasourceService.upload_and_prepare_files(\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_raises_422_when_json_file_has_invalid_content\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/datasource/file_datasource_service.py:287: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(file.filename, content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_content_key\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:416: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_metadata_key\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:422: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_invalid_json_bytes\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:427: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", b\"not-json-content\")\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFilesZip::test_upload_and_prepare_files_zip_validates_json_entries\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/datasource/file_datasource_service.py:214: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(name, content)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_hook_only_session_detail_matches_the_session_list\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_listing_gate_drops_start_only_and_sub_agent_sessions\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_late_parent_start_flags_the_already_rolled_up_child_as_a_sub_agent\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_aggregates_keep_claude_session_results_and_add_the_session_without_usage\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_model_breakdown_merges_dotted_and_dashed_claude_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_claude_code_subagent_start_does_not_hide_the_session_it_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_subagent_with_cost_rows_of_its_own_stays_listed\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_hidden_subagent_is_dropped_from_every_session_aggregate_and_still_opens_by_id\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_explicit_false_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_full_mode_keeps_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[&include_tool_outputs=true-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_passes_format_specific_pandoc_args[pdf-expected_args0-absent_args0]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_list_table_link_content_survives_concise_filtering_end_to_end[pdf]\n= 15 failed, 36217 passed, 610 skipped, 5 xfailed, 641 warnings in 312.01s (0:05:12) =\nmake: *** [test] Error 1\n"
+  }
+}

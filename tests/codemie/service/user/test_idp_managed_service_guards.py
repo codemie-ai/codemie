@@ -54,7 +54,7 @@ class TestCreateUserFromIdp:
             admin_project_names=["proj-a"],
             knowledge_bases=[],
         )
-        created = SimpleNamespace(id=user_id, email="jdoe@example.com")
+        created = SimpleNamespace(id=user_id, email="jdoe@example.com", user_type="regular")
 
         with (
             patch("codemie.service.user.authentication_service.config") as mock_config,
