@@ -1932,8 +1932,8 @@ class TestTopAgentsUsageMoneyComesFromTheSpendPort:
     """AD-1/AD-14: the figure comes from the ledger, and every absence stays absent."""
 
     @staticmethod
-    def _candidate(assistant_id: str) -> dict:
-        return {"assistant_id": assistant_id, "assistant_name": f"name-of-{assistant_id}", "invocations": 7}
+    def _candidate(assistant_id: str, *, invocations: int = 7) -> dict:
+        return {"assistant_id": assistant_id, "assistant_name": f"name-of-{assistant_id}", "invocations": invocations}
 
     @pytest.mark.asyncio
     async def test_the_port_is_keyed_on_the_grouped_ids_not_the_display_names(self, handler):
@@ -2001,15 +2001,20 @@ class TestTopAgentsUsageMoneyComesFromTheSpendPort:
         assert enriched.rows[0]["money_spent"] == 0.0
 
     @pytest.mark.asyncio
-    async def test_the_money_order_puts_an_absent_figure_last_rather_than_at_zero(self, handler):
-        """A **measured zero** stands between the figures and the absence, which is what makes this
-        assertion falsifiable: ranking an absent figure as `0.0` ties it with the measured zero, and
-        only their relative order tells the two apart."""
-        rows = [self._candidate("absent"), self._candidate("zero"), self._candidate("small"), self._candidate("large")]
+    async def test_rows_are_ordered_by_invocations_then_name_whatever_they_cost(self, handler):
+        """Money is totalled but never ranks the table: the most invoked assistant leads even when it
+        costs least, a tie on invocations falls back to the name, and an absent figure keeps its place
+        while the footer says it is short."""
+        rows = [
+            self._candidate("small", invocations=5),
+            self._candidate("busy", invocations=9),
+            self._candidate("absent", invocations=5),
+            self._candidate("large", invocations=1),
+        ]
         answers = {
-            "absent": SpendResult.no_figure(PERIOD),
-            "zero": SpendResult(figure=Decimal("0")),
             "small": SpendResult(figure=Decimal("1")),
+            "busy": SpendResult(figure=Decimal("0")),
+            "absent": SpendResult.no_figure(PERIOD),
             "large": SpendResult(figure=Decimal("90")),
         }
 
@@ -2017,10 +2022,10 @@ class TestTopAgentsUsageMoneyComesFromTheSpendPort:
             enriched = await handler._enrich_top_agents_usage_spending(rows, PERIOD_START, PERIOD_END)
 
         assert [row["assistant_name"] for row in enriched.rows] == [
-            "name-of-large",
-            "name-of-small",
-            "name-of-zero",
+            "name-of-busy",
             "name-of-absent",
+            "name-of-small",
+            "name-of-large",
         ]
         # The footer is short by the row nobody has a figure for, and says so rather than looking whole.
         assert enriched.totals["money_spent"] == 91.0

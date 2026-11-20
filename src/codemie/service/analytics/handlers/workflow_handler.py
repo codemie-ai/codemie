@@ -373,11 +373,11 @@ class WorkflowHandler:
         report_filter: ReportFilter | None = None,
         filters: AnalyticsQueryFilters | None = None,
     ) -> EnrichedRows:
-        """Fill each workflow's cost and per-run cost, and total the table by cost.
+        """Fill each workflow's cost and per-run cost, then order and total the table by cost.
 
-        Rows are ordered by total runs descending, then workflow name ascending, which is the order
-        the Elasticsearch terms aggregation returns them in (Kibana parity). Money is totalled by cost
-        and does not decide the order.
+        **The candidate set is the aggregation's buckets, ranked by unique runs.** Money can only be
+        ordered once it exists, which is after this point, so a workflow with heavy ledger spend but
+        few runs is cut by the bucket cap before the cost sort ever sees it.
 
         Under an `attributes` filter the ledger cannot narrow a workflow's spend to the labelled runs, so
         each workflow's cost is the sum of its filtered executions, priced per execution id.
@@ -399,18 +399,14 @@ class WorkflowHandler:
             rendered = await self._workflow_spend(
                 rows, report_period_or_none(start_dt, end_dt, client_source), pre_floor, report_filter
             )
-        apply_spend_cells(rows, rendered, WORKFLOWS_MONEY_COLUMN)
         for row, figure in zip(rows, rendered, strict=True):
             # No annotation of its own: the ratio is derived from the same figure as the money cell,
             # so the row's single triple already qualifies both. A second copy would be a second
             # thing to keep in sync, saying nothing the first does not.
             row[WORKFLOWS_AVG_COST_COLUMN] = self._avg_cost(figure.figure, row["total_runs"])
 
-        return EnrichedRows(
-            rows=sorted(rows, key=lambda row: (-row["total_runs"], row["workflow_name"])),
-            columns=(WORKFLOWS_MONEY_COLUMN,),
-            totals=spend_footer(WORKFLOWS_MONEY_COLUMN, rendered),
-        )
+        # `ordered_spend_rows` fills the money cells, so they are not filled here as well.
+        return ordered_spend_rows(rows, rendered, WORKFLOWS_MONEY_COLUMN)
 
     def _get_workflows_columns(self) -> list[dict]:
         """Get column definitions for workflows."""
@@ -729,12 +725,21 @@ class WorkflowHandler:
         client_source: str | None = None,
         report_filter: ReportFilter | None = None,
     ) -> EnrichedRows:
-        """Fill each workflow's spend, then order and total the table by it."""
+        """Fill each workflow's spend and total the table by it.
+
+        Rows are ordered by invocations descending, then workflow name ascending. The Elasticsearch
+        terms aggregation ranks the candidates by invocations; ties are broken by name here, which
+        the aggregation does not do. Money is totalled by cost and does not decide the order.
+        """
         rendered = await self._workflow_spend(
             rows, report_period_or_none(start_dt, end_dt, client_source), pre_floor, report_filter
         )
         apply_spend_cells(rows, rendered, TOP_USAGE_MONEY_COLUMN)
-        return ordered_spend_rows(rows, rendered, TOP_USAGE_MONEY_COLUMN)
+        return EnrichedRows(
+            rows=sorted(rows, key=lambda row: (-row["invocations"], row["workflow_name"])),
+            columns=(TOP_USAGE_MONEY_COLUMN,),
+            totals=spend_footer(TOP_USAGE_MONEY_COLUMN, rendered),
+        )
 
     def _get_top_workflow_usage_columns(self) -> list[dict]:
         """Get column definitions for top workflow usage."""

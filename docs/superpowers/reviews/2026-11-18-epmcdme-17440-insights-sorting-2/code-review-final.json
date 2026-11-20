@@ -1,0 +1,20 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case and acceptance lenses ran clean under the balanced profile and standards audit found no blockers. All four sort criteria pass; the no-regression criterion is pending-stage-7. 0 deferred, 0 dismissed, 0 advisory.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "Assistants Usage (Top Assistants Usage) is sorted by Invocations", "status": "pass", "notes": "assistant_handler.py sorts by (-invocations, assistant_name); covered by ordering test"},
+    {"kind": "story-ac", "item": "Top Workflow Usage is sorted by Invocations", "status": "pass", "notes": "workflow_handler.py sorts by (-invocations, workflow_name); covered by tests"},
+    {"kind": "story-ac", "item": "Assistants Chats is sorted by Total Cost ($)", "status": "pass", "notes": "no code change needed per spec; existing pin test covers cost order"},
+    {"kind": "story-ac", "item": "Workflows is sorted by Total Cost ($)", "status": "pass", "notes": "_enrich_workflows_spending uses ordered_spend_rows by cost; tests present"},
+    {"kind": "story-ac", "item": "No regression in other Insights page widgets", "status": "pending-stage-7", "notes": "diff touches only the two top-usage enrichers and the workflows enricher; needs full-suite/lint evidence"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "1 subject in range matches the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "4 files changed (2 handlers, 2 test files); net reduction in large handler modules, no new concern; type hints kept"},
+    {"kind": "security", "status": "na", "notes": "no security guide passed and none at .ai-run/guides/security/security-practices.md; no concrete security issue seen in the sort-order changes"}
+  ],
+  "findings": [],
+  "deferred": []
+}

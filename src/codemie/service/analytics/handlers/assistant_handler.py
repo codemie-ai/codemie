@@ -1317,7 +1317,7 @@ FROM codemie_metrics_logs*
         client_source: str | None = None,
         report_filter: ReportFilter | None = None,
     ) -> EnrichedRows:
-        """Fill each assistant's spend from the spend port, then order and total the table by it.
+        """Fill each assistant's spend from the spend port and total the table by it.
 
         The port is keyed on the **assistant ids the aggregation grouped by**, never on the display
         names: a name is mutable, so keying on it would ask the ledger about a bucket the
@@ -1325,10 +1325,10 @@ FROM codemie_metrics_logs*
         exactly this read and it is consumed here, so the wire shape is today's plus the three
         annotation keys.
 
-        **The candidate set is the pipeline's 10 000 buckets, ranked by invocations.** Money can
-        only be ordered once it exists, which is after this point, so an assistant with heavy ledger
-        spend but few invocations is cut by that cap before the money sort ever sees it - the same
-        consequence every other enriched table carries.
+        **Rows are ordered by invocations descending, then assistant name ascending.** The aggregation
+        ranks the pipeline's 10 000 candidate buckets by invocations, so the cap cuts the least-invoked
+        assistants; ties are broken by name here, which the aggregation does not do. Money is totalled
+        by cost and does not decide the order.
 
         **No row is dropped for costing nothing**, unlike a spending table: a row here is an
         assistant's activity record, and an assistant that was invoked and cost nothing still
@@ -1358,18 +1358,10 @@ FROM codemie_metrics_logs*
 
         rendered = [render_spend(spend.get(assistant_id)) for assistant_id in assistant_ids]
         apply_spend_cells(rows, rendered, TOP_AGENTS_MONEY_COLUMN)
-
-        # The ledger figure decides the order and an absent one sorts last rather than as a zero: the
-        # first key separates the two outright, so no absent row is ranked among the figures.
-        ordered = sorted(
-            zip(rows, rendered, strict=True),
-            key=lambda pair: (pair[1].figure is not None, pair[1].figure or 0.0),
-            reverse=True,
-        )
         return EnrichedRows(
-            rows=[row for row, _ in ordered],
+            rows=sorted(rows, key=lambda row: (-row["invocations"], row["assistant_name"])),
             columns=(TOP_AGENTS_MONEY_COLUMN,),
-            totals=spend_footer(TOP_AGENTS_MONEY_COLUMN, [figure for _, figure in ordered]),
+            totals=spend_footer(TOP_AGENTS_MONEY_COLUMN, rendered),
         )
 
     def _get_top_agents_usage_columns(self) -> list[dict]:

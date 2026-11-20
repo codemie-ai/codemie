@@ -453,10 +453,11 @@ class TestWorkflowsMoneyComesFromTheSpendPort:
         assert enriched.rows[0]["avg_cost_usd"] is None
 
     @pytest.mark.asyncio
-    async def test_an_absent_figure_keeps_its_place_in_the_run_order_and_the_footer_says_so(self, handler):
-        """Cost does not order this table, so an absent figure is not moved to the bottom: the row sits
-        where its runs put it, and the footer is labelled short by the figure nobody has."""
-        rows = [_candidate("absent", total_runs=9), _candidate("zero"), _candidate("small"), _candidate("large")]
+    async def test_the_money_order_puts_an_absent_figure_last_rather_than_at_zero(self, handler):
+        """A **measured zero** stands between the figures and the absence, which is what makes this
+        assertion falsifiable: ranking an absent figure as `0.0` ties it with the measured zero, and
+        only their relative order tells the two apart."""
+        rows = [_candidate("absent"), _candidate("zero"), _candidate("small"), _candidate("large")]
         answers = {
             "id-absent": SpendResult.no_figure(PERIOD),
             "id-zero": SpendResult(figure=Decimal("0")),
@@ -470,7 +471,7 @@ class TestWorkflowsMoneyComesFromTheSpendPort:
         ):
             enriched = await handler._enrich_workflows_spending(rows, PERIOD_START, PERIOD_END)
 
-        assert [row["workflow_name"] for row in enriched.rows] == ["absent", "large", "small", "zero"]
+        assert [row["workflow_name"] for row in enriched.rows] == ["large", "small", "zero", "absent"]
         # The footer is short by the row nobody has a figure for, and says so rather than looking whole.
         assert enriched.totals["total_cost_usd"] == 91.0
         assert enriched.totals["total_cost_usd_spend_partial"] is True
@@ -589,7 +590,7 @@ class TestNameResolution:
             enriched = await handler._enrich_workflows_spending(rows, PERIOD_START, PERIOD_END)
 
         port.assert_not_awaited()
-        assert [row["workflow_name"] for row in enriched.rows] == ["Deploy", "Nightly Report"]
+        assert [row["workflow_name"] for row in enriched.rows] == ["Nightly Report", "Deploy"]
         assert all(row["total_cost_usd"] is None and row["spend_unavailable"] is True for row in enriched.rows)
         # Worth a warning, unlike a name the directory simply does not hold.
         log.warning.assert_called_once()
@@ -862,8 +863,8 @@ class TestTopWorkflowUsageMoneyComesFromTheSpendPort:
     """The second surface: one money column, no ratio."""
 
     @staticmethod
-    def _candidate(name: str) -> dict:
-        return {"workflow_name": name, "invocations": 7, PRE_FLOOR_MONEY_KEY: render_spend(None)}
+    def _candidate(name: str, *, invocations: int = 7) -> dict:
+        return {"workflow_name": name, "invocations": invocations, PRE_FLOOR_MONEY_KEY: render_spend(None)}
 
     @pytest.mark.asyncio
     async def test_the_port_is_keyed_on_the_resolved_id(self, handler):
@@ -909,23 +910,32 @@ class TestTopWorkflowUsageMoneyComesFromTheSpendPort:
         assert enriched.rows[0]["money_spent"] == 0.0
 
     @pytest.mark.asyncio
-    async def test_the_money_order_puts_an_absent_figure_last_rather_than_at_zero(self, handler):
-        rows = [self._candidate("absent"), self._candidate("zero"), self._candidate("large")]
+    async def test_rows_are_ordered_by_invocations_then_name_whatever_they_cost(self, handler):
+        """Money is totalled but never ranks the table: the busiest workflow leads even when it costs
+        least, a tie on invocations falls back to the name, and an absent figure keeps its place while
+        the footer says it is short."""
+        rows = [
+            self._candidate("beta", invocations=5),
+            self._candidate("busy", invocations=9),
+            self._candidate("alpha", invocations=5),
+        ]
         answers = {
-            "id-absent": SpendResult.no_figure(PERIOD),
-            "id-zero": SpendResult(figure=Decimal("0")),
-            "id-large": SpendResult(figure=Decimal("9")),
+            "id-beta": SpendResult(figure=Decimal("9")),
+            "id-busy": SpendResult(figure=Decimal("1")),
+            "id-alpha": SpendResult.no_figure(PERIOD),
         }
 
-        with _directory(absent="id-absent", zero="id-zero", large="id-large"), _patched_port(answers):
+        with _directory(beta="id-beta", busy="id-busy", alpha="id-alpha"), _patched_port(answers):
             enriched = await handler._enrich_top_workflow_usage_spending(rows, PERIOD_START, PERIOD_END)
 
-        assert [row["workflow_name"] for row in enriched.rows] == ["large", "zero", "absent"]
+        assert [row["workflow_name"] for row in enriched.rows] == ["busy", "alpha", "beta"]
+        assert enriched.totals["money_spent"] == 10.0
+        assert enriched.totals["money_spent_spend_partial"] is True
 
 
-class TestWorkflowsAreOrderedByRunsThenName:
-    """The table reads in the order the metric store's terms aggregation gives it - runs descending,
-    then name ascending. Money is totalled by cost and never decides which row leads the page."""
+class TestWorkflowsAreOrderedByCost:
+    """The workflows table reads by what each workflow cost, highest first, and the page is cut from
+    that order, so a later page continues the same ranking rather than restarting it."""
 
     @staticmethod
     async def _enrich_and_page(handler, candidates: list[dict], *, page: int = 0, per_page: int = 20):
@@ -939,30 +949,20 @@ class TestWorkflowsAreOrderedByRunsThenName:
         )
 
     @pytest.mark.asyncio
-    async def test_a_workflow_with_more_runs_leads_the_page_even_when_it_costs_less(self, handler):
-        candidates = [_candidate("X", total_runs=2), _candidate("Y", total_runs=9)]
-        answers = {"id-x": SpendResult(figure=Decimal("12")), "id-y": SpendResult(figure=Decimal("3"))}
+    async def test_a_workflow_that_costs_more_leads_the_page_even_when_it_ran_less(self, handler):
+        candidates = [_candidate("X", total_runs=9), _candidate("Y", total_runs=2)]
+        answers = {"id-x": SpendResult(figure=Decimal("3")), "id-y": SpendResult(figure=Decimal("12"))}
 
         with _directory(X="id-x", Y="id-y"), _patched_port(answers):
             page, total_count, totals = await self._enrich_and_page(handler, candidates)
 
         assert [row["workflow_name"] for row in page] == ["Y", "X"]
-        assert [row["total_cost_usd"] for row in page] == [3.0, 12.0]
+        assert [row["total_cost_usd"] for row in page] == [12.0, 3.0]
         assert total_count == 2
         assert totals["total_cost_usd"] == 15.0
 
     @pytest.mark.asyncio
-    async def test_a_tie_on_runs_is_broken_by_workflow_name_ascending(self, handler):
-        candidates = [_candidate("beta", total_runs=4), _candidate("alpha", total_runs=4)]
-        answers = {"id-beta": SpendResult(figure=Decimal("9")), "id-alpha": SpendResult(figure=Decimal("1"))}
-
-        with _directory(beta="id-beta", alpha="id-alpha"), _patched_port(answers):
-            page, _, _ = await self._enrich_and_page(handler, candidates)
-
-        assert [row["workflow_name"] for row in page] == ["alpha", "beta"]
-
-    @pytest.mark.asyncio
-    async def test_a_later_page_slices_the_run_order_not_the_cost_order(self, handler):
+    async def test_a_later_page_slices_the_cost_order_not_the_run_order(self, handler):
         candidates = [_candidate("A", total_runs=10), _candidate("B", total_runs=5), _candidate("C", total_runs=2)]
         answers = {
             "id-a": SpendResult(figure=Decimal("1")),
@@ -973,18 +973,18 @@ class TestWorkflowsAreOrderedByRunsThenName:
         with _directory(A="id-a", B="id-b", C="id-c"), _patched_port(answers):
             page, total_count, _ = await self._enrich_and_page(handler, candidates, page=1, per_page=1)
 
-        assert [row["workflow_name"] for row in page] == ["B"]
+        assert [row["workflow_name"] for row in page] == ["C"]
         assert total_count == 3
 
 
-class TestTopWorkflowUsageStillOrdersByCost:
-    """Regression: the top-usage table is the cost-ordered one, and the workflows table's run order
-    must not have leaked into it."""
+class TestTopWorkflowUsageIsOrderedByInvocations:
+    """The top-usage table ranks by how often a workflow was invoked, and the cost ordering that
+    `get_workflows` uses must not have leaked into it."""
 
     @pytest.mark.asyncio
-    async def test_the_top_usage_table_is_ordered_by_cost_not_by_invocations(self, handler, mock_repository):
+    async def test_the_top_usage_table_is_ordered_by_invocations_not_by_cost(self, handler, mock_repository):
         mock_repository.execute_aggregation_query.return_value = _as_result(
-            [_top_usage_bucket("Busy", invocations=20), _top_usage_bucket("Costly", invocations=1)]
+            [_top_usage_bucket("Costly", invocations=1), _top_usage_bucket("Busy", invocations=20)]
         )
         answers = {"wf-busy": SpendResult(figure=Decimal("1")), "wf-costly": SpendResult(figure=Decimal("9"))}
 
@@ -995,7 +995,7 @@ class TestTopWorkflowUsageStillOrdersByCost:
         ):
             result = await handler.get_top_workflow_usage(start_date=PERIOD_START, end_date=PERIOD_END)
 
-        assert [row["workflow_name"] for row in result["data"]["rows"]] == ["Costly", "Busy"]
+        assert [row["workflow_name"] for row in result["data"]["rows"]] == ["Busy", "Costly"]
 
 
 class TestAClientSourceFilterReadsNoMoney:
@@ -1090,7 +1090,8 @@ class TestTheDashboardFilterReachesTheMoneyRead:
             await getattr(handler, entry)(time_period="last_30_days", users=["u1"], projects=["p1"])
 
         build.assert_awaited_once_with(["u1"], ["p1"])
-        rows = [_candidate("Nightly Report", pre_floor=_measured(10.0))]
+        # The top-usage enricher also reads `invocations`, which the workflows candidate does not carry.
+        rows = [{**_candidate("Nightly Report", pre_floor=_measured(10.0)), "invocations": 7}]
         with _directory(**{"Nightly Report": "wf-42"}), _patched_port({}, expect_period=AT_OR_ABOVE_FLOOR_LEG) as port:
             await captured["enricher"](rows, PERIOD_START, PERIOD_END)
         assert port.await_args.kwargs["report_filter"] is self.ASKED
