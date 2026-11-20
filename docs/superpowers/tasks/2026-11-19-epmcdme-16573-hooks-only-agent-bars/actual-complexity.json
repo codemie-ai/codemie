@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-11-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 2,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "A single new UNION ALL branch added to one repository method (`get_session_detail_dispatches` in `PostgresCliAnalyticsReader`), self-contained in one component; it reuses existing CTEs (`t`, `launched`, `dispatch_fork`, `stopped`, `agent_usage`) rather than introducing new ones." },
+    { "dimension": "technical_risk", "reason": "The new branch is modeled tightly on the existing 'skill fallback' branch immediately above it in the same UNION (same join shape against `stopped`/`agent_usage`), with explicit NOT EXISTS guards against `t`/`launched` and `dispatch_fork` to prevent double-counting (CR-001). The accompanying live-Postgres test file exercises exactly the enumerated edge cases (fleet overlap, OTel+hooks duplicate, slash-command foreground fork duplicate), so the defensive pattern is covered rather than left as an open risk." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

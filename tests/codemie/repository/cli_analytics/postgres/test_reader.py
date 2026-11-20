@@ -2524,8 +2524,41 @@ async def test_agent_run_time_runs_from_its_subagent_start_to_its_subagent_stop_
         "WHEN st.ended_at >= la.launch_ts "
         "THEN (extract(epoch FROM st.ended_at - la.launch_ts) * 1000)::bigint END AS subagent_duration_ms" in sql
     )
-    # 2 in subagent_duration_ms's own CASE, 2 more in dispatch_start's matching CASE (see the bar-anchoring test)
-    assert sql.count("st.stop_duration_ms") == 4
+    # 2 in subagent_duration_ms's own CASE, 2 more in dispatch_start's matching CASE (see the bar-anchoring
+    # test), plus 6 more in the hooks-only plain-agent branch's own 3 identically-shaped CASEs (2 each): its
+    # dispatch_start-equivalent, duration_ms and subagent_duration_ms (EPMCDME-16573 code review)
+    assert sql.count("st.stop_duration_ms") == 10
+
+
+@pytest.mark.asyncio
+async def test_plain_agent_hooks_only_branch_never_doubles_a_row_another_source_already_owns():
+    # EPMCDME-16573 code review: the hooks-only plain-agent branch (GitHub Copilot CLI, or Claude Code
+    # ingested without OTel) must never add a second Timeline row for a fork another source already
+    # covers. Three guards: an OTel Agent call that resolved this agent_id, OR one of the SAME
+    # subagent_type whose call exists but never resolved any agent_id at all (that call's own span row,
+    # keyed by tool_use_id, already stands for it — a plain agent_id match can never find it, since it
+    # has none; an AI-review finding caught this scoped only by "any unresolved call in the session",
+    # which hid unrelated hooks-only agents of a different type entirely); a slash command's foreground
+    # fork (dispatch_fork); and a Claude Code Skill call's fork (skill_fork, by agent_id alone, span or no
+    # span — it must never join through `t`, which only a Skill call with a span has a row in).
+    sql = await _dispatches_sql()
+
+    assert (
+        "WHERE h.session_id = $1::text AND h.event_type = 'agent.subagent.start' "
+        "AND coalesce(h.agent_type, '') <> '' AND coalesce(h.skill_name, '') = '' " in sql
+    )
+    assert (
+        "AND NOT EXISTS (SELECT 1 FROM t JOIN launched la ON la.tool_use_id = t.tool_use_id "
+        "WHERE t.subagent_type <> '' AND (la.agent_id = h.agent_id "
+        "OR (la.agent_id IS NULL AND t.subagent_type = h.agent_type))) "
+        "AND NOT EXISTS (SELECT 1 FROM dispatch_fork df WHERE df.agent_id = h.agent_id) "
+        "AND NOT EXISTS (SELECT 1 FROM skill_fork sf WHERE sf.agent_id = h.agent_id)" in sql
+    )
+    # the skill_fork guard above reads skill_fork directly: never joined through `t` (a span-only CTE,
+    # which would miss a Skill call recorded only by hooks). That NOT EXISTS/JOIN guard idiom still
+    # exists exactly once, in the unrelated skill-fallback branch's own guard (the skill-fallback test
+    # above) — not twice; the other two `JOIN skill_fork sf` matches below are value-computing LEFT JOINs.
+    assert sql.count("NOT EXISTS (SELECT 1 FROM t JOIN skill_fork sf ON sf.tool_use_id = t.tool_use_id") == 1
 
 
 @pytest.mark.asyncio

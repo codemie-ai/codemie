@@ -1,0 +1,95 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved the fix-up for CR-001 (dispatch_fork guard added, RED-to-GREEN verified). DF-001 remains deferred/out of scope."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User requested fix for CR-001 (missing dispatch_fork guard in new hooks-only agent branch, major, low confidence). DF-001 deferred as pre-existing/out of scope."
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved the fix-up for CR-001 (dispatch_fork guard added, RED-to-GREEN verified). DF-001 remains deferred/out of scope."
+    }
+  ],
+  "reviewed_head": "7abcbb3aa92f5692a8d409f63523a30cbe223969",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No story/spec was provided so acceptance never ran (compact profile: edge-case is the only applicable lens this round), which caps confidence at low. The new hooks-only UNION branch (reader.py:3742-3757) guards against a duplicate OTel-sourced row but omits the `dispatch_fork` guard the skill-fallback branch directly above it already has, so a slash-command's foreground (no-skill-name) fork can be double-counted as both a dispatch_fork row and a plain-agent row (CR-001, major, request-changes). One pre-existing gap was deferred (DF-001): a subagent fork whose hook events carry neither `agent_type` nor `skill_name` stays invisible, matching the AGENTS tile's existing `agent_type <> ''` assumption elsewhere in this file. 0 findings dismissed.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 3753,
+      "title": "Hooks-only agent branch misses dispatch_fork guard",
+      "problem": "The new plain-agent hooks-only UNION branch (reader.py:3742-3757) selects any agent.subagent.start hook with agent_type set and skill_name empty, but unlike the skill-fallback branch directly above it (which has `AND NOT EXISTS (SELECT 1 FROM dispatch_fork df WHERE df.agent_id = h.agent_id)` at line 3731), this branch has no guard against `dispatch_fork`. The dispatch_fork CTE's LATERAL match (reader.py:3487-3499) accepts a fork candidate with an empty skill_name as a slash-command's foreground fork, so the same agent_id can be claimed by both.",
+      "impact": "A slash-command dispatch whose foreground fork reports no skill_name on its own SubagentStart hook gets a row from the dispatch_fork-based UNION branch (reader.py:3758-3780) and a second, duplicate row from this new branch for the same agent_id, double-counting the agent's Timeline bar, duration and cost.",
+      "recommendation": "Add `AND NOT EXISTS (SELECT 1 FROM dispatch_fork df WHERE df.agent_id = h.agent_id)` to this branch's WHERE clause, mirroring the identical guard already present in the skill-fallback branch above (reader.py:3731).",
+      "status": "fixed",
+      "fix": {
+        "change": "Added `AND NOT EXISTS (SELECT 1 FROM dispatch_fork df WHERE df.agent_id = h.agent_id)` to the hooks-only plain-agent UNION branch in get_session_detail_dispatches (reader.py), mirroring the skill-fallback branch's existing guard.",
+        "test": "tests/codemie/repository/cli_analytics/postgres/test_live_hooks_only_agent_dispatches.py::test_live_slash_command_foreground_fork_gets_no_duplicate_row"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 3754,
+      "title": "Agent fork with no type and no skill name stays invisible",
+      "problem": "An agent.subagent.start hook event whose agent_type and skill_name are both empty matches no UNION branch (new branch requires agent_type <> '', skill-fallback requires skill_name <> ''), so it never surfaces in the Timeline.",
+      "preexisting": "The AGENTS tile already assumes agent_type <> '' for a subagent fork (reader.py:3203); this is a system-wide, pre-existing data assumption this change does not alter."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "standards review not expected for this profile/round"
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "standards review not expected for this profile/round"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "standards review not expected for this profile/round"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "Original round found CR-001 (missing `dispatch_fork` guard, major) and deferred DF-001 (pre-existing, out of scope). CR-001 was fixed (dispatch_fork NOT EXISTS guard added, proven RED-to-GREEN by a new regression test) and the user approved the re-ask of this gate on the fixed diff — see `gate_decision` and `gates` above, and `decisions.jsonl`.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

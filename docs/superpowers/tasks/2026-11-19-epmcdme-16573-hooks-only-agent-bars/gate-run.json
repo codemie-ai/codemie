@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16573_hooks-only-agent-bars",
+  "head": "7abcbb3aa92f5692a8d409f63523a30cbe223969",
+  "runner": "poetry",
+  "started_at": "2026-11-19T11:54:57Z",
+  "completed_at": "2026-11-19T12:09:55Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 10715,
+      "command": "poetry run ruff format src/codemie/repository/cli_analytics/postgres/reader.py tests/codemie/repository/cli_analytics/postgres/test_live_hooks_only_agent_dispatches.py && poetry run ruff check --fix <same files> && poetry run ruff check <same files>",
+      "exit_code": 0,
+      "notes": "User-scoped to the 2 files changed vs origin/main (reader.py + new test file) instead of the repo-wide `make ruff`, per caller instruction. '2 files left unchanged' / 'All checks passed!' x2; no mutation needed."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3877,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet src/codemie/repository/cli_analytics/postgres/reader.py tests/codemie/repository/cli_analytics/postgres/test_live_hooks_only_agent_dispatches.py",
+      "exit_code": 0,
+      "notes": "Ran the guide's `make license-check FILE=...` target's underlying command directly: `make` is not installed on this host (git-bash on Windows). Scoped to the 2 changed files per caller instruction. 'Checked 2 files, 0 missing license headers'."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make build",
+      "exit_code": null,
+      "notes": "Caller marked full build as non-essential to validate this reader.py/test-only change, to save time. Not run. Owed before merge if CI build step exists; `make` is also not installed on this host, so this would need the underlying `poetry build` instead."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 83170,
+      "command": "TEST_LOCAL_PG_URL=$PG_URL poetry run pytest -n0 tests/codemie/repository/cli_analytics/postgres/test_live_hooks_only_agent_dispatches.py tests/codemie/repository/cli_analytics/postgres/test_live_skill_tool_attribution.py tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_run.py -W ignore::DeprecationWarning",
+      "exit_code": 0,
+      "notes": "Caller-scoped test gate: ran only the 3 live-Postgres files that exercise get_session_detail_dispatches and could regress from the reader.py change, instead of the repo-wide `make test` (poetry run pytest tests/). TEST_LOCAL_PG_URL pointed at the running local dev Postgres container (PG_URL env, postgresql://postgres:password@localhost:5432/postgres) since no disposable throwaway Postgres was spun up for this run. Result: 6 passed, 0 skipped, 0 failed in 64.67s. Full `make test`, tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py, and the other pre-existing failures named by the caller were not run here and are out of this run's scope."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: the user did not request coverage (guide's own skip criterion) — coverage was not requested for this run."
+    },
+    {
+      "id": "static-analysis",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 244,
+      "command": "node scripts/sonar/run-local-sonar.js (make sonar-local; make itself unavailable on this host)",
+      "exit_code": 0,
+      "notes": "Self-skip/environment-blocked: output was '[sonar-local] EISDIR: illegal operation on a directory, read' because .env.local is a directory (not a file) on this host, and SONAR_TOKEN is also unset in this environment (checked via env). Guide's own skip criterion applies: 'Sonar configuration, network access, or required credentials are unavailable.' To enable locally: fix/remove the stray .env.local directory and set SONAR_TOKEN + SONAR_HOST_URL (or .env.local) with a reachable local SonarQube."
+    },
+    {
+      "id": "secrets-scan-ci",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 118463,
+      "command": "docker run --rm -v \"C:/Repositories/codemie:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace",
+      "exit_code": 0,
+      "notes": "make gitleaks (full working-tree dir scan). Required MSYS_NO_PATHCONV=1 and a Windows-style -v source path (git-bash's default /c/... path form mounted an empty/.git-only view in this Rancher Desktop setup). 'scanned ~83.11 MB in 1m57s' / 'no leaks found'."
+    },
+    {
+      "id": "precommit-gitleaks-staged",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 128,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: output was 'codemie-gitleaks: skipped (CODEMIE_PRECOMMIT_ENABLED=false)' — this host's .env sets CODEMIE_PRECOMMIT_ENABLED=false repo-wide. To enable locally: unset/true that variable and have a live Docker/Podman/Apple-Containers engine. Full-tree content was already covered by the secrets-scan-ci dir scan above (same tool, same .gitleaks.toml)."
+    },
+    {
+      "id": "precommit-ruff-staged-format",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 526,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: output was '[pre-commit] No staged Python files - skipping Ruff format/fix check.' The 2 changed files are already committed on this branch (clean working tree, nothing in the git index), so this staged-content check has nothing to compare. Equivalent intent (ruff format/check against the actual file content) is covered by the lint gate above."
+    },
+    {
+      "id": "commit-msg-prefix",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file>",
+      "exit_code": null,
+      "notes": "No commit is being created by this QA run; this hook only fires on `git commit`. Last commit on the branch (7abcbb3aa9) already carries the 'EPMCDME-16573:' prefix this hook enforces."
+    },
+    {
+      "id": "alembic-heads-check",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 7313,
+      "command": "poetry run python scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "Always-on step of the pre-push hook (not gated by CODEMIE_PREPUSH_ENABLED). 'src/external/alembic/versions: 219 version file(s), OK'; 'src/external/alembic_cli_analytics/versions: 14 version file(s), OK'. (Ran `python` via `poetry run` — bare `python`/`python3` are not on PATH on this host.)"
+    },
+    {
+      "id": "prepush-heavy-suite",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_push.sh (opt-in: poetry run pytest tests/ --ignore=tests/enterprise/ ... && make sonar-local)",
+      "exit_code": null,
+      "notes": "Self-skip by design: opt-in via CODEMIE_PREPUSH_ENABLED (unset = false on this host, confirmed via env), so a real `git push` would print '[pre-push] CODEMIE_PREPUSH_ENABLED=false -> skipping heavy checks.' and exit 0 without running pytest or sonar-local. Not forced on here because that would run the full repo-wide pytest suite the caller asked to skip; its pytest step is already covered in substance by the scoped unit gate above and its sonar-local step by the static-analysis gate above."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Aggregate target (ruff + license + gitleaks + test, each already run individually above with the caller's scoping applied); not re-run as a single aggregate since that would force the full repo-wide `make test` the caller asked to skip."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if: not opening a merge request from this subagent (guide's own skip criterion; MR/PR creation is explicitly out of scope here). Local test-harness fixtures (~/.codemie/test-harness.json) and uvx are present on this host, so it is runnable later as a separate MR-readiness step per .ai-run/guides/testing/local-verification.md."
+    }
+  ],
+  "failures": {}
+}
