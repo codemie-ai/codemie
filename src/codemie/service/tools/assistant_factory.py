@@ -12,9 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional
+import contextvars
+import time
+from collections.abc import Callable
+from concurrent.futures import CancelledError, ThreadPoolExecutor
+from typing import Any, List, Optional
 
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
+from codemie.clients.postgres import _current_session
+from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.core.thread import MessageQueue
 from codemie.core.models import AssistantChatRequest
@@ -35,6 +41,54 @@ def _validate_remote_entity_exists_and_cleanup(assistant: Assistant) -> Optional
     from codemie.service.aws_bedrock.bedrock_agent_service import BedrockAgentService
 
     return BedrockAgentService.validate_remote_entity_exists_and_cleanup(assistant)
+
+
+def _timed_call(name: str, kind: str, fn: Callable[[], Any]) -> tuple[Any, BaseException | None]:
+    start = time.perf_counter()
+    try:
+        return fn(), None
+    except Exception as e:
+        return None, e
+    finally:
+        logger.debug(f"subagent={name} kind={kind} duration_ms={int((time.perf_counter() - start) * 1000)}")
+
+
+def _pooled_call(name: str, kind: str, fn: Callable[[], Any]) -> tuple[Any, BaseException | None]:
+    # Runs in a copied context: never share an ambient DB session (transactional_session) across threads.
+    _current_session.set(None)
+    return _timed_call(name, kind, fn)
+
+
+def run_builds(
+    jobs: list[tuple[str, str, Callable[[], Any]]],
+    is_fatal: Callable[[str, BaseException], bool] = lambda _kind, _e: False,
+) -> list[tuple[Any, BaseException | None]]:
+    """Run build jobs (name, kind, fn) on a bounded per-call pool; outcomes keep submission order.
+
+    is_fatal(kind, error) marks errors that abort the phase. On the first fatal error (scanning in order)
+    unstarted jobs are cancelled; running ones settle.
+    """
+    start = time.perf_counter()
+    if len(jobs) <= 1:
+        return [_timed_call(*job) for job in jobs]
+
+    workers = min(config.SUBAGENT_BUILD_MAX_WORKERS, len(jobs))
+    outcomes: list[tuple[Any, BaseException | None]] = []
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="subagent-build") as pool:
+        futures = [pool.submit(contextvars.copy_context().run, _pooled_call, *job) for job in jobs]
+        for i, future in enumerate(futures):
+            outcome = future.result()
+            outcomes.append(outcome)
+            if outcome[1] is not None and is_fatal(jobs[i][1], outcome[1]):
+                for rest in futures[i + 1 :]:
+                    rest.cancel()
+                outcomes.extend((None, CancelledError()) if f.cancelled() else f.result() for f in futures[i + 1 :])
+                break
+    logger.debug(
+        f"Subagent build phase total_ms={int((time.perf_counter() - start) * 1000)} "
+        f"count={len(jobs)} max_workers={workers}"
+    )
+    return outcomes
 
 
 class AssistantFactory:
@@ -104,13 +158,94 @@ class AssistantFactory:
             raise
 
 
-def create_assistant_executors(
+def prepare_assistants(
     assistant_ids: List[str],
     user: Optional[User] = None,
     request: Optional[AssistantChatRequest] = None,
-    request_uuid: Optional[str] = None,
-    thread_generator: Optional[MessageQueue] = None,
     parent_assistant: Optional[Assistant] = None,
+) -> list[Assistant]:
+    """Serial prelude: fetch sub-assistants, skip remotely deleted ones, pin requested versions."""
+    sub_assistants_versions = _sub_assistants_versions(request)
+
+    try:
+        assistants = Assistant.get_by_ids(user, assistant_ids, parent_assistant=parent_assistant)
+    except Exception as e:
+        logger.error(f"Error fetching assistants: {str(e)}")
+        return []
+
+    prepared = []
+    for assistant in assistants:
+        deleted_name = _validate_remote_entity_exists_and_cleanup(assistant)
+        if deleted_name:
+            logger.info(f"Assistant {assistant.id} has been deleted remotely: {deleted_name}")
+            continue
+        try:
+            prepared.append(_with_pinned_version(assistant, sub_assistants_versions))
+        except Exception as e:
+            # A stale/invalid version pin on one sub-assistant must not abort the whole batch;
+            # skip it and keep building the rest, matching the prior per-assistant degradation.
+            logger.error(f"Error applying version pin for assistant {assistant.id}: {str(e)}")
+    return prepared
+
+
+def is_fatal_custom_failure(kind: str, error: BaseException) -> bool:
+    """Only a custom sub-assistant's MCP load failure aborts the build phase."""
+    return kind == "custom" and isinstance(error, MCPToolLoadException)
+
+
+def custom_build_jobs(  # noqa: PLR0913 -- mirrors the sub-assistant build signature used throughout this module
+    assistants: list[Assistant],
+    user: User | None,
+    request: AssistantChatRequest | None,
+    request_uuid: str | None,
+    thread_generator: MessageQueue | None,
+    build_context: SubagentBuildContext,
+) -> list[tuple[str, str, Callable[[], Any]]]:
+    """Build (name, kind, fn) jobs for ``run_builds``; each child's build_context is allocated here, serially."""
+    return [
+        (
+            assistant.name,
+            "custom",
+            AssistantFactory(
+                assistant=assistant,
+                user=user,
+                request=request,
+                request_uuid=request_uuid,
+                thread_generator=thread_generator,
+                build_context=build_context.child(),
+            ).build,
+        )
+        for assistant in assistants
+    ]
+
+
+def collect_custom_executors(
+    assistants: list[Assistant], outcomes: list[tuple[Any, BaseException | None]]
+) -> list[SubagentHandle]:
+    """Walk build outcomes in list order: skip regular failures, re-raise MCP load failures with context."""
+    handles: list[SubagentHandle] = []
+    for assistant, (handle, error) in zip(assistants, outcomes, strict=False):
+        if error is None:
+            handles.append(handle)
+        elif isinstance(error, MCPToolLoadException):
+            error.attach_assistant_context(assistant_name=assistant.name, assistant_id=assistant.id)
+            logger.error(
+                f"Failed to create executor for sub-assistant '{assistant.name}' (id={assistant.id}) "
+                f"due to MCP server '{error.server_name}': {str(error.original_error)}"
+            )
+            raise error
+        else:
+            logger.error(f"Failed to create executor for assistant {assistant.id}: {describe_exception(error)}")
+    return handles
+
+
+def create_assistant_executors(
+    assistant_ids: list[str],
+    user: Optional[User] = None,
+    request: Optional[AssistantChatRequest] = None,
+    request_uuid: str | None = None,
+    thread_generator: MessageQueue | None = None,
+    parent_assistant: Assistant | None = None,
     build_context: SubagentBuildContext | None = None,
 ) -> list[SubagentHandle]:
     """
@@ -128,51 +263,12 @@ def create_assistant_executors(
     Returns:
         List[SubagentHandle]: the built sub-assistants
     """
-    handles: list[SubagentHandle] = []
     if build_context is None:
         build_context = SubagentBuildContext()
 
-    # Get version overrides from parent assistant or request
-    sub_assistants_versions = _sub_assistants_versions(request)
-
-    # Get assistant objects from IDs
-    try:
-        assistants = Assistant.get_by_ids(user, assistant_ids, parent_assistant=parent_assistant)
-    except Exception as e:
-        logger.error(f"Error fetching assistants: {str(e)}")
-        return handles
-
-    # Create handles from assistants
-    for assistant in assistants:
-        deleted_name = _validate_remote_entity_exists_and_cleanup(assistant)
-
-        if deleted_name:
-            logger.info(f"Assistant {assistant.id} has been deleted remotely: {deleted_name}")
-            continue
-
-        child_context = build_context.child()
-        try:
-            assistant = _with_pinned_version(assistant, sub_assistants_versions)
-            factory = AssistantFactory(
-                assistant=assistant,
-                user=user,
-                request=request,
-                request_uuid=request_uuid,
-                thread_generator=thread_generator,
-                build_context=child_context,
-            )
-            handles.append(factory.build())
-        except MCPToolLoadException as e:
-            e.attach_assistant_context(assistant_name=assistant.name, assistant_id=assistant.id)
-            logger.error(
-                f"Failed to create executor for sub-assistant '{assistant.name}' (id={assistant.id}) "
-                f"due to MCP server '{e.server_name}': {str(e.original_error)}"
-            )
-            raise
-        except Exception as e:
-            logger.error(f"Failed to create executor for assistant {assistant.id}: {describe_exception(e)}")
-
-    return handles
+    assistants = prepare_assistants(assistant_ids, user, request, parent_assistant)
+    jobs = custom_build_jobs(assistants, user, request, request_uuid, thread_generator, build_context)
+    return collect_custom_executors(assistants, run_builds(jobs, is_fatal_custom_failure))
 
 
 def _sub_assistants_versions(request: AssistantChatRequest | None) -> dict[str, int] | None:

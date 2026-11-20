@@ -1,0 +1,110 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": false,
+  "decision": "request-changes",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved the fix-up for CR-001/002/003 after reviewing the fix-up diff; all tests green."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User asked to fix CR-001/002/003 before approving."
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved the fix-up for CR-001/002/003 after reviewing the fix-up diff; all tests green."
+    }
+  ],
+  "reviewed_head": "41bf159fdedc8f7b9c133586cc1474fa6008ca32",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No spec/story was in scope (acceptance lens n/a), which caps confidence at low regardless of findings; blind and verification-gap were correctly skipped under the balanced profile. Standards review found 1 blocking commit-format violation (coverage_gap false). Edge-case lens produced 5 candidates: 2 are real regressions introduced by this concurrency rebase (a fatal custom build now discards already-built builtin handles without cleanup; an unguarded version-pin call now crashes the whole subagent batch instead of being skipped) and 3 were dismissed as noise (BaseException-vs-Exception handling in _timed_call is a pre-existing pattern and purely theoretical here; the best-effort cancel() semantics are already documented in run_builds's own docstring; the lack of a hard SUBAGENT_BUILD_MAX_WORKERS ceiling is already documented as an operator tuning tradeoff in config.py). No decision_needed items, no deferred items.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [
+    "breaking-change"
+  ],
+  "open": 3,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit 'epmcdme-15952-concurrent-subagent-executors: add planning artifacts'",
+      "title": "Commit subject breaks ticket-prefix convention",
+      "problem": "Commit subject uses a lowercase branch-slug prefix instead of the required 'EPMCDME-####: Description' format mandated by git-workflow.md.",
+      "impact": "Breaks the documented commit-message convention this repo enforces for every commit, which blocks the merge workflow.",
+      "recommendation": "Reword the subject to 'EPMCDME-15952: Add planning artifacts' (or squash it into an adjacent EPMCDME-15952-prefixed commit) before merge.",
+      "status": "not-rechecked"
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/assistant_engine_builder.py",
+      "line": 280,
+      "title": "Fatal custom failure drops already-built builtin handles",
+      "problem": "collect_custom_executors re-raises immediately on a fatal MCPToolLoadException from a custom sub-assistant, before the builtin-handle loop below it runs. Because run_builds executes custom and builtin jobs concurrently on one shared pool (previously builtins were only ever attempted after every custom build had already succeeded), a builtin job positioned later in the submission list can already have completed successfully by the time the fatal outcome is detected.",
+      "impact": "The already-built builtin SubagentHandle objects, and whatever resources their build opened, are discarded without being closed or reused; this ordering was impossible before this change serialized builtins strictly after all customs, so the leak is newly introduced.",
+      "recommendation": "Before re-raising in collect_custom_executors (or at the call site in create_subagent_executors), close/release any already-succeeded outcomes in outcomes[len(custom_assistants):] instead of discarding them silently.",
+      "status": "not-rechecked"
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/tools/assistant_factory.py",
+      "line": 178,
+      "title": "Version-pin failure now aborts the whole subagent batch",
+      "problem": "prepare_assistants calls _with_pinned_version outside any try/except. AssistantVersionService.apply_version_to_assistant is documented to raise ExtendedHTTPException when the version is not found, and can also raise from ensure_no_personal_integration_if_shared. Previously this call sat inside the per-assistant try/except in create_assistant_executors that caught Exception, logged, and continued with the remaining sub-assistants.",
+      "impact": "One sub-assistant with a stale or invalid version pin now crashes prepare_assistants and the whole create_subagent_executors call for the request, instead of being skipped while its siblings and all builtin subagents still build.",
+      "recommendation": "Wrap the _with_pinned_version call in prepare_assistants's loop in a try/except Exception that logs and skips that assistant, matching the prior per-assistant degradation behavior.",
+      "status": "not-rechecked"
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "partial",
+      "notes": "13 of 14 commit subjects match 'EPMCDME-####: Description'; 'epmcdme-15952-concurrent-subagent-executors: add planning artifacts' uses a lowercase branch-slug prefix instead."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "New run_builds/_pooled_call/_timed_call/custom_build_jobs code uses modern typing, the bounded runner lives alongside the executor-building code it serves, and all changed files stay well under the Module Cohesion threshold."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "_pooled_call clears the ambient DB session before running a build job in its own copied context; _build_builtin_subagent_executor deepcopies toolkits/mcp_servers/context before concurrent builtin builds; no credentials in new log statements."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "No spec/story was in scope (acceptance lens n/a), which caps confidence at low regardless of findings; blind and verification-gap were correctly skipped under the balanced profile. Standards review found 1 blocking commit-format violation (coverage_gap false). Edge-case lens produced 5 candidates: 2 are real regressions introduced by this concurrency rebase (a fatal custom build now discards already-built builtin handles without cleanup; an unguarded version-pin call now crashes the whole subagent batch instead of being skipped) and 3 were dismissed as noise (BaseException-vs-Exception handling in _timed_call is a pre-existing pattern and purely theoretical here; the best-effort cancel() semantics are already documented in run_builds's own docstring; the lack of a hard SUBAGENT_BUILD_MAX_WORKERS ceiling is already documented as an operator tuning tradeoff in config.py). No decision_needed items, no deferred items.",
+    "confidence": "low",
+    "risk_flags": [
+      "breaking-change"
+    ]
+  }
+}

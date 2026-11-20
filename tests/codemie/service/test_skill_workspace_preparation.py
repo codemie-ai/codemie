@@ -145,3 +145,58 @@ def test_script_step_and_tool_invocation_sites_do_not_prepare_skill_workspace():
     ]
 
     assert [site for site in sites if "prepare_skill_workspace" in pathlib.Path(site).read_text()] == []
+
+
+def test_concurrent_prepare_calls_on_one_conversation_create_one_workspace():
+    """Real AgentWorkspaceService: two builtin children racing on one conversation end with one row and no error."""
+    import contextlib
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sqlalchemy.exc import IntegrityError
+
+    from codemie.service.agent_workspace_service import AgentWorkspaceService
+
+    class FakeRepo:
+        """Unique (conversation, user) like uq_agent_workspaces_conversation_user; both callers pass the lookup first."""
+
+        def __init__(self):
+            self.rows = {}
+            self.lock = threading.Lock()
+            self.barrier = threading.Barrier(2, timeout=5)
+
+        def get_by_conversation_for_user(self, conversation_id, user_id):
+            row = self.rows.get((conversation_id, user_id))
+            if row is None and not self.barrier.broken and self.barrier.n_waiting < 2:
+                with contextlib.suppress(threading.BrokenBarrierError):
+                    self.barrier.wait()
+            return self.rows.get((conversation_id, user_id))
+
+        def save_workspace(self, workspace):
+            with self.lock:
+                key = (workspace.conversation_id, workspace.user_id)
+                if key in self.rows:
+                    raise IntegrityError("insert", {}, Exception("unique"))
+                workspace.id = f"w{len(self.rows)}"
+                self.rows[key] = workspace
+
+    repo = FakeRepo()
+    with (
+        patch.object(module, "_gate_is_open", return_value=True),
+        patch.object(module, "SkillService") as skill_service,
+        patch.object(module, "SkillWorkspaceSeeder") as seeder,
+        patch.object(module, "AgentWorkspaceRepository"),
+        patch.object(AgentWorkspaceService, "__init__", lambda self: setattr(self, "repository", repo)),
+        patch.object(AgentWorkspaceService, "sync_uploaded_files"),
+        patch.object(AgentWorkspaceService, "_get_conversation_uploaded_file_urls", return_value=[]),
+        patch.object(AgentWorkspaceService, "_user_id", return_value="u1"),
+        patch("codemie.service.agent_workspace_service.AgentWorkspaceResponse.from_model", side_effect=lambda w: w),
+    ):
+        skill_service.get_skills_by_ids.return_value = []
+        seeder.return_value.ensure_seeded.return_value = []
+        request = SimpleNamespace(conversation_id="c1")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: prepare_skill_workspace(_assistant(), request, USER), range(2)))
+
+    assert results == [[], []]
+    assert len(repo.rows) == 1

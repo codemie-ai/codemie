@@ -21,7 +21,7 @@ from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant, ToolPermissionsConfig
 from codemie.rest_api.security.user import User
 from codemie.service.tools.agent_tools_result import AgentToolsResult
-from codemie.service.tools.assistant_factory import AssistantFactory, create_assistant_executors
+from codemie.service.tools.assistant_factory import AssistantFactory, create_assistant_executors, prepare_assistants
 
 
 @pytest.fixture(autouse=True)
@@ -298,6 +298,25 @@ class TestAssistantFactory:
         mock_apply_version.assert_called_once_with(mock_assistant, 2)
 
     @patch("codemie.service.tools.assistant_factory.Assistant")
+    @patch("codemie.service.assistant.assistant_version_service.AssistantVersionService.apply_version_to_assistant")
+    def test_prepare_assistants_skips_assistant_with_failing_version_pin(
+        self, mock_apply_version, mock_assistant_class, mock_user, mock_request
+    ):
+        """CR-003 regression: one sub-assistant's bad version pin must not abort the whole batch."""
+        assistant_a = Mock(id="a-id")
+        assistant_b = Mock(id="b-id")
+        mock_assistant_class.get_by_ids.return_value = [assistant_a, assistant_b]
+        mock_request.sub_assistants_versions = {"a-id": 99}
+        mock_apply_version.side_effect = Exception("version not found")
+
+        with patch(
+            "codemie.service.tools.assistant_factory._validate_remote_entity_exists_and_cleanup", return_value=None
+        ):
+            result = prepare_assistants(["a-id", "b-id"], mock_user, mock_request)
+
+        assert result == [assistant_b]
+
+    @patch("codemie.service.tools.assistant_factory.Assistant")
     def test_create_assistant_executors_skips_deleted_assistants(self, mock_assistant_class, mock_user, mock_request):
         """Test that deleted assistants are skipped."""
         # Setup mocks
@@ -434,6 +453,76 @@ def test_sub_assistant_prebuild_restores_parent_attribution(mock_build_agent_han
     ).build()
 
     assert get_current_project() == "parent-project"
+
+
+class TestRunBuilds:
+    """Bounded, ordered concurrent runner for subagent build jobs."""
+
+    def test_peak_concurrency_bounded_and_outcomes_order_preserved(self):
+        import threading
+        import time
+
+        from codemie.configs import config
+        from codemie.service.tools.assistant_factory import run_builds
+
+        lock = threading.Lock()
+        state = {"active": 0, "peak": 0}
+
+        def job(name, delay):
+            def fn():
+                with lock:
+                    state["active"] += 1
+                    state["peak"] = max(state["peak"], state["active"])
+                time.sleep(delay)
+                with lock:
+                    state["active"] -= 1
+                return name
+
+            return (name, "custom", fn)
+
+        # Slowest job submitted first so submission order and completion order diverge.
+        count = config.SUBAGENT_BUILD_MAX_WORKERS + 2
+        jobs = [job(f"j{i}", 0.2 if i == 0 else 0.01) for i in range(count)]
+
+        outcomes = run_builds(jobs, lambda kind, e: False)
+
+        assert [name for name, error in outcomes] == [f"j{i}" for i in range(count)]
+        assert all(error is None for _, error in outcomes)
+        assert state["peak"] <= config.SUBAGENT_BUILD_MAX_WORKERS
+
+    def test_concurrent_setup_wall_time_beats_serial_and_timings_are_logged(self):
+        import re
+        import time
+
+        from codemie.configs import config
+        from codemie.service.tools.assistant_factory import run_builds
+
+        count, delay = 4, 0.15
+
+        def jobs():
+            return [(f"j{i}", "custom", lambda: time.sleep(delay)) for i in range(count)]
+
+        def timed_run(workers):
+            with (
+                patch.object(config, "SUBAGENT_BUILD_MAX_WORKERS", workers),
+                patch("codemie.service.tools.assistant_factory.logger") as mock_logger,
+            ):
+                start = time.perf_counter()
+                outcomes = run_builds(jobs())
+                wall = time.perf_counter() - start
+            assert all(error is None for _, error in outcomes)
+            return wall, [str(c.args[0]) for c in mock_logger.debug.call_args_list]
+
+        serial_wall, _ = timed_run(1)
+        concurrent_wall, logs = timed_run(count)
+
+        # Serial is about count * delay; concurrent about delay. The 0.6 bound leaves wide margin for CI noise.
+        assert serial_wall >= count * delay
+        assert concurrent_wall < serial_wall * 0.6
+
+        per_subagent = [m for m in logs if re.search(r"subagent=j\d kind=custom duration_ms=\d+", m)]
+        assert len(per_subagent) == count
+        assert any(f"count={count} max_workers={count}" in m and "total_ms=" in m for m in logs)
 
 
 class _PolicyPassed(Exception):
@@ -785,6 +874,88 @@ class TestCreateAssistantExecutorsFailureLog:
         logged = " ".join(str(c.args[0]) for c in mock_logger.error.call_args_list)
         assert "ModelNotWhitelistedException" in logged
         assert error.message in logged
+
+
+class TestCreateAssistantExecutorsConcurrency:
+    """Custom sub-assistant builds run through the shared pool (run_builds) and return SubagentHandle."""
+
+    @patch("codemie.service.tools.assistant_factory.config")
+    @patch("codemie.service.tools.assistant_factory.Assistant")
+    @patch("codemie.service.tools.assistant_factory.AssistantFactory")
+    def test_mcp_failure_aborts_phase_with_context_and_cancels_unstarted(
+        self, mock_factory_class, mock_assistant_class, mock_config
+    ):
+        from codemie.service.mcp.models import MCPToolLoadException
+
+        # One worker: the fatal first job must finish (and be seen as fatal) before the second
+        # job's worker slot opens, so the second job is still unstarted when it gets cancelled.
+        mock_config.SUBAGENT_BUILD_MAX_WORKERS = 1
+
+        assistant_a = Mock(id="a-id")
+        assistant_a.name = "a"
+        assistant_b = Mock(id="b-id")
+        assistant_b.name = "b"
+        mock_assistant_class.get_by_ids.return_value = [assistant_a, assistant_b]
+
+        ran: list[str] = []
+
+        def build_a():
+            raise MCPToolLoadException("srv", ValueError("boom"))
+
+        def build_b():
+            ran.append("b")
+            return Mock()
+
+        def factory_side_effect(assistant, **_):
+            return Mock(build=build_a if assistant is assistant_a else build_b)
+
+        mock_factory_class.side_effect = factory_side_effect
+
+        with (
+            patch(
+                "codemie.service.tools.assistant_factory._validate_remote_entity_exists_and_cleanup",
+                return_value=None,
+            ),
+            pytest.raises(MCPToolLoadException) as exc,
+        ):
+            create_assistant_executors(assistant_ids=["a-id", "b-id"], request=Mock(sub_assistants_versions=None))
+
+        assert exc.value.assistant_name == "a"
+        assert exc.value.assistant_id == "a-id"
+        assert ran == []
+
+    def test_custom_builds_run_concurrently_through_shared_pool(self):
+        """Two custom builds must overlap: a sequential loop would hang this barrier out to its timeout."""
+        import threading
+
+        barrier = threading.Barrier(2, timeout=2)
+
+        assistant_a = Mock(id="a-id")
+        assistant_a.name = "a"
+        assistant_b = Mock(id="b-id")
+        assistant_b.name = "b"
+
+        def build():
+            barrier.wait()
+            return Mock()
+
+        def factory_side_effect(assistant, **_):
+            return Mock(build=build)
+
+        with (
+            patch("codemie.service.tools.assistant_factory.Assistant") as mock_assistant_class,
+            patch("codemie.service.tools.assistant_factory.AssistantFactory", side_effect=factory_side_effect),
+            patch(
+                "codemie.service.tools.assistant_factory._validate_remote_entity_exists_and_cleanup",
+                return_value=None,
+            ),
+        ):
+            mock_assistant_class.get_by_ids.return_value = [assistant_a, assistant_b]
+            result = create_assistant_executors(
+                assistant_ids=["a-id", "b-id"], request=Mock(sub_assistants_versions=None)
+            )
+
+        assert len(result) == 2
 
 
 # --- EPMCDME-16463: every channel builds the whole tree (AC14) ---------------------------------------

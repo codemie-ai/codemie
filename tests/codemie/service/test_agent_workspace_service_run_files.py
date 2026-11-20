@@ -305,3 +305,32 @@ def test_workspace_reference_writes_refuse_unsafe_blobs(service: AgentWorkspaceS
         service._upsert_workspace_file_reference("ws-1", "secret.pdf", unsafe)
 
     service.file_repository.read_file.assert_not_called()
+
+
+def test_sync_uploaded_files_tolerates_a_concurrent_insert_of_the_same_path(
+    service: AgentWorkspaceService, repository: _FakeRepository
+) -> None:
+    """Two subagent builds sync the same upload at once; the loser hits uq_agent_workspace_files_workspace_path."""
+    from sqlalchemy.exc import IntegrityError
+
+    winner_row: list[AgentWorkspaceFile] = []
+
+    def save_file_losing_the_race(workspace_file: AgentWorkspaceFile) -> AgentWorkspaceFile:
+        winner = AgentWorkspaceFile(
+            workspace_id=workspace_file.workspace_id,
+            path=workspace_file.path,
+            blob_owner=workspace_file.blob_owner,
+            blob_name=workspace_file.blob_name,
+            mime_type=workspace_file.mime_type,
+            checksum=workspace_file.checksum,
+            size=workspace_file.size,
+        )
+        repository.files.append(winner)
+        winner_row.append(winner)
+        raise IntegrityError("insert", {}, Exception("uq_agent_workspace_files_workspace_path"))
+
+    repository.save_file = save_file_losing_the_race  # type: ignore[method-assign]
+
+    synced = service.sync_uploaded_files(EXECUTION_ID, [_token(USER_ID)], _entity())
+
+    assert [f.path for f in synced] == [winner_row[0].path]

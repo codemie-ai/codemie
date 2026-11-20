@@ -4,6 +4,7 @@
 src/codemie-repos
 .devcontainer/
 .vscode/
+.serena/
 
 google_credentials.json
 

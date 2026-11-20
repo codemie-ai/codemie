@@ -179,6 +179,11 @@ class Config(BaseSettings):
     # file's content (and, for ZIP archives, up to _ZIP_MAX_UNCOMPRESSED_BYTES of decompressed
     # content) resident in memory, so raising this trades peak RSS for upload throughput.
     FILE_DATASOURCE_UPLOAD_MAX_WORKERS: int = Field(default=3, gt=0)
+    # Concurrent workers used to build subagent executors (custom and built-in) for ONE chat request.
+    # Scope is per call, not global. 1 = serial. Each in-flight child build can load toolkits and start
+    # MCP server subprocesses, so many simultaneous chats multiply to chats x workers concurrent builds
+    # and can exhaust processes, the DB pool and MCP server limits. Lower it on constrained deployments.
+    SUBAGENT_BUILD_MAX_WORKERS: int = Field(default=4, gt=0)
     IMAGE_INDEXING_MAX_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
     JIRA_COPY_MAX_ATTACHMENT_BYTES: int = -1
     JIRA_COPY_MAX_ATTACHMENTS: int = -1

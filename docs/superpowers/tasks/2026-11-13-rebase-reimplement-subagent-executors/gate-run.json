@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15952-Prepare-subagent-executors-concurrently-to-reduce-pre-stream-latency",
+  "head": "41bf159fdedc8f7b9c133586cc1474fa6008ca32",
+  "runner": "poetry",
+  "started_at": "2026-11-13T13:54:30Z",
+  "completed_at": "2026-11-13T14:23:47Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 11624,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "make ruff's format/fix steps reformatted src/codemie/service/assistant/assistant_engine_builder.py (wrapped a long comprehension's `for` clause onto its own line) as part of its normal, guide-sanctioned format+fix+check Pass criteria; left in the working tree, not reverted."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 30165,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8196,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets-ci",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Skip if: Docker is unavailable (guide criterion). Docker CLI is not on PATH in this environment (only Podman is installed) and the Makefile target hardcodes `docker run`. Enable by installing Docker Desktop, or run the documented fallback `gitleaks dir --no-banner --config=.gitleaks.toml .` with a locally installed gitleaks binary (none found on PATH either)."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 965230,
+      "command": "make test",
+      "exit_code": 1,
+      "notes": "160 failed, 21 errors, 30473 passed, 199 skipped, 5 xfailed. Isolated re-run of the diff-touched file (tests/codemie/service/test_skill_workspace_preparation.py, 2 failures here) with PYTHONUTF8=1 PYTHONIOENCODING=utf-8 passed 12/12 clean \u2014 those 2 are a Windows cp1252-locale decode artifact in pathlib.Path.read_text() on license-header smart quotes, not a code regression. Several of the 21 ERRORs are the same 'Unic...' decode artifact. A full-suite re-run under PYTHONUTF8=1 to rule the same artifact out for the remaining failures was started but was killed by the harness's low-memory background-task reaper at ~26% progress (not a command failure) and was not restarted per instruction. Reporting FAIL against the literal `make test` command as run; the true signal under a UTF-8 locale is unverified for the suite as a whole."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: coverage was not requested by the caller (guide criterion)."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 1281,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: script printed \"[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.\" and exited 0 without scanning. Enable by setting SONAR_TOKEN (project key \"codemie\", host https://sonar.core.kuberocketci.io per .sonarlint/connectedMode.json) in .env.local or the shell."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "N/A: `verify` is literally `ruff license gitleaks test` (Makefile), all already run individually above as the lint/license-check/secrets-ci/unit gates. Re-running it would only repeat the ~16-minute `make test` invocation for the same already-captured unit FAIL and the same Docker-unavailable gitleaks skip; not re-run to avoid duplicate work with no new signal."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if: not opening a merge request (local iteration only) \u2014 this is a local gate run, not an MR open. Also infra-blocked: requires `docker compose up -d` plus superadmin fixtures; only Podman is available here."
+    },
+    {
+      "id": "check-alembic",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 7112,
+      "command": "PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "Enforced by the .gitlab-ci.yml `check-alembic-heads` job and by the pre-push hook's always-on step 0; not listed in quality-gates.md. The literal command (no env vars) crashed with UnicodeDecodeError on Windows's default cp1252 locale decoding a license header's smart quotes via subprocess output capture \u2014 a misleading environment failure (same class as check-alembic-heads.py's own documented python3-placeholder caveat), not a real result. Re-run with PYTHONUTF8=1/PYTHONIOENCODING=utf-8 gives the actual result: 214 + 13 Alembic version files, single head each, OK."
+    },
+    {
+      "id": "commit-msg-format",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1728,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msgfile>",
+      "exit_code": 0,
+      "notes": "Enforced by the `codemie-commit-msg` pre-commit hook on `git commit`, not during this run. Verified by feeding it the current HEAD commit message; it starts with 'EPMCDME-15952:' and passed."
+    },
+    {
+      "id": "secrets-staged",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 8999,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 125,
+      "notes": "Enforced by the `codemie-gitleaks` pre-commit hook; not covered by quality-gates.md's `make gitleaks` CI gate (different invocation: `protect --staged`). Detected Podman (Docker absent) but the container run failed: \"Error: invalid option type\" on the -v mount argument built from this git worktree's external .git-dir path \u2014 a Windows-path/worktree incompatibility with Podman, not a secret finding (script's own message: \"this is NOT a secret finding\"). N/A rather than FAIL: infra is reachable in principle but not in this worktree+OS combination; needs Docker Desktop or a non-worktree checkout to actually execute. Nothing is currently staged in this tree regardless."
+    },
+    {
+      "id": "ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1163,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: script printed \"[pre-commit] No staged Python files - skipping Ruff format/fix check.\" and exited 0. No files are currently staged in this worktree."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/scripts/test_commit_msg_hook.py::test_valid_prefix_accepted\nFAILED tests/scripts/test_pre_push_hook.py::test_skipped_when_not_enabled\nFAILED tests/scripts/test_commit_msg_hook.py::test_missing_prefix_rejected\nFAILED tests/scripts/test_pre_push_hook.py::test_numeric_one_enabled_runs\nFAILED tests/scripts/test_commit_msg_hook.py::test_prefix_without_colon_rejected\nFAILED tests/scripts/test_pre_push_hook.py::test_on_enabled_runs\nFAILED tests/scripts/test_pre_push_hook.py::test_legacy_precommit_enabled_runs_and_warns\nFAILED tests/scripts/test_commit_msg_hook.py::test_merge_commit_message_bypassed\nFAILED tests/scripts/test_pre_push_hook.py::test_two_migration_heads_block_the_push_even_without_the_opt_in\nFAILED tests/scripts/test_commit_msg_hook.py::test_fixup_message_bypassed\nFAILED tests/scripts/test_pre_push_hook.py::test_one_migration_head_lets_the_push_through_without_the_opt_in\nFAILED tests/scripts/test_commit_msg_hook.py::test_squash_message_bypassed\nFAILED tests/scripts/test_pre_push_hook.py::test_a_failing_migration_check_stops_before_pytest_and_sonar\nFAILED tests/scripts/test_pre_push_hook.py::test_a_broken_python3_falls_back_to_python_and_still_checks\nFAILED tests/scripts/test_commit_msg_hook.py::test_amend_message_bypassed\nFAILED tests/scripts/test_pre_push_hook.py::test_no_working_python_blocks_the_push_with_a_clear_message\nFAILED tests/scripts/test_commit_msg_hook.py::test_revert_message_bypassed\nFAILED tests/scripts/test_commit_msg_hook.py::test_merge_head_present_bypasses_validation\nFAILED tests/scripts/test_ruff_staged_hook.py::test_no_staged_py_files_exits_zero\nFAILED tests/scripts/test_commit_msg_hook.py::test_rebase_head_present_bypasses_validation\nFAILED tests/scripts/test_commit_msg_hook.py::test_cherry_pick_head_present_bypasses_validation\nFAILED tests/scripts/test_ruff_staged_hook.py::test_clean_staged_plus_unstaged_garbage_exits_zero\nFAILED tests/scripts/test_commit_msg_hook.py::test_leading_comment_lines_ignored\nFAILED tests/scripts/test_ruff_staged_hook.py::test_ruff_reformats_staged_file_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_missing_trailing_newline_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_syntax_error_in_staged_file_reports_clearly\nFAILED tests/scripts/test_ruff_staged_hook.py::test_partial_staging_clean_hunk_dirty_unstaged_exits_zero\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - UnicodeDecodeError (cp1252 locale artifact)\nERROR tests/codemie/service/usage_attribution/test_framework_wiring.py\nERROR tests/codemie/service/usage_attribution/test_worker.py\nERROR tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py\nERROR tests/enterprise/mcp_auth/test_discovery_cimd_disabled.py\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py (9 parametrized cases)\nERROR tests/codemie/service/spend/test_budget_period.py::TestTheStartIsClampedToWhenTheBudgetBegan::test_a_naive_value_is_read_as_utc\nFAILED tests/codemie/service/test_skill_workspace_preparation.py::test_script_tool_selected_and_seed_warnings_are_gone_from_the_source (diff-touched file; passes under PYTHONUTF8=1, UnicodeDecodeError artifact, see gates[].notes)\nFAILED tests/codemie/service/test_skill_workspace_preparation.py::test_script_step_and_tool_invocation_sites_do_not_prepare_skill_workspace (diff-touched file; passes under PYTHONUTF8=1, UnicodeDecodeError artifact, see gates[].notes)\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py (multiple parametrized cases)\n= 160 failed, 30473 passed, 199 skipped, 5 xfailed, 571 warnings, 21 errors in 965.23s (0:16:05) =\nmake: *** [test] Error 1"
+  }
+}

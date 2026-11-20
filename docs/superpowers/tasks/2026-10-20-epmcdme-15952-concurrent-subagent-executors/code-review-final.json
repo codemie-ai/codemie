@@ -1,0 +1,56 @@
+{
+  "decision": "request-changes",
+  "rationale": "Required AC5 (concurrent-safety tests) is only partially met, and new code in assistant_factory.py violates the documented X | None standard. 0 deferred; about 18 lens claims dismissed after reading source (e.g. AssistantFactory constructor only assigns fields; shallow child clone assigns attributes on the copy; settled-sibling discard matches prior serial behavior).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "D1 One ThreadPoolExecutor per call runs custom and built-in builds together", "status": "pass", "notes": "run_builds uses one pool; builtin jobs appended to custom jobs"},
+    {"kind": "spec", "item": "D2 SUBAGENT_BUILD_MAX_WORKERS Field(default=4, gt=0) documented", "status": "partial", "notes": "config.py field and comment present; configuration-patterns guide not updated (unverified if needed)"},
+    {"kind": "spec", "item": "D3 Serial prelude, concurrent build only, ordered assembly", "status": "pass", "notes": "outcomes indexed in submission order"},
+    {"kind": "spec", "item": "D4 Failure semantics preserved", "status": "pass", "notes": "custom MCP re-raised with context, builtin isolated, unstarted cancelled"},
+    {"kind": "spec", "item": "D5 copy_context per task and ambient _current_session cleared", "status": "pass", "notes": "covered by test_pooled_jobs_do_not_inherit_ambient_session"},
+    {"kind": "spec", "item": "D6 Shared state copied for builtin children", "status": "pass", "notes": "toolkits, mcp_servers, context deep-copied; other fields assigned on the child clone only"},
+    {"kind": "spec", "item": "D6 thread_generator/callback thread-safety confirmed", "status": "na", "notes": "assessment recorded in PR, not in diff"},
+    {"kind": "spec", "item": "D6 Skill workspace seeding verified; test for applicable branch", "status": "partial", "notes": "added test mocks the seeder, cannot show atomicity"},
+    {"kind": "spec", "item": "D7 Per-child and total timing log lines", "status": "partial", "notes": "inline zero/one-job path skips total line (debug only)"},
+    {"kind": "spec", "item": "D8 Zero or one build runs inline without a pool", "status": "pass", "notes": "test_zero_and_one_job_run_on_caller_thread"},
+    {"kind": "story-ac", "item": "AC1 Custom and built-in builds overlap", "status": "pass", "notes": "barrier test across custom and builtin jobs"},
+    {"kind": "story-ac", "item": "AC2 At most N active builds", "status": "pass", "notes": "test_max_active_respects_limit"},
+    {"kind": "story-ac", "item": "AC3 Inverted delays keep order, names, mapping, pinned versions", "status": "pass", "notes": "multiple ordering tests"},
+    {"kind": "story-ac", "item": "AC4 Failure regression tests", "status": "pass", "notes": "regular, MCP custom, builtin isolation covered"},
+    {"kind": "story-ac", "item": "AC5 Concurrent-safety tests", "status": "partial", "notes": "file test bypasses a real child build; skill-workspace test is all mocks; mutation test covers 3 fields"},
+    {"kind": "story-ac", "item": "AC6 Timings logged; wall time below serial", "status": "pass", "notes": "4x0.2s asserted under 0.6s"},
+    {"kind": "story-ac", "item": "AC7 Shape tests; handoff tests unchanged and passing", "status": "pending-stage-7", "notes": "passing run is Stage 7 evidence"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "3 subjects in range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "partial", "notes": "new helpers in assistant_factory.py use typing.Optional instead of X | None; module cohesion is a soft concern only"},
+    {"kind": "security", "status": "pass", "notes": "No credentials, auth, or untrusted input handling in the changed source; SUBAGENT_BUILD_MAX_WORKERS bounded (gt=0)"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/tools/assistant_factory.py",
+      "line": 45,
+      "title": "New helpers use Optional instead of X | None",
+      "problem": "code-quality.md says avoid typing.Optional[X] in new code and prefer X | None; the newly added _timed_call, _pooled_call, run_builds, custom_build_jobs, collect_custom_executors signatures use Optional[...].",
+      "impact": "Documented code-quality standard not met by newly added code; blocks the workflow per the standards review.",
+      "recommendation": "Use X | None in the newly added functions/signatures (e.g. tuple[Any, BaseException | None]) and drop Optional from the new code."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/service/test_skill_workspace_preparation.py",
+      "line": 568,
+      "title": "Concurrent-safety tests do not exercise real shared state",
+      "problem": "Required AC5 is partial. test_concurrent_prepare_calls_on_one_conversation_both_succeed patches AgentWorkspaceService, SkillService, SkillWorkspaceSeeder and AgentWorkspaceRepository and asserts only results == [[], []], which holds for any implementation; its docstring claims on-conflict-do-nothing atomicity that the test never runs. The request-files test calls build_unique_file_objects directly in the pool rather than through a real child build, and the isolation test covers only toolkits, mcp_servers and context.",
+      "impact": "Builtin children now call prepare_skill_workspace concurrently for one conversation; a race (duplicate workspace, unique violation) would be silently skipped by the non-fatal builtin path and no test would fail. Whether the repository insert is atomic is unconfirmed by tests.",
+      "recommendation": "Add a test running the real repository/seeder (or repository-level insert) from two threads on one conversation_id asserting one workspace and no error; make the request-files test go through a real child build and assert each child sees the files; extend the isolation test to the parent request."
+    }
+  ]
+}

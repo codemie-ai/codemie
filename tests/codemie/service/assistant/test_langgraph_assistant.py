@@ -797,3 +797,149 @@ class TestLangGraphAgent:
         prefix_length = len(LangGraphAgent.SUPERVISOR_HANDOFF_TOOL_PREFIX) + 1
         expected_len = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH - prefix_length
         assert len(formatted) == expected_len
+
+
+class TestBuiltinSubagentIsolation:
+    """Builtin clones must not share toolkits/mcp_servers/context object identity (concurrent builds)."""
+
+    def test_sibling_clones_do_not_share_mutable_field_identity(self):
+        from codemie.rest_api.models.assistant import Assistant, Context, ContextType, MCPServerDetails, ToolKitDetails
+        from codemie.service.assistant.assistant_engine_builder import LangGraphAssistantBuilder
+        from codemie.service.assistant.subagent_build import SubagentBuildContext
+        from codemie.service.subagents.builtin_subagents import BuiltinSubagent
+
+        parent = Assistant(
+            name="p",
+            description="d",
+            system_prompt="s",
+            project="proj",
+            toolkits=[ToolKitDetails(toolkit="t", tools=[])],
+            mcp_servers=[MCPServerDetails(name="m")],
+            context=[Context(context_type=ContextType.KNOWLEDGE_BASE, name="c")],
+        )
+
+        built_assistants = []
+
+        def capture_and_build(self):
+            built_assistants.append(self.assistant)
+            return MagicMock(tree_requires_confirmation=False)
+
+        with (
+            patch(
+                "codemie.service.subagents.builtin_subagents_registry.BuiltinSubagentsRegistry.get_system_prompt",
+                return_value="builtin prompt",
+            ),
+            patch("codemie.service.tools.assistant_factory.AssistantFactory.build", capture_and_build),
+        ):
+            for name in ("clone_a", "clone_b"):
+                LangGraphAssistantBuilder._build_builtin_subagent_executor(
+                    parent=parent,
+                    builtin=BuiltinSubagent.GENERAL_PURPOSE_SUBAGENT,
+                    user=MagicMock(),
+                    request=MagicMock(),
+                    request_uuid="uuid",
+                    thread_generator=MagicMock(),
+                    resolved_model=None,
+                    agent_name=name,
+                    build_context=SubagentBuildContext(),
+                )
+
+        clone_a, clone_b = built_assistants
+
+        assert clone_a.toolkits is not parent.toolkits
+        assert clone_a.toolkits is not clone_b.toolkits
+        assert clone_a.mcp_servers is not parent.mcp_servers
+        assert clone_a.mcp_servers is not clone_b.mcp_servers
+        assert clone_a.context is not parent.context
+        assert clone_a.context is not clone_b.context
+
+
+class TestCreateSubagentExecutorsConcurrency:
+    """create_subagent_executors builds custom and built-in executors on one shared pool."""
+
+    def test_custom_and_builtin_builds_overlap(self):
+        """A sequential two-phase implementation would hang this barrier out to its timeout."""
+        import threading
+
+        from codemie.rest_api.models.assistant import Assistant
+        from codemie.service.assistant.assistant_engine_builder import LangGraphAssistantBuilder
+        from codemie.service.assistant.subagent_build import SubagentBuildContext
+        from codemie.service.subagents.builtin_subagents import BuiltinSubagent
+
+        barrier = threading.Barrier(2, timeout=2)
+
+        custom_assistant = MagicMock(id="sub-id")
+        custom_assistant.name = "sub"
+
+        parent = MagicMock(spec=Assistant)
+        parent.assistant_ids = ["sub-id"]
+
+        def custom_build():
+            barrier.wait()
+            return MagicMock()
+
+        def builtin_build(**_kwargs):
+            barrier.wait()
+            return MagicMock()
+
+        with (
+            patch.object(
+                LangGraphAssistantBuilder,
+                "_merge_skill_builtin_subagents",
+                return_value=[BuiltinSubagent.GENERAL_PURPOSE_SUBAGENT],
+            ),
+            patch.object(LangGraphAssistantBuilder, "_build_builtin_subagent_executor", side_effect=builtin_build),
+            patch("codemie.service.tools.assistant_factory.Assistant") as mock_assistant_class,
+            patch("codemie.service.tools.assistant_factory.AssistantFactory") as mock_factory_class,
+            patch(
+                "codemie.service.tools.assistant_factory._validate_remote_entity_exists_and_cleanup",
+                return_value=None,
+            ),
+        ):
+            mock_assistant_class.get_by_ids.return_value = [custom_assistant]
+            mock_factory_class.return_value.build = custom_build
+
+            result = LangGraphAssistantBuilder.create_subagent_executors(
+                parent, MagicMock(), MagicMock(), "uuid", MagicMock(), "gpt", SubagentBuildContext()
+            )
+
+        assert len(result) == 2
+
+
+class TestConfigureAgentKwargsConfirmationAggregation:
+    """tree_requires_confirmation OR-aggregates over completed handles, strictly after builds finish."""
+
+    def test_aggregates_over_handles_after_completion_without_conversation_service(self):
+        from codemie.core.models import ToolCallPolicy
+        from codemie.service.assistant.assistant_engine_builder import LangGraphAssistantBuilder
+        from codemie.service.assistant.subagent_build import ResolvedToolPolicy, SubagentBuildContext, SubagentHandle
+        from codemie.service.conversation_service import ConversationService
+
+        handles = [
+            SubagentHandle(agent=MagicMock(), executor=MagicMock(), tree_requires_confirmation=False, name="s0"),
+            SubagentHandle(agent=MagicMock(), executor=MagicMock(), tree_requires_confirmation=False, name="s1"),
+            SubagentHandle(agent=MagicMock(), executor=MagicMock(), tree_requires_confirmation=True, name="s2"),
+        ]
+        resolved_policy = ResolvedToolPolicy(policy=ToolCallPolicy.AUTO_APPROVE, requires_confirmation=False)
+        agent_kwargs: dict = {}
+
+        with patch.object(ConversationService, "_find_or_create_conversation") as mock_find:
+            result = LangGraphAssistantBuilder.configure_agent_kwargs(
+                agent_kwargs,
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+                "uuid",
+                MagicMock(),
+                "gpt",
+                False,
+                resolved_policy=resolved_policy,
+                build_context=SubagentBuildContext(),
+                is_root=True,
+                create_subagent_executors=lambda **_kwargs: handles,
+                get_subagent_descriptions=lambda *_a, **_k: {},
+            )
+
+        assert result is True
+        assert agent_kwargs["tree_requires_confirmation"] is True
+        mock_find.assert_not_called()

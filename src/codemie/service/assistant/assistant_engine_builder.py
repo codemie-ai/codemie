@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from functools import partial
 from typing import Any, Callable
 
 from codemie.configs.logger import logger
@@ -191,6 +193,11 @@ class LangGraphAssistantBuilder:
         child_assistant.system_prompt = builtin_system_prompt
         if resolved_model:
             child_assistant.llm_model_type = resolved_model
+        # Shallow copy shares these with the parent and siblings; build_agent/ToolkitService may
+        # mutate them in place, which races once builtin builds run concurrently.
+        child_assistant.toolkits = deepcopy(parent.toolkits)
+        child_assistant.mcp_servers = deepcopy(parent.mcp_servers)
+        child_assistant.context = deepcopy(parent.context)
 
         # Mark as builtin clone and disable skill-contributed builtins at runtime to prevent recursion.
         child_assistant._runtime_builtin_subagent = builtin
@@ -216,14 +223,20 @@ class LangGraphAssistantBuilder:
         llm_model: str,
         build_context: SubagentBuildContext,
     ) -> list[SubagentHandle]:
-        """Build the sub-assistants of ``assistant``."""
+        """Build the sub-assistants of ``assistant``, custom and builtin, on one shared pool."""
         effective_builtins = cls._merge_skill_builtin_subagents(assistant)
 
         if not assistant.assistant_ids and not effective_builtins:
             return []
 
         from codemie.core.exception_formatting import describe_exception
-        from codemie.service.tools.assistant_factory import create_assistant_executors
+        from codemie.service.tools.assistant_factory import (
+            collect_custom_executors,
+            custom_build_jobs,
+            is_fatal_custom_failure,
+            prepare_assistants,
+            run_builds,
+        )
 
         assistant_ids = list(assistant.assistant_ids or [])
 
@@ -234,30 +247,22 @@ class LangGraphAssistantBuilder:
 
         # Children get the caller's request as is: request.llm_model is the user's pick, never the
         # parent's resolved model, so each sub-assistant resolves its own model under its own project.
-        handles = create_assistant_executors(
-            assistant_ids=assistant_ids,
-            user=user,
-            request=request,
-            request_uuid=request_uuid,
-            thread_generator=thread_generator,
-            parent_assistant=assistant,
-            build_context=build_context,
-        )
+        custom_assistants = prepare_assistants(assistant_ids, user, request, assistant)
+        jobs = custom_build_jobs(custom_assistants, user, request, request_uuid, thread_generator, build_context)
 
-        existing_names: set[str] = set()
-        # Best-effort seed: names of assistants referenced by assistant_ids
-        try:
-            sub_assistants = Assistant.get_by_ids(user, assistant_ids, parent_assistant=assistant)
-            existing_names.update([sa.name for sa in sub_assistants if sa and sa.name])
-        except Exception:
-            pass
+        existing_names: set[str] = {sa.name for sa in custom_assistants if sa.name}
 
+        # Names are allocated serially so they stay stable regardless of completion order.
+        builtin_names: list[tuple[BuiltinSubagent, str]] = []
         for builtin in effective_builtins:
-            base_name = f"__builtin__{builtin.value}"
-            agent_name = cls._make_unique_builtin_agent_name(base_name, existing_names)
-            try:
-                handles.append(
-                    cls._build_builtin_subagent_executor(
+            agent_name = cls._make_unique_builtin_agent_name(f"__builtin__{builtin.value}", existing_names)
+            builtin_names.append((builtin, agent_name))
+            jobs.append(
+                (
+                    agent_name,
+                    "builtin",
+                    partial(
+                        cls._build_builtin_subagent_executor,
                         parent=assistant,
                         builtin=builtin,
                         user=user,
@@ -267,18 +272,46 @@ class LangGraphAssistantBuilder:
                         resolved_model=llm_model,
                         agent_name=agent_name,
                         build_context=build_context,
-                    )
+                    ),
                 )
-            except MCPToolLoadException as e:
+            )
+
+        outcomes = run_builds(jobs, is_fatal_custom_failure)
+        builtin_outcomes = outcomes[len(custom_assistants) :]
+        try:
+            handles = collect_custom_executors(custom_assistants, outcomes[: len(custom_assistants)])
+        except MCPToolLoadException:
+            # Custom and builtin jobs share one pool: a builtin submitted after the fatal custom job
+            # can already have finished by the time the fatal outcome is detected above. There's no
+            # teardown hook on a built SubagentHandle to release, so just surface what's being lost
+            # instead of discarding it silently.
+            discarded = [
+                agent_name
+                for (_, agent_name), (_, error) in zip(builtin_names, builtin_outcomes, strict=False)
+                if error is None
+            ]
+            if discarded:
+                logger.warning(
+                    f"Discarding {len(discarded)} already-built builtin subagent executor(s) due to a "
+                    f"fatal custom sub-assistant failure: {discarded}"
+                )
+            raise
+
+        for (builtin, agent_name), (handle, error) in zip(builtin_names, builtin_outcomes, strict=False):
+            if error is None:
+                handles.append(handle)
+            elif isinstance(error, MCPToolLoadException):
                 # Builtin subagent failures stay non-fatal, but the log must still name the
                 # subagent and the MCP server that broke it.
-                e.attach_assistant_context(assistant_name=agent_name)
+                error.attach_assistant_context(assistant_name=agent_name)
                 logger.error(
                     f"Failed to create builtin subagent executor for {builtin.value} "
-                    f"due to MCP server '{e.server_name}': {str(e.original_error)}"
+                    f"due to MCP server '{error.server_name}': {str(error.original_error)}"
                 )
-            except Exception as e:
-                logger.error(f"Failed to create builtin subagent executor for {builtin.value}: {describe_exception(e)}")
+            else:
+                logger.error(
+                    f"Failed to create builtin subagent executor for {builtin.value}: {describe_exception(error)}"
+                )
 
         logger.debug(f"Created {len(handles)} subagent executors")
         return handles

@@ -834,7 +834,14 @@ class AgentWorkspaceService:
                 size=size,
             )
 
-        return self.repository.save_file(workspace_file)
+        try:
+            return self.repository.save_file(workspace_file)
+        except IntegrityError:
+            # A concurrent sync (e.g. parallel subagent builds) inserted this path first.
+            existing = self.repository.get_file(workspace_id, normalized_path, include_deleted=True)
+            if existing is None:
+                raise
+            return existing
 
     def _get_workspace_file_or_raise(self, workspace: AgentWorkspace, file_path: str) -> AgentWorkspaceFile:
         normalized_path = self._normalize_path(file_path)

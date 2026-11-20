@@ -1,0 +1,57 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-15952-Prepare-subagent-executors-concurrently-to-reduce-pre-stream-latency",
+ "head": "a1cd89a5800471056802d6533ee0d3ba73f216aa",
+ "runner": "poetry",
+ "started_at": "2026-10-21T00:00:00Z",
+ "completed_at": "2026-10-21T01:00:00Z",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "secrets",
+   "source": "guide",
+   "status": "SKIPPED",
+   "duration_ms": 0,
+   "command": "make gitleaks",
+   "exit_code": null,
+   "notes": "docker not found on PATH; gitleaks not run locally"
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 0,
+   "command": "poetry run pytest tests/ -n0 --continue-on-collection-errors",
+   "exit_code": 1,
+   "notes": "220 failed, 20579 passed, 204 skipped, 32 errors. Plain run aborted at collection (cp1252 UnicodeDecodeError in test_credentialtypes_enum_migrations.py). Only changed-test-file failures: 2 cp1252 in test_skill_workspace_preparation.py; rest in unrelated files. Unverified against main."
+  }
+ ],
+ "failures": {
+  "unit": "FAILED tests/codemie/service/test_skill_workspace_preparation.py::test_script_tool_selected_and_seed_warnings_are_gone_from_the_source\nFAILED tests/codemie/service/test_skill_workspace_preparation.py::test_script_step_and_tool_invocation_sites_do_not_prepare_skill_workspace\n220 failed, 20579 passed, 204 skipped, 1 warning, 32 errors in 1123.61s (0:18:43)"
+ }
+}

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-11-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 17,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Change spans three components (LangGraphAssistantBuilder in assistant_engine_builder.py, the AssistantFactory job/pool helpers in assistant_factory.py, and the new SUBAGENT_BUILD_MAX_WORKERS config) across the Service and Infrastructure/config layers, and introduces a shared build-job abstraction (run_builds/SubagentBuildContext) reused by both the custom and builtin subagent paths." },
+    { "dimension": "technical_risk", "reason": "Concurrent build orchestration (ThreadPoolExecutor + contextvars.copy_context, per-thread DB session reset via _current_session.set(None), fatal-vs-non-fatal cancellation semantics) is a new application of an otherwise well-established pooling pattern (ThreadPoolExecutor already used in 24 other files). Code comments flag real race-condition concerns -- e.g. deep-copying toolkits/mcp_servers/context on the builtin clone specifically to avoid races once builtin builds run concurrently. Performance is the explicit primary goal of the change (reducing pre-stream latency), which is a Technical Risk red flag." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 17 files changed (1071 insertions, 77 deletions), which maps directly to the XXL file-count band under the actual-mode diffstat rule. Most of that volume is docs artifacts carried over from the prior 2026-10-20-epmcdme-15952-concurrent-subagent-executors task directory (plan/spec/technical-analysis/complexity/gate-run/decisions/code-review json+md files) rather than source code -- only 3 source files and 4 test files are functionally changed -- but the rule scores the raw diffstat count as given." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: performance is the stated primary concern (branch name cites reducing pre-stream latency)."
+  ],
+  "split_recommendation": null
+}
