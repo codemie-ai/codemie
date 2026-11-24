@@ -350,7 +350,8 @@ def health_check_datasource(
     request: DatasourceHealthCheckRequest,
 ):
     try:
-        return IndexHealthCheckService.health_check_datasource(request=request, user_id=raw_request.state.user.id)
+        user = raw_request.state.user
+        return IndexHealthCheckService.health_check_datasource(request=request, user=user)
     except Exception as e:
         raise ExtendedHTTPException(
             code=status.HTTP_422_UNPROCESSABLE_ENTITY,

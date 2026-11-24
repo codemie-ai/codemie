@@ -22,6 +22,7 @@ from codemie.datasource.exceptions import (
     InvalidCustomFieldException,
 )
 from codemie.rest_api.models.index import DatasourceHealthCheckRequest
+from codemie.rest_api.security.user import User
 from codemie.service.index.datasource_health_check_service import IndexHealthCheckService
 
 
@@ -109,7 +110,7 @@ class TestHealthCheckGit:
             index_type=DatasourceTypes.GIT,
             git_url="https://github.com/owner/public-repo",
         )
-        response = IndexHealthCheckService.health_check_datasource(request, user_id="user1")
+        response = IndexHealthCheckService.health_check_datasource(request, user=User(id="user1"))
         assert response.error is None
         assert response.documents_count == 0
         mock_test_public_access.assert_called_once()
@@ -157,7 +158,7 @@ class TestHealthCheckJira:
         mock_check.side_effect = InvalidCustomFieldException(["No Such Field"])
         request = self._make_request(custom_fields=["No Such Field"])
 
-        response = IndexHealthCheckService.health_check_datasource(request, user_id="user1")
+        response = IndexHealthCheckService.health_check_datasource(request, user=User(id="user1"))
 
         assert response.error is not None
         assert response.error.field_error == "jiraCustomFields"
@@ -169,7 +170,7 @@ class TestHealthCheckJira:
         mock_check.side_effect = AmbiguousCustomFieldException(["Sprint"])
         request = self._make_request(custom_fields=["Sprint"])
 
-        response = IndexHealthCheckService.health_check_datasource(request, user_id="user1")
+        response = IndexHealthCheckService.health_check_datasource(request, user=User(id="user1"))
 
         assert response.error is not None
         assert response.error.field_error == "jiraCustomFields"
@@ -180,7 +181,12 @@ class TestHealthCheckJira:
     def test_health_check_datasource_routes_jira(self, mock_get_creds, mock_check):
         mock_check.return_value = 3
 
-        response = IndexHealthCheckService.health_check_datasource(self._make_request(), user_id="user1")
+        response = IndexHealthCheckService.health_check_datasource(self._make_request(), user=User(id="user1"))
 
         assert response.documents_count == 3
         mock_check.assert_called_once()
+        mock_get_creds.assert_called_once_with(
+            user_id="user1",
+            project_name="test-project",
+            setting_id="setting-1",
+        )

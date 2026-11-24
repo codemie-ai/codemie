@@ -26,6 +26,7 @@ from codemie.datasource.exceptions import ConnectionException, InvalidCustomFiel
 from codemie.rest_api.models.index import IndexInfo, IndexKnowledgeBaseJIRARequest
 from codemie.core.models import BaseResponse, CreatedByUser
 from codemie.rest_api.routers.index import router
+from codemie.rest_api.routers.index.queries import health_check_datasource
 from codemie.service.datasource.file_datasource_service import _validate_json_file as validate_json_file
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
@@ -37,6 +38,18 @@ app_client = TestClient(app)
 app_for_client = FastAPI()
 app_for_client.include_router(router)
 client = TestClient(app_for_client)
+
+
+def test_health_check_forwards_authenticated_user():
+    user = MagicMock(id="user-1")
+    raw_request = Request({"type": "http", "state": {"user": user}})
+    health_check_request = MagicMock()
+
+    with patch("codemie.rest_api.routers.index.queries.IndexHealthCheckService.health_check_datasource") as check:
+        response = health_check_datasource(raw_request, health_check_request)
+
+    assert response is check.return_value
+    check.assert_called_once_with(request=health_check_request, user=user)
 
 
 @pytest.fixture

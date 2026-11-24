@@ -1,0 +1,75 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-9989",
+ "head": "d1c0c2a21ff860053237991a0e4ec9a4d4b24f31",
+ "runner": "poetry",
+ "started_at": "2026-10-19T00:00:00Z",
+ "completed_at": "2026-10-19T00:00:00Z",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "poetry run ruff format --check && poetry run ruff check",
+   "exit_code": 0,
+   "notes": "Ran non-mutating equivalent of `make ruff` to avoid reformatting unrelated user-modified files."
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "gitleaks",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "make gitleaks",
+   "exit_code": 0
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 0,
+   "command": "make test",
+   "exit_code": 1,
+   "notes": "Only failure is test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation (user-modified file, unrelated to diff); error: RuntimeError: can't start new thread (likely sandbox/env)."
+  },
+  {
+   "id": "sonar",
+   "source": "guide",
+   "status": "SKIPPED",
+   "duration_ms": 0,
+   "command": "make sonar-local",
+   "exit_code": null,
+   "notes": "Requires Sonar credentials/network; not run; CI/Sonar owed."
+  },
+  {
+   "id": "test-harness",
+   "source": "guide",
+   "status": "N/A",
+   "duration_ms": 0,
+   "command": "make test-harness",
+   "exit_code": null,
+   "notes": "Requires docker stack and fixtures; MR-only."
+  }
+ ],
+ "failures": {
+  "unit": "........................................................................ [ 98%]\n........................................................................ [ 98%]\n........................................................................ [ 98%]\n........................................................................ [ 99%]\n........................................................................ [ 99%]\n.......................................................................  [100%]\n=================================== FAILURES ===================================\n_________________ test_guard_allows_matplotlib_png_generation __________________\n[gw0] linux -- Python 3.12.15 /home/dmytromelnyk4/work/projects/codemie-dev/codemie/.venv/bin/python\n\ntmp_path = PosixPath('/tmp/pytest-of-dmytromelnyk4/pytest-3/popen-gw0/test_guard_allows_matplotlib_p0')\n\n    def test_guard_allows_matplotlib_png_generation(tmp_path: Path) -> None:\n        \"\"\"matplotlib.pyplot.savefig must complete without filesystem denials when\n        MPLCONFIGDIR resolves to an absolute path inside the workspace.  Subprocess\n        denials for font-discovery tools (fc-list, system_profiler) are expected\n        and must not prevent the chart from being saved.\"\"\"\n        workspace = tmp_path / \"workspace\"\n        workspace.mkdir()\n        result = _run_guarded_as_file_in_workspace(\n            workspace,\n            \"import matplotlib\\n\"\n            \"matplotlib.use('Agg')\\n\"\n            \"import matplotlib.pyplot as plt\\n\"\n            \"plt.plot([1, 2, 3], [4, 5, 6])\\n\"\n            \"plt.savefig('chart.png')\\n\"\n            \"print('saved')\\n\",\n            # shortcut: tests share UID-wide RLIMIT_NPROC with the pytest workers; use headroom until tests run under isolated UIDs.\n            max_threads=256,\n        )\n>       assert result.returncode == 0\nE       assert 1 == 0\nE        +  where 1 = CompletedProcess(args=['/home/dmytromelnyk4/work/projects/codemie-dev/codemie/.venv/bin/python', '/tmp/pytest-of-dmytr...ork/projects/codemie-dev/codemie/src/threading.py\",\"reason\":\"absolute_path\"}\\nRuntimeError: can\\'t start new thread\\n').returncode\n\ntests/codemie_tools/data_management/code_executor/test_filesystem_policy.py:739: AssertionError\n=============================== warnings summary ===============================\n.venv/lib/python3.12/site-packages/google/auth/transport/grpc.py:44\n.venv/lib/python3.12/site-packages/google/auth/transport/grpc.py:44\n.venv/lib/python3.12/site-packages/google/auth/transport/grpc.py:44\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/.venv/lib/python3.12/site-packages/google/auth/transport/grpc.py:44: FutureWarning: grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In October 2026, google-auth will raise its minimum requirements to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography\n    warnings.warn(\n\n.venv/lib/python3.12/site-packages/langgraph/cache/base/__init__.py:8\n.venv/lib/python3.12/site-packages/langgraph/cache/base/__init__.py:8\n.venv/lib/python3.12/site-packages/langgraph/cache/base/__init__.py:8\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/.venv/lib/python3.12/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\n==== 1 failed, 19829 passed, 186 skipped, 258 warnings in 103.33s (0:01:43) ====\nmake: *** [Makefile:31: test] Error 1\n"
+ }
+}

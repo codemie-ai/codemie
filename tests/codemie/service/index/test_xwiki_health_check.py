@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 from codemie.core.constants import DatasourceTypes
 from codemie.datasource.exceptions import ConnectionException, UnauthorizedException
 from codemie.datasource.loader.xwiki_loader import XWikiLoader
+from codemie.rest_api.security.user import User
 from codemie.service.index.datasource_health_check_service import IndexHealthCheckService
 
 _SERVICE = "codemie.service.index.datasource_health_check_service"
@@ -46,7 +47,7 @@ def test_returns_the_real_page_count():
         patch(f"{_SERVICE}.SettingsService.get_xwiki_creds"),
         patch(f"{_SERVICE}.XWikiDatasourceProcessor", return_value=_processor_with_stats(count=6)),
     ):
-        response = IndexHealthCheckService.health_check_datasource(_request(), "u1")
+        response = IndexHealthCheckService.health_check_datasource(_request(), User(id="u1"))
     assert response.documents_count == 6
     assert response.error is None
 
@@ -57,7 +58,7 @@ def test_truncation_is_reported_as_not_healthy():
         patch(f"{_SERVICE}.SettingsService.get_xwiki_creds"),
         patch(f"{_SERVICE}.XWikiDatasourceProcessor", return_value=processor),
     ):
-        response = IndexHealthCheckService.health_check_datasource(_request(), "u1")
+        response = IndexHealthCheckService.health_check_datasource(_request(), User(id="u1"))
     assert response.documents_count == 5000
     assert response.error is not None
     assert response.error.field_error == "space"
@@ -71,7 +72,7 @@ def test_connection_failure_points_at_the_url_field():
         patch(f"{_SERVICE}.SettingsService.get_xwiki_creds"),
         patch(f"{_SERVICE}.XWikiDatasourceProcessor", return_value=processor),
     ):
-        response = IndexHealthCheckService.health_check_datasource(_request(), "u1")
+        response = IndexHealthCheckService.health_check_datasource(_request(), User(id="u1"))
     assert response.error is not None
     assert "404" in response.error.details
     assert response.error.field_error == "url"
@@ -86,12 +87,12 @@ def test_auth_failure_becomes_an_error_message():
             side_effect=UnauthorizedException(datasource_type="xWiki"),
         ),
     ):
-        response = IndexHealthCheckService.health_check_datasource(_request(), "u1")
+        response = IndexHealthCheckService.health_check_datasource(_request(), User(id="u1"))
     assert response.error is not None
 
 
 def test_missing_space_is_rejected_with_a_field_error():
-    response = IndexHealthCheckService.health_check_datasource(_request(space=""), "u1")
+    response = IndexHealthCheckService.health_check_datasource(_request(space=""), User(id="u1"))
     assert response.error.field_error == "space"
 
 
@@ -107,7 +108,7 @@ def test_unresolved_integration_is_a_field_error_not_a_500():
         patch(f"{_SERVICE}.SettingsService.get_xwiki_creds", return_value=None),
         patch(f"{_SERVICE}.XWikiDatasourceProcessor") as processor,
     ):
-        response = IndexHealthCheckService.health_check_datasource(_request(), "u1")
+        response = IndexHealthCheckService.health_check_datasource(_request(), User(id="u1"))
     processor.assert_not_called()
     assert response.error is not None
     assert response.error.field_error == "setting_id"
@@ -120,5 +121,5 @@ def test_the_selected_integration_is_the_one_checked():
         patch(f"{_SERVICE}.SettingsService.get_xwiki_creds") as get_creds,
         patch(f"{_SERVICE}.XWikiDatasourceProcessor", return_value=_processor_with_stats(count=1)),
     ):
-        IndexHealthCheckService.health_check_datasource(_request(setting_id="setting-42"), "u1")
+        IndexHealthCheckService.health_check_datasource(_request(setting_id="setting-42"), User(id="u1"))
     assert get_creds.call_args.kwargs["setting_id"] == "setting-42"

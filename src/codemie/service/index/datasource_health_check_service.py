@@ -35,12 +35,16 @@ from codemie.datasource.azure_devops_work_item.azure_devops_work_item_datasource
     AzureDevOpsWorkItemDatasourceProcessor,
 )
 from codemie.rest_api.models.index import ErrorMessage, DatasourceHealthCheckRequest, DatasourceHealthCheckResponse
+from codemie.rest_api.models.settings import CredentialTypes, Settings
+from codemie.rest_api.security.user import User
 from codemie.service.settings.settings import SettingsService
+from codemie.service.settings.settings_util import user_can_access_setting
 
 
 class IndexHealthCheckService:
     @classmethod
-    def health_check_datasource(cls, request: DatasourceHealthCheckRequest, user_id: str):
+    def health_check_datasource(cls, request: DatasourceHealthCheckRequest, user: User):
+        user_id = user.id
         try:
             match request.index_type:
                 case DatasourceTypes.JIRA:
@@ -50,9 +54,9 @@ class IndexHealthCheckService:
                 case DatasourceTypes.CONFLUENCE:
                     return cls.health_check_confluence(request, user_id)
                 case DatasourceTypes.AZURE_DEVOPS_WIKI:
-                    return cls.health_check_azure_devops_wiki(request, user_id)
+                    return cls.health_check_azure_devops_wiki(request, user)
                 case DatasourceTypes.AZURE_DEVOPS_WORK_ITEM:
-                    return cls.health_check_azure_devops_work_item(request, user_id)
+                    return cls.health_check_azure_devops_work_item(request, user)
                 case DatasourceTypes.XWIKI:
                     return cls.health_check_xwiki(request, user_id)
                 case DatasourceTypes.SVN:
@@ -157,10 +161,40 @@ class IndexHealthCheckService:
         )
 
     @classmethod
-    def health_check_azure_devops_wiki(cls, request: DatasourceHealthCheckRequest, user_id: str):
+    def _unresolved_ado_setting_error(cls, request: DatasourceHealthCheckRequest, user: User):
+        """Reject explicit ADO selections that are missing, mismatched, or inaccessible."""
+        if not request.setting_id:
+            return None
+
+        setting = Settings.find_by_id(request.setting_id)
+        if (
+            setting
+            and setting.credential_type == CredentialTypes.AZURE_DEVOPS
+            and user is not None
+            and user_can_access_setting(setting, user, request.project_name)
+        ):
+            return None
+
+        return DatasourceHealthCheckResponse(
+            error=ErrorMessage(
+                message="Selected Azure DevOps integration is unavailable",
+                details=(
+                    "The selected integration does not exist, is not an Azure DevOps integration, or is inaccessible."
+                ),
+                help='Open the "Integrations" tab and select an Azure DevOps integration you can access.',
+                field_error="setting_id",
+            )
+        )
+
+    @classmethod
+    def health_check_azure_devops_wiki(cls, request: DatasourceHealthCheckRequest, user: User):
+        if error_response := cls._unresolved_ado_setting_error(request, user):
+            return error_response
+
         azure_devops_creds = SettingsService.get_azure_devops_creds(
-            user_id=user_id,
+            user_id=user.id,
             project_name=request.project_name,
+            setting_id=request.setting_id,
         )
 
         processor = AzureDevOpsWikiDatasourceProcessor(
@@ -256,10 +290,14 @@ class IndexHealthCheckService:
         return DatasourceHealthCheckResponse(documents_count=documents_count)
 
     @classmethod
-    def health_check_azure_devops_work_item(cls, request: DatasourceHealthCheckRequest, user_id: str):
+    def health_check_azure_devops_work_item(cls, request: DatasourceHealthCheckRequest, user: User):
+        if error_response := cls._unresolved_ado_setting_error(request, user):
+            return error_response
+
         azure_devops_creds = SettingsService.get_azure_devops_creds(
-            user_id=user_id,
+            user_id=user.id,
             project_name=request.project_name,
+            setting_id=request.setting_id,
         )
 
         processor = AzureDevOpsWorkItemDatasourceProcessor(
