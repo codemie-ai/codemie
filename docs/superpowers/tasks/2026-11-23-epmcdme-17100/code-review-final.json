@@ -1,0 +1,164 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved check round: CR-001 and CR-002 resolved, 0 new findings."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User: fix both (CR-001 fix-now, CR-002 fix-now)."
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved check round: CR-001 and CR-002 resolved, 0 new findings."
+    }
+  ],
+  "reviewed_head": "6d71c7c1be1bc802daa10dd3362852d9afa59dff",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "Targeted check of fix set CR-001, CR-002: the source at HEAD resolves both. CR-001: the actor-string fallback now goes into ledger_email (queue_service.py:727) and reaches only the ledger and the activity event, while track_marketplace_metric still gets the raw decided_by_email (:881), and a new unit test asserts this. CR-002 (advisory): _snapshot_actor uses the row from _recorded_user, with one lookup and a None branch. Business and standards rows are carried forward; the AC6 PostgreSQL run is still pending Stage 7.",
+  "confidence": "high",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/marketplace_management/queue_service.py",
+      "line": 881,
+      "title": "Metric actor_email changed by email fallback",
+      "problem": "decide() reassigns decided_by_email = actor at queue_service.py:726-727 when the acting id has no users row and no email was passed, and the same variable is then passed as actor_email to track_marketplace_metric at :881. The spec non-goal (spec.md:88) says no change to the decision metrics, and the spec decision (spec.md:101) keeps the metric actor on the raw values.",
+      "impact": "For an actor with no users row and no email (IdP users without an email claim, admin calls with decided_by_id None), the decision metric's actor_email changes from None to the username/id string. The path is live on every such decision after commit; it deviates from the approved spec and changes metric data that downstream dashboards group by.",
+      "recommendation": "Keep the caller's email for the metric: compute the fallback into a separate variable (e.g. `ledger_email = decided_by_email or (actor if recorded_id is None else None)`), use it for the `MarketplaceReviewDecision.decided_by_email` and the `_record_activity_event` `actor_email`, and pass the original `decided_by_email` to `track_marketplace_metric`. Add an assertion to the DB-free decide() unit test that the metric receives `actor_email=None` when no email was passed.",
+      "status": "resolved",
+      "check_notes": "queue_service.py:727 computes ledger_email, used at :804 and :826; :881 passes the raw decided_by_email to the metric; no reassignment of decided_by_email remains. A test asserts the metric gets actor_email None.",
+      "fix": {
+        "change": "decide() puts the actor-string fallback in a separate ledger_email for the ledger row and activity event; track_marketplace_metric gets the caller's raw decided_by_email",
+        "test": "tests/codemie/service/marketplace_management/test_decide_recorded_user_id.py::test_the_metric_keeps_the_raw_actor_values_when_the_email_falls_back"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/service/marketplace_management/queue_service.py",
+      "line": 1273,
+      "title": "Removed None guard in _snapshot_actor",
+      "problem": "_snapshot_actor calls _recorded_user_id, which discards the loaded UserDB, then calls session.get(UserDB, actor_id) again and dereferences user.email / user.name with no None check. The SQLAlchemy identity map is weak-referencing, so the comment 'Served from the identity map' does not hold: the second get can re-query and return None. The previous code guarded `if user is not None`.",
+      "impact": "Trigger is narrow: the user's row must be deleted and committed by another transaction between the two adjacent lookups. Then an AttributeError is raised before the activity insert's savepoint and aborts the whole decision. It also costs an extra users query per decision.",
+      "recommendation": "Have the rule return the loaded row (or keep the `if user is not None` guard), so _snapshot_actor reads email/name from the object it already has and drops actor_id when it is gone; correct the identity-map comment.",
+      "status": "resolved",
+      "check_notes": "_snapshot_actor (:1275) uses the UserDB from _recorded_user: one lookup, actor_id dropped when None, no second session.get; the identity-map comment is removed.",
+      "fix": {
+        "change": "New _recorded_user returns the loaded UserDB row; _snapshot_actor reads email/name from it with one lookup and drops actor_id when it is None; _recorded_user_id delegates to it",
+        "test": "tests/codemie/service/marketplace_management/test_record_activity_event.py::test_a_users_row_is_looked_up_once_and_supplies_the_snapshot"
+      },
+      "disposition": {
+        "rationale": "user chose to fix now",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC1: flag False, unpublish by a user with no users row succeeds, WITHDRAWN, no FK violation",
+      "status": "pass",
+      "notes": "decide() writes the recorded id (None for a missing row); flag not read on this path; router test with flag False and PG test cover it."
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: the three FK columns hold an existing users.id or NULL, NULL exactly when the acting id has no row",
+      "status": "pass",
+      "notes": "queue_service.py:725,743,803,825 use recorded_id; _snapshot_actor applies the same rule."
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: when the id is NULL the ledger keeps the email, or the actor string when no email was passed",
+      "status": "pass",
+      "notes": "queue_service.py:726-727; unit and PG tests."
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: a user with a users row keeps their id in all three columns under both flag values",
+      "status": "pass",
+      "notes": "recorded_id equals decided_by_id when the row exists; flag-independent."
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: all six decide() call sites get the rule with no change of their own",
+      "status": "pass",
+      "notes": "Rule inside decide() after the replay check; no call-site edits."
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: regression tests (PG three cases, DB-free decide() unit, _snapshot_actor unit, router test flag False)",
+      "status": "pass",
+      "notes": "All four test files present in the diff."
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: PostgreSQL tests actually run locally (they skip without a database)",
+      "status": "pending-stage-7",
+      "notes": "Needs a run against MM_TEST_PG_URL / dev stack; a skip is not a pass."
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no change to the idempotency key or the decision metrics",
+      "status": "partial",
+      "notes": "Idempotency key and metric actor_id keep the raw id; metric actor_email now receives the actor-string fallback (CR-001)."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Not in the compact review profile."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Not in the compact review profile."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Not in the compact review profile."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Compact profile: edge-case and acceptance ran, blind/verification-gap and standards not in roster. One blocking finding: the actor-string email fallback at queue_service.py:726-727 also reaches the decision metric, against the spec non-goal and decision to leave metrics unchanged; 1 advisory (removed None guard in _snapshot_actor), 0 deferred, 2 dismissed (pre-existing race, intended-per-spec) -> code-review-dismissed.local.md; PostgreSQL tests are pending Stage 7.",
+    "confidence": "high",
+    "risk_flags": []
+  }
+}

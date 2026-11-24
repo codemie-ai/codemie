@@ -1,0 +1,1914 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17100",
+  "head": "6d71c7c1be1bc802daa10dd3362852d9afa59dff",
+  "runner": "custom",
+  "started_at": "2026-11-23T17:58:08Z",
+  "completed_at": "2026-11-23T23:03:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 30168,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "make is not installed in this Git Bash; ran the Makefile target recipe lines directly: poetry run ruff format && poetry run ruff check --fix && poetry run ruff check. 3887 files unchanged; no working-tree edits."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 85971,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "make is not installed in this Git Bash; ran the Makefile target recipe lines directly: poetry build. Built codemie-0.8.0 sdist and wheel into dist/ (gitignored)."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "scope": "user-approved-scoped",
+      "duration_ms": 943000,
+      "command": "PYTHONPATH=D:/Projects/codemie/src poetry run pytest tests/codemie/service/marketplace_management/ tests/codemie/rest_api/routers/ tests/codemie/service/assistant/test_assistant_version_service.py -n 0 -rfE -q --continue-on-collection-errors",
+      "exit_code": 1,
+      "notes": "USER-APPROVED SCOPED RUN (attempt 3, final): the user chose a scoped unit gate after two full-suite attempts (poetry run pytest tests/) could not finish here: attempt 1/run A stopped at collection 'Interrupted: 86 errors during collection' (86 Windows-only collection errors, pre-existing on origin/main), and run B with --continue-on-collection-errors was reaped by Claude Code for low memory after ~23 min (logs unit-retry*.local.log). Scope: tests/codemie/service/marketplace_management/, tests/codemie/rest_api/routers/, plus every other tests/ file that imports or patches codemie.service.marketplace_management.queue_service or MarketplaceQueueService: tests/codemie/service/assistant/test_assistant_version_service.py (also tests/codemie/marketplace_fixtures/conftest.py, a fixture module with no tests, consumed by files already in scope). --continue-on-collection-errors added because with -n 0 pytest otherwise stops at the 64 collection errors and runs nothing. Result on HEAD 6d71c7c1be: '15 failed, 3143 passed, 9 skipped, 5 xfailed, 239 warnings, 151 errors in 898.28s', pytest exit 1 (log unit-scoped.local.log). All 166 failing/erroring ids (15 failed, 64 collection errors, 87 setup errors) were re-run on origin/main f97c9a6dc5 in a temporary detached worktree (D:/Projects/codemie-main-cmp-17100, removed afterwards, no junctions) with the same flags: '15 failed, 2 warnings, 151 errors', the identical id set (log unit-scoped-main.local.log). 0 new, 166 pre-existing; 165 are No module named 'fcntl' (incl. test_queue_ordering.py::test_invalid_order_by_returns_422), 1 is the WinError 10106 subprocess probe in test_oauth_redis_lazy_init.py. Real-PostgreSQL tests ran against projects-postgres-1 (localhost:5432, PYTHONPATH=src for the alembic subprocess): test_withdraw_without_users_row_pg.py 3 PASSED and test_audit_claim_isolation.py 1 PASSED in a -v rerun; a -rs rerun of the PG/skip-bearing files showed no PG skip. Of the 9 skips, 3 are test_workflow_generator.py 'WORKFLOW_GENERATION_ENABLED is False'; the other 6 reasons were not captured (-rfE does not print skips) and none of them is in the PG files rerun with -rs. Not covered: the rest of tests/ outside this scope, and the PG-backed test_marketplace_management_contract.py / test_queue_ordering.py cases blocked by fcntl on Windows - only CI (Linux) settles those."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 22518,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "make is not installed in this Git Bash; ran the Makefile target recipe lines directly: poetry run python scripts/license_headers/check_license_headers.py --check --quiet. 3556 files checked, 0 missing."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 16085,
+      "command": "make gitleaks",
+      "exit_code": 125,
+      "notes": "Environment block, not a scan result. Recipe as written: 'unable to load gitleaks config, err: open C:/Program Files/Git/workspace/.gitleaks.toml: no such file or directory' (Git Bash path rewrite). With MSYS_NO_PATHCONV=1: 'create ./: \"./\" includes invalid characters for a local volume name ... use absolute path.' (exit 125). Docker itself is up. Enable locally: MSYS_NO_PATHCONV=1 docker run --rm -v \"D:/Projects/codemie:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace. That absolute-path run printed nothing for about 35 minutes (it scans the whole tree, including .venv and dist). Claude Code reaped its shell for low memory, and this subagent stopped the leftover container, so there is no result (exit 2, empty output). Covers the codemie-gitleaks pre-commit hook too (nothing staged)."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Guide Skip if: the user did not request coverage."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 1623,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip, exit 0: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' No .env.local and sonar-scanner not on PATH. Enable locally: set SONAR_TOKEN (or add it to .env.local) and install SonarScanner CLI. The pre-push hook runs this only when CODEMIE_PREPUSH_ENABLED=true."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Aggregate of ruff, license, gitleaks, test; each is recorded on its own here."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Needs a local stack built from this branch. The running projects-codemie-1 container uses image projects-codemie:mr4679, not this branch, so a run would test other code. Enable: docker compose up -d --build codemie in D:/Projects, then make test-harness. The MR description must carry its summary (auto_epm-cdme_vcs checks 3.1/3.2)."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 19472,
+      "command": "bash scripts/git-hooks/commit_msg.sh <message file> for each commit in origin/main..HEAD",
+      "exit_code": 0,
+      "notes": "commit-msg hook from .pre-commit-config.yaml; 3 commits checked, all start with EPMCDME-17100:."
+    },
+    {
+      "id": "check-alembic",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 10876,
+      "command": "make check-alembic",
+      "exit_code": 0,
+      "notes": "make is not installed in this Git Bash; ran the Makefile target recipe lines directly: python scripts/check_alembic_heads.py --merge-with origin/main. This always runs in the pre-push hook; the guide does not list it."
+    },
+    {
+      "id": "check-deps",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 8915,
+      "command": "make check-deps",
+      "exit_code": 0,
+      "notes": "make is not installed in this Git Bash; ran the Makefile target recipe lines directly: python scripts/check_poetry_lock.py. README lists it in the KRCI review pipeline (changed-checks); the guide does not."
+    },
+    {
+      "id": "ruff-changed",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 14934,
+      "command": "make ruff-changed",
+      "exit_code": 0,
+      "notes": "make is not installed in this Git Bash; ran the Makefile target recipe lines directly: poetry run python scripts/check_ruff_changed.py --base origin/main. No new strict issues in 1 changed file. README lists it in the KRCI changed-checks; the guide does not."
+    },
+    {
+      "id": "ci-wait-contexts",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml wait-ci-init",
+      "exit_code": null,
+      "notes": "The guide says no pipeline runs in this repo, but .gitlab-ci.yml has a pre-ci-guard that waits for the external contexts ci-pipeline and compliance-report (KRCI and the compliance bot). These can't be run locally; only the MR pipeline can settle them."
+    }
+  ],
+  "failures": {},
+  "unit_full_suite_failed_tests": [
+    {
+      "id": "tests/codemie/core/hosted_applications/test_content_cache.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/core/hosted_applications/test_content_gateway.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/core/hosted_applications/test_parser_sandbox.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_a2a_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_ai_kata.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_analytics_capability_guards.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_analytics_leaderboard.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_categories.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_deselected_default_tools_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_mapping.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_marketplace.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison); this test file IS changed on the branch, but origin/main's copy has the same 'from codemie.rest_api.main import app' at line 22, which pulls in fcntl, so it fails to collect on Windows on origin/main too"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_mcp_tools.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_plugin_tools.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_prompt_variable_mapping.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_reactions.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_refresh_flow.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_share.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_sort_params.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_users.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_background_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_budget_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_common_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_contract_baseline.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_conversation.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_conversation_hide_tool_outputs.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_conversation_metrics_access.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_conversation_pagination.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_cost_centers_router_http_auth.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_create_always_new.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_custom_node.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_customer_config_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_files.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_google_oauth.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_hide_tool_outputs_e2e.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_hosted_applications_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_hosted_thumbnail_route.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_idempotent_write.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_index.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_index_git_faq.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_index_idempotency.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_kata_feature_gate.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_llm_models.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_logs.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_mcp_config.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_mcp_config_test_endpoint.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_mcp_managed.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_project_budget_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_project_settings_project_change.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_provider.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_provisioning_budgets_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_provisioning_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_resume_workflow_execution.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_share.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_system_prompt_validation.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_tool.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_tool_call_resume.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_usage_attribution.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_user_kata_progress.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_user_model_override_endpoints.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_user_model_override_endpoints_review.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_execution_transitions.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_executions.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_executions_marketplace.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_marketplace_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_selectable.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_versions.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/test_core_gating.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/test_customer_config_warmup.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/test_event_loop_lag_monitor_scheduling.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/test_litellm_model_recovery.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/test_main_exception_handler.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/test_main_hsts_header.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/test_main_validation_handler.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/test_mcp_auth_required_handler.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/rest_api/test_standalone_startup.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/service/hosted_applications",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/service/usage_attribution/test_framework_wiring.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie/service/usage_attribution/test_worker.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/enterprise/mcp_auth/test_client_metadata_bridge.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/enterprise/mcp_auth/test_discovery_cimd_disabled.py",
+      "kind": "collection-error",
+      "cause": "ImportError: cannot import name 'AuthorizationServerMetadataDiscoveryResult' from 'codemie_enterprise.mcp_auth' (installed enterprise package lacks the symbol)",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/enterprise/mcp_auth/test_saml_initiate_bridge.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "tests/enterprise/mcp_auth/test_saml_metadata_bridge.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: POSIX-only module 'fcntl' or 'resource' imported by src (hosted_applications/filesystem.py, usage_attribution/worker.py, hosted_apps_validator/isolation.py); not importable on Windows",
+      "origin_main": "pre-existing",
+      "notes": "pre-existing: same import on origin/main f97c9a6dc5 and no src file in the import chain is changed on the branch (static comparison)"
+    },
+    {
+      "id": "<unnamed: 119 F and 102 E outcomes in the first 14261 results (39%)>",
+      "kind": "failed-or-errored-unnamed",
+      "origin_main": "unknown",
+      "notes": "Run reaped before pytest printed its summary; -q progress lines carry no node ids. 1-based outcome positions of F/E are recoverable from unit-retry.local.log; mapping them to ids needs a 'pytest tests/ -n 0 --continue-on-collection-errors --collect-only -q' listing (same collection order), not run here because of memory pressure."
+    }
+  ],
+  "unit_failed_tests": [
+    {
+      "id": "tests/codemie/rest_api/routers/test_a2a_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_admin_reindex_kill_switch.py::test_reindex_still_works_when_the_feature_is_enabled",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_admin_reindex_kill_switch.py::test_reindex_works_when_marketplace_management_is_disabled",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_ai_kata.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_analytics_capability_guards.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_analytics_leaderboard.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_categories.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_deselected_default_tools_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_mapping.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_marketplace.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_mcp_tools.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_plugin_tools.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_prompt_variable_mapping.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_reactions.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_refresh_flow.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_share.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_sort_params.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_assistant_users.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_background_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_budget_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_common_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_contract_baseline.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_conversation.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_conversation_hide_tool_outputs.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_conversation_metrics_access.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_conversation_pagination.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_cost_centers_router_http_auth.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_create_always_new.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_custom_node.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_customer_config_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_export_router.py::test_router_is_mounted_on_the_application",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_files.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_google_oauth.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_hide_tool_outputs_e2e.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_hosted_applications_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_hosted_thumbnail_route.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_idempotent_write.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_index.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_index_git_faq.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_index_idempotency.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_kata_feature_gate.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_llm_models.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_logs.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_a_bad_gate_config_degrades_the_page_instead_of_500ing",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_audit_run_returns_202",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_category_and_order_by_forwarded_to_list_pending",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_entity_detail_still_resolves_a_real_id",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_gate_result_has_critical_filter_applied_at_http_layer",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_get_config_returns_the_config",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_invalid_gate_result_returns_422",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_no_untyped_routes",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_non_admin_is_403",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_one_bad_row_does_not_blank_the_pending_page",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_overview_emits_cleanup_reasons",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_overview_emits_usage_tiers_and_verdict_kinds",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_overview_keeps_the_audited_population_under_an_honest_name",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_overview_pending_block_is_typed_not_a_loose_dict",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_overview_returns_200_for_admin",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_overview_total_is_right_before_the_first_audit",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_overview_total_is_the_live_catalogue_not_the_last_run",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_pending_page_size_is_capped_below_the_generic_200",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_pending_projects_the_creator_and_the_timestamp",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_put_config_accepts_a_gates_patch",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_put_config_records_a_threshold_event_per_persisted_section",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_put_config_refuses_usage_tiers_until_they_are_persisted",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_reads_stay_fast_during_a_running_audit",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_unauthenticated_is_401",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_unknown_kind_is_400",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_workflows_reads_are_501_not_500[cleanup]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_workflows_reads_are_501_not_500[facets]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_workflows_reads_are_501_not_500[overview]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApproveCriticalGate::test_approve_allowed_with_no_findings",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApproveCriticalGate::test_approve_allowed_with_optional_only_findings",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApproveCriticalGate::test_approve_blocked_when_critical_finding_present",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApproveCriticalGate::test_force_publish_not_blocked_by_critical_finding",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApproveCriticalGate::test_reject_not_blocked_by_critical_finding",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApprovePending::test_pending_approve",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApprovePending::test_pending_approve_derives_the_actor_from_the_token",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApprovePending::test_pending_approve_forwards_the_idempotency_key_and_flags_a_replay",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApprovePending::test_pending_approve_of_a_moved_entity_is_409",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApprovePending::test_pending_approve_of_an_unknown_entity_is_404",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestAssessAssistant::test_assess_is_501_for_workflows",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestAssessAssistant::test_assess_with_ai_delegates_to_service",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestAuditStatus::test_status_reports_running_audit",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestAuditStatus::test_status_surfaces_a_failed_run",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_expected_version_reaches_the_queue_service[7-7-approve-approve-body0]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_expected_version_reaches_the_queue_service[7-7-force-publish-force_publish-body2]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_expected_version_reaches_the_queue_service[7-7-reject-reject-body1]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_expected_version_reaches_the_queue_service[None-None-approve-approve-body0]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_expected_version_reaches_the_queue_service[None-None-force-publish-force_publish-body2]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_expected_version_reaches_the_queue_service[None-None-reject-reject-body1]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_negative_expected_version_is_rejected[approve-body0]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestDecisionsCarryExpectedVersion::test_negative_expected_version_is_rejected[reject-body1]",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestEntityReviewDetailNewFields::test_entity_review_detail_serializes_bucket_reason_and_usage_tier",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestEntityReviewDetailNewFields::test_review_verdict_returns_bucket_reason_and_usage_tier",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetCleanup::test_cleanup_default_bucket_is_delete",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetCleanup::test_cleanup_empty_bucket_returns_all",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetCleanup::test_cleanup_rejects_an_out_of_range_page_size",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetCleanup::test_cleanup_rule_filter_returns_only_entities_failing_that_check",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetCleanup::test_cleanup_unknown_rule_is_422",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetCleanup::test_get_cleanup_order_by_unknown_returns_200",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetCleanup::test_get_cleanup_order_by_valid",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetFacets::test_facets_mcp_category_and_cluster_values",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetFacets::test_facets_returns_mcps_categories_clusters",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetOverview::test_an_unknown_kind_is_a_400_not_a_default",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestGetOverview::test_overview_returns_the_three_buckets",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_absent_status_calls_service_with_all_statuses",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_is_verified_false_for_non_approved",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_omitted_page_size_returns_all_rows",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_page_size_over_100_returns_422",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_pagination_params_forwarded_to_service",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_response_shape_and_item_fields",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_status_all_calls_service_with_all_statuses",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_status_pending_calls_service_with_pending_review",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_status_rejected_calls_service_with_rejected",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_status_verified_calls_service_with_approved",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestListMarketplaceAssistants::test_workflow_kind_returns_empty_page",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestPromptViewedActivityEvent::test_event_carries_the_assistants_project_and_name",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestReviewPolishChecks::test_review_polish_checks_returns_all_four_entries",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestReviewPolishChecks::test_review_polish_checks_returns_none_on_config_failure",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_router.py::TestRunAudit::test_audit_run_starts_in_background_and_returns_202",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_5xx_body_has_no_traceback",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_assess_is_rate_limited",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_audit_run_is_rate_limited",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_detail_does_not_leak_prompts_or_credentials",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_detail_masks_sensitive_prompt_variables",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_marketplace_management_security.py::test_detail_response_model_declares_the_projection",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_mcp_config.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_mcp_config_test_endpoint.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_mcp_managed.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_oauth_redis_lazy_init.py::test_app_starts_without_redis_package_when_pkce_disabled",
+      "kind": "failed",
+      "cause": "AssertionError: probe failed (exit 1): subprocess app-import probe hit OSError [WinError 10106] importing _overlapped (Windows asyncio provider not loadable in the subprocess)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_project_budget_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_project_settings_project_change.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_provider.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_provisioning_budgets_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_provisioning_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_resume_workflow_execution.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_share.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_system_prompt_validation.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_tool.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_tool_call_resume.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_usage_attribution.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_user_kata_progress.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_user_model_override_endpoints.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_user_model_override_endpoints_review.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_user_settings_crud.py::test_update_user_setting_does_not_move_when_update_settings_fails",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_execution_transitions.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_executions.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_executions_marketplace.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_marketplace_router.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_selectable.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/rest_api/routers/test_workflow_versions.py",
+      "kind": "collection-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_audit_reaper_job.py::test_a_failing_sweep_does_not_take_the_scheduler_down",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_audit_reaper_job.py::test_a_follower_pod_reaps_nothing",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_audit_reaper_job.py::test_the_leader_reaps_with_the_configured_timeout",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_audit_reaper_job.py::test_the_reaper_is_armed_by_default",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_audit_retention_job.py::test_a_failing_purge_does_not_take_the_scheduler_down",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_audit_retention_job.py::test_a_non_leader_pod_purges_nothing",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_audit_retention_job.py::test_retention_is_off_until_somebody_turns_it_on",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_audit_retention_job.py::test_the_leader_purges_every_entity_kind",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_moderation_purge_hook.py::test_a_failing_sweep_does_not_take_the_scheduler_down",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_moderation_purge_hook.py::test_a_non_leader_pod_sweeps_nothing",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_moderation_purge_hook.py::test_the_sweep_is_off_when_the_feature_is_off",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_moderation_purge_hook.py::test_the_sweep_runs_without_anyone_enabling_retention",
+      "kind": "failed",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "FAILED"
+    },
+    {
+      "id": "tests/codemie/service/marketplace_management/test_queue_ordering.py::test_invalid_order_by_returns_422",
+      "kind": "setup-error",
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (src/codemie/repository/hosted_applications/filesystem.py imports POSIX-only fcntl; not importable on Windows)",
+      "origin_main": "pre-existing",
+      "main_result": "ERROR"
+    }
+  ]
+}

@@ -701,6 +701,37 @@ async def test_unpublish_assistant_from_marketplace():
 
 
 @pytest.mark.asyncio
+async def test_unpublish_assistant_with_marketplace_management_disabled(monkeypatch):
+    """Unpublish still goes through the WITHDRAW decision when marketplace management is off (EPMCDME-17100)."""
+    monkeypatch.setattr(config, "MARKETPLACE_MANAGEMENT_ENABLED", False)
+    assistant_id = "456"
+    assistant_mock = MagicMock()
+    assistant_mock.id = assistant_id
+    assistant_mock.is_global = True
+
+    mock_mqs_instance = MagicMock()
+    mock_mqs_class = MagicMock(return_value=mock_mqs_instance)
+
+    with (
+        patch("codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=assistant_mock),
+        patch("codemie.core.ability.Ability.can", return_value=True),
+        patch(
+            "codemie.service.marketplace_management.queue_service.MarketplaceQueueService",
+            mock_mqs_class,
+        ),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/assistants/{assistant_id}/marketplace/unpublish", headers={"Authorization": "Bearer testtoken"}
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        mock_mqs_instance.withdraw.assert_called_once()
+        assert mock_mqs_instance.withdraw.call_args.kwargs["assistant_id"] == assistant_id
+
+
+@pytest.mark.asyncio
 async def test_unpublish_assistant_access_denied():
     """Test unpublishing when user does not have access to the assistant."""
     assistant_id = "456"

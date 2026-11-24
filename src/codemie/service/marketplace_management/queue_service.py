@@ -82,7 +82,6 @@ from codemie.service.activity.activity_models import (
     ActivityEntityType,
     ActivityEventCreate,
     MarketplaceModerationEvent,
-    SYSTEM_ACTOR_ID,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
 from codemie.service.marketplace_management.models import (
@@ -721,6 +720,11 @@ class MarketplaceQueueService:
                     to_version=replay["to_version"],
                 )
 
+            # Only an id with a `users` row may reach the users-FK columns below; who acted stays on record
+            # through `ledger_email`, which falls back to the `actor` string when the id is dropped. The metric
+            # below keeps the caller's raw values, so this fallback never reaches it.
+            recorded_id, ledger_email = self._recorded_actor(session, decided_by_id, decided_by_email, actor)
+
             # Run the optional pre-CAS gate check immediately before the UPDATE
             # so the check and the write are as close together as possible (CR-004).
             # Any exception from the hook aborts the decision without touching the
@@ -735,7 +739,7 @@ class MarketplaceQueueService:
                         "to_status": rule.to_status,
                         "to_is_global": rule.to_is_global,
                         "to_is_verified": rule.to_is_verified,
-                        "decided_by_id": decided_by_id,
+                        "decided_by_id": recorded_id,
                         "reason": reason,
                         "stamp_submitted": stamp_submitted,
                         "submitted_at": submitted_at,
@@ -795,8 +799,8 @@ class MarketplaceQueueService:
                     reason=reason,
                     override_notice=override_notice,
                     audit_run_id=audit_run_id,
-                    decided_by_id=decided_by_id,
-                    decided_by_email=decided_by_email,
+                    decided_by_id=recorded_id,
+                    decided_by_email=ledger_email,
                     idempotency_key=idem_key,
                     request_id=request_id,
                     result=result,
@@ -808,7 +812,7 @@ class MarketplaceQueueService:
             # action that happened without a trace, or a trace of one that
             # never happened, are both worse than either alone.
             #
-            # `insert` opens a SAVEPOINT (`activity_repository.py:140`) and
+            # `insert` opens a SAVEPOINT (`activity_repository.py:242`) and
             # swallows its own failures, so a malformed event can never abort
             # the transaction that carries the decision.
             self._record_activity_event(
@@ -817,8 +821,8 @@ class MarketplaceQueueService:
                 entity_kind=entity_kind,
                 entity_id=assistant_id,
                 actor=actor,
-                actor_id=decided_by_id,
-                actor_email=decided_by_email,
+                actor_id=recorded_id,
+                actor_email=ledger_email,
                 entity_label=updated["name"],
                 project_name=updated["project"],
                 attributes={
@@ -1238,25 +1242,54 @@ class MarketplaceQueueService:
         return {**result, "indexing": indexing}
 
     @staticmethod
+    def _recorded_user(session, user_id: str | None) -> UserDB | None:
+        """Return the `users` row for `user_id`, or None when the id is missing or has no row.
+
+        The marketplace columns that hold a deciding user's id all FK `users.id`, but an authenticated
+        actor need not have a row (an identity provider that never provisions one, the system actor).
+        Writing such an id aborts the whole decision with a FK violation, so only an id with a row is
+        recorded; who acted stays on record through the email and `attributes.actor`.
+        """
+        if not user_id:
+            return None
+        return session.get(UserDB, user_id)
+
+    @staticmethod
+    def _recorded_user_id(session, user_id: str | None) -> str | None:
+        """Return `user_id` when it has a `users` row, else None (see `_recorded_user`)."""
+        return user_id if MarketplaceQueueService._recorded_user(session, user_id) is not None else None
+
+    @staticmethod
+    def _recorded_actor(session, user_id: str | None, email: str | None, actor: str) -> tuple[str | None, str | None]:
+        """Return `(id, email)` to store for a decision: the id only when it has a `users` row.
+
+        When the id is dropped, `actor` stands in for a missing email so the ledger still says who acted.
+        """
+        recorded_id = MarketplaceQueueService._recorded_user_id(session, user_id)
+        return recorded_id, email or (actor if recorded_id is None else None)
+
+    @staticmethod
     def _snapshot_actor(
         session, actor: str, actor_id: str | None, actor_email: str | None
     ) -> tuple[str | None, str | None, str | None]:
         """Return the `(actor_id, actor_email, actor_display_name)` snapshot stored on an activity row.
 
-        Snapshot the actor the way every other domain does. `ActivityEventCreate` raises when `actor_id` is set
+        `actor_id` is kept only when it has a `users` row (`_recorded_user`); that row also supplies the
+        email when none was passed, and the display name. `ActivityEventCreate` raises when `actor_id` is set
         without an email, and that happens before `insert`'s savepoint, so an unresolvable email must never
         reach it: fall back to an email-shaped `actor` string, then drop `actor_id` (`attributes.actor` keeps it).
         """
         actor_display_name = None
-        if actor_id and actor_id != SYSTEM_ACTOR_ID:
-            user = session.get(UserDB, actor_id)
-            if user is not None:
-                actor_email = actor_email or user.email
-                actor_display_name = user.name or None
-            if actor_email is None and "@" in actor:
-                actor_email = actor
-            if actor_email is None:
-                actor_id = None
+        user = MarketplaceQueueService._recorded_user(session, actor_id)
+        if user is None:
+            actor_id = None
+        else:
+            actor_email = actor_email or user.email
+            actor_display_name = user.name or None
+        if actor_email is None and "@" in actor:
+            actor_email = actor
+        if actor_email is None:
+            actor_id = None
         return actor_id, actor_email, actor_display_name
 
     @staticmethod

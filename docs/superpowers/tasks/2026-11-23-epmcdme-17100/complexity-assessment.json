@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "task": "Fix EPMCDME-17100: marketplace unpublish/withdraw fails with ForeignKeyViolation because decide() writes an acting user.id with no users row into three FK columns; write only an existing user id or null, keep flag-True behaviour unchanged, and add a regression test.",
+  "generated": "2026-11-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "MarketplaceQueueService.decide() is the single write path. It feeds three FK'd writes (assistants.marketplace_decided_by CAS, the mm_review_decision insert, and the activity_events actor via _snapshot_actor), plus the users-existence lookup through UserRepository. That is 2-3 components across the service and persistence layers. One fix inside decide() covers all six call sites, so the unpublish router probably needs no change." },
+    { "dimension": "requirements_clarity", "reason": "The acceptance criteria are concrete, but the ticket names MARKETPLACE_MANAGEMENT_ENABLED=False as the trigger, and the code contradicts that: the missing users row comes from ENABLE_USER_MANAGEMENT=False or stand-in users. Two choices are still open: fix at the endpoint or inside decide(), and how the 'flag True unchanged' criterion applies, since the same failure also happens with the flag True." },
+    { "dimension": "technical_risk", "reason": "Closest patterns are UserRepository.get_existing_user_ids and _snapshot_actor, and decide() already accepts decided_by_id=None. All FK columns are nullable, and the change needs no migration. Risk is held at M rather than S for three reasons: nulling only the CAS parameter moves the failure to the mm_review_decision FK at flush or commit; _snapshot_actor keeps an actor_id that has no users row, so the activity event is silently dropped; and the FK behaviour can only be observed with the real-PostgreSQL fixtures, which skip themselves when no database is reachable. Calibration: this sits at the S/M boundary next to bundled M example epmcdme-10203 (15). It stays S because it has fewer files and layers and no new endpoint." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

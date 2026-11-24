@@ -16,9 +16,7 @@
 """`_record_activity_event` stamps project/label and the actor snapshot without ever raising (EPMCDME-14325)."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock, call, patch
 
 from codemie.service.activity.activity_models import SYSTEM_ACTOR_ID
 from codemie.service.marketplace_management.models import EntityKind, ReviewDecision
@@ -84,7 +82,13 @@ def test_user_row_without_name_for_a_caller_without_email_still_records():
 def test_unresolvable_email_falls_back_to_an_email_shaped_actor_string():
     event = _record(_session(user=None), actor="alice@example.com")
 
-    assert (event.actor_id, event.actor_email) == ("u-1", "alice@example.com")
+    assert (event.actor_id, event.actor_email) == (None, "alice@example.com")
+
+
+def test_missing_users_row_drops_actor_id_even_with_passed_email():
+    event = _record(_session(user=None), actor_email="p@x.io")
+
+    assert (event.actor_id, event.actor_email) == (None, "p@x.io")
 
 
 def test_unresolvable_email_drops_actor_id_instead_of_raising():
@@ -94,10 +98,42 @@ def test_unresolvable_email_drops_actor_id_instead_of_raising():
     assert event.attributes["actor"] == "a-username"
 
 
-@pytest.mark.parametrize("actor_id", [None, SYSTEM_ACTOR_ID])
-def test_system_or_missing_actor_is_not_looked_up(actor_id):
+def test_missing_actor_is_not_looked_up():
     session = _session()
-    event = _record(session, actor="system", actor_id=actor_id)
+    event = _record(session, actor="system", actor_id=None)
 
-    assert (event.actor_email, event.actor_display_name) == (None, None)
+    assert (event.actor_id, event.actor_email, event.actor_display_name) == (None, None, None)
+    assert session.get.call_args_list == []
+
+
+def test_system_actor_without_users_row_is_looked_up_and_dropped():
+    session = _session()
+    event = _record(session, actor="system", actor_id=SYSTEM_ACTOR_ID)
+
+    assert (event.actor_id, event.actor_email, event.actor_display_name) == (None, None, None)
+    assert session.get.call_args_list == [call(UserDB, SYSTEM_ACTOR_ID)]
+
+
+def test_a_users_row_is_looked_up_once_and_supplies_the_snapshot():
+    session = _session(user=SimpleNamespace(email="a@x.io", name="Alice"))
+    event = _record(session)
+
+    assert (event.actor_id, event.actor_email, event.actor_display_name) == ("u-1", "a@x.io", "Alice")
+    assert session.get.call_args_list == [call(UserDB, "u-1")]
+
+
+def test_recorded_user_id_keeps_an_id_that_has_a_users_row():
+    session = _session(user=SimpleNamespace(email="a@x.io", name="Alice"))
+
+    assert MarketplaceQueueService._recorded_user_id(session, "u-1") == "u-1"
+
+
+def test_recorded_user_id_drops_an_id_without_a_users_row():
+    assert MarketplaceQueueService._recorded_user_id(_session(user=None), "u-1") is None
+
+
+def test_recorded_user_id_does_not_look_up_a_missing_id():
+    session = _session()
+
+    assert MarketplaceQueueService._recorded_user_id(session, None) is None
     assert session.get.call_args_list == []
