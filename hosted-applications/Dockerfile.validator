@@ -24,8 +24,8 @@ COPY hosted-applications/requirements-validator.txt /tmp/requirements-validator.
 # that failure is the signal to bump the pin (and the label below).
 RUN pip install --no-cache-dir --require-hashes --only-binary=:all: --no-deps -r /tmp/requirements-validator.txt \
     && rm /tmp/requirements-validator.txt
-RUN apk add --no-cache chromium=156.0.8078.79-r0
-LABEL org.codemie.chromium-version=156.0.8078.79-r0
+RUN apk add --no-cache chromium=158.0.8127.36-r0
+LABEL org.codemie.chromium-version=158.0.8127.36-r0
 WORKDIR /app
 COPY src/codemie/__init__.py /app/src/codemie/__init__.py
 COPY src/codemie/core/__init__.py /app/src/codemie/core/__init__.py

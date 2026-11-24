@@ -394,7 +394,7 @@ expiry of the sign-in it came from, or at sign-out.
   - seccomp: only `AF_UNIX` sockets. `socket()` for IP and packet families returns `EPERM`.
   - Landlock: read access to the version's files, the Chromium install, `/usr/lib`, `/usr/share/fonts`,
     `/proc` and `/dev/null`. Read and write access to one private scratch directory. Execute access to
-    Chromium, its crash handler and the musl loader only. Chromium 156 does not start with a `/proc/self`
+    Chromium, its crash handler and the musl loader only. Chromium 158 does not start with a `/proc/self`
     rule, or without its crash handler (it starts the handler even with `--disable-crash-reporter`).
   - The environment holds `TMPDIR` only. It has no `VALIDATOR_SERVICE_KEY` and no TLS material.
   - rlimits: 60 s CPU time per process, 256 MiB file size, 512 open files, no core dumps.
