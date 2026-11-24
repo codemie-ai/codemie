@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-11-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 10,
+  "routing": "writing-plans",
+  "reviewed_baseline": {
+    "base_sha": "a952b969663a9a527e451ae26b7b9432b54cf7f6",
+    "candidate_snapshot": "e9a5118a3e551d7861272761de84b1efcd13aebe",
+    "diff_sha256": "75f62816f1d4180c7340e34dfa66e5f760ef712570fe23bfa91746dff3f24b55"
+  },
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "10 files (371+/11-) but only one source module (user_rollup.py) plus one guide; the rest are live/unit tests. Count drives L, not logic breadth." },
+    { "dimension": "technical_risk", "reason": "Option A: rollup pricing flags (has_priced/cost_priced=False) without a migration, so rollback is trivial; shared rollup cost semantics keep it at M. Scored from diffstat and file list, not a full file read. Reviewed baseline: base a952b969663a9a527e451ae26b7b9432b54cf7f6, candidate snapshot e9a5118a3e551d7861272761de84b1efcd13aebe, diff sha256 75f62816f1d4180c7340e34dfa66e5f760ef712570fe23bfa91746dff3f24b55. Supersedes the shape-5/migration design assessment." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

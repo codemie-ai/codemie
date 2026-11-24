@@ -16910,7 +16910,7 @@
                 "type": "null"
               }
             ],
-            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "description": "True for an incomplete amount with no priced usage. Stored rollups also report true for any incomplete amount with an exact zero cost. False for complete amounts or incomplete amounts with priced usage evidence. None when the source cannot tell.",
             "title": "Cost Unknown"
           },
           "cost_usd": {
@@ -16977,7 +16977,7 @@
                 "type": "null"
               }
             ],
-            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "description": "True for an incomplete amount with no priced usage. Stored rollups also report true for any incomplete amount with an exact zero cost. False for complete amounts or incomplete amounts with priced usage evidence. None when the source cannot tell.",
             "title": "Cost Unknown"
           },
           "cost_usd": {
@@ -17095,7 +17095,7 @@
                 "type": "null"
               }
             ],
-            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "description": "True for an incomplete amount with no priced usage. Stored rollups also report true for any incomplete amount with an exact zero cost. False for complete amounts or incomplete amounts with priced usage evidence. None when the source cannot tell.",
             "title": "Cost Unknown"
           },
           "project_origins": {
@@ -17672,7 +17672,7 @@
                 "type": "null"
               }
             ],
-            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "description": "True for an incomplete amount with no priced usage. Stored rollups also report true for any incomplete amount with an exact zero cost. False for complete amounts or incomplete amounts with priced usage evidence. None when the source cannot tell.",
             "title": "Cost Unknown"
           },
           "dead_sessions": {
@@ -17836,7 +17836,7 @@
                 "type": "null"
               }
             ],
-            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "description": "True for an incomplete amount with no priced usage. Stored rollups also report true for any incomplete amount with an exact zero cost. False for complete amounts or incomplete amounts with priced usage evidence. None when the source cannot tell.",
             "title": "Cost Unknown"
           },
           "cost_usd": {
@@ -18094,7 +18094,7 @@
                 "type": "null"
               }
             ],
-            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "description": "True for an incomplete amount with no priced usage. Stored rollups also report true for any incomplete amount with an exact zero cost. False for complete amounts or incomplete amounts with priced usage evidence. None when the source cannot tell.",
             "title": "Cost Unknown"
           },
           "cost_usd": {
@@ -18231,7 +18231,7 @@
                 "type": "null"
               }
             ],
-            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "description": "True for an incomplete amount with no priced usage. Stored rollups also report true for any incomplete amount with an exact zero cost. False for complete amounts or incomplete amounts with priced usage evidence. None when the source cannot tell.",
             "title": "Cost Unknown"
           },
           "cost_usd": {
@@ -19321,7 +19321,7 @@
                 "type": "null"
               }
             ],
-            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "description": "True for an incomplete amount with no priced usage. Stored rollups also report true for any incomplete amount with an exact zero cost. False for complete amounts or incomplete amounts with priced usage evidence. None when the source cannot tell.",
             "title": "Cost Unknown"
           },
           "cost_usd": {
@@ -19374,7 +19374,7 @@
                 "type": "null"
               }
             ],
-            "description": "True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+            "description": "True for an incomplete amount with no priced usage. Stored rollups also report true for any incomplete amount with an exact zero cost. False for complete amounts or incomplete amounts with priced usage evidence. None when the source cannot tell.",
             "title": "Cost Unknown"
           },
           "cost_usd": {

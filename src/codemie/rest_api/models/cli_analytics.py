@@ -111,8 +111,9 @@ class _RowPricing(BaseModel):
     )
     cost_unknown: bool | None = Field(
         None,
-        description="True when nothing of this amount was priced (cost_usd is then not a real $0). False when part or "
-        "all of it was priced, a true $0 included. None when the source cannot tell (the stored per-user rollups).",
+        description="True for an incomplete amount with no priced usage. Stored rollups also report true for any "
+        "incomplete amount with an exact zero cost. False for complete amounts or incomplete amounts with priced "
+        "usage evidence. None when the source cannot tell.",
     )
 
 

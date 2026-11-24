@@ -30,12 +30,18 @@ from codemie.repository.cli_analytics.ports import G_MODEL, G_USER
 from codemie.repository.cli_analytics.postgres import user_rollup as ur
 from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
 from codemie.service.analytics.handlers.coding_agent_pricing import model_rates_for
-from tests.codemie.repository.cli_analytics.postgres.live_helpers import _COST_SQL, _DIMS_SQL, _MODULE, _engine
+from tests.codemie.repository.cli_analytics.postgres.live_helpers import (
+    _COST_SQL,
+    _DIMS_SQL,
+    _MODULE,
+    _REAL_WORK_SQL,
+    _engine,
+)
 from tests.codemie.repository.cli_analytics.postgres.test_live_users_page import _MODEL
 from tests.codemie.service.analytics.handlers.test_coding_agent_pricing import _HAIKU
 
 VERSION = "test-cost-rates-version"
-_TABLES = ("session_dims", "cost_daily", "lines_daily", "turns_daily", "invocations_hourly")
+_TABLES = ("session_dims", "cost_daily", "lines_daily", "turns_daily", "invocations_hourly", "log_events")
 _ROLLUP_TABLES = (*ur._DAY_TABLES, "user_rollup_day_state")
 
 
@@ -65,6 +71,7 @@ class _Sessions:
         self.sids.append(sid)
         async with engine.acquire() as conn:
             await conn.execute(_DIMS_SQL, sid, started, started + timedelta(minutes=1), email)
+            await conn.execute(_REAL_WORK_SQL, started + timedelta(seconds=10), sid)
             await conn.execute(_COST_SQL, started.date(), sid, email, _MODEL, input_tokens, 0, 0, 0, None, None)
             # known activity and not resumed: the sessions the partial first day reads as `_GAP_NONRESUMED_SQL`; the
             # last activity day is what a window that starts inside a day admits a session by (ingest stores it)
@@ -110,6 +117,7 @@ async def test_rollup_cost_gives_what_the_live_cost_statements_give():
             sid = f"test-cost-{seeds.suffix}-4"
             seeds.sids.append(sid)
             await conn.execute(_DIMS_SQL, sid, started, started + timedelta(minutes=1), c)
+            await conn.execute(_REAL_WORK_SQL, started + timedelta(seconds=10), sid)
         reader = PostgresCliAnalyticsReader(engine)
         reader.set_rates(lambda: VERSION)
         with patch(f"{_MODULE}.llm_service.get_all_llm_model_info", return_value=[_HAIKU]):

@@ -1,0 +1,69 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case lens returned no findings; acceptance AC1-AC7 pass (AC7 reconciled with the earlier 206-pass PostgreSQL run and the harness log, see its notes). Confidence stays low: the standards audit did not run, so commit-format, code-quality and security are unverified. Cause: review-standards derives its evidence from `git log/diff <diff_base>...HEAD`, and the candidate is uncommitted, so the committed HEAD differs from the snapshot (it still has the superseded migration); no diff_base was passed and the dispatch was skipped by contract. The skill has no snapshot mode; the gap closes only on a commit of the candidate (then re-run with diff_base a952b969663a9a527e451ae26b7b9432b54cf7f6).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC1: migration a1c1a0000020 and shape-5 storage/wiring absent; shape stays 4; no new live fallback",
+      "status": "pass",
+      "notes": "diff touches no migration, SHAPE_*, column or SQL"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: existing shape-4 rows stay readable and served by rollup without rebuild",
+      "status": "pass",
+      "notes": "test asserts shapes {4} and rollup answered"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: rollup _group has_priced=False and Overview spend row cost_priced=False",
+      "status": "pass",
+      "notes": "unit tests assert both"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: rollup incomplete exact $0 unknown; positive incomplete partial; complete unmarked",
+      "status": "pass",
+      "notes": "tests assert per-group flag tuples"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: live SQL semantics unchanged; filtered request answered live",
+      "status": "pass",
+      "notes": "no live SQL changed; live tests cover zero-rate and filtered cases"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: guide documents priced-zero exception",
+      "status": "pass",
+      "notes": "cli-analytics-storage.md exception sentence present"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: evidence across Users, Cost by User/Model, KPIs, Overview Est. Cost via real consumer",
+      "status": "pass",
+      "notes": "local PostgreSQL run (206 passed, 0 skipped, a1c1a0000019, user-reported in-session, no saved log) of test_live_rollup_priced_evidence through the real LocalAnalyticsHandler: shape-4 rows served without rebuild (rollup answered Users/Cost/Overview), fully unpriced / partial positive / complete / zero-rate live-vs-rollup exception, filtered request live. Scope tie: compiled-module source stamps (mtime+size) of all 9 changed code/test files match the current files, and src, tests, .ai-run are identical to snapshot e9a5118a3e; only the guide was edited after the run. Harness sanity-api 183 passed/10 skipped/4 rerun, exit 0 (log verify/logs/harness-20261120-141911.*), backend on the worktree src; retrieval-dependent skips are environment."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "standards audit expected but missing; coverage gap"
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "standards audit expected but missing; coverage gap"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "standards audit expected but missing; coverage gap"
+    }
+  ],
+  "findings": [],
+  "deferred": []
+}

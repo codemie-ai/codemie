@@ -57,6 +57,9 @@ _API_REQUEST_SQL = """
          cache_creation_tokens, severity, resource_id)
     VALUES ($1, $2, 1, $3, $4, $5, $6, $7, 9, 1)
 """
+# A record of real work (EPMCDME-16496 AC4): without one a session is admitted only to a window wider than its own day,
+# so the rollup windows (midnight UTC to now) do not see it.
+_REAL_WORK_SQL = "INSERT INTO log_events (ts, session_id, event_kind, severity, resource_id) VALUES ($1, $2, 1, 9, 1)"
 _REQUEST_START = datetime(2026, 8, 2, 12, tzinfo=timezone.utc) - timedelta(minutes=10)
 
 

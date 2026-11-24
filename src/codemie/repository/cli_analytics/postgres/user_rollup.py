@@ -1357,6 +1357,8 @@ def _group(keys: dict, cost: Decimal, sessions: int, unpriced: set[str]) -> Cost
         session_count=sessions,
         unpriced_models=tuple(sorted(unpriced)),
         cost_incomplete=bool(unpriced),
+        # The stored rows keep names, not usage: an incomplete $0 reads as unknown, a positive cost stays partial.
+        has_priced=False,
     )
 
 
@@ -1461,6 +1463,7 @@ def assemble_overview(cohort: Cohort, with_users: bool = False) -> RollupOvervie
                 "cost_usd": float(o.spend_cost),
                 "cache_read_cost_usd": float(o.cache_read_cost),
                 "unpriced_models": sorted(o.unpriced),
+                "cost_priced": False,  # as `_group`: no stored evidence, an incomplete $0 is unknown
             }
         )
     money_rows += [

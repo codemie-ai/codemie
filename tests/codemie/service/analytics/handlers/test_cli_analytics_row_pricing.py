@@ -23,8 +23,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from codemie.repository.cli_analytics.ports import CostGroup
-from codemie.repository.cli_analytics.postgres.user_rollup import Cohort, OverviewAgg, assemble_overview
+from codemie.repository.cli_analytics.ports import G_TOTAL, CostGroup
+from codemie.repository.cli_analytics.postgres.user_rollup import (
+    Cohort,
+    MoneyAgg,
+    OverviewAgg,
+    assemble_cost,
+    assemble_overview,
+)
 from codemie.service.analytics.handlers.cli_analytics_handler import (
     _build_repository_rows,
     _cost_kpis,
@@ -107,17 +113,19 @@ async def test_headline_kpis_carry_their_own_pricing(endpoint, scenario, session
         assert data["kpis"]["total_cost_usd"] == 0
 
 
-def test_headline_cost_kpi_keeps_uncertain_rollup_evidence():
-    total = CostGroup({}, 0.0, 0.0, 1, (UNPRICED,), True, has_priced=None)
+def test_headline_cost_kpi_reads_an_incomplete_rollup_zero_as_unknown():
+    cohort = Cohort(money={("developer", "unknown", False): MoneyAgg(sessions_all=1, unpriced_all={UNPRICED})})
+    (total,) = assemble_cost(cohort).money.groups[G_TOTAL]
     assert _pricing(_cost_kpis(total, [{"spend_sessions": 1}], [])) == {
         "cost_incomplete": True,
         "unpriced_models": [UNPRICED],
-        "cost_unknown": None,
+        "cost_unknown": True,
     }
 
 
 @pytest.mark.asyncio
-async def test_headline_overview_keeps_uncertain_rollup_evidence():
+async def test_headline_overview_reads_an_incomplete_rollup_zero_as_unknown():
+    # EPMCDME-17152: the stored rows keep no usage evidence, so on the rollup an incomplete exact $0 is unknown.
     handler, _ = handler_over({})
     handler._rollup_overview = AsyncMock(
         return_value=assemble_overview(Cohort(overview=OverviewAgg(unpriced={UNPRICED})))
@@ -127,7 +135,7 @@ async def test_headline_overview_keeps_uncertain_rollup_evidence():
     assert _pricing(data["kpis"]) == {
         "cost_incomplete": True,
         "unpriced_models": [UNPRICED],
-        "cost_unknown": None,
+        "cost_unknown": True,
     }
 
 
@@ -246,7 +254,7 @@ def test_merging_children_without_evidence_does_not_guess_from_their_completenes
     unpriced = {**_unknown("a"), "_priced": False}
     empty = {**PRICED, "_priced": False}
     priced = {**PRICED, "_priced": True}
-    no_evidence = {**PRICED}  # a child that cannot say (stored rollup): no `_priced` at all
+    no_evidence = {**PRICED}  # a child without pricing evidence: no `_priced` at all
 
     assert merge_pricing([unpriced, empty])["cost_unknown"] is True
     assert merge_pricing([unpriced, priced])["cost_unknown"] is False
@@ -269,7 +277,7 @@ def test_a_project_carries_the_marks_of_its_repositories_up():
 
 
 def test_the_source_that_cannot_prove_usage_reports_none_instead_of_guessing_from_zero():
-    unknown_cost = CostGroup({}, 0.0, 0.0, 1, ("m",), True)  # a stored rollup: names, no usage evidence
+    unknown_cost = CostGroup({}, 0.0, 0.0, 1, ("m",), True)  # a source that did not supply pricing evidence
     assert group_pricing(unknown_cost)["cost_unknown"] is None
     assert group_pricing(CostGroup({}, 2.0, 0.0, 1, ("m",), True))["cost_unknown"] is False  # money proves usage
     assert group_pricing(CostGroup({}, 0.0, 0.0, 1, (), False))["cost_unknown"] is False  # a true $0

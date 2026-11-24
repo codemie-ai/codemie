@@ -32,17 +32,27 @@ from tests.codemie.repository.cli_analytics.postgres.live_helpers import (
     _COST_SQL,
     _DIMS_SQL,
     _MODULE,
+    _REAL_WORK_SQL,
     _engine,
 )
 from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 from tests.codemie.service.analytics.handlers.test_coding_agent_pricing import _HAIKU
 
 _MODEL = "claude-haiku-4-5"
-_TABLES = ("session_dims", "cost_daily", "session_usage", "turns_daily", "invocations_hourly", "lines_daily")
+_TABLES = (
+    "session_dims",
+    "cost_daily",
+    "session_usage",
+    "turns_daily",
+    "invocations_hourly",
+    "lines_daily",
+    "log_events",
+)
 
 
 class _Seed:
-    def __init__(self) -> None:
+    def __init__(self, real_work: bool = False) -> None:
+        self.real_work = real_work
         self.suffix = uuid.uuid4().hex[:12]
         self.t0 = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=2)
         self.sids: list[str] = []
@@ -79,6 +89,8 @@ class _Seed:
         day = self.t0.date()
         async with engine.acquire() as conn:
             await conn.execute(_DIMS_SQL, sid, self.t0, last, email)
+            if self.real_work:
+                await conn.execute(_REAL_WORK_SQL, self.t0 + timedelta(seconds=10), sid)
             if input_tokens is not None:
                 await conn.execute(_COST_SQL, day, sid, cost_email or email, _MODEL, input_tokens, 0, 0, 0, None, None)
             if turns is not None:

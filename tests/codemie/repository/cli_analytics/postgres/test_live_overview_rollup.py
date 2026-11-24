@@ -28,12 +28,18 @@ from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.postgres import user_rollup as ur
 from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
 from codemie.service.analytics.handlers.coding_agent_pricing import model_rates_for
-from tests.codemie.repository.cli_analytics.postgres.live_helpers import _COST_SQL, _DIMS_SQL, _MODULE, _engine
+from tests.codemie.repository.cli_analytics.postgres.live_helpers import (
+    _COST_SQL,
+    _DIMS_SQL,
+    _MODULE,
+    _REAL_WORK_SQL,
+    _engine,
+)
 from tests.codemie.service.analytics.handlers.test_coding_agent_pricing import _HAIKU
 
 VERSION = "test-overview-rates-version"
 PERSONAL_MODEL = "claude-haiku-4-5"  # priced by the patched catalog (`_HAIKU`), so its cache re-reads cost money
-_TABLES = ("session_dims", "cost_daily", "lines_daily", "turns_daily", "invocations_hourly")
+_TABLES = ("session_dims", "cost_daily", "lines_daily", "turns_daily", "invocations_hourly", "log_events")
 _ROLLUP_TABLES = (*ur._DAY_TABLES, "user_rollup_day_state")
 
 
@@ -79,6 +85,7 @@ class _Models:
                     email = f"dev{n % 3}-{self.suffix}@x.com"
                     self.sids.append(sid)
                     await conn.execute(_DIMS_SQL, sid, self.t0, self.t0 + timedelta(minutes=1), email)
+                    await conn.execute(_REAL_WORK_SQL, self.t0 + timedelta(seconds=10), sid)
                     await conn.execute(  # API and Subscription sessions: the `class` rows
                         "UPDATE session_dims SET subscription_type = $2 WHERE session_id = $1",
                         sid,
@@ -104,6 +111,7 @@ class _Models:
             sid, email = f"test-overview-{self.suffix}-personal", f"dev0-{self.suffix}@x.com"
             self.sids.append(sid)
             await conn.execute(_DIMS_SQL, sid, self.t0, self.t0 + timedelta(minutes=1), email)
+            await conn.execute(_REAL_WORK_SQL, self.t0 + timedelta(seconds=10), sid)
             await conn.execute(
                 "UPDATE session_dims SET subscription_type = 'personal', project_origin = 'profile'"
                 " WHERE session_id = $1",

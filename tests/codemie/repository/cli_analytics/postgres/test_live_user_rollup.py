@@ -51,7 +51,7 @@ async def test_the_rollup_serves_what_the_live_statements_give_for_the_seeded_us
     if not await _has_tables(engine):
         await engine.close()
         pytest.skip("the user rollup tables are not in this database")
-    seed = _Seed()
+    seed = _Seed(real_work=True)
     now = datetime.now(timezone.utc)
     first = seed.t0.date()
     days = sorted({first, now.date()})

@@ -116,10 +116,10 @@ EVIDENCE = "_priced"  # internal: whether the amount had a used token kind with 
 
 
 def _pricing(incomplete: bool, names: Any, cost: float, has_priced: bool | None) -> dict[str, Any]:
-    """`cost_unknown` is True only when nothing was priced: an incomplete amount with no priced usage. The evidence
-    is `has_priced` (a used token kind with a rate), or a positive cost, which is priced usage by itself; a $0 total
-    alone is none, and neither is the absence of incompleteness (an empty row is complete). Without evidence
-    (`has_priced` None, the stored rollups) it is None. The evidence rides along as `EVIDENCE`, for the roll-ups that
+    """`cost_unknown` is true for incomplete amounts when the supplied evidence indicates no priced usage.
+    A positive cost is evidence of priced usage. For an incomplete zero, live pricing uses `has_priced`,
+    while stored rollups supply False and classify the amount as unknown. If the source supplies None,
+    an incomplete zero retains `cost_unknown`=None. The evidence rides along as `EVIDENCE`, for the roll-ups that
     merge amounts; `without_evidence` / `drop_evidence` take it off before a row is answered."""
     evidence = True if cost > 0 else has_priced
     unknown: bool | None = False

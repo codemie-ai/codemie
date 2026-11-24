@@ -49,7 +49,7 @@ class CostGroup:
     session_count: int
     unpriced_models: tuple[str, ...]
     cost_incomplete: bool
-    # Some usage of the group had a price. None: the source cannot say (the stored rollups keep names, not usage).
+    # Some usage of the group had a price. None means the source did not supply pricing evidence.
     has_priced: bool | None = None
 
 

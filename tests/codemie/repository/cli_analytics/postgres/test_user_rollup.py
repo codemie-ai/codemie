@@ -482,6 +482,42 @@ def test_the_cost_per_model_keeps_a_model_with_only_unpriced_names():
     assert by_model["claude-y"].unpriced_models == ("raw-y",) and by_model["claude-y"].cost_incomplete
 
 
+def test_the_stored_rows_keep_no_usage_evidence_so_an_incomplete_zero_is_unknown_and_a_positive_one_partial():
+    # EPMCDME-17152 (option A): the rollup says `has_priced=False` for every group; `_pricing` reads positive money as
+    # evidence by itself, so only an incomplete exact zero turns unknown.
+    c = ur.Cohort()
+    for name in ("zero@x", "part@x", "full@x"):
+        c.users[name] = ur.UserAgg(session_count=1)
+    c.money[("zero@x", "api_based", False)] = ur.MoneyAgg(Decimal(0), 1, {"raw"}, Decimal(0), 1, {"raw"})
+    c.money[("part@x", "api_based", False)] = ur.MoneyAgg(Decimal("2"), 1, {"raw"}, Decimal("2"), 1, {"raw"})
+    c.money[("full@x", "api_based", False)] = ur.MoneyAgg(Decimal("1"), 1, set(), Decimal("1"), 1, set())
+    c.models["raw"] = ur.ModelAgg(Decimal(0), 1, {"raw"})
+    served = ur.assemble_cost(c).money.groups
+    page, _ = ur._money(c)
+    for groups in (served[G_USER], page.groups[G_USER], served[G_MODEL], served[G_TOTAL]):
+        assert all(g.has_priced is False for g in groups)
+    by_user = {g.keys["user"]: pricing_of(g) for g in served[G_USER]}
+    assert by_user["zero@x"] == (True, True)  # incomplete exact zero: unknown
+    assert by_user["part@x"] == (True, False)  # positive subtotal: partial, keeps its value and names
+    assert by_user["full@x"] == (False, False)  # complete: unmarked
+    assert {g.keys["user"]: g.unpriced_models for g in served[G_USER]}["part@x"] == ("raw",)
+    assert pricing_of(served[G_MODEL][0]) == (True, True)
+    assert pricing_of(served[G_TOTAL][0]) == (True, False)  # 3 > 0: the window total is partial
+
+
+def pricing_of(group):
+    from codemie.service.analytics.handlers.funding_buckets import group_pricing
+
+    p = group_pricing(group)
+    return p["cost_incomplete"], p["cost_unknown"]
+
+
+def test_the_overview_spend_row_of_the_rollup_has_no_priced_evidence():
+    o = ur.OverviewAgg(unpriced={"raw"})
+    (spend,) = [r for r in ur.assemble_overview(ur.Cohort(overview=o)).money_rows if r.get("key") == "spend"]
+    assert spend["cost_priced"] is False
+
+
 def test_an_empty_window_has_no_total_group():
     served = ur.assemble_cost(ur.Cohort())
 
