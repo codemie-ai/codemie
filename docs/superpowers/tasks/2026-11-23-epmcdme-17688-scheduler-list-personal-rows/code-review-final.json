@@ -1,0 +1,95 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "CR-001 fixed (tests), fix-set empty, user approved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "CR-001 fix-now chosen by user"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "CR-001 fixed (tests), fix-set empty, user approved"
+    }
+  ],
+  "reviewed_head": "b59fd7e7711c713a174361e77623415ffea5c8fc",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No spec/story artifact was supplied, so acceptance did not run and confidence is capped at low; the change itself is a small, correctly gated filter with no blocking defects. 1 advisory (test gap on user forwarding), 0 deferred, 9 dismissed as noise (see code-review-dismissed.local.md).",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [
+    "authorization"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/rest_api/routers/schedulers.py",
+      "line": 78,
+      "title": "No test asserts user is forwarded to owner filter",
+      "problem": "The new restriction only applies when the authenticated user reaches _build_list_filters via the router and list_schedulers. Router tests patch the service and never assert kwargs['user']; the new service tests call _build_list_filters directly, and no test executes list_schedulers itself. Regression gap.",
+      "impact": "Trigger is narrow: a future refactor dropping user= at schedulers.py:78 or scheduler_settings_service.py:541-543 would silently re-expose other members' personal rows while all tests pass. No behavior consequence today; the forwarding is correct at HEAD.",
+      "recommendation": "In tests/codemie/rest_api/routers/test_schedulers.py assert the mocked list_schedulers receives user=<authenticated user>; optionally add a list_schedulers test with patched engine asserting the executed SQL contains 's.user_id = :caller_id' for a non-admin with owner_type=None.",
+      "status": "fixed",
+      "fix": {
+        "change": "Added tests asserting router forwards authenticated user to list_schedulers and service forwards it to _build_list_filters",
+        "test": "test_router_forwards_authenticated_user_to_service; test_list_schedulers_forwards_user_to_build_list_filters"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "1 commit subject in range matches the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "3-line change in scheduler_settings_service.py plus tests; no violation of code-quality.md Python style, types, license header or module cohesion rules (change is core to the owning module)"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "no .ai-run/guides/security/security-practices.md in repo and no ref passed; absent standard. No concrete security issue seen: new filter clause uses bind parameter :caller_id, no string-built SQL from user input, no logging of credentials, and it narrows rather than widens row visibility"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "No spec/story artifact was supplied, so acceptance did not run and confidence is capped at low; the change itself is a small, correctly gated filter with no blocking defects. 1 advisory (test gap on user forwarding), 0 deferred, 9 dismissed as noise (see code-review-dismissed.local.md).",
+    "confidence": "low",
+    "risk_flags": [
+      "authorization"
+    ]
+  },
+  "advisory_status": []
+}

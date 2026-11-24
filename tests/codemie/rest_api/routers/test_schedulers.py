@@ -515,6 +515,30 @@ def test_router_forwards_owner_type_to_service():
         assert kwargs["owner_type"] == "Project"
 
 
+def test_router_forwards_authenticated_user_to_service():
+    with patch("codemie.rest_api.routers.schedulers.SchedulerSettingsService") as mock_svc_cls:
+        mock_svc_cls.list_schedulers.return_value = MagicMock(items=[], total=0, page=0, pageSize=10, totalPages=0)
+        caller = MagicMock()
+
+        from codemie.rest_api.routers.schedulers import list_schedulers
+
+        list_schedulers(
+            page=0,
+            page_size=10,
+            search=None,
+            resource_type=None,
+            project_ids=None,
+            resource_ids=None,
+            status=None,
+            last_run_status=None,
+            owner_type=None,
+            user=caller,
+        )
+
+        _, kwargs = mock_svc_cls.list_schedulers.call_args
+        assert kwargs["user"] is caller
+
+
 @pytest.mark.parametrize(
     "query, expected_projects, expected_resources",
     [

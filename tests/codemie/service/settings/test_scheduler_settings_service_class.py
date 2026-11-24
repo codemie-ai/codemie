@@ -534,8 +534,7 @@ def test_build_list_filters_owner_type_project_does_not_add_caller_id():
     assert "caller_id" not in params
 
 
-def test_build_list_filters_no_owner_type_does_not_add_caller_id():
-    """When ownerType is absent, no user_id constraint should be added."""
+def test_build_list_filters_no_owner_type_restricts_non_admin_to_project_or_own_rows():
     user = _make_user_with_id(user_id="user-42", is_admin=False)
     conditions, params = SchedulerSettingsService._build_list_filters(
         project_ids=None,
@@ -547,5 +546,55 @@ def test_build_list_filters_no_owner_type_does_not_add_caller_id():
         owner_type=None,
         user=user,
     )
-    assert not any("s.user_id" in c for c in conditions)
+    assert "(s.setting_type = 'PROJECT' OR s.user_id = :caller_id)" in conditions
+    assert params["caller_id"] == "user-42"
+    assert "owner_type" not in params
+
+
+def test_build_list_filters_no_owner_type_adds_no_owner_condition_for_admin_or_maintainer():
+    user = _make_user_with_id(user_id="admin-99", is_admin=True)
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_ids=None,
+        resource_type=None,
+        resource_ids=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type=None,
+        user=user,
+    )
+    assert not any("s.user_id" in c or "s.setting_type" in c for c in conditions)
+    assert "caller_id" not in params
+
+
+def test_list_schedulers_forwards_user_to_build_list_filters():
+    user = Mock()
+    mock_conn = Mock()
+    mock_conn.execute.return_value.scalar_one.return_value = 0
+    mock_conn.execute.return_value.mappings.return_value.all.return_value = []
+    mock_engine = Mock()
+    mock_engine.connect.return_value.__enter__ = Mock(return_value=mock_conn)
+    mock_engine.connect.return_value.__exit__ = Mock(return_value=False)
+
+    with (
+        patch.object(SchedulerSettingsService, "_build_list_filters", return_value=(["1=1"], {})) as mock_filters,
+        patch.object(Settings, "get_engine", return_value=mock_engine),
+    ):
+        SchedulerSettingsService.list_schedulers(owner_type="User", user=user)
+
+    assert mock_filters.call_args.kwargs["user"] is user
+
+
+def test_build_list_filters_no_owner_type_without_user_adds_no_owner_condition():
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_ids=None,
+        resource_type=None,
+        resource_ids=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type=None,
+        user=None,
+    )
+    assert not any("s.user_id" in c or "s.setting_type" in c for c in conditions)
     assert "caller_id" not in params

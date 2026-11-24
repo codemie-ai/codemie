@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17688-scheduler-list-personal-rows",
+  "head": "b59fd7e7711c713a174361e77623415ffea5c8fc",
+  "runner": "poetry",
+  "started_at": "2026-11-23T15:01:30Z",
+  "completed_at": "2026-11-23T15:10:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 23000,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 247000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "19 failed, 38163 passed. 8 pdf export tests fail on missing libcairo; 11 cli_analytics postgres live tests fail (LocalAnalyticsFilter missing 'scope' kwarg and others). None in changed files (scheduler tests pass)."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "pre-push hook gate; 'make check-alembic' fails locally only because 'python' is not on PATH (hook uses python3)."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "notes": "Not requested."
+    },
+    {
+      "id": "static-analysis",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "notes": "Sonar credentials/network not available; pre-push sonar step is opt-in via CODEMIE_PREPUSH_ENABLED. Only CI/reviewer can settle."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Requires docker stack and MR; not opening an MR."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "",
+      "notes": ".gitlab-ci.yml only includes remote pre-ci-guard template (wait-ci-init); needs GitLab infrastructure. Guide says no pipeline exists, mismatch noted."
+    }
+  ],
+  "failures": {
+    "unit": "  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:422: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_invalid_json_bytes\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:427: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", b\"not-json-content\")\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFilesZip::test_upload_and_prepare_files_zip_validates_json_entries\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/datasource/file_datasource_service.py:214: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(name, content)\n\ntests/codemie/service/test_mcp_config_service_auth_crud.py::test_update_rejects_auth_config_id_change_when_credentials_exist\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:604: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._apply_config_field_update(\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:295: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:673: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(mcp_config.config, config_id=config_id)\n\ntests/codemie/service/test_mcp_config_service_clone.py::test_invalid_auth_config_raises_422\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:389: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_hook_only_session_detail_matches_the_session_list\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_listing_gate_drops_start_only_and_sub_agent_sessions\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_late_parent_start_flags_the_already_rolled_up_child_as_a_sub_agent\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_aggregates_keep_claude_session_results_and_add_the_session_without_usage\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_model_breakdown_merges_dotted_and_dashed_claude_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_claude_code_subagent_start_does_not_hide_the_session_it_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_subagent_with_cost_rows_of_its_own_stays_listed\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_hidden_subagent_is_dropped_from_every_session_aggregate_and_still_opens_by_id\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_explicit_false_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_full_mode_keeps_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[-pdf]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_cost_rollup.py::test_rollup_cost_gives_what_the_live_cost_statements_give\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[&include_tool_outputs=true-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_passes_format_specific_pandoc_args[pdf-expected_args0-absent_args0]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_list_table_link_content_survives_concise_filtering_end_to_end[pdf]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_stop_alone_is_no_agent_call_so_its_span_shows_an_empty_row\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_overview_rollup.py::test_the_rollup_serves_the_overview_the_live_statements_give_with_the_model_ties\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_user_rollup.py::test_the_rollup_serves_what_the_live_statements_give_for_the_seeded_users\n= 19 failed, 38163 passed, 666 skipped, 6 xfailed, 652 warnings in 243.17s (0:04:03) =\nmake: *** [test] Error 1"
+  }
+}

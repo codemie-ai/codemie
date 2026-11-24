@@ -454,6 +454,9 @@ class SchedulerSettingsService(BaseSettingsService):
     @staticmethod
     def _apply_owner_filter(conditions, params, owner_type, user):
         if not owner_type:
+            if user is not None and not user.is_admin_or_maintainer:
+                conditions.append("(s.setting_type = 'PROJECT' OR s.user_id = :caller_id)")
+                params["caller_id"] = str(user.id)
             return
         conditions.append("s.setting_type = :owner_type")
         params["owner_type"] = owner_type.upper()
