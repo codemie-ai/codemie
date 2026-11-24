@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import io
 import struct
 import zipfile
@@ -20,6 +21,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from codemie.core.hosted_applications.errors import HostedApplicationError
+from codemie.rest_api.models.hosted_application import HostedApplicationVersions
 from codemie.rest_api.models.hosted_application_requests import (
     AppCreate,
     AppPatch,
@@ -29,8 +31,8 @@ from codemie.rest_api.models.hosted_application_requests import (
     UploadComplete,
 )
 from codemie.rest_api.models.user_management import UserDB
-from codemie.service.hosted_applications.thumbnails import HostedThumbnailService
-from tests.codemie.service.hosted_applications.conftest import CATEGORY_A
+from codemie.service.hosted_applications.thumbnails import Cover, HostedThumbnailService
+from tests.codemie.service.hosted_applications.conftest import CATEGORY_A, preview_jpeg
 
 
 async def activate(service, owner, app, version_id):
@@ -69,12 +71,16 @@ def png(width=320, height=180):
     )
 
 
-async def image_app(processing, identity, image=None, filename='preview.png', app=None):
-    service, _, _, worker, _ = processing
+async def image_app(processing, identity, image=None, filename='preview.png', app=None, preview=None):
+    """Upload and validate a bundle; ``filename=None`` bundles no raster, ``preview`` is the captured picture."""
+    service, _, _, worker, validator = processing
+    # The seam keeps its picture between uploads, so every call sets it.
+    validator.preview = preview
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w') as archive:
         archive.writestr('index.html', '<html><h1>Actual visual</h1></html>')
-        archive.writestr(filename, png() if image is None else image)
+        if filename is not None:
+            archive.writestr(filename, png() if image is None else image)
     original = stream.getvalue()
     owner = identity()
     if app is None:
@@ -220,3 +226,137 @@ async def test_missing_cover_is_never_stored(processing, identity):
     response = await thumbnail_endpoint(UUID(app['id']), identity(), value, None)
     assert response.status_code == 204 and response.headers['cache-control'] == 'private, no-store'
     assert 'etag' not in response.headers
+
+
+def preview_cover(picture):
+    return Cover(picture, 'image/jpeg', '"' + hashlib.sha256(picture).hexdigest() + '"')
+
+
+def record_reads(service, monkeypatch):
+    """Every storage key ``read_small`` reads from now on."""
+    reads = []
+    original = service.storage.read_small
+
+    async def counted(key, *, maximum):
+        reads.append(key)
+        return await original(key, maximum=maximum)
+
+    monkeypatch.setattr(service.storage, 'read_small', counted)
+    return reads
+
+
+@pytest.mark.asyncio
+async def test_preview_serves_when_no_cover_or_bundled_raster(processing, identity):
+    service, app, _ = await image_app(processing, identity, filename=None, preview=preview_jpeg())
+    assert await HostedThumbnailService(service).get(identity(), app['id']) == preview_cover(preview_jpeg())
+    _, plain, _ = await image_app(processing, identity, filename=None)
+    assert await HostedThumbnailService(service).get(identity(), plain['id']) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('header', ['"{}"', '*'])
+async def test_matching_etag_skips_the_read(processing, identity, monkeypatch, header):
+    service, app, _ = await image_app(processing, identity, filename=None, preview=preview_jpeg())
+    thumbnails = HostedThumbnailService(service)
+    reads = record_reads(service, monkeypatch)
+    # A stale tag reads the picture: that read is the preview key.
+    await thumbnails.get(identity(), app['id'], '"0000"')
+    preview_key = reads[-1]
+    reads.clear()
+    digest = hashlib.sha256(preview_jpeg()).hexdigest()
+    cover = await thumbnails.get(identity(), app['id'], header.format(digest))
+    assert cover == Cover(None, 'image/jpeg', '"' + digest + '"')
+    assert preview_key not in reads
+
+
+@pytest.mark.asyncio
+async def test_stale_etag_reads_and_verifies(processing, identity):
+    service, app, _ = await image_app(processing, identity, filename=None, preview=preview_jpeg())
+    cover = await HostedThumbnailService(service).get(identity(), app['id'], '"0000"')
+    assert cover == preview_cover(preview_jpeg())
+
+
+@pytest.mark.asyncio
+async def test_matching_etag_still_reads_a_bundled_raster(processing, identity):
+    service, app, _ = await image_app(processing, identity, preview=preview_jpeg())
+    tag = '"' + hashlib.sha256(preview_jpeg()).hexdigest() + '"'
+    cover = await HostedThumbnailService(service).get(identity(), app['id'], tag)
+    assert cover.body == png() and cover.mime == 'image/png'
+
+
+@pytest.mark.asyncio
+async def test_bundled_raster_wins_over_preview(processing, identity):
+    service, app, _ = await image_app(processing, identity, preview=preview_jpeg())
+    cover = await HostedThumbnailService(service).get(identity(), app['id'])
+    assert cover.body == png() and cover.mime == 'image/png'
+
+
+@pytest.mark.asyncio
+async def test_viewer_gets_active_and_manager_selected_preview(processing, identity):
+    first, second = preview_jpeg(), preview_jpeg(80, 60)
+    service, app, staged = await image_app(processing, identity, filename=None, preview=first)
+    thumbnails = HostedThumbnailService(service)
+    # A manager sees the selected version's preview before it is activated; a viewer sees nothing yet.
+    assert await thumbnails.get(identity(), app['id']) == preview_cover(first)
+    with pytest.raises(HostedApplicationError):
+        await thumbnails.get(identity('viewer'), app['id'])
+    shared = await share_with_project(service, identity(), app, staged['version_id'])
+    assert await thumbnails.get(identity('viewer'), app['id']) == preview_cover(first)
+    _, candidate, upload = await image_app(processing, identity, filename=None, app=shared, preview=second)
+    await service.select_version(
+        identity(), app['id'], VersionSelection(version_id=upload['version_id']), candidate['etag'], str(uuid4())
+    )
+    selected = await thumbnails.get(identity(), app['id'])
+    assert selected == preview_cover(second) and selected.etag != preview_cover(first).etag
+    assert await thumbnails.get(identity('viewer'), app['id']) == preview_cover(first)
+
+
+@pytest.mark.asyncio
+async def test_rejected_version_never_serves_preview(processing, identity, monkeypatch):
+    processing[4].rejection = HostedApplicationError('MALWARE_DETECTED', 'Rejected')
+    service, app, _ = await image_app(processing, identity, filename=None, preview=preview_jpeg())
+    reads = record_reads(service, monkeypatch)
+    # No eligible version and no uploaded cover: the manager gets the not-found answer.
+    with pytest.raises(HostedApplicationError):
+        await HostedThumbnailService(service).get(identity(), app['id'])
+    assert not [key for key in reads if key.endswith('/preview.jpg')]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_viewer_reads_no_preview_bytes(processing, identity, monkeypatch):
+    service, app, _ = await image_app(processing, identity, filename=None, preview=preview_jpeg())
+    reads = record_reads(service, monkeypatch)
+    with pytest.raises(HostedApplicationError):
+        await HostedThumbnailService(service).get(identity('viewer'), app['id'])
+    assert not [key for key in reads if key.endswith('/preview.jpg')]
+
+
+@pytest.mark.asyncio
+async def test_preview_integrity_is_rechecked(processing, identity):
+    service, app, _ = await image_app(processing, identity, filename=None, preview=preview_jpeg())
+    stored = next(p for p in service.storage.base.rglob('preview.jpg') if 'assets' not in p.parts)
+    stored.write_bytes(b'corrupt')
+    with pytest.raises(HostedApplicationError) as error:
+        await HostedThumbnailService(service).get(identity(), app['id'])
+    assert error.value.code == 'CONTENT_UNAVAILABLE'
+
+
+@pytest.mark.asyncio
+async def test_preview_over_the_bundle_area_limit_is_served(processing, identity):
+    # The preview has its own bounds (2048 px per side, no area limit), not the bundled-raster area limit.
+    picture = preview_jpeg(2048, 2048)
+    service, app, _ = await image_app(processing, identity, filename=None, preview=picture)
+    assert await HostedThumbnailService(service).get(identity(), app['id']) == preview_cover(picture)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('body', [png(64, 48), preview_jpeg(2049, 16), b'\xff\xd8\xff\xd9'])
+async def test_a_stored_preview_that_is_not_a_jpeg_within_the_bounds_is_not_served(processing, identity, body):
+    service, app, staged = await image_app(processing, identity, filename=None, preview=preview_jpeg())
+    stored = next(p for p in service.storage.base.rglob('preview.jpg') if 'assets' not in p.parts)
+    stored.write_bytes(body)
+    # The version row's size and digest match the stored bytes, so only the fit check can refuse them.
+    async with processing[1].sessions() as session, session.begin():
+        row = await session.get(HostedApplicationVersions, UUID(str(staged['version_id'])))
+        row.preview_size, row.preview_sha256 = len(body), hashlib.sha256(body).digest()
+    assert await HostedThumbnailService(service).get(identity(), app['id']) is None

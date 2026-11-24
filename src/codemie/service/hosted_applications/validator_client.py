@@ -21,18 +21,35 @@ import json
 import re
 import time
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 
 import httpx
 
+from codemie.configs.logger import logger
 from codemie.core.hosted_applications.errors import HostedApplicationError, ARTIFACT_REJECTION_CODES
 from codemie.core.hosted_applications.validation import candidate_from_result
-from codemie.hosted_apps_validator.contract import LIMIT_REJECTION_CODES, validation_budget
+from codemie.core.hosted_applications.preview import MAX_PREVIEW_BYTES, MAX_PREVIEW_SIDE
+from codemie.hosted_apps_validator.contract import CAPTURE_REASONS, LIMIT_REJECTION_CODES, validation_budget
 
 # A healthy validator is asked again after this long; an unhealthy or unreachable one is left alone as long.
 HEALTH_SECONDS = 5.0
 # Every validator slot is taken: this process claims no validation work for this long.
 BUSY_SECONDS = 3.0
 MAX_RESPONSE = 6 * 1024 * 1024
+MAX_PREVIEW_RESPONSE = 4096
+# A lowercase hex SHA-256: preview digests, validation ids and reservations.
+HEX_SHA256 = re.compile("[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class PreviewFile:
+    """One captured picture held by the validator; only the fields file_chunks and the worker need."""
+
+    index: int
+    size: int
+    sha256: str
+    width: int
+    height: int
 
 
 def unavailable():
@@ -42,6 +59,43 @@ def unavailable():
 def not_accepted(code):
     """The validator never took the job: the worker puts it back in the queue without counting a retry."""
     return HostedApplicationError(code, "Artifact validation cannot take this upload yet; it stays queued", 503)
+
+
+def _int_in(value, low, high):
+    return type(value) is int and low <= value <= high
+
+
+def _preview_file(value):
+    """The validator's answer: a PreviewFile, or a string for no picture.
+
+    A null answer gives the validator's reason (``off``, ``busy`` or ``no_picture``), or ``unknown`` when an older
+    validator names none. Anything that is not exactly the contract gives ``failed``.
+    """
+    if not isinstance(value, dict) or "preview" not in value:
+        return "failed"
+    if value["preview"] is None:
+        if set(value) == {"preview"}:
+            return "unknown"
+        reason = value.get("reason")
+        return reason if set(value) == {"preview", "reason"} and reason in CAPTURE_REASONS else "failed"
+    item = value["preview"]
+    if (
+        set(value) != {"preview"}
+        or not isinstance(item, dict)
+        or set(item) != {"index", "size", "sha256", "width", "height"}
+    ):
+        return "failed"
+    digest = item["sha256"]
+    if not (
+        _int_in(item["index"], 0, 2**31)
+        and _int_in(item["size"], 1, MAX_PREVIEW_BYTES)
+        and _int_in(item["width"], 1, MAX_PREVIEW_SIDE)
+        and _int_in(item["height"], 1, MAX_PREVIEW_SIDE)
+        and isinstance(digest, str)
+        and HEX_SHA256.fullmatch(digest)
+    ):
+        return "failed"
+    return PreviewFile(item["index"], item["size"], digest, item["width"], item["height"])
 
 
 def _scanner_shape(scanner):
@@ -63,7 +117,7 @@ def candidate_response(value, source_digest):
     try:
         _require_policy(value, source_digest)
         identifier = value["validation_id"]
-        if not isinstance(identifier, str) or not re.fullmatch("[0-9a-f]{64}", identifier):
+        if not isinstance(identifier, str) or not HEX_SHA256.fullmatch(identifier):
             raise ValueError
         candidate = candidate_from_result(value)
         scanner = _scanner_shape(value["scanner"])
@@ -158,7 +212,7 @@ class ValidatorClient:
             self.pause(BUSY_SECONDS)
             raise not_accepted("VALIDATOR_BUSY")
         reservation = data.get("reservation") if isinstance(data, dict) and response.status_code == 201 else None
-        if not isinstance(reservation, str) or not re.fullmatch("[0-9a-f]{64}", reservation):
+        if not isinstance(reservation, str) or not HEX_SHA256.fullmatch(reservation):
             self.pause(HEALTH_SECONDS)
             raise not_accepted("VALIDATOR_UNREACHABLE")
         return reservation
@@ -229,6 +283,43 @@ class ValidatorClient:
                 raise ValueError
         except (httpx.HTTPError, ValueError) as exc:
             raise unavailable() from exc
+
+    async def capture(  # noqa: PLR0913 - one argument per request field, limits keyword-only
+        self,
+        identifier: str,
+        site_root: str,
+        entrypoint: str,
+        routing_mode: str,
+        *,
+        lock_wait: float,
+        timeout: float,
+    ) -> PreviewFile | str:
+        """Ask the validator for one picture of the start page.
+
+        Gives the picture, or the reason there is none: a validator reason, ``unknown`` (a null answer without a
+        reason) or ``failed`` (transport error, refused request or an answer that breaks the contract). A picture
+        is never required, so nothing is raised.
+        """
+        body = {"site_root": site_root, "entrypoint": entrypoint, "routing_mode": routing_mode, "lock_wait": lock_wait}
+        try:
+            async with self.client.stream(
+                "POST",
+                self.base_url + f"/results/{identifier}/preview",
+                json=body,
+                headers=self.headers,
+                timeout=httpx.Timeout(timeout, connect=min(timeout, 5)),
+            ) as response:
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    data.extend(chunk)
+                    if len(data) > MAX_PREVIEW_RESPONSE:
+                        return "failed"
+                if response.status_code != httpx.codes.OK:
+                    return "failed"
+            return _preview_file(json.loads(data))
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            logger.warning("Preview capture gave no picture: %s", type(exc).__name__)
+            return "failed"
 
     async def close(self):
         await self.client.aclose()

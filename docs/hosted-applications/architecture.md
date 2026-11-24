@@ -6,24 +6,32 @@ project's managers, share it with the project's members, publish it to the marke
 internal user, and open it inside the CodeMie UI at `/apps/{id}`. Access follows the platform access model
 (project, creator, `Ability`), not a hosted-only audience or grant list.
 The backend stores and serves files. Uploaded code runs only in the viewer's browser, on a
-separate origin, and never with CodeMie credentials. There is no server-side rendering, no build
-step and no container per application.
+separate origin, and never with CodeMie credentials. There is no server-side rendering of applications
+for viewers, no build step and no container per application. One exception exists: the validator pod
+takes one picture of each accepted version's start page (D7).
 
 Feature ticket: EPMCDME-15659. Feature flag: the customer-config component `features:hostedApplications`
 (off by default; `FEATURE_HOSTED_APPLICATIONS` overrides it). One switch turns the feature on for the UI
 and the API together.
 Operations runbook: [`hosted-applications/README.md`](../../hosted-applications/README.md).
 
+## Terms
+
+**Automatic cover**: the JPEG that the validator captures for an accepted version (D7). It differs from a
+bundled `preview.*` raster, which is a file inside the upload. It also differs from a manager's Preview, which
+launches the selected version.
+
 ## Decisions
 
 | # | Decision | Rejected alternative and why | Cost we accept |
 |---|---|---|---|
-| D1 | Static artifacts only; apps execute in the viewer's browser. | A container or function per app: a runtime to patch, scale and isolate for every upload. | Apps cannot run server code or call external APIs (`connect-src 'self'`). Apps that need a backend do not fit. |
+| D1 | Static artifacts only; apps execute in the viewer's browser. The one exception is the preview picture (D7). | A container or function per app: a runtime to patch, scale and isolate for every upload. | Apps cannot run server code or call external APIs (`connect-src 'self'`). Apps that need a backend do not fit. |
 | D2 | The feature lives in the existing backend process and stores everything in the existing PostgreSQL database, in the core `codemie` schema, through the same Alembic chain. | A separate service with its own database: a second deployment, a second authentication path and a copy of the user directory. | Content traffic shares CPU with the management API. It gets its own capped connection pool and concurrency limits so it cannot starve core features. |
 | D3 | Uploaded content is served from a separate registrable domain, one origin per version: `v-<version-id-hex>.<content-domain>`. | Serving under the CodeMie origin: uploaded JavaScript would run with the user's CodeMie cookies and storage. One shared content origin: every app could read every other app's storage and cookies. | Wildcard DNS and a wildcard TLS certificate on a second domain. Embedded viewing needs partitioned third-party cookies; browsers that block them use the "Open in new tab" path. |
 | D4 | Server-side viewing sessions, re-authorized against the database on every content request. | Signed URLs or tokens in links: they leak through history, screenshots and copied links, and cannot be revoked. | Every content request performs an authorization query, which reads the access rule from `users` and `user_projects` in the same statement. Mitigated by one combined query (at most two per content request) and `no-cache` revalidation (304) instead of `no-store`. |
 | D5 | Untrusted archives are parsed by a separate validator service inside a kernel sandbox (Landlock, seccomp, rlimits) and scanned by ClamAV, in two private pods (validator, clamd) outside the API pods; a NetworkPolicy admits only the validator to clamd. | Parsing ZIP and HTML inside the API process, next to database credentials. Validator and clamd as sidecars of every API pod: ClamAV's minutes-long signature load would decide whether the API pod is ready, and a scanner compromise would share the API pod's network and service account. | Two more Deployments, one replica each (a validation result lives in the pod that produced it). Validation pauses while either pod restarts; queued uploads wait. Scan traffic crosses the pod network, guarded by the clamd NetworkPolicy. The clamd liveness probe also restarts the container when its signature updater (freshclam) is not running, not only when clamd itself stops responding. API and validator must agree on policy version, policy-definition digest and protocol, so both images are built from the same commit. |
 | D6 | Versions are immutable. A new upload creates a new version; making it live is an explicit action. | Overwriting files in place: viewers would see half-written bundles and there would be no rollback. | Storage holds several versions per app (the 10 newest accepted versions are retained by default). |
+| D7 | The validator pod captures one picture per version in a sandboxed renderer. After a version passes validation, a renderer child process of the validator loads the start page in pinned headless Chromium and stores one JPEG at `<attempt prefix>/preview.jpg`. Three nullable columns on the version row (`preview_key`, `preview_size`, `preview_sha256`) point to it. The worker sets them in the same transaction as `manifest_digest`. The manifest does not carry the pointer, and a reader of the manifest ignores any key it does not know. The verdict never depends on the picture. | Capture in the uploader's browser: the picture comes from a client, so the server cannot trust it, and the capture would not cover the other upload paths. A separate renderer pod: one more Deployment, Service, NetworkPolicy and image to run, and the version's files would have to cross the pod network a second time. | Chromium runs in the pod that holds the validated files, so the pod needs a stronger sandbox than the parser: no IP sockets (seccomp), reads limited by Landlock, an empty environment and rlimits. The validator hides its own `/proc` files from the renderer. Landlock also allows reads of `/usr/lib`, `/usr/share/fonts`, all of `/proc` and `/dev/null`, and execution of the crashpad handler and the musl loader: Chromium 156 does not start without them, and a `/proc/self` rule is not enough. `PR_SET_DUMPABLE` on the validator compensates for the `/proc` reads. On kernels below Landlock ABI 6 (Linux 6.12) the renderer could signal the validator, so capture stays off there unless `VALIDATOR_PREVIEW_CAPTURE_UNSCOPED=true` accepts the risk; `/health` reports the node's ABI. At the end of each capture the validator stops and then kills every process in a session that it did not start, a renderer process that left the renderer's session included; a complete guarantee would need a cgroup for the renderer (`cgroup.kill`), which this design does not have, so a process that keeps forking faster than the sweep is out of scope. The sweep needs a `/proc` that lists the validator's container alone, so capture stays off when the validator is not PID 1. The image grows (about 723 MiB) and the validator memory limit rises from 2Gi to 3Gi. Chromium needs a security update at least every 4 weeks. A capture adds up to 84 s to a validation pass (at most 60 s waiting for the renderer, then the 20 s hard limit, then 4 s for the request, the cleanup and the pull of the picture). The API sets the wait from the spare time of the job (at least 3 s) and starts a capture only when the job budget also covers the output writes after it. A retried job does not capture, so a capture that crashed the validator cannot repeat. A version accepted on a retry therefore gets no automatic cover; this is a decision. A picture that is missed stays missed until the next upload. The platform does not add automatic covers to existing cards. Renderer memory: the renderer has no aggregate memory limit (no `RLIMIT_AS`, because Chromium reserves a large address space), and the V8 heap flag does not cover ArrayBuffers, decoded images or canvas. One capture can use all the memory of the validator container (3Gi limit). An OOM kill restarts the validator and fails the jobs in flight, which the worker then retries. |
 
 ## System context
 
@@ -158,6 +166,9 @@ erDiagram
         text validation_state
         text manifest_key
         bytea manifest_digest
+        text preview_key
+        int preview_size
+        bytea preview_sha256
         text entrypoint_path
         text routing_mode
     }
@@ -654,11 +665,14 @@ The card image is chosen in this order:
 
 1. a cover image a manager uploaded for the application;
 2. a validated raster bundled in the upload (`preview.png`, `thumbnail.*`, `cover.*`, … up to 1 MiB, 2048 px);
-3. the application's initials.
+3. the automatic cover captured for the version during validation (the same integrity check, and the
+   cover bounds: a JPEG up to 1 MiB and 2048 px per side, with no area limit; managers see the
+   selected version's, viewers the active version's);
+4. the application's initials.
 
-Cards never render the application itself, and the gateway has no static-preview mode: a launch costs a
-ticket redemption and live authorization of every file it loads on the hosted database pool, which a card grid
-must not multiply. Only an explicit Open or a manager's Preview launches an application, and every launch is
+Cards still never launch the application: the automatic cover is a picture stored at validation time, and
+the gateway has no static-preview mode. A launch costs a ticket redemption and live authorization of every
+file it loads on the hosted database pool, which a card grid must not multiply. Only an explicit Open or a manager's Preview launches an application, and every launch is
 audited.
 
 A manager sets the cover with `PUT /v1/hosted-applications/{id}/cover` and
@@ -669,7 +683,7 @@ image body with `Content-Type` exactly `image/png`, `image/jpeg` or `image/webp`
 must match that type and the structure and header dimensions are checked without decoding the image
 (`415 UNSUPPORTED_MEDIA_TYPE`, `422 INVALID_COVER`, `413 COVER_TOO_LARGE` above 1 MiB, `409 QUOTA_EXCEEDED` past the quota holder's storage quota). Both return
 the application with `has_cover`; removing a missing cover is a no-op. `GET .../thumbnail` serves the
-uploaded cover before any bundled raster, to managers while the application is active and to viewers
+uploaded cover before any bundled raster and the automatic cover, to managers while the application is active and to viewers
 under the same visibility rule as bundled rasters.
 
 ## Lifecycle
@@ -891,12 +905,12 @@ constant in the code (the runbook lists the constants):
 The hosted database pool (10 connections, 2 s wait) is separate from the core pool on the same
 database, so a saturated feature answers `503 SERVICE_BUSY` instead of taking core connections.
 
-Database changes ship as two Alembic revisions in the core chain and run in the normal migration step:
+Database changes ship as three Alembic revisions in the core chain and run in the normal migration step:
 `e3b7c1a95d42` creates the eight feature tables with their constraints and indexes (and the `pg_trgm` extension for
 the search index), with the `filesystem`, `aws` and `gcp` storage providers; `f8d24a6c0b17` changes the tables
 other entities share: it adds `HOSTED_APPLICATION` to `codemie.resourcetype`, creates the common `share_links`
 table, adds `grant_source` / `source_link_id` with their CHECK and the `share_links` foreign key to the platform
-`permissions` table, and sets `grant_source='name'` on existing assistant grants. The design spec, section 4, lists them.
+`permissions` table, and sets `grant_source='name'` on existing assistant grants. `6158f5209f50` adds three nullable columns to `hosted_application_versions` (`preview_key`, `preview_size`, `preview_sha256`) with an all-or-none CHECK, and no backfill. The design spec, section 4, lists the first two.
 
 ## Trade-offs of object storage
 

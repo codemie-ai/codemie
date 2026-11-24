@@ -292,6 +292,8 @@ features:
             value: "3310"
           - name: CLAMD_CONFIGURATION
             value: "/etc/clamav/clamd.conf"
+          - name: VALIDATOR_PREVIEW_CAPTURE
+            value: "true"
         # -- Mount the service account token into the validator pod
         automountServiceAccountToken: false
         # -- Inject Service environment variables into the validator pod
@@ -340,7 +342,7 @@ features:
             memory: 512Mi
           limits:
             cpu: "1"
-            memory: 2Gi
+            memory: 3Gi
         # -- Extra volume mounts for the validator container
         volumeMounts:
           - name: work
@@ -349,7 +351,7 @@ features:
         volumes:
           - name: work
             emptyDir:
-              sizeLimit: 2Gi
+              sizeLimit: 3Gi
       clamd:
         image:
           # -- Repository of the ClamAV image

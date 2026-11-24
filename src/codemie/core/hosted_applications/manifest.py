@@ -108,6 +108,9 @@ def _validate_asset(path, item, prefix, site_root):
         raise ValueError("Invalid asset metadata")
 
 
+_BASE_KEYS = ("version", "site_root", "entrypoint", "routing_mode", "files")
+
+
 def parse_manifest(data: bytes, *, expected_digest: bytes, prefix: str) -> dict:
     try:
         _prefix(prefix)
@@ -116,7 +119,7 @@ def parse_manifest(data: bytes, *, expected_digest: bytes, prefix: str) -> dict:
         value = json.loads(data, object_pairs_hook=_unique_pairs)
         if (
             not isinstance(value, dict)
-            or set(value) != {"version", "site_root", "entrypoint", "routing_mode", "files"}
+            or not set(_BASE_KEYS) <= set(value)
             or type(value["version"]) is not int
             or value["version"] != 1
             or value["routing_mode"] not in ("static", "spa_history")
@@ -125,6 +128,8 @@ def parse_manifest(data: bytes, *, expected_digest: bytes, prefix: str) -> dict:
             or not 1 <= len(value["files"]) <= 5000
         ):
             raise ValueError("Manifest schema")
+        # Any other top-level key is ignored: only the base keys leave this function.
+        value = {key: value[key] for key in _BASE_KEYS}
         if value["site_root"]:
             canonical_artifact_path(value["site_root"])
         folded = set()

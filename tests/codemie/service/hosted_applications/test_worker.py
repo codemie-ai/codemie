@@ -33,6 +33,7 @@ from codemie.rest_api.models.hosted_application import (
 )
 from codemie.rest_api.models.hosted_application_requests import AppCreate, VersionCreate, UploadComplete
 from codemie.service.hosted_applications.worker import ValidationWorker
+from tests.codemie.service.hosted_applications.conftest import preview_jpeg
 from tests.codemie.service.hosted_applications.storage_fakes import CROSS_ADAPTERS
 
 
@@ -238,6 +239,448 @@ async def test_truncated_validator_stream_is_not_an_artifact_rejection(processin
     assert (await service.get_app(context, app["id"]))["suspended"] is False
 
 
+async def accepted_output(repo, storage, version_id):
+    """The accepted version's row, its passed job and output attempt, its manifest and its report bytes."""
+    from sqlalchemy import select
+
+    async with repo.sessions() as session:
+        row = await session.get(HostedApplicationVersions, UUID(str(version_id)))
+        job = (
+            await session.execute(
+                select(HostedApplicationJobs).where(
+                    HostedApplicationJobs.version_id == row.id, HostedApplicationJobs.kind == "validate"
+                )
+            )
+        ).scalar_one()
+        output = await session.get(HostedApplicationStorageAttempts, job.output_attempt_id)
+    assert row.validation_state == "accepted" and job.state == "passed"
+    manifest = await storage.read_small(row.manifest_key, maximum=1024 * 1024)
+    report = await storage.read_small(job.report_key, maximum=1024 * 1024)
+    return row, job, output, manifest, report
+
+
+def stored_files(storage):
+    return [p for p in storage.base.rglob("*") if p.is_file() and ".locks" not in p.parts]
+
+
+@pytest.mark.asyncio
+async def test_accepted_version_stores_the_preview_pointer(processing, identity):
+    from codemie.hosted_apps_validator.contract import CAPTURE_HARD_SECONDS, MAX_CAPTURE_LOCK_WAIT_SECONDS
+    from codemie.service.hosted_applications.preview import CAPTURE_OVERHEAD_SECONDS
+
+    service, repo, _, worker, validator = processing
+    validator.preview = picture = preview_jpeg()
+    context = identity()
+    _, version = await queued(service, context)
+    assert await worker.run_one()
+    row, _, output, manifest_data, report = await accepted_output(repo, service.storage, version["version_id"])
+    manifest = json.loads(manifest_data)
+    # The pointer is in the version row; the manifest does not carry it.
+    assert "preview" not in manifest
+    assert row.preview_key == output.prefix + "/preview.jpg"
+    assert row.preview_size == len(picture)
+    assert row.preview_sha256 == hashlib.sha256(picture).digest()
+    assert await read_object(service.storage, output.prefix + "/preview.jpg", len(picture)) == picture
+    assert validator.capture_calls == [
+        {
+            "identifier": "a" * 64,
+            "site_root": row.site_root,
+            "entrypoint": row.entrypoint_path,
+            "routing_mode": "static",
+            "lock_wait": MAX_CAPTURE_LOCK_WAIT_SECONDS,
+            "timeout": MAX_CAPTURE_LOCK_WAIT_SECONDS + CAPTURE_HARD_SECONDS + CAPTURE_OVERHEAD_SECONDS,
+        }
+    ]
+    files = sum(item["size"] for item in manifest["files"].values())
+    assert output.confirmed_bytes == len(report) + len(manifest_data) + files + len(picture)
+    async with repo.sessions() as session:
+        state = await session.get(HostedApplicationUserState, "owner")
+    assert state.stored_bytes == sum(p.stat().st_size for p in stored_files(service.storage))
+
+
+async def outcome(service, repo, context, app_id, version_id):
+    """What the owner and the audit see of one validated version, with the identifiers of its rows left out."""
+    from sqlalchemy import select
+    from codemie.rest_api.models.hosted_application import HostedApplicationOperations as Operation
+
+    detail = await service.get_version(context, app_id, version_id)
+    _, job, _, _, report = await accepted_output(repo, service.storage, version_id)
+    async with repo.sessions() as session:
+        rows = (await session.execute(select(Operation).where(Operation.app_id == UUID(str(app_id))))).scalars().all()
+    audit = sorted(
+        (
+            row.action,
+            row.state,
+            row.response_status,
+            row.actor_kind,
+            str(row.actor_id),
+            json.dumps({k: v for k, v in (row.audit_details or {}).items() if k != "job_id"}, sort_keys=True)
+            if row.actor_kind == "system"
+            else "",
+        )
+        for row in rows
+    )
+    verdict = (detail["validation_state"], detail["security_state"], detail["job"]["state"])
+    return verdict, report, audit, dict(job.safe_details)
+
+
+@pytest.mark.asyncio
+async def test_preview_leaves_verdict_report_and_audit_unchanged(processing, identity):
+    service, repo, _, worker, validator = processing
+    context = identity()
+    plain_app, plain = await queued(service, context)
+    assert await worker.run_one()
+    validator.preview = preview_jpeg()
+    pictured_app, pictured = await queued(service, context)
+    assert await worker.run_one()
+    without = await outcome(service, repo, context, plain_app["id"], plain["version_id"])
+    with_preview = await outcome(service, repo, context, pictured_app["id"], pictured["version_id"])
+    assert without == with_preview
+    assert without[0] == ("accepted", "clear", "passed")
+
+
+def unavailable_error():
+    return HostedApplicationError("VALIDATION_UNAVAILABLE", "Artifact validation is unavailable; retry later", 503)
+
+
+PREVIEW_FAULTS = {
+    "capture_error": lambda seam, picture: setattr(seam, "capture_error", unavailable_error()),
+    "no_picture": lambda seam, picture: setattr(seam, "preview", None),
+    "pull_error": lambda seam, picture: setattr(seam, "preview_pull_error", unavailable_error()),
+    "digest_mismatch": lambda seam, picture: setattr(seam, "preview_changes", {"sha256": "0" * 64}),
+    "size_mismatch": lambda seam, picture: setattr(seam, "preview_changes", {"size": len(picture) - 1}),
+    "not_a_jpeg": lambda seam, picture: setattr(seam, "preview", picture[:-2] + b"\0\0"),
+    "wrong_dimensions": lambda seam, picture: setattr(seam, "preview_changes", {"width": 65}),
+}
+
+
+async def assert_accepted_without_preview(service, repo, version_id):
+    """The version is accepted, its pointer columns are empty and its attempt holds no picture."""
+    row, _, output, manifest_data, report = await accepted_output(repo, service.storage, version_id)
+    manifest = json.loads(manifest_data)
+    assert "preview" not in manifest
+    assert (row.preview_key, row.preview_size, row.preview_sha256) == (None, None, None)
+    assert not [p for p in stored_files(service.storage) if p.name == "preview.jpg" and output.prefix in str(p)]
+    files = sum(item["size"] for item in manifest["files"].values())
+    assert output.confirmed_bytes == len(report) + len(manifest_data) + files
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", sorted(PREVIEW_FAULTS))
+async def test_a_preview_that_fails_a_check_is_left_out_and_the_version_is_accepted(processing, identity, fault):
+    service, repo, _, worker, validator = processing
+    validator.preview = picture = preview_jpeg()
+    PREVIEW_FAULTS[fault](validator, picture)
+    _, version = await queued(service, identity())
+    assert await worker.run_one()
+    assert len(validator.capture_calls) == 1
+    await assert_accepted_without_preview(service, repo, version["version_id"])
+
+
+@pytest.mark.asyncio
+async def test_an_accept_without_a_picture_clears_a_stale_pointer(processing, identity):
+    service, repo, _, worker, validator = processing
+    validator.preview = None
+    _, version = await queued(service, identity())
+    async with repo.sessions() as session:
+        row = await session.get(HostedApplicationVersions, UUID(str(version["version_id"])))
+        row.preview_key, row.preview_size, row.preview_sha256 = "stale/preview.jpg", 5, b"\x01" * 32
+        await session.commit()
+    assert await worker.run_one()
+    await assert_accepted_without_preview(service, repo, version["version_id"])
+
+
+def limit_output(worker, **limits):
+    """Narrow the claimed job's output reservation as the writer and the room check see it."""
+    claim = worker.claim
+
+    async def narrowed():
+        work = await claim()
+        if work is not None:
+            work["output"].update(limits)
+        return work
+
+    worker.claim = narrowed
+
+
+@pytest.mark.asyncio
+async def test_no_room_leaves_the_pointer_empty(processing, identity):
+    service, repo, _, worker, validator = processing
+    context = identity()
+    validator.preview = preview_jpeg()
+    _, first = await queued(service, context)
+    assert await worker.run_one()
+    needed = (await accepted_output(repo, service.storage, first["version_id"]))[2].confirmed_bytes
+    limit_output(worker, byte_upper_bound=needed - 1)
+    _, short = await queued(service, context)
+    assert await worker.run_one()
+    await assert_accepted_without_preview(service, repo, short["version_id"])
+    limit_output(worker, byte_upper_bound=needed)  # Wraps the narrowing above: the last value wins.
+    _, exact = await queued(service, context)
+    assert await worker.run_one()
+    assert (await accepted_output(repo, service.storage, exact["version_id"]))[0].preview_key is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("room,kept", [(2, False), (3, True)])
+async def test_a_preview_without_object_room_is_left_out(processing, identity, room, kept):
+    service, repo, _, worker, validator = processing
+    validator.preview = preview_jpeg()
+    files = 1  # One HTML upload is one validated file.
+    limit_output(worker, object_limit=files + room)
+    _, version = await queued(service, identity())
+    assert await worker.run_one()
+    assert len(validator.candidate.files) == files
+    row = (await accepted_output(repo, service.storage, version["version_id"]))[0]
+    assert (row.preview_key is not None) is kept
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra,called", [(-1, False), (1, True)])
+async def test_capture_starts_only_with_room_for_the_capture_and_the_writes_in_the_budget(
+    processing, identity, extra, called
+):
+    from codemie.service.hosted_applications.preview import CAPTURE_REQUEST_SECONDS, write_seconds
+
+    service, repo, _, worker, validator = processing
+    validator.preview = preview_jpeg()
+    claim = worker.claim
+
+    async def late_claim():
+        work = await claim()
+        if work is not None:
+
+            def late():
+                # The clock reads ``extra`` seconds more than the capture and the writes after it need.
+                candidate = getattr(validator, "candidate", None)
+                reserve = CAPTURE_REQUEST_SECONDS + (write_seconds(candidate) if candidate is not None else 0)
+                return work["lease"].received_at + work["budget"] - (reserve + extra)
+
+            worker.monotonic = late
+        return work
+
+    worker.claim = late_claim
+    _, version = await queued(service, identity())
+    assert await worker.run_one()
+    assert bool(validator.capture_calls) is called
+    row = (await accepted_output(repo, service.storage, version["version_id"]))[0]
+    assert (row.preview_key is not None) is called
+
+
+@pytest.fixture
+def outcomes(monkeypatch):
+    """The automatic cover outcomes the worker counts, in order."""
+    from types import SimpleNamespace
+
+    from codemie.service.hosted_applications import observability
+
+    counted = []
+    monitoring = SimpleNamespace(preview_capture=counted.append, validation=lambda hard: None)
+    monkeypatch.setattr(observability, "hosted_request_monitoring", lambda: monitoring)
+    return counted
+
+
+EXPECTED_OUTCOME = {
+    "capture_error": "failed",
+    "no_picture": "no_picture",
+    "pull_error": "failed",
+    "digest_mismatch": "mismatch",
+    "size_mismatch": "failed",
+    "not_a_jpeg": "mismatch",
+    "wrong_dimensions": "mismatch",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", sorted(PREVIEW_FAULTS))
+async def test_each_failed_capture_is_counted_once(processing, identity, outcomes, fault):
+    service, _, _, worker, validator = processing
+    validator.preview = picture = preview_jpeg()
+    PREVIEW_FAULTS[fault](validator, picture)
+    await queued(service, identity())
+    assert await worker.run_one()
+    assert outcomes == [EXPECTED_OUTCOME[fault]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["off", "busy", "no_picture", "unknown", "failed"])
+async def test_a_validator_reason_is_counted_as_it_is(processing, identity, outcomes, reason):
+    service, _, _, worker, validator = processing
+    validator.no_picture_reason = reason
+    await queued(service, identity())
+    assert await worker.run_one()
+    assert outcomes == [reason]
+
+
+@pytest.mark.asyncio
+async def test_a_stored_picture_is_counted_as_captured(processing, identity, outcomes):
+    service, _, _, worker, validator = processing
+    validator.preview = preview_jpeg()
+    await queued(service, identity())
+    assert await worker.run_one()
+    assert outcomes == ["captured"]
+
+
+@pytest.mark.asyncio
+async def test_a_write_failure_after_the_pull_is_counted_as_failed_once(processing, identity, outcomes, monkeypatch):
+    service, _, _, worker, validator = processing
+    validator.preview = preview_jpeg()
+    failure = unavailable_error()
+
+    async def broken(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(worker, "_write_output", broken)
+    seen = []
+    fail = worker.fail
+
+    async def failing(work, code):
+        seen.append(code)
+        await fail(work, code)
+
+    worker.fail = failing
+    await queued(service, identity())
+    assert await worker.run_one()
+    assert outcomes == ["failed"]
+    assert seen == [failure.code], "The original error still reaches the job's failure handling"
+
+
+@pytest.mark.asyncio
+async def test_a_picture_without_room_is_counted_as_no_room(processing, identity, outcomes):
+    service, _, _, worker, validator = processing
+    validator.preview = preview_jpeg()
+    limit_output(worker, object_limit=3)
+    await queued(service, identity())
+    assert await worker.run_one()
+    assert outcomes == ["no_room"]
+
+
+def set_safe_details(worker, details):
+    claim = worker.claim
+
+    async def claimed():
+        work = await claim()
+        if work is not None:
+            work["job"]["safe_details"] = details
+        return work
+
+    worker.claim = claimed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "details,retried",
+    [
+        ({"retry_count": 1}, True),
+        ({"retry_count": 3}, True),
+        ({"retry_count": 0}, False),
+        ({"retry_count": True}, False),
+        ({"retry_count": "2"}, False),
+        ({}, False),
+    ],
+)
+async def test_only_a_job_with_a_positive_integer_retry_count_skips_the_capture(
+    processing, identity, outcomes, details, retried
+):
+    service, repo, _, worker, validator = processing
+    validator.preview = preview_jpeg()
+    set_safe_details(worker, details)
+    _, version = await queued(service, identity())
+    assert await worker.run_one()
+    assert bool(validator.capture_calls) is not retried
+    assert outcomes == (["skipped_retry"] if retried else ["captured"])
+    if retried:
+        await assert_accepted_without_preview(service, repo, version["version_id"])
+
+
+@pytest.mark.asyncio
+async def test_a_capture_without_budget_is_counted_as_skipped_budget(processing, identity, outcomes):
+    from codemie.service.hosted_applications.preview import CAPTURE_REQUEST_SECONDS, write_seconds
+
+    service, _, _, worker, validator = processing
+    validator.preview = preview_jpeg()
+    claim = worker.claim
+
+    async def late_claim():
+        work = await claim()
+        if work is not None:
+
+            def late():
+                candidate = getattr(validator, "candidate", None)
+                reserve = CAPTURE_REQUEST_SECONDS + (write_seconds(candidate) if candidate is not None else 0)
+                return work["lease"].received_at + work["budget"] - (reserve - 1)
+
+            worker.monotonic = late
+        return work
+
+    worker.claim = late_claim
+    await queued(service, identity())
+    assert await worker.run_one()
+    assert validator.capture_calls == []
+    assert outcomes == ["skipped_budget"]
+
+
+@pytest.mark.asyncio
+async def test_the_lock_wait_uses_the_spare_time_of_the_job(processing, identity):
+    from codemie.hosted_apps_validator.contract import CAPTURE_HARD_SECONDS
+    from codemie.service.hosted_applications.preview import (
+        CAPTURE_OVERHEAD_SECONDS,
+        CAPTURE_REQUEST_SECONDS,
+        write_seconds,
+    )
+
+    service, _, _, worker, validator = processing
+    claim = worker.claim
+
+    async def tight_claim():
+        work = await claim()
+        if work is not None:
+
+            def late():
+                candidate = getattr(validator, "candidate", None)
+                # 10 seconds of spare beyond the shortest capture request.
+                reserve = CAPTURE_REQUEST_SECONDS + 10 + (write_seconds(candidate) if candidate is not None else 0)
+                return work["lease"].received_at + work["budget"] - reserve
+
+            worker.monotonic = late
+        return work
+
+    worker.claim = tight_claim
+    await queued(service, identity())
+    assert await worker.run_one()
+    (call,) = validator.capture_calls
+    assert call["lock_wait"] == pytest.approx(13)
+    assert call["timeout"] == pytest.approx(13 + CAPTURE_HARD_SECONDS + CAPTURE_OVERHEAD_SECONDS)
+
+
+@pytest.mark.asyncio
+async def test_no_capture_for_a_rejected_version(processing, identity):
+    service, _, _, worker, validator = processing
+    validator.preview = preview_jpeg()
+    validator.rejection = HostedApplicationError("MALWARE_DETECTED", "Rejected")
+    context = identity()
+    app, version = await queued(service, context)
+    assert await worker.run_one()
+    assert (await service.get_version(context, app["id"], version["version_id"]))["validation_state"] == "rejected"
+    assert validator.capture_calls == []
+
+
+@pytest.mark.asyncio
+async def test_no_capture_for_a_version_awaiting_configuration(processing, identity, monkeypatch):
+    from codemie.service.hosted_applications import worker as worker_module
+
+    service, _, _, worker, validator = processing
+    validator.preview = preview_jpeg()
+    monkeypatch.setattr(worker_module, "configuration", lambda candidate, requested: None)
+    context = identity()
+    app, version = await queued(service, context)
+    assert await worker.run_one()
+    detail = await service.get_version(context, app["id"], version["version_id"])
+    assert detail["validation_state"] == "awaiting_configuration"
+    assert validator.capture_calls == []
+    assert not [p for p in stored_files(service.storage) if p.name in ("preview.jpg", "manifest.json")]
+
+
 class RecordingStorage(HostedFileStorage):
     """Real filesystem adapter that records the lease handed to the writer and every renewal."""
 
@@ -348,6 +791,8 @@ def offline_worker(tmp_path, fake, provider):
         "output": {"prefix": OUTPUT_PREFIX, "byte_upper_bound": 1024 * 1024, "object_limit": 100},
         "version": {"artifact_kind": "html", "requested_configuration": {}},
         "lease": writer_lease(),
+        "budget": 120.0,
+        "job": {"safe_details": {}},
     }
     return worker, storage, work
 
@@ -380,6 +825,97 @@ async def test_validation_output_is_marked_quiesced_only_after_the_writer_exits(
     monkeypatch.setattr(worker, outcome, receipt)
     await worker._process(work)
     assert receipts == [{"writer_open": False, "fences": [], "uploads": []}]
+
+
+async def cross_adapter_worker(tmp_path, adapter):
+    """A worker on one CROSS_ADAPTERS storage with no database: the original is stored, ``accept`` is recorded."""
+    from tests.codemie.service.hosted_applications.conftest import TrustedValidatorSeam
+    from tests.codemie.service.hosted_applications.storage_fakes import writer_lease
+    from codemie.service.hosted_applications.worker import bytes_chunk
+
+    storage = adapter(tmp_path / "cross-adapter-storage")
+    async with storage.writer(SOURCE_PREFIX, byte_limit=1024, object_limit=1, lease=writer_lease()) as writer:
+        await writer.put("original", bytes_chunk(ORIGINAL), expected_size=len(ORIGINAL))
+    seam = TrustedValidatorSeam(tmp_path)
+    worker = ValidationWorker(None, storage, seam)
+
+    async def database_recheck(work, *, heartbeat=False):
+        return None
+
+    accepted = []
+
+    async def accept(*args):
+        accepted.append(args)
+
+    worker.fence, worker.accept = database_recheck, accept
+    work = {
+        "source": {
+            "prefix": SOURCE_PREFIX,
+            "confirmed_bytes": len(ORIGINAL),
+            "receipt_digest": hashlib.sha256(ORIGINAL).digest(),
+        },
+        "output": {"prefix": OUTPUT_PREFIX, "byte_upper_bound": 1024 * 1024, "object_limit": 100},
+        "version": {"artifact_kind": "html", "requested_configuration": {}},
+        "lease": writer_lease(),
+        "budget": 120.0,
+        "job": {"safe_details": {}},
+    }
+    return worker, storage, seam, work, accepted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter", CROSS_ADAPTERS)
+async def test_a_captured_preview_is_stored_and_counted_on_every_adapter(tmp_path, adapter):
+    worker, storage, seam, work, accepted = await cross_adapter_worker(tmp_path, adapter)
+    seam.preview = picture = preview_jpeg()
+    await worker._process(work)
+    raw = await storage.read_small(OUTPUT_PREFIX + "/manifest.json", maximum=1024 * 1024)
+    manifest = json.loads(raw)
+    assert "preview" not in manifest
+    assert await read_object(storage, OUTPUT_PREFIX + "/preview.jpg", len(picture)) == picture
+    (args,) = accepted
+    manifest_data, pointer = args[-2:]
+    assert manifest_data == raw
+    assert pointer == (OUTPUT_PREFIX + "/preview.jpg", len(picture), hashlib.sha256(picture).digest())
+    assert pointer.size == len(picture), "accept() counts the picture's bytes in the attempt and the quota"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter", CROSS_ADAPTERS)
+async def test_a_preview_with_a_wrong_digest_is_not_stored_on_any_adapter(tmp_path, adapter):
+    worker, storage, seam, work, accepted = await cross_adapter_worker(tmp_path, adapter)
+    seam.preview = preview_jpeg()
+    seam.preview_changes = {"sha256": "0" * 64}
+    await worker._process(work)
+    manifest = json.loads(await storage.read_small(OUTPUT_PREFIX + "/manifest.json", maximum=1024 * 1024))
+    assert "preview" not in manifest
+    with pytest.raises(HostedApplicationError):
+        await read_object(storage, OUTPUT_PREFIX + "/preview.jpg", 1)
+    (args,) = accepted
+    assert args[-1] is None, "No pointer and no picture bytes are counted"
+
+
+@pytest.mark.asyncio
+async def test_no_capture_when_the_budget_cannot_also_cover_the_output_writes(tmp_path):
+    from codemie.service.hosted_applications.preview import CAPTURE_REQUEST_SECONDS
+    from tests.codemie.service.hosted_applications.storage_fakes import filesystem_adapter
+
+    worker, _, seam, work, accepted = await cross_adapter_worker(tmp_path, filesystem_adapter)
+    seam.preview = preview_jpeg()
+    # One second more than the capture itself may take: nothing would be left to write the output.
+    stamp = work["lease"].received_at + work["budget"] - (CAPTURE_REQUEST_SECONDS + 1)
+    worker.monotonic = lambda: stamp
+    await worker._process(work)
+    assert seam.capture_calls == []
+    assert len(accepted) == 1
+
+
+def test_a_capture_request_covers_the_lock_wait_and_the_hard_limit():
+    from codemie.hosted_apps_validator import contract
+    from codemie.service.hosted_applications.preview import CAPTURE_REQUEST_SECONDS
+
+    # The validator may wait for its single renderer, then run it for the hard limit; the request outlasts both.
+    assert contract.CAPTURE_LOCK_WAIT_SECONDS + contract.CAPTURE_HARD_SECONDS < CAPTURE_REQUEST_SECONDS
 
 
 @pytest.mark.asyncio

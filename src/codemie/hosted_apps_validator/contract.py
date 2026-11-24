@@ -27,6 +27,20 @@ MAXIMUM_SECONDS = 900
 RESULT_GRACE_SECONDS = 30
 # Parser findings above this count fail validation deterministically (the candidate schema bound).
 MAX_WARNINGS = 10000
+# Preview capture, both counted from capture start (renderer start, so browser start too; set by the Task 1 spike).
+# At the soft deadline the renderer takes what is on screen; at the hard limit the browser is killed.
+CAPTURE_SOFT_SECONDS = 15
+CAPTURE_HARD_SECONDS = 20
+# How long a capture waits for the pod's single renderer before it gives no preview. The wait comes before
+# capture start, so the API's capture request must cover this wait plus the hard limit.
+CAPTURE_LOCK_WAIT_SECONDS = 3
+# The most a request may ask the validator to wait for the renderer: the API sets the wait from the spare time
+# of the job. CAPTURE_LOCK_WAIT_SECONDS is the least it may ask and the default when it asks nothing.
+MAX_CAPTURE_LOCK_WAIT_SECONDS = 60
+# Why the validator kept no picture (a null answer carries one): capture is off, the renderer stayed busy
+# for the whole lock wait, or the capture gave no usable picture.
+CAPTURE_REASONS = ("off", "busy", "no_picture")
+PREVIEW_VIEWPORT = (1280, 800)
 
 # The artifact exceeds what validation can process; retrying cannot help, and nothing unsafe was found.
 LIMIT_REJECTION_CODES = frozenset({"SCAN_LIMIT_EXCEEDED", "VALIDATION_LIMIT_EXCEEDED"})

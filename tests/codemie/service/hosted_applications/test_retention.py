@@ -643,3 +643,43 @@ async def test_retire_version_blocks_the_version_queues_cleanup_and_audits_the_a
     )
     update = tx.session.statements[-1]
     assert 'owner_id' not in update and 'app_id' in update
+
+
+@pytest.mark.asyncio
+async def test_retire_deletes_the_preview_and_the_ledger_counts_its_bytes(processing, identity):
+    from tests.codemie.service.hosted_applications.conftest import preview_jpeg
+
+    service, repo, _, worker, validator = processing
+    validator.preview = picture = preview_jpeg()
+    context = identity()
+    app, _ = await queued(service, context)
+    await worker.run_one()
+    retired = await add_version(service, worker, context, app, b'<html>Retired visual</html>')
+    await add_version(service, worker, context, app, b'<html>Latest visual</html>')
+
+    def stored():
+        return [p for p in service.storage.base.rglob('*') if p.is_file() and '.locks' not in p.parts]
+
+    async with repo.sessions() as session:
+        job = (await session.execute(select(Job).where(Job.version_id == retired, Job.state == 'passed'))).scalar_one()
+        output = await session.get(Attempt, job.output_attempt_id)
+        state = await session.get(State, 'owner')
+    preview = service.storage.base.joinpath(*output.prefix.split('/'), 'preview.jpg')
+    assert [p for p in stored() if p.name == 'preview.jpg' and p.parent == preview.parent] == [preview]
+    assert preview.read_bytes() == picture
+    attempt_files = [p for p in stored() if p.is_relative_to(preview.parent)]
+    # The attempt ledger and the quota both count the picture's bytes.
+    assert output.confirmed_bytes == sum(p.stat().st_size for p in attempt_files)
+    assert state.stored_bytes == sum(p.stat().st_size for p in stored())
+
+    retention = RetentionWorker(repo, accepted=1)
+    assert await retention.schedule_version_one()
+    maintenance = MaintenanceWorker(repo, service.storage)
+    while await maintenance.cleanup_one():
+        pass
+    assert await retention.finish_version_one()
+    assert not preview.exists()
+    async with repo.sessions() as session:
+        assert await session.get(Version, retired) is None
+        state = await session.get(State, 'owner')
+    assert state.stored_bytes == sum(p.stat().st_size for p in stored())

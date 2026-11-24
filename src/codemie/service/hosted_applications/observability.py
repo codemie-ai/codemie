@@ -30,6 +30,21 @@ from codemie.rest_api.models.hosted_application import HostedApplicationJobs as 
 OPERATIONS = frozenset(('validation', 'cleanup', 'retry', 'purge', 'retention'))
 # Best-effort revocation after platform logout.
 LOGOUT_RESULTS = frozenset(('revoked', 'failed', 'timeout'))
+# Where each validation job that reaches the automatic cover capture point ends: a cover, or the one reason it has none.
+PREVIEW_CAPTURE_RESULTS = frozenset(
+    (
+        'captured',
+        'skipped_budget',
+        'skipped_retry',
+        'off',
+        'busy',
+        'no_picture',
+        'failed',
+        'mismatch',
+        'no_room',
+        'unknown',
+    )
+)
 
 
 def response_result(status: int) -> str:
@@ -144,6 +159,10 @@ class HostedRequestMonitoring:
         self.bandwidth = meter.create_counter('hosted_applications_content_bytes', unit='By')
         self.directory_seconds = meter.create_histogram('hosted_applications_directory_seconds', unit='s')
         self.validation_failures = meter.create_counter('hosted_applications_validation_failures')
+        self.preview_captures = meter.create_counter(
+            'hosted_applications_preview_captures',
+            description='Validation jobs that reached the automatic cover capture point, by outcome',
+        )
         self.logout_revocations = meter.create_counter(
             'hosted_applications_logout_revocations', description='Best-effort hosted revocation after platform logout'
         )
@@ -170,6 +189,12 @@ class HostedRequestMonitoring:
     def validation(self, hard):
         with suppress(Exception):
             self.validation_failures.add(1, {'kind': 'artifact_rejected' if hard else 'service_unavailable'})
+
+    def preview_capture(self, result):
+        """Count one automatic cover outcome; ``result`` is one of PREVIEW_CAPTURE_RESULTS, anything else is dropped."""
+        with suppress(Exception):
+            if result in PREVIEW_CAPTURE_RESULTS:
+                self.preview_captures.add(1, {'result': result})
 
     def logout(self, result):
         with suppress(Exception):

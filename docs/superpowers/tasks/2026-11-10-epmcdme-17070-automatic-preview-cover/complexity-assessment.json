@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "task": "Capture one sandboxed screenshot per hosted application version during the validation pass inside the existing validator pod, store it with the validation attempt output, and serve it from /thumbnail after the form cover and bundle cover image, before initials, without affecting the verdict.",
+  "generated": "2026-11-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 5, "label": "XL" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 27,
+  "size": "XL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Scored against the Section 9 design (D5-D8). Touches 4+ components in two subsystems: a new renderer process with its own sandbox profile in hosted_apps_validator (server.py capture step, isolation profile), the validator client (file_chunks pull of the raster), ValidationWorker._process/accept (write raster with the attempt output, version pointer), HostedThumbnailService cover order, and the validator deployment (Dockerfile.validator, kubernetes.yaml resources, chart values). The renderer is a new abstraction; no new pod, job kind or attempt kind." },
+    { "dimension": "technical_risk", "reason": "No headless browser and no server-side rendering exist anywhere; the renderer executes untrusted uploaded code inside the validator pod. Closest pattern is isolation.py (Landlock, seccomp, rlimits), but it is built for a parser that executes nothing, so it does not cover the security-sensitive aspect (sandboxing a JS-executing browser). Further risks: Alpine base without an official Playwright build, validator memory/CPU and 2-job capacity, fidelity vs CONTENT_CSP and WRAPPER_SCRIPT, and keeping capture failure isolated from the verdict (AC5). Reversing recorded decision architecture.md D1 needs a new decision record. Mitigating: D5-D8 reuse the pod posture, the lease, the attempt ledger, retention and quota." },
+    { "dimension": "file_change_estimate", "reason": "Estimate about 11-15 modified and 3-5 new files across validator, service, core manifest/model, deployment and docs: server.py, isolation.py, validator_client.py, worker.py, manifest.py or version model (plus migration if a column is chosen), thumbnails.py, Dockerfile.validator, requirements-validator.txt, kubernetes.yaml, chart values, runbook README, architecture.md; new renderer module and new tests; updates to test_worker, test_thumbnail, test_validator_server, conftest TrustedValidatorSeam." },
+    { "dimension": "dependencies", "reason": "One heavyweight new dependency: a Chromium-class headless browser in the validator image, which today installs only 7 hash-pinned packages. Alpine compatibility and image size need checks." },
+    { "dimension": "affected_layers", "reason": "Service (worker, thumbnails), DB-Persistence (raster object under the attempt prefix, version pointer that may need a column and migration with schema parity), Infrastructure (validator image, resources, chart), and the validator service boundary. The /thumbnail API contract does not change." },
+    { "dimension": "requirements_clarity", "reason": "Seven ACs and decisions D1-D8 are explicit. Open points: manifest field vs version column for the raster pointer, the headless browser choice on Alpine, and the renderer sandbox profile." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: closest pattern (isolation.py parser sandbox) does not cover sandboxing a code-executing renderer, a security-sensitive divergence; the 'Security' red flag is the same signal and is not counted twice"
+  ],
+  "split_recommendation": {
+    "strategy": "by-dependency",
+    "secondary_strategy": null,
+    "ordering_note": "Capture and store the per-version raster first; the /thumbnail cover order depends on the stored raster and its version pointer.",
+    "slices": [
+      {
+        "title": "Capture preview in the validation pass",
+        "slice_slug": "preview-capture",
+        "component": "codemie",
+        "feature": "automatic-preview-cover",
+        "scope": "Add a sandboxed headless renderer process to the validator pod and image, capture one raster per version from the /work files, pull it back through the validator client and store it under the validation attempt prefix with a version pointer. Capture failure or timeout yields no preview and never changes the verdict; rejected or failed versions drop it.",
+        "depends_on": null
+      },
+      {
+        "title": "Serve preview from /thumbnail",
+        "slice_slug": "preview-serving",
+        "component": "codemie",
+        "feature": "automatic-preview-cover",
+        "scope": "Extend the HostedThumbnailService cover order to form cover, bundle cover image, automatic preview, initials, for the active version for viewers and the selected version for managers, never for rejected or failed versions. Record the new server-side rendering decision in architecture.md and the runbook.",
+        "depends_on": "Capture preview in the validation pass"
+      }
+    ]
+  }
+}

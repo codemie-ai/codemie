@@ -14,6 +14,7 @@
 
 """Deployment manifests: the chart, the standalone objects and the runbook describe one topology and one set of names."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -96,3 +97,34 @@ def test_runbook_and_values_name_the_namespace_qualified_validator_url():
         assert VALIDATOR_URL in text
     for stale in ("codemie-hosted-validator:8091", "http://codemie-hosted-apps-validator:8091", "codemie-hosted-clamd"):
         assert stale not in readme and stale not in values
+
+
+def test_validator_memory_and_chromium_pin():
+    """AC8: the validator image pins Chromium, labels the pin, and the pod gets 3Gi with the same CPU."""
+    standalone = container(named("Deployment", VALIDATOR), "validator")["resources"]["limits"]
+    chart = hosted_values()["validator"]["resources"]["limits"]
+    for limits in (standalone, chart):
+        assert limits["memory"] == "3Gi"
+        assert limits["cpu"] == "1"
+
+    dockerfile = (STANDALONE / "Dockerfile.validator").read_text()
+    (pin,) = re.findall(r"apk add --no-cache chromium=(\S+)", dockerfile)
+    assert re.fullmatch(r"\d+(\.\d+)+-r\d+", pin)
+    assert f"LABEL org.codemie.chromium-version={pin}" in dockerfile
+
+
+def work_volume_size(volumes):
+    (found,) = [item for item in volumes if item["name"] == "work"]
+    return found["emptyDir"]["sizeLimit"]
+
+
+def test_validator_work_volume_is_3gi():
+    """AR-2: two workspaces (about 1.2 GiB) and a picture capture (up to 512 MiB) need more than 2Gi."""
+    standalone = named("Deployment", VALIDATOR)["spec"]["template"]["spec"]["volumes"]
+    assert work_volume_size(standalone) == "3Gi"
+    assert work_volume_size(hosted_values()["validator"]["volumes"]) == "3Gi"
+
+
+def test_chart_exposes_preview_capture():
+    """AR-2: the chart sets the preview capture switch to the exact value the validator reads."""
+    assert env(hosted_values()["validator"])["VALIDATOR_PREVIEW_CAPTURE"] == "true"

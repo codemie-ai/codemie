@@ -38,6 +38,7 @@ from codemie.rest_api.models.hosted_application_requests import AppCreate, AppPa
 from codemie.service.hosted_applications.covers import MAX_COVER_BYTES, verify_cover
 from codemie.service.hosted_applications.maintenance import MaintenanceWorker
 from codemie.service.hosted_applications.thumbnails import HostedThumbnailService
+from tests.codemie.service.hosted_applications.conftest import preview_jpeg
 from tests.codemie.service.hosted_applications.test_query_plans import recording
 from tests.codemie.service.hosted_applications.test_thumbnail import image_app, png, share_with_project
 from tests.codemie.service.hosted_applications.test_worker import queued
@@ -422,6 +423,27 @@ async def test_custom_cover_wins_over_the_bundled_raster_for_owner_and_project_v
         await thumbnails.get(viewer, app["id"])
     assert error.value.status == 404
     assert tuple(await thumbnails.get(owner, app["id"])) == expected
+
+
+@pytest.mark.asyncio
+async def test_form_cover_wins_over_preview_and_removal_restores_it(processing, identity):
+    picture = preview_jpeg()
+    service, app, _ = await image_app(processing, identity, filename=None, preview=picture)
+    thumbnails = HostedThumbnailService(service)
+    owner = identity()
+    custom = jpeg(800, 450)
+    covered = await put(service, owner, app, custom, "image/jpeg")
+    assert tuple(await thumbnails.get(owner, app["id"])) == (
+        custom,
+        "image/jpeg",
+        '"' + hashlib.sha256(custom).hexdigest() + '"',
+    )
+    await remove(service, owner, covered)
+    assert tuple(await thumbnails.get(owner, app["id"])) == (
+        picture,
+        "image/jpeg",
+        '"' + hashlib.sha256(picture).hexdigest() + '"',
+    )
 
 
 @pytest.mark.asyncio

@@ -29,6 +29,65 @@ EXECUTABLE_MAGIC = (
     b"\xbe\xba\xfe\xca",
 )
 _WOFF = ".woff"
+_WEBP = ".webp"
+_JPEG = ".jpeg"
+
+# JPEG start-of-frame markers, the segments that carry the frame size.
+JPEG_FRAME_MARKERS = (192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207)
+# Every JPEG marker starts with this byte; a repeated one is fill.
+_JPEG_MARKER_PREFIX = 0xFF
+# A segment length counts its own two bytes; a start-of-frame segment needs 8 to hold the frame size.
+_JPEG_SEGMENT_LENGTH_SIZE = 2
+_JPEG_FRAME_HEADER_SIZE = 8
+# The bytes that hold the size: the PNG IHDR chunk, the WebP VP8/VP8L/VP8X header.
+_PNG_SIZE_END = 24
+_WEBP_SIZE_END = 30
+_VP8L_SIGNATURE = 0x2F
+
+
+def _png_dimensions(data):
+    return int.from_bytes(data[16:20], 'big'), int.from_bytes(data[20:24], 'big')
+
+
+def _webp_dimensions(data):
+    if data[12:16] == b'VP8X':
+        return 1 + int.from_bytes(data[24:27], 'little'), 1 + int.from_bytes(data[27:30], 'little')
+    if data[12:16] == b'VP8L' and data[20] == _VP8L_SIGNATURE:
+        bits = int.from_bytes(data[21:25], 'little')
+        return 1 + (bits & 16383), 1 + ((bits >> 14) & 16383)
+    if data[12:16] == b'VP8 ' and data[23:26] == b'\x9d\x01\x2a':
+        return int.from_bytes(data[26:28], 'little') & 16383, int.from_bytes(data[28:30], 'little') & 16383
+    return 0, 0
+
+
+def _jpeg_dimensions(data):
+    position = 2
+    for _ in range(4096):
+        if position + 4 > len(data) or data[position] != _JPEG_MARKER_PREFIX:
+            break
+        marker = data[position + 1]
+        if marker == _JPEG_MARKER_PREFIX:
+            position += 1
+            continue
+        length = int.from_bytes(data[position + 2 : position + 4], 'big')
+        if length < _JPEG_SEGMENT_LENGTH_SIZE or position + 2 + length > len(data):
+            break
+        if marker in JPEG_FRAME_MARKERS and length >= _JPEG_FRAME_HEADER_SIZE:
+            return int.from_bytes(data[position + 7 : position + 9], 'big'), int.from_bytes(
+                data[position + 5 : position + 7], 'big'
+            )
+        position += 2 + length
+    return 0, 0
+
+
+def dimensions(data, suffix):
+    if suffix == '.png' and len(data) >= _PNG_SIZE_END:
+        return _png_dimensions(data)
+    if suffix == _WEBP and len(data) >= _WEBP_SIZE_END:
+        return _webp_dimensions(data)
+    if suffix in ('.jpg', _JPEG):
+        return _jpeg_dimensions(data)
+    return 0, 0
 
 
 def png(data):
@@ -54,7 +113,7 @@ def png(data):
 def image(data, suffix):
     if suffix == '.png':
         return png(data)
-    if suffix in ('.jpg', '.jpeg'):
+    if suffix in ('.jpg', _JPEG):
         return len(data) >= 4 and data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9")
     if suffix == '.gif':
         return (
@@ -64,7 +123,7 @@ def image(data, suffix):
             and int.from_bytes(data[6:8], 'little') > 0
             and int.from_bytes(data[8:10], 'little') > 0
         )
-    if suffix == '.webp':
+    if suffix == _WEBP:
         return (
             len(data) >= 20
             and data[:4] == b'RIFF'
@@ -138,7 +197,7 @@ def media(data, suffix):
 def inspect_binary(data, suffix):
     if data.startswith(EXECUTABLE_MAGIC):
         raise HostedApplicationError('UNSUPPORTED_ARTIFACT', 'Executable files are not static application assets')
-    if suffix in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico'):
+    if suffix in ('.png', '.jpg', _JPEG, '.gif', _WEBP, '.avif', '.ico'):
         valid = image(data, suffix)
     elif suffix in (_WOFF, '.woff2', '.ttf', '.otf'):
         valid = font(data, suffix)

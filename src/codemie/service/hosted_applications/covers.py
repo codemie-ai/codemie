@@ -26,7 +26,7 @@ from collections.abc import AsyncIterable
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 
-from codemie.core.hosted_applications.binary import image
+from codemie.core.hosted_applications.binary import dimensions, image
 from codemie.core.hosted_applications.errors import HostedApplicationError
 from codemie.core.hosted_applications.protocol import check_etag
 from codemie.rest_api.models.hosted_application_cover import HostedApplicationCovers as Cover
@@ -61,9 +61,6 @@ async def read_cover(stream: AsyncIterable[bytes]) -> bytes:
 
 def verify_cover(data: bytes, media_type: str) -> tuple[int, int]:
     """Width and height of a PNG, JPEG or WebP whose signature, structure and size bounds all hold."""
-    # thumbnails imports the catalog, which composes this module, so its header parser is imported on use.
-    from codemie.service.hosted_applications.thumbnails import dimensions
-
     suffix = COVER_TYPES.get(media_type)
     if suffix is None:
         raise HostedApplicationError("UNSUPPORTED_MEDIA_TYPE", "Choose a PNG, JPEG or WebP image", 415)

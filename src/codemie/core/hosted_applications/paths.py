@@ -18,6 +18,7 @@ import re
 import unicodedata
 from urllib.parse import unquote_to_bytes
 
+from codemie.core.hosted_applications.content_policy import RESERVED_PREFIX
 from codemie.core.hosted_applications.errors import HostedApplicationError
 
 _WINDOWS_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)", re.IGNORECASE)
@@ -37,7 +38,7 @@ def canonical_artifact_path(value: str) -> str:
         or any(unicodedata.category(c).startswith("C") for c in value)
         or unicodedata.normalize("NFC", value) != value
         or any(part in ("", ".", "..") or part.endswith((".", " ")) or _WINDOWS_RESERVED.match(part) for part in parts)
-        or parts[0].casefold() == "_platform"
+        or parts[0].casefold() == RESERVED_PREFIX
     ):
         raise HostedApplicationError("INVALID_ARCHIVE_PATH", "Artifact contains an unsafe or noncanonical path")
     return value

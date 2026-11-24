@@ -33,18 +33,30 @@ import subprocess
 import sys
 import time
 import urllib.request
+from typing import Any
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse, Response
 from starlette.routing import Route
 
 from codemie.core.hosted_applications.errors import HostedApplicationError, ARTIFACT_REJECTION_CODES
 from codemie.core.hosted_applications.validation import candidate_from_result
+from codemie.hosted_apps_validator.child_process import drain, release, spawn
 from codemie.hosted_apps_validator.contract import LIMIT_REJECTION_CODES, RESULT_GRACE_SECONDS, validation_budget
 from codemie.hosted_apps_validator.logging_config import LOGGER_NAME, configure_logging
+from codemie.hosted_apps_validator.preview_capture import (
+    RENDERER,
+    Preview,
+    capture,
+    configure_capture,
+    hide_secrets,
+    preview_request,
+)
+from codemie.core.hosted_applications.preview import PREVIEW_NAME
 from codemie.hosted_apps_validator.scanner import ClamAvScanner
 from codemie.core.hosted_applications.policy import POLICY_VERSION, POLICY_DIGEST
 
@@ -70,6 +82,7 @@ class Workspace:
     expires: float
     result: dict
     files: list[Path] = field(default_factory=list)
+    preview: Preview | None = None
 
 
 def running_as_root() -> bool:
@@ -166,19 +179,10 @@ def require_isolation(root: Path) -> None:
         outside.unlink(missing_ok=True)
 
 
-async def _drain(stream, limit: int) -> bytes:
-    """Read ``stream`` to EOF, keeping only its first ``limit`` bytes."""
-    kept = bytearray()
-    while chunk := await stream.read(64 * 1024):
-        if len(kept) < limit:
-            kept.extend(chunk[: limit - len(kept)])
-    return bytes(kept)
-
-
 class Inspector:
     """Each validation occupies one slot, by its key, from reservation until its result is deleted or expires."""
 
-    def __init__(self, root: Path, scanner, secret: str, capacity=2):
+    def __init__(self, root: Path, scanner, secret: str, capacity=2, renderer=RENDERER):
         if len(secret) < 32 or not 1 <= capacity <= 4:
             raise ValueError("Invalid validator configuration")
         self.root, self.scanner, self.secret = private_workspace(root), scanner, secret
@@ -187,6 +191,10 @@ class Inspector:
         self.validating = set()  # keys whose upload is being received and inspected
         self.workspaces = {}  # key -> finished result, until the client deletes it or it expires
         self.lock = asyncio.Lock()
+        self.renderer = tuple(renderer)
+        self.capture = False  # decided once at startup by configure_capture
+        self.landlock_abi = None  # the node's Landlock ABI from the renderer self-test, when it ran
+        self.capture_lock = asyncio.Lock()  # one renderer at a time, separate from the validation slots
 
     def occupied(self):
         return len(self.reservations.keys() | self.validating | self.workspaces.keys())
@@ -240,7 +248,7 @@ class Inspector:
         return JSONResponse({"reservation": key}, status_code=201, headers={"Cache-Control": "no-store"})
 
     async def parser(self, source, output, kind):
-        process = await asyncio.create_subprocess_exec(
+        process = await spawn(
             sys.executable,
             "-B",
             "-m",
@@ -255,7 +263,7 @@ class Inspector:
             close_fds=True,
         )
         # Drained while stdout is read: a child blocked on a full stderr pipe would never close stdout.
-        stderr_task = asyncio.create_task(_drain(process.stderr, STDERR_KEPT))
+        stderr_task = asyncio.create_task(drain(process.stderr, STDERR_KEPT))
         try:
             # Read bounded stdout concurrently, never communicate() unbounded attacker-derived output.
             data = bytearray()
@@ -294,6 +302,7 @@ class Inspector:
                 # returncode is None it is not reaped yet, so its pid and group id cannot belong to anyone else.
                 os.killpg(process.pid, signal.SIGKILL)  # NOSONAR - kills only the parser group started above
                 await asyncio.shield(process.wait())
+            release(process)
             if not stderr_task.done():
                 stderr_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -408,21 +417,59 @@ class Inspector:
     async def file(self, request):
         _, workspace = self.workspace(request)
         index = request.path_params["index"]
-        if not 0 <= index < len(workspace.result["files"]):
+        reported = workspace.result["files"]
+        if 0 <= index < len(reported):
+            path, size = workspace.files[index], reported[index]["size"]
+        elif index == len(reported) and workspace.preview is not None:
+            # The captured preview is the one file after the result's own files.
+            path, size = workspace.preview.path, workspace.preview.size
+        else:
             raise HostedApplicationError("VALIDATION_UNAVAILABLE", "Validation file unavailable", 503)
-        item = workspace.result["files"][index]
 
         async def chunks():
             # An open file stays readable when its workspace is deleted or expires meanwhile.
-            with workspace.files[index].open("rb") as file:
+            with path.open("rb") as file:
                 while chunk := await asyncio.to_thread(file.read, 1024 * 1024):
                     yield chunk
 
         return StreamingResponse(
             chunks(),
             media_type="application/octet-stream",
-            headers={"Content-Length": str(item["size"]), "Cache-Control": "no-store"},
+            headers={"Content-Length": str(size), "Cache-Control": "no-store"},
         )
+
+    async def preview(self, request: Request) -> JSONResponse:
+        """Capture the result's start page as one JPEG, served as file index ``len(result["files"])``.
+
+        Answers ``{"preview": null, "reason": ...}`` whenever no picture is kept (reason ``off``, ``busy`` or
+        ``no_picture``); the stored result and its verdict never change.
+        """
+        started = time.monotonic()
+        key, workspace = self.workspace(request)
+        configuration, lock_wait = preview_request(await request.body())
+        # Each request replaces the previous picture: a null answer leaves no picture behind.
+        if workspace.preview is not None:
+            workspace.preview = None
+            (workspace.path / PREVIEW_NAME).unlink(missing_ok=True)
+        outcome: dict[str, Any] | str = "off"
+        if self.capture:
+            outcome = await capture(
+                key,
+                workspace,
+                configuration,
+                inspector=self,
+                lock_wait=lock_wait,
+                current=lambda: self.workspaces.get(key) is workspace,
+            )
+        picture = outcome if isinstance(outcome, dict) else None
+        logger.info(
+            "Preview capture %s %s (elapsed=%.1fs)",
+            key,
+            "kept" if picture else f"none ({outcome})",
+            time.monotonic() - started,
+        )
+        answer = {"preview": picture} if picture else {"preview": None, "reason": outcome}
+        return JSONResponse(answer, headers={"Cache-Control": "no-store"})
 
     async def delete(self, request):
         key, workspace = self.workspace(request)
@@ -433,7 +480,12 @@ class Inspector:
 
     async def health(self, request):
         self.authorize(request)
-        return JSONResponse(await self.scanner.health(), headers={"Cache-Control": "no-store"})
+        health = {
+            **await self.scanner.health(),
+            "capture": "on" if self.capture else "off",
+            "landlock_abi": self.landlock_abi,
+        }
+        return JSONResponse(health, headers={"Cache-Control": "no-store"})
 
 
 def create_app(inspector):
@@ -460,6 +512,7 @@ def create_app(inspector):
             Route("/reservations", inspector.reservation, methods=["POST"]),
             Route("/validate", inspector.validate, methods=["POST"]),
             Route("/results/{key}/files/{index:int}", inspector.file, methods=["GET"]),
+            Route("/results/{key}/preview", inspector.preview, methods=["POST"]),
             Route("/results/{key}", inspector.delete, methods=["DELETE"]),
         ],
         exception_handlers={HostedApplicationError: failure, TimeoutError: timeout_failure},
@@ -562,8 +615,12 @@ if __name__ == "__main__":
     import uvicorn
 
     configure_logging()
+    # Before any child starts: the renderer runs as this user and may read /proc.
+    secrets_hidden = hide_secrets()
     inspector = configured_inspector()
     # Fail at startup, visibly, on a node whose kernel cannot sandbox the parser.
     require_isolation(inspector.root)
-    logger.info("Validator ready (capacity=%d)", inspector.capacity)
+    # A node that cannot sandbox the renderer still validates; it only captures no previews.
+    configure_capture(inspector, secrets_hidden=secrets_hidden)
+    logger.info("Validator ready (capacity=%d, capture=%s)", inspector.capacity, "on" if inspector.capture else "off")
     uvicorn.run(create_app(inspector), **server_options())

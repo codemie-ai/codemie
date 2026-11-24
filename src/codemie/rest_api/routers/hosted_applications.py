@@ -366,7 +366,7 @@ async def thumbnail(
     from codemie.service.hosted_applications.thumbnails import HostedThumbnailService
 
     # Live authorization always runs first; only then may a matching validator skip the transfer.
-    cover = await HostedThumbnailService(value.catalog).get(identity, app_id)
+    cover = await HostedThumbnailService(value.catalog).get(identity, app_id, if_none_match)
     headers = {
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
@@ -376,7 +376,7 @@ async def thumbnail(
     if cover is None:
         return Response(status_code=204, headers=headers)
     headers |= {"Cache-Control": "private, no-cache", "ETag": cover.etag}
-    if etag_matches(if_none_match, cover.etag):
+    if cover.body is None or etag_matches(if_none_match, cover.etag):
         return Response(status_code=304, headers=headers)
     return Response(cover.body, media_type=cover.mime, headers=headers)
 

@@ -3,7 +3,8 @@
 Feature ticket EPMCDME-15659. Users upload a single HTML file or a ZIP of a prebuilt static web app,
 keep it private, share it, and open it inside CodeMie. The backend stores and serves static bytes
 only: it never builds an artifact, never runs uploaded server code and starts no runtime per
-application. Uploaded code runs in the viewer's browser on a separate, isolated content origin.
+application. One exception exists: the validator pod takes one picture of each accepted version's
+start page in a sandboxed renderer (section 7). Uploaded code runs in the viewer's browser on a separate, isolated content origin.
 
 The feature is off by default. One switch turns it on for the UI and the API together: the
 customer-config feature `features:hostedApplications` (section 3). While it is off, no hosted
@@ -44,6 +45,7 @@ Files in this directory:
                                                     |  validator pod (one replica)          |
                                                     |    :8091 (service key only)           |
                                                     |    sandboxed parser child process     |
+                                                    |    sandboxed renderer (Chromium)      |
                                                     |          | only the validator         |
                                                     |          v                            |
                                                     |  clamd pod :3310 (freshclam) ---------+--> signature mirror
@@ -73,6 +75,9 @@ Files in this directory:
   the validator key. NetworkPolicies admit only API pods to the validator and only validator pods to clamd,
   whose TCP port has no authentication. The chart creates the clamd policy whenever hosted applications are
   enabled; it needs a CNI that enforces NetworkPolicy.
+- The renderer is a child process of the validator, in the same pod. It starts no new pod, Deployment,
+  Service, NetworkPolicy or image. After a version passes validation, the API asks the validator for one
+  JPEG of the start page and stores it with the version (section 7).
 - **Exactly one validator replica.** A validation result lives in the pod that produced it, and the API
   fetches the validated files from that pod after `/validate`; a second replica behind the Service would
   receive some of those calls. While the pod restarts, validation pauses: the API stops claiming
@@ -89,8 +94,8 @@ Files in this directory:
 | Identity | User management (`ENABLE_USER_MANAGEMENT=true`) with any `IDP_PROVIDER`, JWKS validation on or off. Section 5. |
 | Storage | A dedicated private bucket on S3 (`FILES_STORAGE_TYPE=aws`) or GCS (`FILES_STORAGE_TYPE=gcp`), used by one deployment only. Azure is not supported yet. Section 6. |
 | Validator nodes | The supplied pod uses **Linux amd64** nodes because the pinned upstream scanner image is amd64-only. The Python validator also supports aarch64, but using that architecture requires a separately built and qualified scanner. Nodes need **Landlock ABI 3 or later** (normally Linux 6.2 or later), with the runtime seccomp profile permitting Landlock system calls. The validator refuses to start without confinement (section 7). |
-| Database | Alembic revisions `e3b7c1a95d42` and `f8d24a6c0b17` (head), applied through the normal migration step. The first adds the hosted tables to the core schema; the second changes shared platform tables: `HOSTED_APPLICATION` grants in `permissions`, the common `share_links` table, and `grant_source='name'` on existing assistant grants. |
-| Validator image | Built from the **same commit** as the API image: both compute the same validation policy digest. |
+| Database | Alembic revisions `e3b7c1a95d42`, `f8d24a6c0b17` and `6158f5209f50`, applied through the normal migration step. The first adds the hosted tables to the core schema; the second changes shared platform tables: `HOSTED_APPLICATION` grants in `permissions`, the common `share_links` table, and `grant_source='name'` on existing assistant grants; the third adds the automatic cover pointer to `hosted_application_versions` (three nullable columns, no backfill). |
+| Validator image | Built from the **same commit** as the API image: both compute the same validation policy digest. The outside image pipeline builds `hosted-applications/Dockerfile.validator` with every API build and tags it with the API version. This repository has no build job for it. |
 
 No Redis or other new infrastructure is needed.
 
@@ -177,6 +182,8 @@ every other CodeMie route (section 4).
 | `VALIDATOR_TLS_CERT_FILE`, `VALIDATOR_TLS_KEY_FILE` | unset | Set both to serve HTTPS; the API then needs a certificate it trusts. Setting one without the other refuses to start. |
 | `VALIDATOR_WORKSPACE` | `/work` | Scratch volume. The validator works in a private `jobs` directory inside it, recreated empty at every start and checked for owner and mode `0700`. |
 | `CLAMD_HOST`, `CLAMD_PORT` | required, `3310` | `codemie-hosted-apps-clamd` and `3310`: the clamd Service in the same namespace. |
+| `VALIDATOR_PREVIEW_CAPTURE` | `true` | Exactly `true` or `false`. `false` switches the preview capture off without a code change. Any other value stops the validator at start. |
+| `VALIDATOR_PREVIEW_CAPTURE_UNSCOPED` | `false` | Exactly `true` or `false`. `true` keeps the capture on a node with Landlock ABI below 6 (before Linux 6.12), where a renderer escape can signal the validator and the parsers (section 13). Set it only to accept that risk on purpose. Any other value stops the validator at start. |
 | `CLAMD_CONFIGURATION` | required | Path of the same read-only `clamd.conf` mounted into clamd. The validator refuses to scan when the policy limits in it do not match. |
 
 The validator exposes `GET /livez` (unauthenticated, `204`, no body) for probes and keeps the detailed
@@ -364,6 +371,101 @@ expiry of the sign-in it came from, or at sign-out.
   the validator runs that sandbox once on a harmless probe and **exits** unless network, reads and writes
   outside its workspace and program execution are all refused. On a node without Landlock ABI 3 the pod
   crash-loops visibly; the API keeps serving and uploads wait. Schedule the pod on qualified nodes.
+- **Preview renderer.** The image holds Chromium, installed at one exact version
+  (`apk add chromium=<version>-r<n>` in `Dockerfile.validator`). The image label
+  `org.codemie.chromium-version` shows that version. The validator starts the renderer as a child
+  process, one at a time, only for a version that passed validation. The renderer loads the start page from a
+  synthetic HTTPS origin and answers every request from the version's files. It fails every other request.
+  It takes one JPEG (at most 1 MiB and 2048 px per side). It takes the picture when the page is quiet, or at
+  the soft limit of 15 s. At the hard limit of 20 s it kills the browser and there is no preview. Both limits
+  count from renderer start. The API tells the validator how long to wait for the single renderer before
+  that: the spare time of the job, from 3 s up to 60 s. A capture adds up to 84 s to a validation pass:
+  60 s of wait, the 20 s hard limit, and 4 s for the request, the cleanup and the pull of the picture. A picture
+  with one color only counts as no preview. The picture is stored as `<attempt prefix>/preview.jpg`, and
+  three columns of the version row point to it. The API starts a capture only when the job budget leaves
+  at least 27 s plus the time to write the output after it (10 s plus the validation budget's per-file and
+  per-byte rates). It drops a picture that does not fit the output reservation. A capture never changes the
+  verdict and never fails the job. A retried job does not capture, so a capture that crashed the validator cannot repeat. A version that is
+  accepted on a retry therefore gets no automatic cover. This is a decision; the `skipped_retry` count
+  (section 11) shows how many versions it affects. A picture that is missed stays
+  missed until the next upload of the application. The platform does not add automatic covers to existing
+  cards.
+- **Renderer sandbox.** The whole renderer process tree runs under these rules, and the profile fails closed:
+  - seccomp: only `AF_UNIX` sockets. `socket()` for IP and packet families returns `EPERM`.
+  - Landlock: read access to the version's files, the Chromium install, `/usr/lib`, `/usr/share/fonts`,
+    `/proc` and `/dev/null`. Read and write access to one private scratch directory. Execute access to
+    Chromium, its crash handler and the musl loader only. Chromium 156 does not start with a `/proc/self`
+    rule, or without its crash handler (it starts the handler even with `--disable-crash-reporter`).
+  - The environment holds `TMPDIR` only. It has no `VALIDATOR_SERVICE_KEY` and no TLS material.
+  - rlimits: 60 s CPU time per process, 256 MiB file size, 512 open files, no core dumps.
+  - Memory and disk: the V8 heap of a page is at most 512 MiB. A served file above 32 MiB fails its request.
+    When the scratch directory uses more than 512 MiB, the validator kills the renderer's process group, so
+    one page cannot fill the shared `/work` volume (3Gi).
+  - The validator is PID 1 in its container. Chromium's processes from a renderer killed at the hard limit,
+    the crash handler included (it runs in its own session), are reparented to it. The validator reaps
+    them before and after each capture.
+  - A renderer process can call `setsid()` and leave the renderer's process group, so the group kill misses
+    it. At the end of each capture, while it still holds the renderer, the validator stops and then kills every
+    process in a session that it did not start. It spares its own session and the session of each child it
+    waits for (a parser can run at the same time). It also spares processes entered from outside the
+    container, such as `kubectl exec`. A background job that a `kubectl exec` shell leaves behind is killed by
+    the sweep of the next capture, after the shell has exited.
+  - The sweep stops the processes first, in rounds. Each round reads `/proc` again and sends `SIGSTOP` to every
+    such process that is not stopped yet. A stopped process cannot fork. A round can miss the newest process of a
+    forking chain, so a round counts as quiet only when it stops nothing and no process is created while it runs
+    (the last created PID in `/proc/loadavg` does not change). When three rounds in a row are quiet (at most 20
+    rounds), the validator sends `SIGKILL` to every process it found.
+  - The sweep runs only when the validator is PID 1, because only then does `/proc` show its own container
+    alone. When a parser is being started at that moment, the capture waits until the start ends, then
+    sweeps. It holds the renderer while it waits, so the sweep is never skipped. When it kills a process, the
+    validator logs `Preview capture <key> stopped <n> stray renderer processes`. When the validator is not
+    PID 1, capture stays off (`reason=init`), and the validator logs one warning at startup:
+    `Preview capture off: the validator is not PID 1 in its container, so no stray sweep can run`.
+  - The validator reads the automatic cover through one file descriptor. It does not follow a link, does not
+    wait on a FIFO and reads at most one byte more than the reported size. It writes the checked bytes to the
+    result, so a later change in the scratch directory does not reach it.
+  - The renderer runs as the validator's UID and can read `/proc`. The validator therefore sets
+    `PR_SET_DUMPABLE` to 0 for itself at start, so the renderer cannot read its `environ`. If the kernel
+    refuses, capture stays off.
+  - The scratch directory for a capture is `<jobs>/capture`. A shorter path keeps the Chromium UNIX socket path
+    below the 108-byte limit.
+- **Renderer self-test.** At start the validator runs the renderer sandbox once on a probe. It checks
+  that the sandbox refuses IP sockets, reads and writes outside the allowed paths, starting another
+  program and reading the validator's `environ`. It checks that the environment is clean, that UNIX
+  sockets work and that Chromium starts and reports its version. Capture goes off, and validation continues,
+  when the setting is `false`, the secrets cannot be hidden, the validator is not PID 1, the self-test fails,
+  or the node has Landlock ABI below 6 and `VALIDATOR_PREVIEW_CAPTURE_UNSCOPED` is not `true`. The validator
+  logs one line at start: `Preview capture on (chromium=<version>, landlock_abi=<n>)` or
+  `Preview capture off (reason=setting|secrets|init|renderer|landlock)`.
+  A passed self-test also logs `Renderer self-test passed (chromium=<version>, landlock_abi=<n>)`.
+- **Node kernel and signal scoping.** Check the node kernel of the validator pods. Linux 6.12 or later
+  (Landlock ABI 6) also stops the renderer from signalling the validator. On Landlock ABI 3 to 5 capture stays
+  off, unless `VALIDATOR_PREVIEW_CAPTURE_UNSCOPED=true` accepts the risk (section 13). The validator logs
+  `Preview capture off: Landlock ABI <n> is below 6, ...` in that case.
+  `GET /health` reports `"capture": "on"` or `"off"`, and `"landlock_abi"`: the node's ABI from the self-test,
+  or `null` when the self-test did not run. Read it in each environment after each deploy. The renderer logs only class names and counts, never
+  page text. During a capture the validator can log `Preview capture <key> reached its hard limit`,
+  `... renderer errors: ...` or `... failed: <class>`; the API logs `Preview capture gave no picture: <class>`.
+- **Measured limits.** The limits come from a timing spike with Chromium `156.0.8078.79-r0` on a 1 CPU
+  pod under load (a 55 MB ZIP validating at the same time). Browser start was 0.8 to 1.1 s. Time to quiet
+  was 0.7 to 0.9 s. The screenshot took under 0.1 s. From these values, the soft limit is 15 s and the hard limit
+  is 20 s. The image is about 723 MiB. The validator memory limit is 3Gi. WebGL pages render blank, because
+  the capture uses `--disable-gpu` and the Alpine package has no software GL.
+- **Chromium update rule.**
+  - The outside image pipeline builds the validator with every API build and tags it with the API version.
+    A Chromium bump is therefore a commit that ships with the next API release.
+  - The pin is `chromium=<version>-r<n>` in `Dockerfile.validator`. The label `org.codemie.chromium-version`
+    holds the same version. Bump the pin and the label together, at least every 4 weeks.
+  - The Platform team watches the Chromium security releases and bumps at once when one appears.
+  - For a released line, cherry-pick the bump and cut a patch release.
+  - The base image is pinned by digest. That digest decides which Alpine release, and so which Chromium
+    versions, `apk` can install. Bump the digest in the same commit when the new Chromium needs a newer
+    Alpine release.
+  - When Alpine drops the pinned version, the image build fails. That failure is the signal to bump the
+    pin.
+  - After a bump, run the renderer tests and check `Preview capture on (chromium=...)` in the validator log.
+  - To roll back, redeploy the earlier image by its digest. Never rebuild it: a rebuild installs the current
+    Chromium.
 - clamd runs from the reviewed upstream ClamAV image (1.4 LTS or 1.5), which starts as root to
   prepare its directories and runs clamd and freshclam as its `clamav` user. Mount `clamd.conf`
   read-only into both pods (`kubectl -n codemie-hosted-apps create configmap codemie-hosted-apps-clamd --from-file=clamd.conf=…`;
@@ -450,7 +552,16 @@ identity provider, without a back-channel signal, is bounded by token and sessio
    operator must be able to tell who was given access by name or by link; renames, publishes and suspensions
    are in the hosted audit either way.
 5. Pilot private uploads, then selected and everyone-with-access publishing.
-6. Before production traffic, test with real browsers: embedded viewing with partitioned cookies,
+6. Roll out the preview capture with matching images.
+   - The outside image pipeline builds `Dockerfile.validator` with every API build and tags it with the API
+     version. This repository has no build job for it.
+   - Deploy the API and the validator from the same commit.
+   - Capture needs validator nodes on Linux 6.12 or later (Landlock ABI 6). On an older kernel it stays off
+     unless `VALIDATOR_PREVIEW_CAPTURE_UNSCOPED=true`. Check `"landlock_abi"` in `GET /health`.
+   - Set a pod PID limit (the kubelet's `podPidsLimit`) on the validator nodes. No manifest here sets one, and
+     it is the only bound on a renderer process that forks faster than the sweep (section 13).
+   - To stop new pictures at once, set `VALIDATOR_PREVIEW_CAPTURE=false` and restart the validator.
+7. Before production traffic, test with real browsers: embedded viewing with partitioned cookies,
    the "Open in new tab" fallback, sign-out, every HEAD/range/conditional request, and the load
    targets of the deployment.
 
@@ -468,6 +579,7 @@ contain users, applications, versions, paths or file names.
 | `hosted_applications_directory_seconds` | `result` | Membership lookup latency: `allowed`, `denied`, `unavailable`. |
 | `hosted_applications_directory_searches` | `source`, `page`, `outcome` | People searches; never the query text. |
 | `hosted_applications_validation_failures` | `kind` | `artifact_rejected` or `service_unavailable`. |
+| `hosted_applications_preview_captures` | `result` | One outcome for each validation job that reaches the capture point. `result`: `captured`, `skipped_budget` (not enough job time), `skipped_retry` (a retried job), `off` (capture is off in the validator), `busy` (the renderer stayed busy for the whole wait), `no_picture` (the page gave no usable picture), `failed` (transport error, refused request or broken answer), `mismatch` (the pulled picture failed a check), `no_room` (the picture did not fit the output reservation), `unknown` (an older validator gave no reason). |
 | `hosted_applications_logout_revocations` | `result` | `revoked`, `failed`, `timeout`. |
 | `hosted_applications_completed_work`, `hosted_applications_deferred_work`, `hosted_applications_work_seconds` | `operation` | Durable worker steps. |
 | `hosted_applications_queue_jobs`, `hosted_applications_oldest_queue_seconds` | `kind`, `state` | Queue depth and age. |
@@ -483,6 +595,10 @@ spikes of `denied`, directory `unavailable`, `logout_revocations` with `failed` 
 above 5 minutes (for example while the validator pod is down), snapshot age above 120 seconds, growing
 reserved bytes, scanner signature age approaching 48 hours, and the clamd container's restart count
 together with its `Liveness probe failed: freshclam is not running` event.
+
+Share of validation jobs that reach the capture point and end with `captured`: `captured` divided by the sum of all
+`hosted_applications_preview_captures` results. Alert when this share stays low for a day, or when `busy`,
+`failed` or `mismatch` grow. A high `busy` count means the single renderer is too slow for the upload rate.
 
 ## 12. Operations
 
@@ -574,6 +690,34 @@ authentication, or make storage public, to restore availability.
   credentials, no service-account token and NetworkPolicies that admit only the validator to its
   unauthenticated port and block its egress to cluster-internal and metadata addresses. Without an
   enforcing CNI any pod could reach that port (and stop the scanner). Keep its image patched.
+- **Chromium in the validator pod.** The renderer opens uploaded pages in a browser that has no network
+  and a reduced view of the file system. A browser escape is limited by seccomp, Landlock, an empty
+  environment and hidden validator secrets. Residual points:
+  - On kernels with Landlock ABI below 6 (before Linux 6.12), the renderer has no signal and abstract UNIX
+    socket scoping. After a browser escape, the page can kill the validator, which runs as the same UID,
+    and stop every validation in the pod. For this reason capture stays off below ABI 6.
+    `VALIDATOR_PREVIEW_CAPTURE_UNSCOPED=true` accepts the risk on purpose. `GET /health` reports the node's
+    ABI (section 7).
+  - A renderer process that calls `setsid()` leaves the renderer's process group and keeps running during its
+    capture. At the end of each capture the sweep stops and kills every process that left its session
+    (section 7). A complete guarantee needs a cgroup for the renderer (`cgroup.kill`), which this design does
+    not have. A process that keeps forking faster than the sweep's rounds can still survive. This case is out
+    of scope, and no test covers it. The node's pod PID limit is then the only bound (section 10).
+  - The page session blocks all requests except the version's files. Requests from workers are not
+    intercepted; they fail because the process has no network.
+  - The timings come from an arm64 host. Check them again on amd64 before release.
+  - The image is larger (about 723 MiB), and the validator needs 3Gi of memory.
+  - The renderer has no aggregate memory limit. It has no `RLIMIT_AS`, because Chromium reserves a large
+    address space. The V8 heap flag does not cover ArrayBuffers, decoded images or canvas. One capture can
+    therefore use all the memory of the validator container (3Gi limit). An OOM kill restarts the validator
+    and fails the jobs in flight; the worker retries them. This risk is accepted.
+    The design has no aggregate limit for three reasons.
+    - `RLIMIT_AS` breaks Chromium.
+    - A cgroup for the renderer needs a writable, delegated cgroup tree. The non-root, unprivileged validator
+      container does not have one.
+    - A separate renderer pod was rejected (D7 in `docs/hosted-applications/architecture.md`).
+  - Chromium needs an update at least every 4 weeks (section 7). A late update leaves known browser
+    flaws in the image.
 - **One validator replica.** Validation pauses while the pod restarts or its node fails; viewing is
   unaffected.
 - **Sign-out during an outage.** Revocation is best effort (section 9): an open content session can last

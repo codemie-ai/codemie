@@ -21,18 +21,29 @@ import hashlib
 import time
 from contextlib import suppress
 from dataclasses import replace
+from typing import Any
 from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import aliased
 
+from codemie.configs.logger import logger
 from codemie.core.hosted_applications.errors import ARTIFACT_REJECTION_CODES, HostedApplicationError
 from codemie.core.hosted_applications.manifest import build_manifest, parse_manifest
 from codemie.core.hosted_applications.policy import POLICY_DIGEST, POLICY_VERSION
 from codemie.core.hosted_applications.protocol import canonical_json
 from codemie.repository.hosted_applications.contract import build_writer_lease
+from codemie.core.hosted_applications.validation import BundleCandidate
 from codemie.hosted_apps_validator.contract import LIMIT_REJECTION_CODES, NOT_ACCEPTED_CODES, validation_budget
+from codemie.core.hosted_applications.preview import PREVIEW_NAME
+from codemie.service.hosted_applications.preview import (
+    Picture,
+    PreviewPointer,
+    capture_preview,
+    record_outcome,
+    write_seconds,
+)
 from codemie.rest_api.models.hosted_application import (
     HostedApplicationJobs as Job,
     HostedApplicationVersions as Version,
@@ -396,7 +407,27 @@ class ValidationWorker:
                     # Several sites or entry pages: the owner chooses one before anything is published.
                     await writer.put("report.json", bytes_chunk(report_data), expected_size=len(report_data))
                 else:
-                    manifest_data = await self._write_output(work, writer, identifier, candidate, report_data, chosen)
+                    # The picture is pulled and checked before any write; it never changes the verdict.
+                    preview = await capture_preview(
+                        self.validator,
+                        identifier,
+                        chosen,
+                        output["prefix"],
+                        spare=self._time_left(work) - write_seconds(candidate),
+                        retried=self._retried(work),
+                    )
+                    try:
+                        manifest_data, pointer = await self._write_output(
+                            work, identifier, candidate, report_data, chosen, preview
+                        )
+                    except BaseException:
+                        # The picture was pulled but the writes failed: the job kept no picture, and the failure
+                        # still reaches the job's failure handling.
+                        if preview is not None:
+                            record_outcome("failed")
+                        raise
+                    if preview is not None:
+                        record_outcome("captured" if pointer is not None else "no_room")
         # The receipt sets writer_quiesced_at, so it runs only after the writer context has exited: its
         # uploads are completed or aborted and its fence is deleted. The lease still fences cleanup until then.
         work["writer"] = None
@@ -410,23 +441,53 @@ class ValidationWorker:
             report_data,
             scanner,
             chosen,
-            hashlib.sha256(manifest_data).digest(),
-            len(manifest_data),
+            manifest_data,
+            pointer,
         )
 
-    async def _write_output(self, work, writer, identifier, candidate, report_data, chosen):
-        """Write the report, every validated file and the manifest; returns the manifest bytes."""
-        output = work["output"]
+    @staticmethod
+    def _retried(work: dict[str, Any]) -> bool:
+        """Whether this job is a retry: its ``retry_count`` is an integer above 0 (a boolean does not count)."""
+        count = (work["job"].get("safe_details") or {}).get("retry_count")
+        return type(count) is int and count > 0
+
+    def _time_left(self, work: dict[str, Any]) -> float:
+        """Seconds of the job's budget still unused."""
+        return work["budget"] - (self.monotonic() - work["lease"].received_at)
+
+    def _manifest(self, candidate: BundleCandidate, chosen: tuple[str, str, str], prefix: str) -> bytes:
         root, entry, mode = chosen
-        manifest = build_manifest(
-            candidate, prefix=output["prefix"], site_root=root, entrypoint=entry, routing_mode=mode
-        )
+        manifest = build_manifest(candidate, prefix=prefix, site_root=root, entrypoint=entry, routing_mode=mode)
         manifest_data = canonical_json(manifest)
-        manifest_digest = hashlib.sha256(manifest_data).digest()
-        parse_manifest(manifest_data, expected_digest=manifest_digest, prefix=output["prefix"])
-        if candidate.total_bytes + len(report_data) + len(manifest_data) > output["byte_upper_bound"]:
+        parse_manifest(manifest_data, expected_digest=hashlib.sha256(manifest_data).digest(), prefix=prefix)
+        return manifest_data
+
+    async def _write_output(
+        self,
+        work: dict[str, Any],
+        identifier: str,
+        candidate: BundleCandidate,
+        report_data: bytes,
+        chosen: tuple[str, str, str],
+        preview: Picture | None = None,
+    ) -> tuple[bytes, PreviewPointer | None]:
+        """Write the report, every validated file, the picture and the manifest.
+
+        Returns the manifest bytes and the stored picture's pointer (None without one). The picture is left
+        out, never an error, when it does not fit the attempt's byte or object reservation.
+        ``work["writer"]`` writes them.
+        """
+        output, writer = work["output"], work["writer"]
+        manifest_data = self._manifest(candidate, chosen, output["prefix"])
+        size = candidate.total_bytes + len(report_data) + len(manifest_data)
+        if size > output["byte_upper_bound"]:
             # Decided before any file moves: this upload can never fit its reservation.
             raise HostedApplicationError("VALIDATION_LIMIT_EXCEEDED", "The validation output exceeds its reservation")
+        if preview is not None and (
+            size + len(preview[0]) > output["byte_upper_bound"] or len(candidate.files) + 3 > output["object_limit"]
+        ):
+            logger.info("Preview left out: %s", "NoRoom")
+            preview = None
         await writer.put("report.json", bytes_chunk(report_data), expected_size=len(report_data))
         for index, item in enumerate(candidate.files):
             stored = await writer.put(
@@ -437,8 +498,15 @@ class ValidationWorker:
             # The digest of the bytes on disk is the one integrity check of each transferred file.
             if stored.digest.hex() != item.sha256:
                 raise HostedApplicationError("VALIDATION_UNAVAILABLE", "Validated file integrity mismatch", 503)
+        pointer = None
+        if preview is not None:
+            body, pointer = preview
+            stored = await writer.put(PREVIEW_NAME, bytes_chunk(body), expected_size=len(body))
+            # The version row would point at this object: a stored copy that differs is a failed write, as for a file.
+            if stored.digest != pointer.sha256:
+                raise HostedApplicationError("VALIDATION_UNAVAILABLE", "Validated file integrity mismatch", 503)
         await writer.put("manifest.json", bytes_chunk(manifest_data), expected_size=len(manifest_data))
-        return manifest_data
+        return manifest_data, pointer
 
     async def locked_result(self, session, work):
         now = (await session.execute(select(func.clock_timestamp()))).scalar_one()
@@ -500,10 +568,21 @@ class ValidationWorker:
             }
             job.revision += 1
 
-    async def accept(self, work, candidate, candidate_digest, report, scanner, chosen, manifest_digest, manifest_size):
+    async def accept(
+        self,
+        work,
+        candidate,
+        candidate_digest,
+        report,
+        scanner,
+        chosen,
+        manifest_data: bytes,
+        preview: PreviewPointer | None = None,
+    ) -> None:
+        manifest_digest = hashlib.sha256(manifest_data).digest()
         async with self.repository.sessions() as session, session.begin():
             now, state, app, version, job, output = await self.locked_result(session, work)
-            size = candidate.total_bytes + len(report) + manifest_size
+            size = candidate.total_bytes + len(report) + len(manifest_data) + (preview.size if preview else 0)
             self.receipt(state, output, now, size, manifest_digest)
             root, entry, mode = chosen
             job.state, job.phase, job.completed_at = "passed", "accepted", now
@@ -525,6 +604,9 @@ class ValidationWorker:
             version.manifest_key, version.manifest_digest = output.prefix + "/manifest.json", manifest_digest
             version.site_root, version.entrypoint_path, version.routing_mode = root, entry, mode
             version.candidate_manifest_digest, version.accepted_at = candidate_digest, now
+            # The automatic cover pointer is set in the same transaction as the manifest digest.
+            # Always all three, so a version never keeps a stale pointer.
+            version.preview_key, version.preview_size, version.preview_sha256 = preview or (None, None, None)
             version.expanded_bytes, version.file_count = candidate.total_bytes, len(candidate.files)
             version.revision += 1
             if app.selected_version_id is None:

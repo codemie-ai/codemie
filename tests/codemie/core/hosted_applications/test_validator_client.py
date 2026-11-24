@@ -15,14 +15,16 @@
 """The API side of the validator protocol: a slot first, then the upload; busy and outages leave jobs queued."""
 
 import hashlib
+import json
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from codemie.core.hosted_applications.errors import HostedApplicationError
+from codemie.core.hosted_applications.preview import MAX_PREVIEW_BYTES
 from codemie.hosted_apps_validator.contract import validation_budget
-from codemie.service.hosted_applications.validator_client import ValidatorClient
+from codemie.service.hosted_applications.validator_client import PreviewFile, ValidatorClient
 
 KEY = "k" * 32
 RESERVATION = "a" * 64
@@ -156,3 +158,103 @@ async def test_transferred_file_must_have_its_announced_size():
         with pytest.raises(HostedApplicationError) as error:
             _ = [chunk async for chunk in client.file_chunks(RESERVATION, 0, SimpleNamespace(size=size, sha256=""))]
         assert error.value.code == "VALIDATION_UNAVAILABLE"
+
+
+GOOD_PREVIEW = {"index": 3, "size": 5, "sha256": "ab" * 32, "width": 1280, "height": 800}
+
+
+async def capture(client, identifier=RESERVATION):
+    return await client.capture(identifier, "site", "index.html", "static", lock_wait=10, timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_capture_returns_preview_file():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if request.url.path.endswith("/preview"):
+            return httpx.Response(200, json={"preview": GOOD_PREVIEW})
+        return httpx.Response(200, content=b"12345")
+
+    client = client_for(handler)
+    preview = await capture(client)
+    assert preview == PreviewFile(3, 5, "ab" * 32, 1280, 800)
+    request = seen[0]
+    assert (request.method, request.url.path) == ("POST", f"/results/{RESERVATION}/preview")
+    assert request.headers["x-validator-key"] == KEY
+    assert json.loads(request.content) == {
+        "site_root": "site",
+        "entrypoint": "index.html",
+        "routing_mode": "static",
+        "lock_wait": 10,
+    }
+    data = b"".join([chunk async for chunk in client.file_chunks(RESERVATION, preview.index, preview)])
+    assert data == b"12345"
+
+
+def _preview(**changes):
+    return {"preview": GOOD_PREVIEW | changes}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, json=[]),
+        httpx.Response(200, json={"preview": None, "reason": "slow"}),
+        httpx.Response(200, json={"preview": None, "reason": "busy", "extra": 1}),
+        httpx.Response(200, json={"preview": GOOD_PREVIEW, "reason": "busy"}),
+        httpx.Response(200, json={"preview": GOOD_PREVIEW, "extra": 1}),
+        httpx.Response(200, json={"preview": {k: v for k, v in GOOD_PREVIEW.items() if k != "width"}}),
+        httpx.Response(200, json={"preview": GOOD_PREVIEW | {"extra": 1}}),
+        httpx.Response(200, json=_preview(size=MAX_PREVIEW_BYTES + 1)),
+        httpx.Response(200, json=_preview(size=0)),
+        httpx.Response(200, json=_preview(size=True)),
+        httpx.Response(200, json=_preview(index=-1)),
+        httpx.Response(200, json=_preview(sha256="AB" * 32)),
+        httpx.Response(200, json=_preview(sha256="ab" * 31)),
+        httpx.Response(200, json=_preview(width=2049)),
+        httpx.Response(200, json=_preview(height=0)),
+        httpx.Response(200, content=b"not json"),
+        httpx.Response(200, content=b" " * 8192),
+        httpx.Response(422, json={"code": "BAD"}),
+        httpx.Response(503, json={"code": "VALIDATION_UNAVAILABLE"}),
+    ],
+)
+async def test_capture_gives_failed_for_an_unusable_answer(response):
+    assert await capture(client_for(lambda request: response)) == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "answer,expected",
+    [
+        ({"preview": None, "reason": "busy"}, "busy"),
+        ({"preview": None, "reason": "off"}, "off"),
+        ({"preview": None, "reason": "no_picture"}, "no_picture"),
+        ({"preview": None}, "unknown"),
+        ({"preview": None, "reason": "slow"}, "failed"),
+    ],
+)
+async def test_capture_gives_the_validator_reason_for_a_null_answer(answer, expected):
+    assert await capture(client_for(lambda request: httpx.Response(200, json=answer))) == expected
+
+
+@pytest.mark.asyncio
+async def test_capture_refused_request_is_failed():
+    # An older validator refuses the request that carries lock_wait with 422.
+    assert (
+        await capture(client_for(lambda request: httpx.Response(422, json={"code": "INVALID_CONFIGURATION"})))
+        == "failed"
+    )
+    assert await capture(client_for(lambda request: httpx.Response(400, json={}))) == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [httpx.ConnectError, httpx.ReadTimeout])
+async def test_capture_gives_failed_on_a_transport_error(error):
+    def handler(request):
+        raise error("down", request=request)
+
+    assert await capture(client_for(handler)) == "failed"

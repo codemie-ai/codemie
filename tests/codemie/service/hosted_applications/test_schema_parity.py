@@ -114,6 +114,7 @@ async def test_models_match_the_migrated_schema_exactly(database):
 
 
 HOSTED_CATEGORIES_REVISION = "2394f0863c6a"
+HOSTED_PREVIEW_REVISION = "6158f5209f50"
 CATEGORIES_COLUMN = "categories"
 CATEGORIES_INDEX = "ix_hosted_applications_categories"
 
@@ -160,8 +161,12 @@ async def test_migrated_schema_has_no_tenant_keys_folders_or_trash(database):
     ) in foreign_keys
 
 
+PREVIEW_COLUMNS = {"preview_key", "preview_size", "preview_sha256"}
+
+
 @pytest.mark.asyncio
 async def test_hosted_migrations_downgrade_and_upgrade_again(database):
+    """Round trip on a sync connection, one commit per revision: the sharing revision needs autocommit."""
     engine, _ = database
     async with engine.connect() as connection:
         schema = (await connection.execute(text("SELECT current_schema()"))).scalar_one()
@@ -170,6 +175,7 @@ async def test_hosted_migrations_downgrade_and_upgrade_again(database):
     base = migrations["e3b7c1a95d42"]
     share_links = migrations["f8d24a6c0b17"]
     categories = migrations[HOSTED_CATEGORIES_REVISION]
+    preview = migrations[HOSTED_PREVIEW_REVISION]
 
     def column_exists(sync):
         return (
@@ -184,6 +190,15 @@ async def test_hosted_migrations_downgrade_and_upgrade_again(database):
             is not None
         )
 
+    def preview_columns(sync):
+        rows = sync.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'hosted_application_versions'"
+            )
+        )
+        return PREVIEW_COLUMNS & {row[0] for row in rows}
+
     def index_exists(sync):
         return sync.execute(text(f"SELECT to_regclass('{CATEGORIES_INDEX}')::text")).scalar_one() is not None
 
@@ -191,25 +206,36 @@ async def test_hosted_migrations_downgrade_and_upgrade_again(database):
     # cannot run through asyncpg's extended protocol (see ``sync_migration_connection``'s docstring).
     with sync_migration_connection(os.environ["HOSTED_TEST_DATABASE_URL"], schema) as sync:
         context = MigrationContext.configure(sync)
-        for migration in (base, share_links, categories):
+        for migration in (base, share_links, categories, preview):
             migration.op = Operations(context)
 
         with context.begin_transaction():
             assert column_exists(sync)
             assert index_exists(sync)
 
+            assert preview_columns(sync) == PREVIEW_COLUMNS
+            preview.downgrade()
+            assert preview_columns(sync) == set()
+            preview.upgrade()
+            assert preview_columns(sync) == PREVIEW_COLUMNS
+
+            preview.downgrade()
             categories.downgrade()
             assert not column_exists(sync)
             assert not index_exists(sync)
             categories.upgrade()
+            preview.upgrade()
             assert column_exists(sync)
             assert index_exists(sync)
 
+            preview.downgrade()
             categories.downgrade()
             share_links.downgrade()
             share_links.upgrade()
             categories.upgrade()
+            preview.upgrade()
 
+            preview.downgrade()
             categories.downgrade()
             share_links.downgrade()
             base.downgrade()
@@ -218,4 +244,6 @@ async def test_hosted_migrations_downgrade_and_upgrade_again(database):
             base.upgrade()
             share_links.upgrade()
             categories.upgrade()
+            preview.upgrade()
+            assert preview_columns(sync) == PREVIEW_COLUMNS
             assert sync.execute(text("SELECT to_regclass('hosted_application_covers')::text")).scalar_one()

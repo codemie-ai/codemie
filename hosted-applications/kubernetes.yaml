@@ -102,7 +102,7 @@ spec:
               memory: 512Mi
             limits:
               cpu: "1"
-              memory: 2Gi
+              memory: 3Gi
           volumeMounts:
             - name: work
               mountPath: /work
@@ -113,7 +113,7 @@ spec:
       volumes:
         - name: work
           emptyDir:
-            sizeLimit: 2Gi
+            sizeLimit: 3Gi
         - name: clamd-config
           configMap:
             name: codemie-hosted-apps-clamd

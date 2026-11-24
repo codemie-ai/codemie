@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "generated": "2026-11-12T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 5, "label": "XL" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 31,
+  "size": "XL",
+  "band_range": "27-31",
+  "files_changed": 26,
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "The change crosses the validator pod and the API over a shared contract (contract.py capture limits, a new validator capture endpoint in server.py, a capture call in validator_client.py). It adds new abstractions: the sandboxed renderer child (renderer.py with a CDP-over-pipe Browser), the preview capture orchestrator (preview_capture.py), the renderer sandbox in isolation.py and the child_process helpers. It also changes core shared code: the manifest version 1 schema (manifest.py) and the CSP that the content gateway and the renderer now share (content_policy.py, gateway content.py)." },
+    { "dimension": "technical_risk", "reason": "No precedent exists for this work. It runs untrusted application pages in headless Chromium under a Landlock ABI 3/6 and seccomp sandbox, with a scrubbed environment, a hidden /proc via PR_SET_DUMPABLE, a startup self-test that fails closed, orphan reaping as PID 1, and limits on scratch disk, heap, file count and time. The parser sandbox is the nearest pattern. It does not cover a browser that starts processes, so the socket, exec and /proc rules had to be measured against Chromium 156. Each picture is checked twice (validator and API: size, sha256, JPEG dimensions). The security red flag is applied." },
+    { "dimension": "file_change_estimate", "reason": "The diffstat shows 26 files and 3852 insertions in src/, tests/, hosted-applications/, deploy-templates/ and docs/. Two source modules are new (renderer.py, preview_capture.py), and so is preview.py in the service layer. Several test modules are new or heavily extended. 16 or more files maps to XXL." },
+    { "dimension": "dependencies", "reason": "There are no new Python packages, because requirements-validator.txt is unchanged. One heavyweight system dependency is new: Chromium 156.0.8078.79-r0, pinned from the Alpine index in Dockerfile.validator. If Alpine removes that version, the image build fails. New configuration: VALIDATOR_PREVIEW_CAPTURE, plus Helm values.yaml and kubernetes.yaml changes." },
+    { "dimension": "affected_layers", "reason": "Layers touched: Infrastructure (validator image, Kubernetes manifest, Helm values), API (validator capture endpoint, gateway content policy), Service (worker, preview.py, validator_client), Persistence (preview.jpg stored next to each accepted version, plus an optional preview key in manifest version 1) and an external runtime (Chromium). The manifest change is additive and needs no migration, so it stays at XL and is not XXL." },
+    { "dimension": "requirements_clarity", "reason": "The task statement is precise. The code shows that a Task 1 spike set the soft and hard capture limits and the Chromium read set ('set by the Task 1 spike', 'spec section 3 accepts this read set'). These were open measurements, so the score is M and not S." },
+    { "dimension": "calibration", "reason": "The total of 31 sits at the top of XL, on the 31->32 border. The borderline rule leans higher because Technical Risk and Component Scope are XXL. The bundled XXL example epmcdme-10999 does not support a raise: it has a schema migration, a UI layer and several new libraries, and this diff has none of them. The bundled XL example epmcdme-10303 (total 27) matches the dependency and layer profile. The total therefore stays at 31 (XL), and no dimension was raised only to cross the border." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL: touches core shared utilities (core/hosted_applications manifest schema and the shared content CSP)",
+    "Technical Risk bumped from XL to XXL: security requirements (sandboxed execution of untrusted pages in a browser, process-secret hiding, injection-surface control over the request router)"
+  ],
+  "split_recommendation": "Retrospective, single repo (codemie), by-dependency: (1) renderer sandbox and startup self-test in the validator, with capture off by default (isolation.py, renderer.py probe, Dockerfile.validator Chromium pin, deployment manifests); (2) validator capture endpoint and renderer capture path (preview_capture.py, renderer.py capture, server.py, contract.py, child_process.py); (3) API side: validator client capture call, preview.py checks, worker storage of preview.jpg and the optional preview key in manifest version 1, gateway CSP sharing. Each slice is M or larger, and each later slice depends on the one before it."
+}

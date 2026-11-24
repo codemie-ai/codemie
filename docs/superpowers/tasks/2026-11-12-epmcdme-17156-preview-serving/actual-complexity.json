@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-11-12T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 16,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "Scored on the story's own work (c6607ae23, a1b4643ef): 4 files, +137/-10 - thumbnails.py (+8/-1), test_thumbnail.py, test_covers.py and docs/hosted-applications/architecture.md. 4 files maps to M. The diffstat shows 16 files because 6fa97bc8e adds 12 files of behavior-preserving strict-ruff fixes (+85/-81) to the sibling EPMCDME-17155 preview capture code (validator server, renderer, isolation, worker, validator client, manifest). The CI changed-files check required that fix during the quality gates. It is extra in-run work and is not scored; if it were included, File Change Estimate would be XXL (16 files) and the total would be 13, still S." },
+    { "dimension": "component_scope", "reason": "One component changes: HostedThumbnailService.get in the thumbnail service. It gains a third cover branch that reads manifest['preview'] after the bundled-raster candidates and before the initials fallback (the None return). The /thumbnail router, the manifest contract and the storage layer are unchanged." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the bundled-raster branch in the same method. The preview branch reuses its _verified size and SHA-256 check (HMAC compare, 503 CONTENT_UNAVAILABLE on mismatch), its _fits signature and dimension check, and its strong ETag form (quoted SHA-256). The security-sensitive aspect (integrity of stored bytes served to viewers) is fully covered by that existing code, so no divergence bump. The new tests follow existing fixtures in test_thumbnail.py and test_covers.py (image_app, png, preview_jpeg), so no defensive-test bump." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

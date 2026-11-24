@@ -50,7 +50,7 @@ async def test_thumbnail_route_reads_if_none_match_after_authorization(monkeypat
         def __init__(self, catalog):
             pass
 
-        async def get(self, identity, app_id):
+        async def get(self, identity, app_id, if_none_match=None):
             calls.append(identity.principal_id)
             if identity.principal_id != "user-1":
                 raise HostedApplicationError("NOT_FOUND", "Application not found", 404)
@@ -70,3 +70,29 @@ async def test_thumbnail_route_reads_if_none_match_after_authorization(monkeypat
     assert first.headers["cache-control"] == "private, no-cache"
     assert cached.status_code == 304 and cached.content == b"" and cached.headers["etag"] == tag
     assert revoked.status_code == 404 and calls == ["user-1", "user-1", "revoked"]
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_route_answers_304_when_the_service_skips_the_body(monkeypatch):
+    from codemie.service.hosted_applications import thumbnails
+
+    tag = '"' + "b" * 64 + '"'
+    seen = []
+
+    class Covers:
+        def __init__(self, catalog):
+            pass
+
+        async def get(self, identity, app_id, if_none_match=None):
+            seen.append(if_none_match)
+            return thumbnails.Cover(None, "image/jpeg", tag)
+
+    monkeypatch.setattr(thumbnails, "HostedThumbnailService", Covers)
+    app = application()
+    app.state.hosted_applications = SimpleNamespace(settings=SimpleNamespace(enabled=True), catalog=None)
+    path = "/v1/hosted-applications/6f1c1a52-3a43-4d55-9d43-0d6f1d7b3a10/thumbnail"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://api.test") as client:
+        response = await client.get(path, headers={"If-None-Match": tag})
+    assert response.status_code == 304 and response.content == b"" and response.headers["etag"] == tag
+    assert response.headers["cache-control"] == "private, no-cache"
+    assert seen == [tag]

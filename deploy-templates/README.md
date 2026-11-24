@@ -118,7 +118,7 @@ A Helm chart for AI/Run API
 | features.tools.hosted-apps.validator.affinity | object | `{}` | Affinity rules for the validator pod |
 | features.tools.hosted-apps.validator.automountServiceAccountToken | bool | `false` | Mount the service account token into the validator pod |
 | features.tools.hosted-apps.validator.enableServiceLinks | bool | `false` | Inject Service environment variables into the validator pod |
-| features.tools.hosted-apps.validator.env | list | `[{"name":"VALIDATOR_BIND_HOST","value":"0.0.0.0"},{"name":"VALIDATOR_SERVICE_KEY","valueFrom":{"secretKeyRef":{"key":"validator-key","name":"codemie-hosted-applications"}}},{"name":"CLAMD_HOST","value":"codemie-hosted-apps-clamd"},{"name":"CLAMD_PORT","value":"3310"},{"name":"CLAMD_CONFIGURATION","value":"/etc/clamav/clamd.conf"}]` | Environment variables for the validator container |
+| features.tools.hosted-apps.validator.env | list | `[{"name":"VALIDATOR_BIND_HOST","value":"0.0.0.0"},{"name":"VALIDATOR_SERVICE_KEY","valueFrom":{"secretKeyRef":{"key":"validator-key","name":"codemie-hosted-applications"}}},{"name":"CLAMD_HOST","value":"codemie-hosted-apps-clamd"},{"name":"CLAMD_PORT","value":"3310"},{"name":"CLAMD_CONFIGURATION","value":"/etc/clamav/clamd.conf"},{"name":"VALIDATOR_PREVIEW_CAPTURE","value":"true"}]` | Environment variables for the validator container |
 | features.tools.hosted-apps.validator.image.pullPolicy | string | `"IfNotPresent"` | Image pull policy for the validator |
 | features.tools.hosted-apps.validator.image.repository | string | `""` | Repository of the hosted applications validator image (built from Dockerfile.validator) |
 | features.tools.hosted-apps.validator.image.tag | string | `""` | Validator image tag. Defaults to image.tag (the API image tag), then to the chart appVersion |
@@ -128,11 +128,11 @@ A Helm chart for AI/Run API
 | features.tools.hosted-apps.validator.podSecurityContext | object | `{"seccompProfile":{"type":"RuntimeDefault"}}` | Pod security context for the validator pod |
 | features.tools.hosted-apps.validator.priorityClassName | string | `""` | Priority class for the validator pod |
 | features.tools.hosted-apps.validator.readinessProbe | object | `{"httpGet":{"path":"/livez","port":"http"},"periodSeconds":10}` | Readiness probe for the validator container |
-| features.tools.hosted-apps.validator.resources | object | `{"limits":{"cpu":"1","memory":"2Gi"},"requests":{"cpu":"250m","memory":"512Mi"}}` | Resources for the validator container |
+| features.tools.hosted-apps.validator.resources | object | `{"limits":{"cpu":"1","memory":"3Gi"},"requests":{"cpu":"250m","memory":"512Mi"}}` | Resources for the validator container |
 | features.tools.hosted-apps.validator.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsGroup":65532,"runAsNonRoot":true,"runAsUser":65532}` | Security context for the validator container |
 | features.tools.hosted-apps.validator.tolerations | list | `[]` | Tolerations for the validator pod |
 | features.tools.hosted-apps.validator.volumeMounts | list | `[{"mountPath":"/work","name":"work"}]` | Extra volume mounts for the validator container |
-| features.tools.hosted-apps.validator.volumes | list | `[{"emptyDir":{"sizeLimit":"2Gi"},"name":"work"}]` | Extra volumes for the validator pod |
+| features.tools.hosted-apps.validator.volumes | list | `[{"emptyDir":{"sizeLimit":"3Gi"},"name":"work"}]` | Extra volumes for the validator pod |
 | fullnameOverride | string | `""` |  |
 | gatewayAPI.enabled | bool | `false` | Enable Gateway API usage |
 | gatewayAPI.gateway | object | `{"name":"codemie","namespace":"envoy-gateway-system","sectionName":"https"}` | Gateway to attach HTTPRoute to by default |

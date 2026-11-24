@@ -72,7 +72,7 @@ def test_spa_only_extensionless_document_navigation():
             resolve_asset(manifest(), path, html_navigation=navigation)
 
 
-@pytest.mark.parametrize("change", ["digest", "key", "mime", "size", "unknown"])
+@pytest.mark.parametrize("change", ["digest", "key", "mime", "size"])
 def test_manifest_integrity_and_trusted_storage_boundaries(change):
     value = manifest()
     if change == "key":
@@ -81,8 +81,6 @@ def test_manifest_integrity_and_trusted_storage_boundaries(change):
         value["files"]["index.html"]["mime"] = "text/javascript; charset=utf-8"
     elif change == "size":
         value["files"]["index.html"]["size"] = True
-    elif change == "unknown":
-        value["evil"] = True
     data = canonical_json(value)
     expected = b"z" * 32 if change == "digest" else hashlib.sha256(data).digest()
     with pytest.raises(HostedApplicationError):
@@ -91,5 +89,24 @@ def test_manifest_integrity_and_trusted_storage_boundaries(change):
 
 def test_duplicate_manifest_json_keys_are_rejected():
     data = b'{"version":1,"version":1}'
+    with pytest.raises(HostedApplicationError):
+        parse_manifest(data, expected_digest=hashlib.sha256(data).digest(), prefix="attempt/" + "a" * 32)
+
+
+def test_unknown_top_level_key_is_ignored():
+    value = manifest()
+    value["extra"] = 1
+    data = canonical_json(value)
+    parsed = parse_manifest(data, expected_digest=hashlib.sha256(data).digest(), prefix="attempt/" + "a" * 32)
+    assert "extra" not in parsed
+    assert "preview" not in parsed
+    assert set(parsed) == {"version", "site_root", "entrypoint", "routing_mode", "files"}
+
+
+@pytest.mark.parametrize("missing", ["version", "site_root", "entrypoint", "routing_mode", "files"])
+def test_missing_base_key_is_refused(missing):
+    value = manifest()
+    del value[missing]
+    data = canonical_json(value)
     with pytest.raises(HostedApplicationError):
         parse_manifest(data, expected_digest=hashlib.sha256(data).digest(), prefix="attempt/" + "a" * 32)

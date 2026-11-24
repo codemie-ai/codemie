@@ -18,6 +18,7 @@ import hashlib
 import importlib.util
 import os
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -106,6 +107,7 @@ HOSTED_MIGRATION = (
     "e3b7c1a95d42_add_hosted_applications.py",
     "f8d24a6c0b17_platform_sharing_grants_and_links.py",
     "2394f0863c6a_add_hosted_application_categories.py",
+    "6158f5209f50_add_hosted_version_preview_pointer.py",
 )
 
 # Two shared-platform categories seeded for every test; later tasks that exercise hosted application categories
@@ -267,11 +269,37 @@ async def catalog(database):
     return HostedApplicationCatalog(repository, directory), repository, directory
 
 
+def preview_jpeg(width=64, height=48):
+    """A small real baseline JPEG, the kind of picture the validator's capture returns."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), (40, 90, 160)).save(buffer, "JPEG", quality=80)
+    return buffer.getvalue()
+
+
 class TrustedValidatorSeam:
     def __init__(self, root):
         self.root = root
         self.rejection = None
         self.available = True
+        # The picture ``capture`` describes, or None for "no picture". ``preview_changes`` replaces fields of the
+        # answer (a wrong digest, size or dimension); ``capture_error`` and ``preview_pull_error`` are raised.
+        self.preview = None
+        self.preview_changes = {}
+        self.capture_error = None
+        self.preview_pull_error = None
+        self.capture_calls = []
+        # What ``capture`` answers when there is no picture: a validator reason, "unknown" or "failed".
+        self.no_picture_reason = "no_picture"
+        # One scanner answer per seam, so two runs of the same upload give the same report bytes.
+        self.scanner = {
+            "version": "1.5.4",
+            "signature_version": "28143",
+            "signature_updated_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     async def ready(self):
         return self.available
@@ -284,18 +312,39 @@ class TrustedValidatorSeam:
         source.write_bytes(b"".join([part async for part in chunks]))
         assert source.stat().st_size == size and hashlib.sha256(source.read_bytes()).digest() == digest
         self.output = self.root / uuid4().hex
-        candidate = inspect_bundle(source, kind, self.output)
-        yield (
-            "a" * 64,
-            candidate,
+        self.candidate = inspect_bundle(source, kind, self.output)
+        yield "a" * 64, self.candidate, dict(self.scanner)
+
+    async def capture(self, identifier, site_root, entrypoint, routing_mode, *, lock_wait, timeout):
+        from codemie.core.hosted_applications.binary import dimensions
+        from codemie.service.hosted_applications.validator_client import PreviewFile
+
+        self.capture_calls.append(
             {
-                "version": "1.5.4",
-                "signature_version": "28143",
-                "signature_updated_at": datetime.now(timezone.utc).isoformat(),
-            },
+                "identifier": identifier,
+                "site_root": site_root,
+                "entrypoint": entrypoint,
+                "routing_mode": routing_mode,
+                "lock_wait": lock_wait,
+                "timeout": timeout,
+            }
         )
+        if self.capture_error is not None:
+            raise self.capture_error
+        if self.preview is None:
+            return self.no_picture_reason
+        width, height = dimensions(self.preview, ".jpg")
+        found = PreviewFile(
+            len(self.candidate.files), len(self.preview), hashlib.sha256(self.preview).hexdigest(), width, height
+        )
+        return replace(found, **self.preview_changes)
 
     async def file_chunks(self, identifier, index, item):
+        if index == len(self.candidate.files):
+            if self.preview_pull_error is not None:
+                raise self.preview_pull_error
+            yield self.preview
+            return
         yield (self.output / item.path).read_bytes()
 
 

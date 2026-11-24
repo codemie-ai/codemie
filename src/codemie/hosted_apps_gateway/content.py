@@ -29,6 +29,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response, Stream
 from starlette.routing import Route
 
 from codemie.configs.logger import logger
+from codemie.core.hosted_applications.content_policy import CONTENT_CSP, RESERVED_PREFIX
 from codemie.core.hosted_applications.errors import HostedApplicationError
 from codemie.core.hosted_applications.manifest import resolve_asset
 from codemie.core.hosted_applications.paths import decode_content_path, local_target, strip_root_path
@@ -47,13 +48,6 @@ from codemie.hosted_apps_gateway.navigation import (
 )
 from codemie.service.hosted_applications.observability import hosted_request_monitoring
 
-CONTENT_CSP = (
-    "default-src 'none'; base-uri 'self'; script-src 'self' 'unsafe-inline'; "
-    "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; "
-    "media-src 'self' blob:; connect-src 'self'; frame-src 'none'; object-src 'none'; "
-    "worker-src 'none'; manifest-src 'none'; form-action 'none'; frame-ancestors 'none'; "
-    "sandbox allow-scripts allow-same-origin allow-popups"
-)
 # No `webrtc 'block'`: Chromium and Firefox do not implement it and log an error on every response.
 # WebRTC egress remains a documented residual risk (docs/hosted-applications/architecture.md).
 # Immutable version assets are revalidated on every use: each reuse re-runs live authorization
@@ -78,7 +72,7 @@ UNAVAILABLE = "Application unavailable"
 RETURN_TO_CODEMIE = "Return to CodeMie to open this application"
 FRAME_ANCESTORS = "frame-ancestors "
 # Platform-owned paths on every version host; uploaded files can never use them (validation refuses them).
-RESERVED = ("_platform",)
+RESERVED = (RESERVED_PREFIX,)
 
 
 def navigation(request):

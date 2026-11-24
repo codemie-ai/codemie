@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Authorized raster covers: the owner's uploaded cover first, then rasters from accepted bundles.
+"""Authorized raster covers: the owner's uploaded cover first, then rasters from accepted bundles,
+then the preview captured for the version during validation.
 
 No rendering, decoding or remote fetch.
 """
@@ -26,8 +27,10 @@ from typing import NamedTuple
 
 from sqlalchemy import select
 
-from codemie.core.hosted_applications.binary import image
+from codemie.core.hosted_applications.binary import dimensions, image
+from codemie.core.hosted_applications.preview import MAX_PREVIEW_BYTES, MAX_PREVIEW_SIDE, PREVIEW_MIME
 from codemie.core.hosted_applications.errors import HostedApplicationError
+from codemie.core.hosted_applications.protocol import etag_matches
 from codemie.hosted_apps_gateway.cache import ImmutableContentCache
 from codemie.repository.hosted_applications.repository import as_uuid, not_found
 from codemie.rest_api.models.hosted_application import (
@@ -41,54 +44,7 @@ MAX_THUMBNAIL_BYTES = 1024 * 1024
 RASTER = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp'}
 
 
-# JPEG start-of-frame markers, the segments that carry the frame size.
-JPEG_FRAME_MARKERS = (192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207)
 THUMBNAIL_PRIORITIES = ('preview', 'thumbnail', 'screenshot', 'cover', 'poster')
-
-
-def _png_dimensions(data):
-    return int.from_bytes(data[16:20], 'big'), int.from_bytes(data[20:24], 'big')
-
-
-def _webp_dimensions(data):
-    if data[12:16] == b'VP8X':
-        return 1 + int.from_bytes(data[24:27], 'little'), 1 + int.from_bytes(data[27:30], 'little')
-    if data[12:16] == b'VP8L' and data[20] == 47:
-        bits = int.from_bytes(data[21:25], 'little')
-        return 1 + (bits & 16383), 1 + ((bits >> 14) & 16383)
-    if data[12:16] == b'VP8 ' and data[23:26] == b'\x9d\x01\x2a':
-        return int.from_bytes(data[26:28], 'little') & 16383, int.from_bytes(data[28:30], 'little') & 16383
-    return 0, 0
-
-
-def _jpeg_dimensions(data):
-    position = 2
-    for _ in range(4096):
-        if position + 4 > len(data) or data[position] != 255:
-            break
-        marker = data[position + 1]
-        if marker == 255:
-            position += 1
-            continue
-        length = int.from_bytes(data[position + 2 : position + 4], 'big')
-        if length < 2 or position + 2 + length > len(data):
-            break
-        if marker in JPEG_FRAME_MARKERS and length >= 8:
-            return int.from_bytes(data[position + 7 : position + 9], 'big'), int.from_bytes(
-                data[position + 5 : position + 7], 'big'
-            )
-        position += 2 + length
-    return 0, 0
-
-
-def dimensions(data, suffix):
-    if suffix == '.png' and len(data) >= 24:
-        return _png_dimensions(data)
-    if suffix == '.webp' and len(data) >= 30:
-        return _webp_dimensions(data)
-    if suffix in ('.jpg', '.jpeg'):
-        return _jpeg_dimensions(data)
-    return 0, 0
 
 
 def _priority(stem):
@@ -119,6 +75,17 @@ def _fits(body, suffix):
     return image(body, suffix) and 1 <= width <= 2048 and 1 <= height <= 2048 and width * height <= 1024 * 1024
 
 
+def _fits_preview(body):
+    """Whether ``body`` is a JPEG within the automatic cover limits (core ``preview`` constants)."""
+    width, height = dimensions(body, '.jpg')
+    return (
+        len(body) <= MAX_PREVIEW_BYTES
+        and image(body, '.jpg')
+        and 1 <= width <= MAX_PREVIEW_SIDE
+        and 1 <= height <= MAX_PREVIEW_SIDE
+    )
+
+
 async def _matches(tx, app, condition):
     """Whether ``app`` satisfies the access ``condition``."""
     found = await tx.session.execute(select(App.id).where(App.id == app.id, condition))
@@ -126,9 +93,12 @@ async def _matches(tx, app, condition):
 
 
 class Cover(NamedTuple):
-    """A verified cover image; ``etag`` is its strong validator (the image's SHA-256)."""
+    """A cover image; ``etag`` is its strong validator (the image's SHA-256).
 
-    body: bytes
+    ``body`` is None when the caller's ``If-None-Match`` already matched the stored digest: not modified.
+    """
+
+    body: bytes | None
     mime: str
     etag: str
 
@@ -140,7 +110,7 @@ class HostedThumbnailService:
         # Digest-bound manifests are immutable: reuse the content gateway's bounded cache.
         self.cache = ImmutableContentCache.shared(self.storage)
 
-    async def get(self, identity, app_id) -> Cover | None:
+    async def get(self, identity, app_id, if_none_match: str | None = None) -> Cover | None:
         # Existing projection checks viewer/owner membership before the definitive primary check
         # below; authorization runs on every call, only immutable manifest data is cached.
         await self.catalog.get_app(identity, app_id)
@@ -174,11 +144,27 @@ class HostedThumbnailService:
             if attempt is None:
                 raise not_found()
             version, attempt = version.model_dump(), attempt.model_dump()
-        manifest = await self.cache.manifest(version, attempt)
+        return await self._manifest_cover(await self.cache.manifest(version, attempt), version, if_none_match)
+
+    async def _manifest_cover(self, manifest, version, if_none_match: str | None = None) -> Cover | None:
+        """The first bundled raster that fits, else the captured preview that fits, else None."""
         for _, path, asset in _candidates(manifest):
             body = await self._verified(asset)
             if _fits(body, PurePosixPath(path).suffix.casefold()):
                 return Cover(body, asset['mime'], '"' + asset['sha256'] + '"')
+        # The picture captured during validation: its pointer is in the version row, and it passes the same
+        # integrity check as a bundled raster, then the preview bounds (no area limit).
+        if version['preview_key'] is not None:
+            digest = bytes(version['preview_sha256']).hex()
+            etag = '"' + digest + '"'
+            # The stored digest is the validator: a matching tag needs no storage read.
+            if etag_matches(if_none_match, etag):
+                return Cover(None, PREVIEW_MIME, etag)
+            body = await self._verified(
+                {'key': version['preview_key'], 'size': version['preview_size'], 'sha256': digest}
+            )
+            if _fits_preview(body):
+                return Cover(body, PREVIEW_MIME, etag)
         return None
 
     async def _verified(self, asset):

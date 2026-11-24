@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "task": "Add a sandboxed headless renderer process to the existing hosted apps validator pod and image, capture one raster per version in the validation pass, pull it back through the validator client and store it under the validation attempt prefix with a version pointer, without ever changing the verdict.",
+  "generated": "2026-11-12T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 5, "label": "XL" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 28,
+  "size": "XL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Five components across three subsystems. Validator side: the server.py capture step, a new renderer module with its own sandbox profile, and isolation.py. Service side: validator_client and ValidationWorker (_process, accept). Data side: the version pointer (a manifest field, or a version column plus migration). Deployment side: the validator image and its resources. The renderer sandbox profile is a new abstraction." },
+    { "dimension": "technical_risk", "reason": "No headless browser and no server-side rendering exist in the codebase. The renderer executes untrusted uploaded code inside the validator pod. The closest pattern is the isolation.py profile (Landlock, seccomp, rlimits), but that profile is built for a parser that executes nothing. It does not cover sandboxing an executing browser, so the security-sensitive gap is a divergence. The base score is XL, bumped to XXL. Other risks: no official Playwright on Alpine, image growth, validator CPU and memory headroom at capacity 2, and keeping capture inside the validation budget and lease (AC3) without changing the verdict (AC2)." },
+    { "dimension": "file_change_estimate", "reason": "About 12 non-test files modified: server.py, isolation.py, validator_client.py, worker.py, manifest.py or the version model, Dockerfile.validator, requirements-validator.txt, kubernetes.yaml, chart values and template, architecture.md and the README runbook. New files: the renderer module, its tests, and an optional Alembic migration. Tests are also modified: test_validator_server, test_worker, test_deployment_manifests and the TrustedValidatorSeam fixture. The changes span the validator, service, core, deployment and docs directories." },
+    { "dimension": "dependencies", "reason": "One heavyweight new dependency: a headless browser (most likely a Chromium-class CLI from the Alpine distribution), possibly with a driver package. It must fit the hash-pinned requirements-validator.txt and the image built by digest." },
+    { "dimension": "affected_layers", "reason": "Service (worker, validator client), DB-Persistence (raster under the attempt prefix, version pointer, possible migration with schema parity), Infrastructure (validator image, pod resources, chart) and the validator process itself. No UI and no public API change. Topology stays the same (D7)." },
+    { "dimension": "requirements_clarity", "reason": "AC1-AC9 and decisions D5-D8 fix the main path. Two design choices stay open: a manifest field or a version column for the pointer, and which renderer to use on Alpine." },
+    { "dimension": "calibration", "reason": "Agrees with the bundled XL example epmcdme-10303 (new heavyweight dependency, security-sensitive novelty, multiple subsystems, total 27). Not near the L band: without the Technical Risk bump the total is still 27, and with Technical Risk at XL or higher the borderline rule leans higher. This work is already a child slice of EPMCDME-17070. The repo is single, so G0 forces no cut. The split below follows the validator HTTP results contract seam." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from XL to XXL: security requirement (the renderer executes untrusted uploaded code), and the closest pattern, the isolation.py parser profile, does not cover sandboxing an executing process"
+  ],
+  "split_recommendation": {
+    "strategy": "by-dependency",
+    "secondary_strategy": null,
+    "ordering_note": "Build the sandboxed renderer and the validator capture contract first. Then let the worker pull and store the raster through that contract.",
+    "slices": [
+      {
+        "title": "Sandboxed renderer in the validator",
+        "slice_slug": "renderer-sandbox",
+        "component": "codemie",
+        "feature": "preview-capture",
+        "scope": "Add the headless renderer as a separate sandboxed process in the validator pod and image. The validator captures one raster per version from /work and exposes it as a result file within budget. Includes the image, the pod resources, the chart and the new architecture decision; the verdict and POLICY_VERSION stay unchanged.",
+        "depends_on": null
+      },
+      {
+        "title": "Store the captured preview with the version",
+        "slice_slug": "preview-storage",
+        "component": "codemie",
+        "feature": "preview-capture",
+        "scope": "The worker pulls the raster through validator_client.file_chunks, checks it with the shared raster header checks and writes it under the validation attempt prefix. It sets the version pointer on accept and drops the raster for rejected or failed versions. A missing preview never changes the verdict; the runbook is updated.",
+        "depends_on": "Sandboxed renderer in the validator"
+      }
+    ]
+  }
+}

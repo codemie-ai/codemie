@@ -178,6 +178,13 @@ class HostedApplicationVersions(SQLModel, table=True):
         CheckConstraint('expanded_bytes BETWEEN 0 AND 524288000'),
         CheckConstraint('file_count BETWEEN 0 AND 5000'),
         CheckConstraint(POSITIVE_REVISION),
+        # The automatic cover pointer: all three columns set, or all three empty.
+        CheckConstraint(
+            '(preview_key IS NULL) = (preview_size IS NULL) AND (preview_key IS NULL) = (preview_sha256 IS NULL)',
+            name='hosted_application_versions_preview_all_or_none',
+        ),
+        CheckConstraint('octet_length(preview_sha256) = 32', name='hosted_application_versions_preview_sha256_length'),
+        CheckConstraint('preview_size BETWEEN 1 AND 1048576', name='hosted_application_versions_preview_size_range'),
         UniqueConstraint('app_id', 'id'),
         UniqueConstraint('app_id', 'sequence'),
         ForeignKeyConstraint(['app_id'], [APPLICATION_ID], ondelete='RESTRICT'),
@@ -269,6 +276,10 @@ class HostedApplicationVersions(SQLModel, table=True):
     routing_mode: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     expanded_bytes: int = Field(default=None, sa_column=Column(BigInteger, nullable=False, server_default=text('0')))
     file_count: int = Field(default=None, sa_column=Column(Integer, nullable=False, server_default=text('0')))
+    # The automatic cover: its object key, size and SHA-256 (32 raw bytes). All three are set, or none.
+    preview_key: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    preview_size: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
+    preview_sha256: bytes | None = Field(default=None, sa_column=Column(LargeBinary, nullable=True))
     revision: int = Field(default=None, sa_column=Column(BigInteger, nullable=False, server_default=text('1')))
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     accepted_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
