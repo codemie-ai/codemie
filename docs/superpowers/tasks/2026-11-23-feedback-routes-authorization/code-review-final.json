@@ -1,0 +1,114 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved after CR-001 fix-up (9f48641ca5); CR-002 fix-later"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User accepted recommended dispositions: CR-001 fix-now, CR-002 fix-later"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved after CR-001 fix-up (9f48641ca5); CR-002 fix-later"
+    }
+  ],
+  "reviewed_head": "9f48641ca54bdec86037238f7afff8a94efd6170",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "Acceptance did not run (no spec), so confidence is low; the owner scoping, WRITE checks and entry-to-conversation guard held up against the real code. One blocking standards finding (new model methods use List/Optional against code-quality.md) and 1 advisory (silent 10k cap for non-admin list). 0 deferred, 10 dismissed (pre-existing, fail-closed, intended per task decisions or below-floor); dismissed list in code-review-dismissed.local.md.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [
+    "security",
+    "authorization"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/feedback.py",
+      "line": 54,
+      "title": "New methods use List/Optional annotations",
+      "problem": "code-quality.md (Types And Imports) says to avoid typing.Optional[X] and List in new code and prefer X | None and list[...]; the new methods get_all_for_user and find_by_id_for_user are annotated List[\"FeedbackEntry\"] and Optional[\"FeedbackEntry\"].",
+      "impact": "A documented code-quality rule on type annotations is not met for newly added code, which the standards review treats as blocking; no runtime effect.",
+      "recommendation": "Annotate the new methods as list[FeedbackEntry] and FeedbackEntry | None (quoted forward reference form where needed).",
+      "status": "fixed",
+      "fix": {
+        "change": "Annotated get_all_for_user as list[FeedbackEntry] and find_by_id_for_user as FeedbackEntry | None",
+        "test": "n/a"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/rest_api/models/feedback.py",
+      "line": 62,
+      "title": "Non-admin feedback list silently capped at 10,000",
+      "problem": "get_all_for_user applies a hard limit(10_000) with no paging or truncation signal, so a user owning more than 10k entries silently loses the oldest ones.",
+      "impact": "Trigger needs a single user with more than 10,000 feedback entries, which is uncommon; the admin branch uses get_all, whose default page size is also 10,000 on the sibling base class, so the gap is narrow.",
+      "recommendation": "Accept the cap, or add page/per_page parameters to get_all_for_user and the index route.",
+      "status": "wont-fix",
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-later"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "3 subjects in range all match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "Types And Imports prefers X | None and list[...]; new methods get_all_for_user and find_by_id_for_user in models/feedback.py use List[...] and Optional[...]."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Adjudicated against security-patterns.md (no security-practices.md exists). Auth dependency kept, parameterized queries, write-ability check on create/delete; no concrete defect."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Acceptance did not run (no spec), so confidence is low; the owner scoping, WRITE checks and entry-to-conversation guard held up against the real code. One blocking standards finding (new model methods use List/Optional against code-quality.md) and 1 advisory (silent 10k cap for non-admin list). 0 deferred, 10 dismissed (pre-existing, fail-closed, intended per task decisions or below-floor); dismissed list in code-review-dismissed.local.md.",
+    "confidence": "low",
+    "risk_flags": [
+      "security",
+      "authorization"
+    ]
+  }
+}

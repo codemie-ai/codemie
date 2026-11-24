@@ -22,7 +22,8 @@ from codemie.rest_api.models.base import (
     BaseModelWithSQLSupport,
     PydanticListType,
 )
-from sqlmodel import Field as SQLField, Column, UUID, String
+from sqlalchemy import cast
+from sqlmodel import Field as SQLField, Column, UUID, String, Session, select
 from codemie.rest_api.models.standard import AuthorEnum
 from codemie.core.models import ChatMessage
 
@@ -48,6 +49,33 @@ class FeedbackEntry(BaseModelWithSQLSupport, table=True):
     appName: Optional[str] = SQLField(default=None, sa_column=Column("app_name", String))
     repoName: Optional[str] = SQLField(default=None, sa_column=Column("repo_name", String))
     indexType: Optional[str] = SQLField(default=None, sa_column=Column("index_type", String))
+
+    @classmethod
+    def get_all_for_user(cls, user_id: str) -> list["FeedbackEntry"]:
+        from codemie.rest_api.models.conversation import Conversation
+
+        statement = (
+            select(cls)
+            .join(Conversation, cast(cls.conversationId, String) == Conversation.id)
+            .where(Conversation.user_id == user_id)
+            .order_by(cls.update_date.desc())
+            .limit(10_000)
+        )
+        with Session(cls.get_engine()) as session:
+            return session.exec(statement).all()
+
+    @classmethod
+    def find_by_id_for_user(cls, id_: str, user_id: str) -> "FeedbackEntry | None":
+        from codemie.rest_api.models.conversation import Conversation
+
+        statement = (
+            select(cls)
+            .join(Conversation, cast(cls.conversationId, String) == Conversation.id)
+            .where(Conversation.user_id == user_id)
+            .where(cls.id == id_)
+        )
+        with Session(cls.get_engine()) as session:
+            return session.exec(statement).first()
 
     @classmethod
     def delete_feedback(cls, id: str):
