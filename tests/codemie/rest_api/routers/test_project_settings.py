@@ -191,6 +191,181 @@ async def test_update_project_setting_logs_on_success(
     assert "super-secret-token" not in message
 
 
+def _project_admin_user():
+    user = User(
+        id="pa1",
+        username="projectadmin",
+        project_names=["test_project", "second_project"],
+        admin_project_names=["test_project", "second_project"],
+    )
+    user.is_admin = False
+    return user
+
+
+def _stored_setting(setting_type, user_id):
+    from codemie_tools.base.models import CredentialTypes
+
+    return MagicMock(
+        setting_type=setting_type,
+        user_id=user_id,
+        project_name="test_project",
+        credential_type=CredentialTypes.GIT,
+        alias="my-git",
+    )
+
+
+def _git_update_payload(project_name="test_project"):
+    return {
+        "project_name": project_name,
+        "alias": "my-git",
+        "credential_type": "Git",
+        "credential_values": [{"key": "token", "value": "super-secret-token"}],
+    }
+
+
+async def _put_project_setting(payload):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        return await ac.put("/v1/settings/project/set-1", headers={"user-id": "caller"}, json=payload)
+
+
+def _assert_forbidden_for(excinfo, action):
+    assert excinfo.value.code == status.HTTP_403_FORBIDDEN
+    assert f"to {action} this entity" in excinfo.value.details
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("caller_factory", [_admin_user, _project_admin_user], ids=["platform_admin", "project_admin"])
+@pytest.mark.parametrize("target_project", ["test_project", "second_project"])
+@patch("codemie.rest_api.routers.project_settings.SettingsTransferService")
+@patch("codemie.rest_api.routers.project_settings.Settings")
+@patch("codemie.rest_api.routers.project_settings.Ability")
+@patch('codemie.service.settings.settings.SettingsService.update_settings')
+@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_update_project_setting_rejects_non_owner_converting_personal_setting(
+    mock_authenticate,
+    mock_get_ability,
+    mock_update_settings,
+    mock_ability,
+    mock_settings,
+    mock_transfer_service,
+    caller_factory,
+    target_project,
+):
+    from codemie.rest_api.models.settings import SettingType
+
+    mock_authenticate.return_value = caller_factory()
+    mock_ability.return_value.can.return_value = True
+    mock_settings.get_by_id.return_value = _stored_setting(SettingType.USER, "owner-a")
+
+    with pytest.raises(ExtendedHTTPException) as excinfo:
+        await _put_project_setting(_git_update_payload(target_project))
+
+    _assert_forbidden_for(excinfo, "update" if target_project == "test_project" else "convert")
+    mock_update_settings.assert_not_called()
+    mock_transfer_service.transfer_setting.assert_not_called()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stored_type, stored_user_id", [(None, "owner-a"), ("user", None), ("user", "")])
+@patch("codemie.rest_api.routers.project_settings.SettingsTransferService")
+@patch("codemie.rest_api.routers.project_settings.Settings")
+@patch("codemie.rest_api.routers.project_settings.Ability")
+@patch('codemie.service.settings.settings.SettingsService.update_settings')
+@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_update_project_setting_rejects_non_owner_when_stored_type_is_null_or_owner_missing(
+    mock_authenticate,
+    mock_get_ability,
+    mock_update_settings,
+    mock_ability,
+    mock_settings,
+    mock_transfer_service,
+    stored_type,
+    stored_user_id,
+):
+    from codemie.rest_api.models.settings import SettingType
+
+    mock_authenticate.return_value = _admin_user()
+    mock_ability.return_value.can.return_value = True
+    resolved_type = SettingType(stored_type) if stored_type else None
+    mock_settings.get_by_id.return_value = _stored_setting(resolved_type, stored_user_id)
+
+    with pytest.raises(ExtendedHTTPException) as excinfo:
+        await _put_project_setting(_git_update_payload())
+
+    _assert_forbidden_for(excinfo, "update")
+    mock_update_settings.assert_not_called()
+    mock_transfer_service.transfer_setting.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("codemie.rest_api.routers.project_settings.SettingsTransferService")
+@patch("codemie.rest_api.routers.project_settings.Settings")
+@patch('codemie.service.settings.settings.SettingsService.update_settings')
+@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_update_project_setting_rejects_real_project_admin_non_owner_past_ability_check(
+    mock_authenticate, mock_get_ability, mock_update_settings, mock_settings, mock_transfer_service
+):
+    from codemie.rest_api.models.settings import ProjectSetting, SettingType
+
+    stored = _stored_setting(SettingType.USER, "owner-a")
+    mock_settings.get_by_id.return_value = stored
+    mock_get_ability.return_value = ProjectSetting(stored)
+    mock_authenticate.return_value = _project_admin_user()
+
+    with pytest.raises(ExtendedHTTPException) as excinfo:
+        await _put_project_setting(_git_update_payload())
+
+    _assert_forbidden_for(excinfo, "update")
+    mock_update_settings.assert_not_called()
+    mock_transfer_service.transfer_setting.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("codemie.rest_api.routers.project_settings.Settings")
+@patch("codemie.rest_api.routers.project_settings.Ability")
+@patch('codemie.service.settings.settings.SettingsService.update_settings')
+@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_update_project_setting_allows_owner_to_convert_personal_setting(
+    mock_authenticate, mock_get_ability, mock_update_settings, mock_ability, mock_settings
+):
+    from codemie.rest_api.models.settings import SettingType
+
+    mock_authenticate.return_value = _admin_user()
+    mock_ability.return_value.can.return_value = True
+    mock_settings.get_by_id.return_value = _stored_setting(SettingType.USER, "admin1")
+
+    response = await _put_project_setting(_git_update_payload())
+
+    assert response.status_code == 200
+    mock_update_settings.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch("codemie.rest_api.routers.project_settings.Settings")
+@patch("codemie.rest_api.routers.project_settings.Ability")
+@patch('codemie.service.settings.settings.SettingsService.update_settings')
+@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_update_project_setting_unchanged_for_project_typed_setting_of_other_user(
+    mock_authenticate, mock_get_ability, mock_update_settings, mock_ability, mock_settings
+):
+    from codemie.rest_api.models.settings import SettingType
+
+    mock_authenticate.return_value = _admin_user()
+    mock_ability.return_value.can.return_value = True
+    mock_settings.get_by_id.return_value = _stored_setting(SettingType.PROJECT, "owner-a")
+
+    response = await _put_project_setting(_git_update_payload())
+
+    assert response.status_code == 200
+    mock_update_settings.assert_called_once()
+
+
 @pytest.mark.anyio
 @patch("codemie.rest_api.routers.project_settings.logger")
 @patch("codemie.rest_api.routers.project_settings.Settings")

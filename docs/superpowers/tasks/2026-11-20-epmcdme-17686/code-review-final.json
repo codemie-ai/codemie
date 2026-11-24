@@ -1,0 +1,106 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "CR-001 fixed in 957138d4f4; no open findings"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "CR-001 fix-now chosen by user"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "CR-001 fixed in 957138d4f4; no open findings"
+    }
+  ],
+  "reviewed_head": "957138d4f4f95a43de363d0b2dcffb654ecfe88b",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No spec/story was available, so acceptance was skipped and confidence is low; all three other lenses and standards ran with no blocking issue. 1 advisory finding (misleading 'convert' 403 message on non-conversion edits), 1 deferred (DELETE route has no personal-setting owner check, backlog in code-review-deferred.local.md), 5 dismissed as noise.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [
+    "security",
+    "auth"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/rest_api/routers/project_settings.py",
+      "line": 246,
+      "title": "Misleading 'convert' 403 for non-conversion edits",
+      "problem": "_ensure_personal_setting_owner runs on every PUT and always raises raise_forbidden(\"convert\"), so a non-owner who sends an unchanged project_name is rejected with a message about converting although nothing would be converted.",
+      "impact": "Only the error text is inaccurate; the rejection itself is correct and intended (non-owners must not modify another user's personal integration). Callers may be confused about why a plain edit is refused.",
+      "recommendation": "raise_forbidden(\"convert\" if request.project_name != setting.project_name else \"update\"), or pass the action label into the helper.",
+      "status": "fixed",
+      "fix": {
+        "change": "_ensure_personal_setting_owner raises 'convert' only when project_name changes, otherwise 'update'",
+        "test": "test_update_project_setting_rejects_non_owner_converting_personal_setting (same-project -> update, other project -> convert)"
+      },
+      "disposition": {
+        "rationale": "user chose fix-now",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/rest_api/routers/project_settings.py",
+      "line": 217,
+      "title": "DELETE route lacks personal-setting owner check",
+      "problem": "delete_project_setting only runs _check_permission on setting.project_name and the budget-hidden guard, so a project admin can delete another user's USER-typed integration. Reachability for personal rows carrying a project_name was not confirmed.",
+      "preexisting": "delete_project_setting is untouched by this change; the task scopes the restriction to PUT conversion."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "1 commit in range; subject matches the documented EPMCDME-####: Description format in git-workflow.md"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "New helper is fully typed, uses modern annotations, is small and belongs in the router module; no code-quality.md rule broken"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Adjudicated against development/security-patterns.md; owner check fails closed on missing user_id and runs before the project-transfer path; no concrete security defect found"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "No spec/story was available, so acceptance was skipped and confidence is low; all three other lenses and standards ran with no blocking issue. 1 advisory finding (misleading 'convert' 403 message on non-conversion edits), 1 deferred (DELETE route has no personal-setting owner check, backlog in code-review-deferred.local.md), 5 dismissed as noise.",
+    "confidence": "low",
+    "risk_flags": [
+      "security",
+      "auth"
+    ]
+  }
+}

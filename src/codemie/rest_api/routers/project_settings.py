@@ -156,15 +156,16 @@ def update_project_setting(request: SettingRequest, setting_id: str, user: User 
 
         if not Ability(user).can(Action.WRITE, setting_ability):
             raise_access_denied("write")
-        if SettingsService.is_budget_integration_hidden_from(Settings.get_by_id(setting_id), user):
+        existing_setting = Settings.get_by_id(setting_id)
+        project_changed = bool(request.project_name and request.project_name != existing_setting.project_name)
+        _ensure_personal_setting_owner(existing_setting, user, project_changed)
+        if SettingsService.is_budget_integration_hidden_from(existing_setting, user):
             raise_forbidden("update")
 
         # ms_teams settings cannot change project at all (see validate_ms_teams_request), so the
         # type-specific validation must run before the generic project-transfer check below.
         _validate_update_request(request, setting_id, user)
 
-        existing_setting = Settings.get_by_id(setting_id)
-        project_changed = bool(request.project_name and request.project_name != existing_setting.project_name)
         if project_changed:
             _check_permission(user, request.project_name)
 
@@ -237,6 +238,12 @@ def delete_project_setting(setting_id: str, user: User = Depends(authenticate)):
         f"alias={setting.alias!r}, by={user.id}, domain=project_management"
     )
     return BaseResponse(message="Specified credential removed")
+
+
+def _ensure_personal_setting_owner(setting: Settings, user: User, project_changed: bool) -> None:
+    stored_type = setting.setting_type or SettingType.USER
+    if stored_type == SettingType.USER and (not setting.user_id or setting.user_id != user.id):
+        raise_forbidden("convert" if project_changed else "update")
 
 
 def _validate_update_request(request: SettingRequest, setting_id: str, user: User) -> None:
