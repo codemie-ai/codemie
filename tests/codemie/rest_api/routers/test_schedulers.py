@@ -213,26 +213,62 @@ def test_router_passes_none_status_when_omitted():
 # ── Task 4: SchedulerSettingsService extensions ───────────────────────────────
 
 
-def test_patch_is_enabled_calls_flag_modified():
+def _scheduler_row(
+    *,
+    credential_type=None,
+    setting_type=None,
+    user_id: str = "u1",
+    project_name: str = "p1",
+):
+    from codemie.rest_api.models.settings import CredentialValues
+    from codemie_tools.base.models import CredentialTypes
+
+    row = MagicMock()
+    row.id = "sched-1"
+    row.alias = "Daily Report"
+    row.project_name = project_name
+    row.user_id = user_id
+    row.credential_type = CredentialTypes.SCHEDULER if credential_type is None else credential_type
+    row.setting_type = setting_type
+    row.credential_values = [CredentialValues(key="is_enabled", value=True)]
+    return row
+
+
+def _caller(user_id: str = "u1", *, admin: bool = False, admin_projects=(), projects=()):
+    return MagicMock(
+        id=user_id,
+        is_admin_or_maintainer=admin,
+        admin_project_names=list(admin_projects),
+        project_names=list(projects),
+    )
+
+
+def _patch_enabled(row, caller, is_enabled: bool = False):
     from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
-
-    mock_cv = MagicMock()
-    mock_cv.key = "is_enabled"
-    mock_cv.value = True
-
-    mock_setting = MagicMock()
-    mock_setting.id = "sched-1"
-    mock_setting.credential_values = [mock_cv]
-    mock_setting.project_name = "epm-cdme"
-    mock_setting.alias = "Daily Report"
 
     with (
         patch("codemie.service.settings.scheduler_settings_service.Settings") as mock_settings,
         patch("codemie.service.settings.scheduler_settings_service.flag_modified") as mock_flag,
+        patch.object(SchedulerSettingsService, "_build_scheduler_item", return_value="item"),
     ):
-        mock_settings.get_by_id.return_value = mock_setting
-        SchedulerSettingsService.patch_is_enabled("sched-1", False)
-        mock_flag.assert_called_once_with(mock_setting, "credential_values")
+        mock_settings.get_by_id.return_value = row
+        try:
+            return SchedulerSettingsService.patch_is_enabled("sched-1", is_enabled, caller), mock_flag
+        except Exception:
+            mock_flag.assert_not_called()
+            raise
+
+
+def test_patch_is_enabled_calls_flag_modified():
+    from codemie.rest_api.models.settings import SettingType
+
+    row = _scheduler_row(setting_type=SettingType.USER)
+    result, mock_flag = _patch_enabled(row, _caller("u1"))
+
+    assert result == "item"
+    mock_flag.assert_called_once_with(row, "credential_values")
+    row.update.assert_called_once()
+    assert row.credential_values[0].value is False
 
 
 def test_patch_is_enabled_raises_not_found():
@@ -242,7 +278,112 @@ def test_patch_is_enabled_raises_not_found():
     with patch("codemie.service.settings.scheduler_settings_service.Settings") as mock_settings:
         mock_settings.get_by_id.return_value = None
         with pytest.raises(ExtendedHTTPException):
-            SchedulerSettingsService.patch_is_enabled("missing", True)
+            SchedulerSettingsService.patch_is_enabled("missing", True, _caller())
+
+
+def test_patch_is_enabled_denies_non_owner_of_user_row():
+    from codemie.core.exceptions import ExtendedHTTPException
+    from codemie.rest_api.models.settings import SettingType
+
+    row = _scheduler_row(setting_type=SettingType.USER, user_id="someone-else")
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        _patch_enabled(row, _caller("u1"))
+
+    assert exc_info.value.code == 403
+    row.update.assert_not_called()
+    assert row.credential_values[0].value is True
+
+
+def test_patch_is_enabled_treats_missing_setting_type_as_user_row():
+    from codemie.core.exceptions import ExtendedHTTPException
+
+    row = _scheduler_row(setting_type=None, user_id="someone-else")
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        _patch_enabled(row, _caller("u1", projects=["p1"]))
+
+    assert exc_info.value.code == 403
+    row.update.assert_not_called()
+
+
+@pytest.mark.parametrize("credential_type", ["JIRA", "jira"])
+def test_patch_is_enabled_hides_non_scheduler_rows_as_not_found(credential_type):
+    from codemie.core.exceptions import ExtendedHTTPException
+    from codemie.rest_api.models.settings import SettingType
+
+    row = _scheduler_row(credential_type=credential_type, setting_type=SettingType.USER, user_id="u1")
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        _patch_enabled(row, _caller("admin", admin=True))
+
+    assert exc_info.value.code == 404
+    row.update.assert_not_called()
+
+
+def test_patch_is_enabled_hides_enum_typed_non_scheduler_rows_as_not_found():
+    from codemie.core.exceptions import ExtendedHTTPException
+    from codemie.rest_api.models.settings import SettingType
+    from codemie_tools.base.models import CredentialTypes
+
+    row = _scheduler_row(credential_type=CredentialTypes.JIRA, setting_type=SettingType.USER)
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        _patch_enabled(row, _caller("u1"))
+
+    assert exc_info.value.code == 404
+    row.update.assert_not_called()
+
+
+def test_patch_is_enabled_accepts_string_scheduler_credential_type():
+    from codemie.rest_api.models.settings import SettingType
+
+    row = _scheduler_row(credential_type="SCHEDULER", setting_type=SettingType.USER)
+    result, _ = _patch_enabled(row, _caller("u1"))
+
+    assert result == "item"
+    row.update.assert_called_once()
+
+
+@pytest.mark.parametrize("setting_type_name", ["USER", "PROJECT"])
+def test_patch_is_enabled_allows_admin_and_maintainer_on_any_row(setting_type_name):
+    from codemie.rest_api.models.settings import SettingType
+
+    row = _scheduler_row(setting_type=SettingType[setting_type_name], user_id="someone-else")
+    result, _ = _patch_enabled(row, _caller("admin", admin=True))
+
+    assert result == "item"
+    row.update.assert_called_once()
+
+
+def test_patch_is_enabled_allows_project_admin_on_project_row():
+    from codemie.rest_api.models.settings import SettingType
+
+    row = _scheduler_row(setting_type=SettingType.PROJECT, user_id="someone-else", project_name="p1")
+    result, _ = _patch_enabled(row, _caller("u1", admin_projects=["p1"], projects=["p1"]))
+
+    assert result == "item"
+    row.update.assert_called_once()
+
+
+def test_patch_is_enabled_denies_project_admin_of_another_project():
+    from codemie.core.exceptions import ExtendedHTTPException
+    from codemie.rest_api.models.settings import SettingType
+
+    row = _scheduler_row(setting_type=SettingType.PROJECT, user_id="someone-else", project_name="p1")
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        _patch_enabled(row, _caller("u1", admin_projects=["p2"], projects=["p2"]))
+
+    assert exc_info.value.code == 403
+    row.update.assert_not_called()
+
+
+def test_patch_is_enabled_denies_plain_project_member_on_project_row():
+    from codemie.core.exceptions import ExtendedHTTPException
+    from codemie.rest_api.models.settings import SettingType
+
+    row = _scheduler_row(setting_type=SettingType.PROJECT, user_id="someone-else", project_name="p1")
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        _patch_enabled(row, _caller("u1", projects=["p1"]))
+
+    assert exc_info.value.code == 403
+    row.update.assert_not_called()
 
 
 # ── filter-options ────────────────────────────────────────────────────────────
@@ -417,6 +558,96 @@ def test_delete_scheduler_run_409_propagates():
         mock_svc.delete_run.side_effect = ExtendedHTTPException(code=409, message="conflict")
         response = client.delete("/v1/scheduler-runs/run-1")
     assert response.status_code == 409
+
+
+# ── EPMCDME-17681: PATCH /schedulers/{scheduler_id} authorization ─────────────
+
+
+def _make_patch_client(caller):
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
+    from fastapi.testclient import TestClient
+    import codemie.rest_api.security.authentication as auth_module
+    from codemie.core.exceptions import ExtendedHTTPException
+    from codemie.rest_api.routers.schedulers import router
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[auth_module.authenticate] = lambda: caller
+
+    @app.exception_handler(ExtendedHTTPException)
+    async def _handle(request: Request, exc: ExtendedHTTPException):
+        return JSONResponse(status_code=exc.code, content={"error": exc.message})
+
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _patch_through_service(row, caller):
+    from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
+
+    client = _make_patch_client(caller)
+    with (
+        patch("codemie.service.settings.scheduler_settings_service.Settings") as mock_settings,
+        patch("codemie.service.settings.scheduler_settings_service.flag_modified"),
+        patch.object(SchedulerSettingsService, "_build_scheduler_item", return_value=_SCHEDULER_ITEM),
+    ):
+        mock_settings.get_by_id.return_value = row
+        return client.patch("/v1/schedulers/sched-1", json={"isEnabled": False})
+
+
+_SCHEDULER_ITEM = {
+    "id": "sched-1",
+    "name": "Daily Report",
+    "resource": {"id": "r-1", "name": "Alpha", "type": "Assistant"},
+    "project": {"id": "p1", "name": "p1"},
+    "schedule": {"cron": "0 2 * * *", "description": "Daily", "timezone": "UTC"},
+    "isEnabled": False,
+}
+
+
+def test_patch_scheduler_forwards_authenticated_user_to_service():
+    caller = MagicMock()
+    client = _make_patch_client(caller)
+    with patch("codemie.rest_api.routers.schedulers.SchedulerSettingsService") as mock_svc_cls:
+        mock_svc_cls.patch_is_enabled.return_value = _SCHEDULER_ITEM
+        response = client.patch("/v1/schedulers/sched-1", json={"isEnabled": False})
+
+    assert response.status_code == 200
+    mock_svc_cls.patch_is_enabled.assert_called_once_with("sched-1", False, caller)
+
+
+def test_patch_scheduler_returns_403_for_non_owner_and_leaves_row_untouched():
+    from codemie.rest_api.models.settings import SettingType
+
+    row = _scheduler_row(setting_type=SettingType.USER, user_id="someone-else")
+    response = _patch_through_service(row, _caller("u1"))
+
+    assert response.status_code == 403
+    row.update.assert_not_called()
+    assert row.credential_values[0].value is True
+
+
+def test_patch_scheduler_returns_404_for_non_scheduler_row_and_leaves_row_untouched():
+    from codemie.rest_api.models.settings import SettingType
+    from codemie_tools.base.models import CredentialTypes
+
+    row = _scheduler_row(credential_type=CredentialTypes.JIRA, setting_type=SettingType.USER, user_id="u1")
+    response = _patch_through_service(row, _caller("u1"))
+
+    assert response.status_code == 404
+    row.update.assert_not_called()
+    assert row.credential_values[0].value is True
+
+
+def test_patch_scheduler_returns_200_for_owner():
+    from codemie.rest_api.models.settings import SettingType
+
+    row = _scheduler_row(setting_type=SettingType.USER, user_id="u1")
+    response = _patch_through_service(row, _caller("u1"))
+
+    assert response.status_code == 200
+    row.update.assert_called_once()
+    assert row.credential_values[0].value is False
 
 
 # ── T3: Service delete_run ────────────────────────────────────────────────────

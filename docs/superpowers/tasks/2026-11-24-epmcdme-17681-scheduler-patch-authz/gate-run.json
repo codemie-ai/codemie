@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17681_scheduler-patch-authz",
+  "head": "6c95952f09535e90c87928e0da6a21ad1b2cf37d",
+  "runner": "poetry",
+  "started_at": "2026-11-24T13:33:39Z",
+  "completed_at": "2026-11-24T13:39:40Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1250,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7064,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-headers",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1343,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 24362,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "no leaks found"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 283000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "20 failed, 40537 passed; failures in cli_analytics postgres live tests, test_conversation_pagination pdf export (libcairo missing), budget test_provider_registry; none in changed files. tests/codemie/rest_api/routers/test_schedulers.py: 53 passed."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 50,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "pre-push hook always-on check; make check-alembic fails here only because 'python' is not on PATH, python3 run passed"
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "command": "make sonar-local",
+      "notes": "pre-push hook, opt-in via CODEMIE_PREPUSH_ENABLED; no SONAR_TOKEN/.env.local and sonar-scanner not installed; owed to local sonar setup or CI"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "Only required when opening an MR; needs docker stack and fixtures"
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make coverage",
+      "notes": "Not requested"
+    },
+    {
+      "id": "commit-msg-hook",
+      "source": "hook",
+      "status": "N/A",
+      "command": "scripts/git-hooks/commit_msg.sh",
+      "notes": "Commit-time hook, no commit being made"
+    }
+  ],
+  "failures": {
+    "unit": "  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/rest_api/routers/test_settings_cron_validation.py:242: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_cron_expression(mock_request)\n\ntests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[UTC+2]\ntests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[Bad/Zone]\ntests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[not_a_timezone]\ntests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[]\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/models/index.py:127: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_timezone_string(self.timezone)\n\ntests/codemie/rest_api/routers/test_settings_transfer.py::test_transfer_both_flags_false_returns_422\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/settings.py:154: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    return SettingsTransferService.transfer(\n\ntests/codemie/service/test_mcp_config_service_auth_crud.py::test_update_rejects_auth_config_id_change_when_credentials_exist\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:604: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._apply_config_field_update(\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:295: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:673: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(mcp_config.config, config_id=config_id)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_hook_only_session_detail_matches_the_session_list\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_listing_gate_drops_start_only_and_sub_agent_sessions\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_late_parent_start_flags_the_already_rolled_up_child_as_a_sub_agent\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_aggregates_keep_claude_session_results_and_add_the_session_without_usage\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_model_breakdown_merges_dotted_and_dashed_claude_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_claude_code_subagent_start_does_not_hide_the_session_it_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_subagent_with_cost_rows_of_its_own_stays_listed\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_hidden_subagent_is_dropped_from_every_session_aggregate_and_still_opens_by_id\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_cost_rollup.py::test_rollup_cost_gives_what_the_live_cost_statements_give\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_stop_alone_is_no_agent_call_so_its_span_shows_an_empty_row\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_overview_rollup.py::test_the_rollup_serves_the_overview_the_live_statements_give_with_the_model_ties\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_user_rollup.py::test_the_rollup_serves_what_the_live_statements_give_for_the_seeded_users\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_explicit_false_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_full_mode_keeps_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[&include_tool_outputs=true-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_passes_format_specific_pandoc_args[pdf-expected_args0-absent_args0]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_list_table_link_content_survives_concise_filtering_end_to_end[pdf]\nFAILED tests/codemie/service/budget/test_provider_registry.py::test_sync_member_allocations_returns_outcome_per_item_matching_looped_calls\n= 20 failed, 40537 passed, 694 skipped, 6 xfailed, 712 warnings in 278.99s (0:04:38) =\nmake: *** [test] Error 1\n"
+  }
+}

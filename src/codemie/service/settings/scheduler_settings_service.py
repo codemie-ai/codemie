@@ -705,12 +705,30 @@ class SchedulerSettingsService(BaseSettingsService):
         return result
 
     @staticmethod
-    def patch_is_enabled(scheduler_id: str, is_enabled: bool):
+    def _ensure_can_write(setting, user) -> None:
+        from codemie.core.ability import Ability, Action
+        from codemie.rest_api.models.settings import ProjectSetting, UserSetting
+        from codemie.rest_api.routers.utils import raise_forbidden
+
+        if user.is_admin_or_maintainer:
+            return
+        wrapper = ProjectSetting if (setting.setting_type or SettingType.USER) == SettingType.PROJECT else UserSetting
+        if not Ability(user).can(Action.WRITE, wrapper(setting)):
+            raise_forbidden("update")
+
+    @staticmethod
+    def patch_is_enabled(scheduler_id: str, is_enabled: bool, user):
         from codemie.rest_api.routers.utils import raise_not_found
 
         setting = Settings.get_by_id(scheduler_id)
         if setting is None:
             raise_not_found(scheduler_id, "Scheduler")
+
+        credential_type = getattr(setting.credential_type, "value", setting.credential_type)
+        if str(credential_type).upper() != CredentialTypes.SCHEDULER.value.upper():
+            raise_not_found(scheduler_id, "Scheduler")
+
+        SchedulerSettingsService._ensure_can_write(setting, user)
 
         for cv in setting.credential_values or []:
             if cv.key == "is_enabled":

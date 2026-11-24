@@ -1,0 +1,61 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved; 0 findings, full profile, low confidence only for lack of spec"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved; 0 findings, full profile, low confidence only for lack of spec"
+    }
+  ],
+  "reviewed_head": "6c95952f09535e90c87928e0da6a21ad1b2cf37d",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "Acceptance lens did not run (no spec artifact), so confidence is low; blind, edge-case and verification-gap ran, standards audit had no coverage gap. 0 findings survived; 14 candidates dismissed as noise (see code-review-dismissed.local.md), 0 deferred.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "2 commit subjects in diff_base..HEAD both match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "3 changed files (2 src, 1 test); no code-quality.md rule broken; authorization check lives in scheduler_settings_service.py, which owns that concern"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Adjudicated against security-patterns.md; PATCH now uses authenticate and Ability WRITE check with admin/maintainer shortcut; non-scheduler types return not found. No concrete security issue found"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "Acceptance lens did not run (no spec artifact), so confidence is low; blind, edge-case and verification-gap ran, standards audit had no coverage gap. 0 findings survived; 14 candidates dismissed as noise (see code-review-dismissed.local.md), 0 deferred.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

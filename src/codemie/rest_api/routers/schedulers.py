@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -34,6 +34,7 @@ from codemie.rest_api.models.scheduler_run import (
     SchedulersPaginatedResponse,
 )
 from codemie.rest_api.security.authentication import authenticate
+from codemie.rest_api.security.user import User
 from codemie.service.scheduler_run_service import SchedulerRunService
 from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
 
@@ -80,8 +81,8 @@ def list_schedulers(
 
 
 @router.patch("/schedulers/{scheduler_id}", response_model=SchedulerListItem, status_code=status.HTTP_200_OK)
-def patch_scheduler(scheduler_id: str, body: PatchSchedulerRequest):
-    return SchedulerSettingsService.patch_is_enabled(scheduler_id, body.isEnabled)
+def patch_scheduler(scheduler_id: str, body: PatchSchedulerRequest, user: Annotated[User, Depends(authenticate)]):
+    return SchedulerSettingsService.patch_is_enabled(scheduler_id, body.isEnabled, user)
 
 
 # ── Phase 2 ──────────────────────────────────────────────────────────────────
