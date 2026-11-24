@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Add a scheduled codemie backend job, triggered after the enterprise spend uploader, that settles LLM spend figures on routing_call_usage Elasticsearch documents from the Postgres spend ledger via concurrency-checked bulk partial updates, plus config, a proxy run-id fix and tests.",
+  "generated": "2026-11-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New spend_backfill service package (engine plus target) plus changes to the pure routing-cost formula, the Postgres spend ledger repository, the metrics Elasticsearch repository (PIT, paged search, bulk update, mapping), the spend uploader scheduler, the index rotation service, config, app bootstrap and the enterprise proxy router. That is four or more components across several subsystems, with a new abstraction (the backfill engine)." },
+    { "dimension": "technical_risk", "reason": "First backend writes to the codemie_metrics_logs indices: optimistic-concurrency bulk partial updates, point-in-time paging and explicit mappings. None of this exists in src/; only partial precedents (PIT in metrics_aggregation_snapshot, sync helpers.bulk in state_import). The money fields it overwrites feed the routing analytics widgets, and explicit field mappings cannot be retyped once applied. Base L, bumped to XL because the spec lists outcome variants (pending no_rows / no_routed_success / no_classifier_row / no_run_id_on_rows, ambiguous, no_basis, settled) and no existing test template covers ES writes or bulk error-path parsing (409 vs other)." },
+    { "dimension": "file_change_estimate", "reason": "About 9-10 source files modified (routing_costs, spend_logs_repository, metrics_elastic_repository, spend_uploader scheduler, config, main, es_index_rotation_service, proxy_router, tokens_callback docstring, constants), plus about 5 existing test files (routing costs, ledger SQL, metrics repository, rotation, proxy router) and a docs-repo entry. About 3-4 new package files plus new backfill and scheduler tests. That is 11-15 modified and 4-6 new, across several subsystems." },
+    { "dimension": "affected_layers", "reason": "Service (backfill engine, scheduler), DB-Persistence (bounded Postgres ledger reads and an Elasticsearch mapping change), Infrastructure (scheduler and lifespan bootstrap, index rotation create call) and the enterprise uploader/proxy integration. No UI. Four layers including a persistence schema (mapping) change." },
+    { "dimension": "requirements_clarity", "reason": "The v3 spec defines the trigger, selection, outcome table and formula, and is backed by a reference implementation and a 24-document fixture with verify.py. The remaining gaps are minor: timezone handling of RunSummary.until, ES write permissions (spec open question 4) and line references that have drifted. Calibration note: the L example epmcdme-10401 scores clarity L; this task is much better specified, but scores higher on file count and risk, which gives a similar total (23 vs 22)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: acceptance criteria enumerate edge/outcome variants with no existing test template for Elasticsearch write or bulk error-path assertions"
+  ],
+  "split_recommendation": null
+}

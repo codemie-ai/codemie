@@ -113,7 +113,7 @@ from codemie.core.proxy_routing_headers import (
     _routing_info_to_headers,
 )
 from codemie.core.routing_info import RoutingInfo
-from codemie.core.routing_costs import with_counterfactual_costs
+from codemie.core.routing_costs import compute_original_cost, is_top_tier, with_counterfactual_costs
 from codemie.core.router_proxy_session import RouterProxySession
 
 
@@ -1601,9 +1601,10 @@ def _apply_proxy_counterfactual_costs(proxy_routing: RoutingInfo, usage_data: di
     Original cost includes both the routed model call and the classifier call.
 
     An unsettled call cost is priced locally for these figures only: the ledger settles the call's
-    own spend later, but this routing event is emitted now and Elasticsearch has no later pass, so
-    leaving the actual blank would drop the original cost, the estimated max and the savings from every
-    routed call. A response that carried no usage at all prices nothing and stamps nothing.
+    own spend later, but this routing event is emitted now and the spend backfill
+    (`service/spend_backfill`) corrects its money fields from the ledger only later, so until then the
+    event needs a priced actual cost to show an original cost, an estimated max and savings for routed
+    calls. A response that carried no usage at all prices nothing and stamps nothing.
     """
     if not (proxy_routing.counterfactual_model and proxy_routing.routed_model):
         return proxy_routing
@@ -1624,7 +1625,7 @@ def _apply_proxy_counterfactual_costs(proxy_routing: RoutingInfo, usage_data: di
         if cache_hit:
             proxy_routing = proxy_routing.model_copy(update={"classifier_cost_usd": 0.0})
             estimated_max_usd = 0.0
-        elif proxy_routing.tier == "complex":
+        elif is_top_tier(proxy_routing.tier):
             # Already at top tier; use actual spend, not re-pricing, to avoid
             # catalog-vs-proxy rounding showing up as fake savings.
             estimated_max_usd = money_spent
@@ -1638,7 +1639,9 @@ def _apply_proxy_counterfactual_costs(proxy_routing: RoutingInfo, usage_data: di
                 cached_tokens=usage_data["cached_tokens"],
                 cache_creation_tokens=usage_data.get("cache_creation_tokens", 0),
             )
-        actual_cost_usd = (0.0 if cache_hit else money_spent) + (proxy_routing.classifier_cost_usd or 0.0)
+        actual_cost_usd = compute_original_cost(
+            0.0 if cache_hit else money_spent, proxy_routing.classifier_cost_usd or 0.0
+        )
         return with_counterfactual_costs(
             proxy_routing,
             actual_cost_usd=actual_cost_usd,
@@ -1670,6 +1673,7 @@ def _queue_routing_metric(
         project=request_info.get("project", ""),
         request_id=request_id,
         endpoint=endpoint,
+        llm_run_id=request_info.get(MetricsAttributes.RUN_ID),
     )
 
 

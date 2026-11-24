@@ -22,6 +22,7 @@ from elasticsearch import AsyncElasticsearch, NotFoundError
 
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs import logger
+from codemie.repository.spend_backfill_metrics_repository import LEDGER_ATTRIBUTES_MAPPING
 
 _WRITE_ALIAS = "codemie_metrics_logs_write"
 _INDEX_PREFIX = "codemie_metrics_logs"
@@ -53,7 +54,10 @@ class MetricsIndexRotationService:
 
         if not await self._client.indices.exists(index=target):
             logger.info(f"Metrics rotation: creating index {target!r}")
-            await self._client.indices.create(index=target)
+            await self._client.indices.create(
+                index=target,
+                mappings={"properties": {"attributes": {"properties": LEDGER_ATTRIBUTES_MAPPING}}},
+            )
 
         logger.info(f"Metrics rotation: swapping alias {_WRITE_ALIAS!r} from {current_write!r} to {target!r}")
         await self._client.indices.update_aliases(

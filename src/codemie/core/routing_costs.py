@@ -17,6 +17,15 @@
 from codemie.core.routing_info import RoutingInfo
 
 
+def is_top_tier(tier: str | None) -> bool:
+    # The counterfactual is the top-tier model, so at that tier the estimated max is the routed spend.
+    return tier == "complex"
+
+
+def compute_original_cost(routed_spend: float, classifier_cost: float) -> float:
+    return float(routed_spend) + float(classifier_cost)
+
+
 def with_counterfactual_costs(
     routing: RoutingInfo,
     *,

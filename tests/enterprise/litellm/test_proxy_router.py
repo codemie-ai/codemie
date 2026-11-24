@@ -1979,6 +1979,38 @@ class TestStreamingResponseWithUsageTracking:
         ]
         assert len(routing_calls) == 0
 
+    def test_routing_metric_carries_run_id_from_spend_logs_header(self):
+        from codemie.core.routing_info import RoutingInfo
+        from codemie.enterprise.litellm.proxy_router import _queue_routing_metric
+        from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
+        from codemie.service.spend.spend_logs_metadata import KEY_RUN_ID, SPEND_LOGS_METADATA_HEADER
+
+        mock_request = MagicMock()
+        mock_request.headers = Headers({"content-type": "application/json"})
+        request_info = {"session_id": "s1", "request_id": "r1"}
+        mock_background_tasks = MagicMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_context:
+            mock_context.get.side_effect = LookupError()
+            headers = _prepare_proxy_headers(mock_request, request_info=request_info, user=MagicMock(id="u1"))
+
+        header_run_id = json.loads(headers[SPEND_LOGS_METADATA_HEADER])[KEY_RUN_ID]
+
+        _queue_routing_metric(
+            proxy_routing=RoutingInfo(routed_model="haiku", tier="efficient"),
+            user=MagicMock(),
+            session_id="s1",
+            request_info=request_info,
+            request_id="r1",
+            endpoint="/v1/chat/completions",
+            background_tasks=mock_background_tasks,
+        )
+
+        mock_background_tasks.add_task.assert_called_once()
+        call = mock_background_tasks.add_task.call_args
+        assert call.args[0] == RoutingMonitoringService.send_routing_metric
+        assert call.kwargs["llm_run_id"] == header_run_id
+
     @pytest.mark.asyncio
     async def test_finalize_stream_usage_tracking_uses_router_session_routing_info(self):
         """_finalize_stream_usage_tracking builds the analytics routing record entirely from

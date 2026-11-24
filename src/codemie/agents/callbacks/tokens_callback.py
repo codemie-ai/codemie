@@ -28,7 +28,7 @@ from codemie.configs import config, logger
 from codemie.core.llm_cache import is_litellm_proxy_cache_hit, is_llm_cache_hit
 from codemie.core.router import CallContext
 from codemie.core.router_chat_model import _iter_header_maps
-from codemie.core.routing_costs import with_counterfactual_costs
+from codemie.core.routing_costs import compute_original_cost, is_top_tier, with_counterfactual_costs
 from codemie.core.utils import calculate_token_cost
 from codemie.service.request_summary_manager import request_summary_manager, LLMRun
 from codemie.service.spend.routing import LLMCallClass, uses_litellm
@@ -295,10 +295,11 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         classifier as its own LLMRun), unlike the proxy path.
 
         An unsettled actual cost (`None`) is priced locally for these figures only. The call's own
-        `money_spent` stays unsettled for the ledger to fill in, but the routing event is emitted now
-        and Elasticsearch has no later pass, so leaving the actual blank would drop the original cost,
-        the estimated max and the savings from every routed call on a LiteLLM deployment. Both sides
-        are priced from the same table, so the savings compare like with like.
+        `money_spent` stays unsettled for the ledger to fill in, but the routing event is emitted now and
+        the spend backfill (`service/spend_backfill`) corrects its money fields from the ledger only later,
+        so until then the event needs a priced actual cost to show an original cost, an estimated max and
+        savings for routed calls on a LiteLLM deployment. Both sides are priced from the same table, so the
+        savings compare like with like.
 
         The counterfactual is priced locally even on the LiteLLM path, bypassing `_calculate_cost`'s
         gate: it is a "what it would have cost" analytics figure, never spend.
@@ -315,7 +316,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
                     cached_tokens=cached_tokens,
                     cache_creation_tokens=cache_creation_tokens,
                 )
-            if display_routing.tier == "complex":
+            if is_top_tier(display_routing.tier):
                 # Already at top tier; use actual spend, not re-pricing, to avoid
                 # catalog-vs-agent-path rounding showing up as fake savings.
                 estimated_max_usd = money_spent
@@ -330,7 +331,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
                 )
             return with_counterfactual_costs(
                 display_routing,
-                actual_cost_usd=money_spent + (display_routing.classifier_cost_usd or 0.0),
+                actual_cost_usd=compute_original_cost(money_spent, display_routing.classifier_cost_usd or 0.0),
                 estimated_max_cost_usd=estimated_max_usd,
             )
         except Exception:

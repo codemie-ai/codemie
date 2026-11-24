@@ -14,7 +14,7 @@
 
 import pytest
 
-from codemie.core.routing_costs import with_counterfactual_costs
+from codemie.core.routing_costs import compute_original_cost, is_top_tier, with_counterfactual_costs
 from codemie.core.routing_info import RoutingInfo
 
 
@@ -68,3 +68,13 @@ def test_with_counterfactual_costs_savings_can_be_negative():
     )
 
     assert result.potential_savings_usd == pytest.approx(-0.07)  # 0.05 - 0.12
+
+
+def test_is_top_tier_only_for_complex_tier():
+    assert is_top_tier("complex") is True
+    assert is_top_tier("simple") is False
+    assert is_top_tier(None) is False
+
+
+def test_compute_original_cost_adds_classifier_to_routed_spend():
+    assert compute_original_cost(0.0100, 0.0002) == pytest.approx(0.0102)

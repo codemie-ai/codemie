@@ -1,0 +1,693 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Check round approved all 12 fixes. User chose to move the CR-012 mapping call from startup into the job (applied once per process, run skipped and retried on failure); done after the check, tests and ruff green."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User: fix CR-002..CR-013 now; CR-001 accepted, commits reworded to EPMCDME-17780 after the check round."
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Check round approved all 12 fixes. User chose to move the CR-012 mapping call from startup into the job (applied once per process, run skipped and retried on failure); done after the check, tests and ruff green."
+    }
+  ],
+  "reviewed_head": "d7e8ed4f75a87244968db081a5bbb13682a39f82",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "Targeted re-check of the fix set: all 9 blocking findings (CR-002..CR-010) are resolved on current-source inspection and all 3 fix-set advisory findings (CR-011..CR-013) are resolved; CR-012 now bounds the startup mapping call with asyncio.wait_for, the lifespan's existing pattern for bounded startup checks. CR-001 (placeholder ticket) was accepted by the user and is outside the fix set; business and standards rows are carried forward from the final round, and tests were not executed here (Stage 7 owns execution).",
+  "confidence": "low",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 9,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 1
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "git log 8f36bf8a..HEAD",
+      "title": "Commits use placeholder ticket EPMCDME-0000",
+      "problem": "git-workflow.md requires the EPMCDME-#### prefix to name the real Jira work item and says to ask for the ticket before committing; all 7 commit subjects in 8f36bf8a..HEAD use the placeholder EPMCDME-0000. The original task says 'no ticket for now', so the correct fix depends on the user.",
+      "impact": "The squash commit that lands on main must keep a ticket-prefixed subject; a placeholder key breaks Jira traceability for the change. The documented standard makes this blocking.",
+      "recommendation": "Decide with the user: either supply the real EPMCDME-#### key and rewrite the commit subjects (at least the final squash commit and the MR title), or record that EPMCDME-0000 stays until a ticket exists and must be replaced before merge.",
+      "status": "wont-fix",
+      "disposition": {
+        "rationale": "User created ticket EPMCDME-17780; the branch commits get reworded to it at the commit-fixes step, after the check round, so the fixer does not rewrite history",
+        "source": "hitl",
+        "action": "accept"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/repository/metrics_elastic_repository.py",
+      "line": 341,
+      "title": "close_pit ignores the remaining time budget",
+      "problem": "The spec constraint says to bound each page and each Elasticsearch call's timeout by the remaining budget. close_pit always passes request_timeout=DEFAULT_REQUEST_TIMEOUT (60 s), and _scan's finally calls it through _close_pit_quietly on every window.",
+      "impact": "With Elasticsearch slow or stalled, each window's cleanup can hold a run up to 60 s past SPEND_BACKFILL_TIME_BUDGET_SECONDS (default 60 s), so a run can take twice its budget. A required spec constraint is only partly met.",
+      "recommendation": "Give close_pit a timeout parameter and pass it from _scan/_close_pit_quietly: the remaining budget with a small floor (a few seconds) so the point-in-time is still released when the budget is spent.",
+      "status": "resolved",
+      "check_notes": "close_pit takes a keyword timeout; _scan keeps a deadline from its timeout and closes with the remaining budget floored at CLOSE_PIT_MIN_TIMEOUT=5s; engine passes the remaining budget to scan().",
+      "fix": {
+        "change": "scan() keeps a deadline from its timeout; close_pit takes a keyword timeout and the scan closes with the remaining budget, floored at CLOSE_PIT_MIN_TIMEOUT (5 s)",
+        "test": "tests/codemie/repository/test_metrics_elastic_repository.py::test_scan_closes_pit_within_the_remaining_budget"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/metrics_ledger_writer.py",
+      "line": 39,
+      "title": "Bare dict/list/Sequence annotations in new code",
+      "problem": "code-quality.md Types And Imports forbids bare list/dict annotations in new code. The new code annotates with bare dict, list | None and an unparameterized Sequence at metrics_ledger_writer.py:39,57; engine.py:60,86,130,318,356; targets.py:78,86,114,147; metrics_elastic_repository.py:365,369.",
+      "impact": "A documented code-quality rule for new code is broken across every new module the change introduces; the standard makes it blocking for the workflow.",
+      "recommendation": "Parameterize every flagged annotation, e.g. dict[str, Any], list[Any] | None, Sequence[LedgerGroup], at metrics_ledger_writer.py:39,57; engine.py:60,86,130,318,356; targets.py:78,86,114,147; metrics_elastic_repository.py:365,369.",
+      "status": "resolved",
+      "check_notes": "No bare dict/list/Sequence annotations remain in metrics_ledger_writer, metrics_elastic_repository, routing_costs or spend_backfill/*.py (grep at HEAD).",
+      "fix": {
+        "change": "Parameterized every bare dict/list/Sequence annotation in metrics_ledger_writer, engine, targets and metrics_elastic_repository",
+        "test": "n/a"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/spend_backfill/engine.py",
+      "line": 83,
+      "title": "Missing return types on new functions",
+      "problem": "code-quality.md Types And Imports requires explicit return types on new functions. The public protocol method MetricsReader.scan (engine.py:83) and the new startup helper _put_spend_backfill_mapping (main.py:741) declare none.",
+      "impact": "scan is the protocol contract that MetricsElasticRepository implements (it returns AbstractAsyncContextManager[str] at metrics_elastic_repository.py:351), so the protocol does not state what callers get; a documented rule for new code is broken.",
+      "recommendation": "Annotate MetricsReader.scan with `-> AbstractAsyncContextManager[str]` and `_put_spend_backfill_mapping` (src/codemie/rest_api/main.py:741) with `-> None`.",
+      "status": "resolved",
+      "check_notes": "MetricsReader.scan returns AbstractAsyncContextManager[str]; _put_spend_backfill_mapping returns None.",
+      "fix": {
+        "change": "MetricsReader.scan returns AbstractAsyncContextManager[str]; _put_spend_backfill_mapping returns None",
+        "test": "n/a"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/spend_backfill/engine.py",
+      "line": 195,
+      "title": "Bulk item errors not counted by status or logged",
+      "problem": "The design's Writing section says other item errors are counted by status and the first few reasons logged. MetricsLedgerWriter.bulk_update returns only items[*].update.status, and _Stats.add_statuses folds every non-2xx, non-409 result into one item_errors counter; the error type and reason from the bulk response are dropped.",
+      "impact": "Mapping conflicts, parse errors or a read-only old index show up only as a number in the window line, so an operator cannot tell which failure is happening on every write. A binding spec requirement is only partly met.",
+      "recommendation": "Have MetricsLedgerWriter.bulk_update return each item's status plus its error type and reason; count non-409 failures per status (e.g. item_errors_400=N) in _Stats and log the first few reasons per window.",
+      "status": "resolved",
+      "check_notes": "bulk_update returns BulkItem(status, error_type, reason); _Stats counts item_errors per status (item_errors_<status>=N) and logs the first 3 reasons per window with the window prefix.",
+      "fix": {
+        "change": "bulk_update returns BulkItem(status, error_type, reason); the window line adds item_errors_<status>=N and the first 3 item errors are logged as warning lines with type and reason",
+        "test": "tests/codemie/service/spend_backfill/test_engine.py::test_item_errors_counted_by_status_and_first_reasons_logged; tests/codemie/repository/test_metrics_ledger_writer.py::test_bulk_update_returns_each_items_error_type_and_reason"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/spend_backfill/engine.py",
+      "line": 268,
+      "title": "No test for stale scan position reset",
+      "problem": "The reset at engine.py:268-269 (a saved position older than the window start is discarded) has no test: the only tests that seed a position (test_engine.py:426, 455) set last_ts inside the 48 h window, and frozen NOW keeps window.start fixed across runs. Deleting or inverting the reset fails nothing. Evidence: lens read of test_engine.py plus a triage grep of tests/ for last_ts.",
+      "impact": "A regression would restart the sweep from the stale timestamp (dry run once no new docs arrive for MAX_AGE_HOURS; write mode after a wrapped sweep), selecting documents from before the ledger coverage floor and settling them against partial ledger rows, which overwrites original_cost_usd and potential_savings_usd with too-small values. Consumer: SpendBackfillService._scan/_sweep selection feeding RoutingCallUsageTarget.decide and bulk_update.",
+      "recommendation": "Add an engine test that seeds positions.position(METRIC, 'recent').last_ts earlier than the window start (or a coverage floor that clips it), with a store doc between that timestamp and the window start; assert the first search range is gte the window start, the out-of-window doc never reaches target.decide, and the position was reset.",
+      "status": "resolved",
+      "check_notes": "test_stale_position_before_window_start_is_reset seeds last_ts before RECENT_START and asserts the query gte is the window start; _scan resumes from position.last_ts, so removing the reset fails it.",
+      "fix": {
+        "change": "Added a test for resetting a stale scan position",
+        "test": "tests/codemie/service/spend_backfill/test_engine.py::test_stale_position_before_window_start_is_reset"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/spend_backfill/engine.py",
+      "line": 274,
+      "title": "Ledger errors escape the per-window catch",
+      "problem": "_run_window catches only ExtendedHTTPException. targets._read sets the ledger statement_timeout to the remaining budget (floor 1 ms), so a ledger read still running when the budget runs out is cancelled by PostgreSQL and raises a SQLAlchemy error; a connection error or a ValueError does the same. These escape _run_window and run() and land in job.py's broad catch.",
+      "impact": "On the routine budget-hit path (large backlog, history pass) the window's stats line is never logged, a stack-traced 'Spend backfill failed' error is logged instead, the in-flight page's work is thrown away and any remaining windows are skipped. The next run retries, so no data is corrupted, but the tested 'a failing window lets the next window run' behaviour holds only for Elasticsearch errors.",
+      "recommendation": "In _run_window also catch SQLAlchemyError (a statement-timeout cancel counts as budget_hit) and log it with the window prefix, so the per-window stats line is always written and the next window still runs.",
+      "status": "resolved",
+      "check_notes": "_run_window also catches SQLAlchemyError, logs it with the window prefix, sets budget_hit when the deadline has passed; the window line is always written. Two tests added.",
+      "fix": {
+        "change": "_run_window also catches SQLAlchemyError, logs it with the window prefix, and sets budget_hit when the budget is spent; the window line is always written",
+        "test": "tests/codemie/service/spend_backfill/test_engine.py::test_ledger_error_is_caught_logged_and_next_window_runs; test_ledger_statement_timeout_counts_as_budget_hit"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/spend_backfill/engine.py",
+      "line": 280,
+      "title": "No test for an incomplete history pass",
+      "problem": "The history pass is marked done only when its sweep reached the window end (`if window.name == HISTORY and complete`), but no test runs a history window that stops partway: test_budget_stop runs out inside the recent window, the window-failure test fails the recent window, and the history test covers only a completed pass. A triage grep found no test referencing history_done.",
+      "impact": "Dropping `and complete`, or a budget-limited sweep returning True, would record a cut-short history pass as complete for the life of the process; older routing documents past the stop point would keep their estimated money and never be settled, and no test would fail. Consumer: SpendBackfillService._windows skips history once history_done is True, via job.py's process-wide _positions.",
+      "recommendation": "Add an engine test where the history window stops partway (monotonic clock crossing the budget mid-history sweep with page_size=1, or the reader failing on the history `lt` range); assert positions.history_done(METRIC) is False, no 'history pass complete' line is logged, and a second run queries history again and decides the remaining docs.",
+      "status": "resolved",
+      "check_notes": "test_history_pass_cut_short_is_not_marked_done_and_resumes fails the second history page and asserts history_done is False, no completion line, and a second run settles the rest.",
+      "fix": {
+        "change": "Added a test for a history pass cut short: not marked done, and it resumes on the next run",
+        "test": "tests/codemie/service/spend_backfill/test_engine.py::test_history_pass_cut_short_is_not_marked_done_and_resumes"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/spend_backfill/job.py",
+      "line": 45,
+      "title": "Some backfill log lines omit pod=",
+      "problem": "The spec says every log line carries pod=<host name>. run_spend_backfill's `logger.error(f\"Spend backfill failed: ...\")` at job.py:45 and both _parse_history_from error lines at engine.py:74 and 77 leave it out; the window lines carry it.",
+      "impact": "The failure lines, which are the ones an operator searches for in a multi-pod deployment, cannot be tied to a pod. A required spec behaviour is only partly met.",
+      "recommendation": "Prefix job.py's failure line and both _parse_history_from error lines (engine.py:74, 77) with `spend_backfill pod={_POD}`, sharing _POD with job.py.",
+      "status": "resolved",
+      "check_notes": "job.py failure line and both _parse_history_from error lines start with 'spend_backfill pod={POD}'; every logger call in spend_backfill/ carries pod=.",
+      "fix": {
+        "change": "engine _POD made public as POD; job failure line and both HISTORY_FROM error lines start with 'spend_backfill pod=<host>'",
+        "test": "tests/codemie/service/spend_backfill/test_job.py::test_logs_and_swallows_service_failure; test_engine.py::test_invalid_history_from_turns_history_off"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/spend_backfill/targets.py",
+      "line": 209,
+      "title": "several_run_ids ambiguous omits ledger fields",
+      "problem": "The design's Fields written table puts ledger_spend_usd and ledger_rows on every decided document that had ledger rows. RoutingCallUsageTarget._resolve returns `_decided_doc(\"ambiguous\")` with no result for a request id that resolves to more than one run id, although the resolution query found rows; test_request_grain_with_several_run_ids_is_ambiguous does not check the fields.",
+      "impact": "These documents are written as decided (ledger_settlement_version 1, never selected again) without ledger_spend_usd or ledger_rows, so ledger totals read from Elasticsearch leave out exactly the ambiguous proxy requests. A binding spec requirement is only partly met.",
+      "recommendation": "For a request id resolving to several run ids, compute ledger_spend_usd and ledger_rows from that request's ledger rows (extend the resolution query with sum(spend)/count(*), or fetch and classify the groups of all its run ids, since the spec defines ledger_spend_usd as routed+classifier total) and pass them to _decided_doc; assert both fields in test_request_grain_with_several_run_ids_is_ambiguous.",
+      "status": "resolved",
+      "check_notes": "resolve_request_runs adds sum(spend) and count(*) as RequestRuns (request ids deduplicated); several_run_ids builds _decided_doc with ledger_spend_usd and ledger_rows; test asserts both.",
+      "fix": {
+        "change": "Resolution query also returns sum(spend) and count(*) as RequestRuns; several_run_ids ambiguous doc carries ledger_spend_usd and ledger_rows",
+        "test": "tests/codemie/service/spend_backfill/test_targets.py::test_request_grain_with_several_run_ids_is_ambiguous; test_spend_logs_repository.py::test_request_runs_map_each_request_to_its_run_count_minimum_spend_and_rows"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/repository/metrics_elastic_repository.py",
+      "line": 378,
+      "title": "PIT renewal ignores the keep_alive parameter",
+      "problem": "scan() and open_pit() take a keep_alive parameter, but search_page always renews the point-in-time with the hard-coded SCAN_KEEP_ALIVE (\"2m\"), and the defaults repeat the literal \"2m\" instead of the constant.",
+      "impact": "No behaviour consequence today: the engine never passes keep_alive and the spec uses 2m. The trigger is narrow: the PIT expires mid-scan only if one page step (decide plus bulk, each bounded by the remaining budget) exceeds 2 minutes, which needs SPEND_BACKFILL_TIME_BUDGET_SECONDS above 120 s.",
+      "recommendation": "Pass keep_alive through to search_page (or drop the parameter) and use SCAN_KEEP_ALIVE for the defaults.",
+      "status": "resolved",
+      "check_notes": "keep_alive parameters removed from scan/open_pit; open_pit uses SCAN_KEEP_ALIVE, the value search_page renews with.",
+      "fix": {
+        "change": "Removed the unused keep_alive parameters from scan/open_pit; open_pit uses SCAN_KEEP_ALIVE, the same value search_page renews with",
+        "test": "tests/codemie/repository/test_metrics_elastic_repository.py::test_open_pit_disallows_partial_results_and_returns_id"
+      },
+      "disposition": {
+        "rationale": "User chose to fix now",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-012",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/rest_api/main.py",
+      "line": 1404,
+      "title": "Startup mapping call can stall startup",
+      "problem": "lifespan awaits _put_spend_backfill_mapping after _setup_spend_uploader_scheduler has started the scheduler, and put_attributes_mapping uses DEFAULT_REQUEST_TIMEOUT (60 s).",
+      "impact": "Only with SPEND_BACKFILL_ENABLED and Elasticsearch slow or unreachable at startup: startup waits up to 60 s plus client retries, then warns and continues. A backfill writing before the mapping exists is harmless because every value passes float()/int(), so dynamic mapping types it correctly.",
+      "recommendation": "Bound the call (e.g. asyncio.wait_for with a few seconds) or apply the mapping before starting the scheduler or in the background.",
+      "status": "resolved",
+      "check_notes": "Mapping call wrapped in asyncio.wait_for (10s) with a warning on failure or timeout, matching the lifespan's bounded model-provider readiness check; no longer a bare await.",
+      "fix": {
+        "change": "Startup mapping call bounded by asyncio.wait_for (_SPEND_BACKFILL_MAPPING_TIMEOUT_SECONDS = 10); a timeout warns and startup continues",
+        "test": "tests/codemie/rest_api/test_main_lifespan.py::test_put_spend_backfill_mapping_gives_up_after_its_timeout"
+      },
+      "disposition": {
+        "rationale": "User: the bare `await _put_spend_backfill_mapping()` in lifespan looks wrong; follow the codebase convention for startup work in rest_api/main.py lifespan (how other optional startup steps and index setup are done), or another proper non-blocking solution, so startup is never held up by Elasticsearch",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-013",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/service/spend_backfill/engine.py",
+      "line": 106,
+      "title": "Numeric backfill settings are not validated",
+      "problem": "SpendBackfillSettings.from_config takes PAGE_SIZE, MAX_AGE_HOURS, SKEW_SECONDS and TIME_BUDGET_SECONDS as given. PAGE_SIZE=0 makes `len(hits) < 0` never true, so `hits[-1]` raises IndexError in _sweep (engine.py:330-332); a size above index.max_result_window is rejected on every page; a negative SKEW moves the ready bound past what the feed flushed; negative MAX_AGE or budget give empty or inverted windows.",
+      "impact": "Only on operator misconfiguration (the defaults are valid): the run aborts through job.py's catch on every feed, or silently does nothing, until the setting is corrected, which is the workaround.",
+      "recommendation": "Validate or clamp in from_config: page_size to min(max(n, 1), 10000), skew, max_age and budget to >= 0, and log a warning when a value is clamped.",
+      "status": "resolved",
+      "check_notes": "from_config clamps PAGE_SIZE to 1..10000 and MAX_AGE, SKEW, TIME_BUDGET to >= 0, warning per clamped value with pod=.",
+      "fix": {
+        "change": "from_config clamps PAGE_SIZE to 1..10000 and MAX_AGE, SKEW and TIME_BUDGET to >= 0, with a warning per clamped value",
+        "test": "tests/codemie/service/spend_backfill/test_engine.py::test_out_of_range_settings_are_clamped_with_a_warning"
+      },
+      "disposition": {
+        "rationale": "User chose to fix now",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Scope 1: proxy routing metric passes llm_run_id from request_info",
+      "status": "pass",
+      "notes": "proxy_router.py:1674; run id minted at :416-417; test_routing_metric_carries_run_id_from_spend_logs_header"
+    },
+    {
+      "kind": "spec",
+      "item": "Scope 2: pure backfill_routing_costs with input/output dataclasses in core/routing_costs.py",
+      "status": "pass",
+      "notes": "LedgerGroup, RoutingBackfillInput, RoutingBackfill, _classify; no I/O"
+    },
+    {
+      "kind": "spec",
+      "item": "Scope 2: write-time rules defined once, both call sites switched, behaviour unchanged",
+      "status": "pass",
+      "notes": "actual_cost/counterfactual_is_actual used in proxy_router.py and tokens_callback.py; arithmetic identical"
+    },
+    {
+      "kind": "spec",
+      "item": "Scope 3: two bounded ledger reads in spend_logs_repository.py",
+      "status": "pass",
+      "notes": "resolve_request_runs, run_groups; both use within(period)"
+    },
+    {
+      "kind": "spec",
+      "item": "Scope 4: fail-closed PIT methods; bulk_update and mapping on a separate writer class",
+      "status": "pass",
+      "notes": "_require_client raises when unconfigured; MetricsLedgerWriter holds bulk_update and the mapping"
+    },
+    {
+      "kind": "spec",
+      "item": "Scope 5: engine.py (service, per-process positions) and targets.py (protocol, routing target)",
+      "status": "pass",
+      "notes": "ScanPositions/SpendBackfillService; BackfillTarget, RoutingCallUsageTarget"
+    },
+    {
+      "kind": "spec",
+      "item": "Scope 6: feed returns (summary, end_margin); one-shot spend_backfill scheduled; job catches and logs all",
+      "status": "pass",
+      "notes": "scheduler._schedule_spend_backfill add_job(trigger=date); job.py broad except"
+    },
+    {
+      "kind": "spec",
+      "item": "Scope 7: nine SPEND_BACKFILL_* settings next to LITELLM_SPEND_UPLOADER_*",
+      "status": "pass",
+      "notes": "config.py:1097-1106 with design defaults"
+    },
+    {
+      "kind": "spec",
+      "item": "Scope 7: startup mapping call in main.py and mapping on rotation index creation",
+      "status": "pass",
+      "notes": "main.py _put_spend_backfill_mapping; es_index_rotation_service indices.create(mappings=...)"
+    },
+    {
+      "kind": "spec",
+      "item": "Scope 7: docstring pointers replace 'Elasticsearch has no later pass'",
+      "status": "pass",
+      "notes": "tokens_callback.py and proxy_router.py point to service/spend_backfill"
+    },
+    {
+      "kind": "spec",
+      "item": "Scope 7: docs repo entry in docs/docs/admin/configuration/codemie/api-configuration.md",
+      "status": "pass",
+      "notes": "verified by triage in the docs repo working tree: lines 117-125 list all nine settings; outside this diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Dry run is env SPEND_BACKFILL_DRY_RUN, default True, read once per run; no dynamic config",
+      "status": "pass",
+      "notes": "SpendBackfillSettings.from_config built per run; no DynamicConfigService"
+    },
+    {
+      "kind": "spec",
+      "item": "Bounds: until = summary.until UTC; flushed_bound = until - end_margin - SKEW; job args both bounds",
+      "status": "pass",
+      "notes": "test_schedules_one_shot_backfill_with_utc_bounds"
+    },
+    {
+      "kind": "spec",
+      "item": "Bounds: ledger_coverage() once per run; one log line when not activated",
+      "status": "pass",
+      "notes": "engine.run skipped=ledger_not_activated; test_skips_with_one_line_when_ledger_not_activated"
+    },
+    {
+      "kind": "spec",
+      "item": "Bounds: both windows clipped with admitted(TimeRange)",
+      "status": "pass",
+      "notes": "engine._admitted; test_history_selection_uses_lt_and_is_clipped_to_the_floor"
+    },
+    {
+      "kind": "spec",
+      "item": "Bounds: ledger lo = oldest hit - emission_lag; hi = until (recent) or history end + SKEW",
+      "status": "pass",
+      "notes": "engine._process TimeRange; test_ledger_period_per_window"
+    },
+    {
+      "kind": "spec",
+      "item": "Scan position: per-process holder per target and window; own PIT per run; stale position clamped",
+      "status": "pass",
+      "notes": "ScanPositions/ScanPosition; reset when last_ts < window.start; test_resume_skips_seen_ids_at_same_timestamp"
+    },
+    {
+      "kind": "spec",
+      "item": "Scan position: write-mode recent window wraps at most once per run; dry run does not wrap",
+      "status": "pass",
+      "notes": "engine._scan; test_write_mode_wraps_at_most_once_per_run, test_dry_run_does_not_wrap_or_write"
+    },
+    {
+      "kind": "spec",
+      "item": "Scan position: every log line carries pod=<host name>; cursor_reset=true after restart",
+      "status": "partial",
+      "notes": "job.py:45 failure line and engine.py:74,77 HISTORY_FROM error lines omit pod= (CR-009)"
+    },
+    {
+      "kind": "spec",
+      "item": "Selection: ledger_settlement_version missing or lower than 1",
+      "status": "pass",
+      "notes": "engine._query; test_recent_selection_query"
+    },
+    {
+      "kind": "spec",
+      "item": "Classification: ignored first; LiteLLM routed/classifier/foreign; Switchyard routed/foreign",
+      "status": "pass",
+      "notes": "routing_costs._classify; shared-model tests for both families"
+    },
+    {
+      "kind": "spec",
+      "item": "Formula: clf, actual, est_max per family and tier; O/M/C from *_estimated copies when present",
+      "status": "pass",
+      "notes": "backfill_routing_costs; targets._estimate prefers *_estimated"
+    },
+    {
+      "kind": "spec",
+      "item": "Formula: pending no_classifier_row when LiteLLM doc has classifier cost and no classifier row",
+      "status": "pass",
+      "notes": "test_backfill_litellm_with_classifier_cost_but_no_classifier_row_is_pending"
+    },
+    {
+      "kind": "spec",
+      "item": "Fields written: *_estimated copies written only when absent",
+      "status": "pass",
+      "notes": "targets._settled; test_estimated_copies_read_and_not_rewritten"
+    },
+    {
+      "kind": "spec",
+      "item": "Mapping: one mapping used at startup (when enabled), rotation create (always) and a target test",
+      "status": "pass",
+      "notes": "LEDGER_ATTRIBUTES_MAPPING; test_mapping_matches_spec; rotation test parametrised on the flag"
+    },
+    {
+      "kind": "spec",
+      "item": "Engine/target split: target supplies grain-specific reads and outcomes; engine has no routing code",
+      "status": "pass",
+      "notes": "Outcome dataclass; _Stats counts status and status_reason generically"
+    },
+    {
+      "kind": "spec",
+      "item": "Rollout and open-questions amendments (ratio comparison, ledger_rows recount, presence rule)",
+      "status": "na",
+      "notes": "operational rollout procedure; no code obligation in this change"
+    },
+    {
+      "kind": "spec",
+      "item": "Constraint: one ledger session per query with a statement timeout",
+      "status": "pass",
+      "notes": "targets._read; test_each_ledger_query_opens_its_own_session_with_statement_timeout"
+    },
+    {
+      "kind": "spec",
+      "item": "Constraint: bound each page and each Elasticsearch call's timeout by the remaining budget",
+      "status": "partial",
+      "notes": "close_pit uses fixed DEFAULT_REQUEST_TIMEOUT=60s from scan's finally (CR-002)"
+    },
+    {
+      "kind": "spec",
+      "item": "Constraint: PIT without partial results, shard failures as errors, closed via context manager",
+      "status": "pass",
+      "notes": "open_pit/search_page allow_partial_search_results=False + _require_complete; scan() closes in finally"
+    },
+    {
+      "kind": "spec",
+      "item": "Constraint: ledger query docstrings say why id-keyed reads are time-bounded",
+      "status": "pass",
+      "notes": "resolve_request_runs and run_groups docstrings"
+    },
+    {
+      "kind": "spec",
+      "item": "AC1: job disabled changes only llm_run_id and new-index mapping; run-id test on proxy metric",
+      "status": "pass",
+      "notes": "startup mapping and scheduling gated on SPEND_BACKFILL_ENABLED"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: enabled write run gives every ready doc with rows its non-pending outcome and fields",
+      "status": "pass",
+      "notes": "test_run_grain_settles_worked_example; several_run_ids ledger-field gap tracked as CR-010"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: unit tests cover every outcome row, formula branch, worked example, Decimal and shared model",
+      "status": "pass",
+      "notes": "tests/core/test_routing_costs.py"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: a second run over the same window writes nothing",
+      "status": "pass",
+      "notes": "test_second_write_run_writes_nothing"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: dry run writes nothing; each doc counted once per process; job run twice",
+      "status": "pass",
+      "notes": "test_dry_run_counts_each_document_once_across_runs; test_runs_service_with_bounds_and_the_same_positions_every_time"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: backfill scheduled with add_job(trigger='date'), never awaited; None schedules nothing",
+      "status": "pass",
+      "notes": "tests/codemie/service/spend_uploader/test_scheduler.py"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: money fields JSON floats and counts ints via the client's serializer",
+      "status": "pass",
+      "notes": "test_serialized_update_has_json_floats_for_money_and_ints_for_counts"
+    },
+    {
+      "kind": "spec",
+      "item": "AC8: both ledger statements compile on PostgreSQL, half-open start_time, ids as one array",
+      "status": "pass",
+      "notes": "TestTheRoutingBackfillReadsBindTheirIdsAsOneArray"
+    },
+    {
+      "kind": "spec",
+      "item": "AC9: local stack write run with HISTORY_FROM, verify.py prints 24/24 documents match",
+      "status": "pending-stage-7",
+      "notes": "implementation present; remaining proof is a local-stack run"
+    },
+    {
+      "kind": "spec",
+      "item": "AC10: quality gates pass plus tests of the touched areas",
+      "status": "pending-stage-7",
+      "notes": "lint/test execution evidence owned by Stage 7"
+    },
+    {
+      "kind": "spec",
+      "item": "AC11: engine/repository tests cover matching outcomes, 409 vs item errors, budget, allow-list, wrap, skip",
+      "status": "pass",
+      "notes": "test_targets.py request-grain tests; test_engine.py"
+    },
+    {
+      "kind": "spec",
+      "item": "AC12: selection takes missing or lower version; *_estimated copies used and never overwritten",
+      "status": "pass",
+      "notes": "engine._query; test_estimated_copies_read_and_not_rewritten"
+    },
+    {
+      "kind": "spec",
+      "item": "AC13: startup mapping call when enabled, failure only warns; written fields all in mapping",
+      "status": "pass",
+      "notes": "test_main_lifespan.py; test_every_written_field_is_in_the_shared_mapping"
+    },
+    {
+      "kind": "spec",
+      "item": "AC14: docs repo entry exists and lists the nine settings",
+      "status": "pass",
+      "notes": "verified by triage: docs repo api-configuration.md:117-125 lists all nine SPEND_BACKFILL_* settings"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals: no read-side, write-time, dynamic config, enterprise, update_by_query or other-target change",
+      "status": "pass",
+      "notes": "bulk partial updates only; TARGETS holds only routing_call_usage"
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: recent window lte flushed_bound, history lt now - MAX_AGE; inverted recent skipped",
+      "status": "pass",
+      "notes": "_Window end_inclusive; test_recent_window_skipped_when_inverted"
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: history pass complete logged once, not rescanned for the process",
+      "status": "pass",
+      "notes": "test_history_pass_complete_logged_once_and_not_rescanned"
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: request-grain doc whose resolved run has no groups is pending no_rows",
+      "status": "pass",
+      "notes": "test_resolved_run_without_groups_is_pending_no_rows"
+    },
+    {
+      "kind": "spec",
+      "item": "Decision: bulk_update reads items[*].update.status; engine catches ExtendedHTTPException",
+      "status": "pass",
+      "notes": "metrics_ledger_writer.bulk_update; engine._run_window"
+    },
+    {
+      "kind": "spec",
+      "item": "Writing: bulk partial updates to hit _index with if_seq_no/if_primary_term, refresh=False; 409 counted",
+      "status": "pass",
+      "notes": "test_bulk_update_sends_concurrency_checked_partial_updates"
+    },
+    {
+      "kind": "spec",
+      "item": "Writing: other item errors counted by status and the first few reasons logged",
+      "status": "partial",
+      "notes": "bulk_update returns statuses only; all non-409 failures fold into one item_errors count; no reasons logged (CR-005)"
+    },
+    {
+      "kind": "spec",
+      "item": "Fields written: ledger_spend_usd and ledger_rows on every decided document that had ledger rows",
+      "status": "partial",
+      "notes": "several_run_ids ambiguous writes _decided_doc('ambiguous') without both fields (targets.py:209, CR-010)"
+    },
+    {
+      "kind": "spec",
+      "item": "Logging: one info line per window, key=value, old_/new_ sums over settled, no user/project names",
+      "status": "pass",
+      "notes": "engine._run_window; test_log_line"
+    },
+    {
+      "kind": "spec",
+      "item": "Failure modes: job errors logged, feed unaffected, next run retries",
+      "status": "pass",
+      "notes": "job.py swallows all exceptions; test_window_failure_is_caught_and_next_window_runs"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "partial",
+      "notes": "All 7 subjects in 8f36bf8a..HEAD match 'EPMCDME-####: Description' (git-workflow.md) but carry placeholder EPMCDME-0000, not a real work item."
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "Met: Apache headers, __future__ annotations, X | None unions. Unmet (Types And Imports): bare dict/list/Sequence annotations and missing return types in new code. Ruff not run."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Checked against security-patterns.md: no secrets in new logs, no new endpoint, HISTORY_FROM fails closed, ledger ids bound as one array, ES queries are structured dicts."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "All four lenses and the standards audit ran; 13 findings (10 blocking: four partially met spec requirements, five major including two test gaps and two code-quality standard violations, and one decision_needed on the placeholder ticket EPMCDME-0000, which the task's 'no ticket for now' leaves to the user) plus 3 advisory. Confidence is low because that decision_needed item remains open; 0 deferred, 22 lens claims dismissed (see code-review-dismissed.local.md), and the docs-repo criterion was verified present in the docs repo working tree.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

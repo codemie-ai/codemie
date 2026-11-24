@@ -752,3 +752,149 @@ class TestSumByRequestId:
 
         assert "codemie_origin" in rendered
         assert "attr_category" in rendered
+
+
+class TestTheLedgerTotalsReadsBindTheirIdsAsOneArray:
+    REQUEST_IDS = ["req-1", "req-2"]
+    RUN_IDS = ["run-1", "run-2"]
+
+    @staticmethod
+    def compiled(statement):
+        return statement.compile(dialect=postgresql.dialect())
+
+    def test_request_totals_join_one_unnested_text_array_parameter(self):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        compiled = self.compiled(SpendLogsRepository._sum_ledger_rows_by_request_id_statement(self.REQUEST_IDS, PERIOD))
+        rendered = str(compiled).replace("\n", " ")
+
+        assert "unnest(CAST(" in rendered and "AS TEXT[])" in rendered
+        assert " IN (" not in rendered
+        assert [p.value for p in compiled.binds.values() if isinstance(p.value, list)] == [self.REQUEST_IDS]
+
+    def test_request_totals_group_by_request_id_and_count_distinct_runs(self):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        rendered = sql(SpendLogsRepository._sum_ledger_rows_by_request_id_statement(self.REQUEST_IDS, PERIOD)).upper()
+
+        assert "COUNT(DISTINCT LITELLM_SPEND_LOGS.CODEMIE_RUN_ID)" in rendered
+        assert "MIN(LITELLM_SPEND_LOGS.CODEMIE_RUN_ID)" in rendered
+        assert "SUM(LITELLM_SPEND_LOGS.SPEND)" in rendered
+        assert "COUNT(*)" in rendered
+        assert rendered.rstrip().endswith("GROUP BY LITELLM_SPEND_LOGS.CODEMIE_REQUEST_ID")
+
+    def test_run_totals_join_one_unnested_text_array_parameter(self):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        compiled = self.compiled(SpendLogsRepository._sum_ledger_rows_by_run_id_statement(self.RUN_IDS, PERIOD))
+        rendered = str(compiled).replace("\n", " ")
+
+        assert "unnest(CAST(" in rendered and "AS TEXT[])" in rendered
+        assert " IN (" not in rendered
+        assert [p.value for p in compiled.binds.values() if isinstance(p.value, list)] == [self.RUN_IDS]
+
+    def test_run_totals_group_by_run_model_group_and_status(self):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        rendered = sql(SpendLogsRepository._sum_ledger_rows_by_run_id_statement(self.RUN_IDS, PERIOD))
+
+        assert rendered.rstrip().endswith(
+            "GROUP BY litellm_spend_logs.codemie_run_id, litellm_spend_logs.model_group, litellm_spend_logs.status"
+        )
+        assert "prompt_tokens + litellm_spend_logs.completion_tokens" in rendered
+
+    @pytest.mark.parametrize(
+        "method", ["_sum_ledger_rows_by_request_id_statement", "_sum_ledger_rows_by_run_id_statement"]
+    )
+    def test_both_reads_are_half_open_on_start_time(self, method):
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        rendered = sql(getattr(SpendLogsRepository, method)(["x"], PERIOD))
+
+        assert "start_time >= '2026-08-01" in rendered
+        assert "start_time < '2026-09-01" in rendered
+        assert "BETWEEN" not in rendered.upper()
+        assert "<=" not in rendered
+
+
+@pytest.mark.asyncio
+class TestTheLedgerTotalsReadsReturnKeyedResults:
+    async def test_an_empty_id_list_is_answered_without_a_query(self):
+        from unittest.mock import AsyncMock
+
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        session = AsyncMock()
+        repository = SpendLogsRepository()
+
+        assert await repository.sum_ledger_rows_by_request_id(session, [], PERIOD, timeout=1.0) == {}
+        assert await repository.sum_ledger_rows_by_run_id(session, [], PERIOD, timeout=1.0) == {}
+        session.execute.assert_not_called()
+
+    @pytest.mark.parametrize("method", ["sum_ledger_rows_by_request_id", "sum_ledger_rows_by_run_id"])
+    async def test_each_read_sets_the_statement_timeout_from_the_time_left_first(self, method):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(all=lambda: [])
+
+        await getattr(SpendLogsRepository(), method)(session, ["x"], PERIOD, timeout=2.5)
+
+        first_call = session.execute.await_args_list[0]
+        assert "set_config('statement_timeout'" in str(first_call.args[0])
+        assert first_call.args[1] == {"ms": "2500"}
+
+    async def test_request_totals_map_each_request_to_its_run_count_minimum_float_spend_and_rows(self):
+        from decimal import Decimal
+        from unittest.mock import AsyncMock, MagicMock
+
+        from codemie.core.routing_ledger_costs import RequestLedgerTotals
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(
+            all=lambda: [
+                ("req-1", 1, "run-1", Decimal("0.5"), 2),
+                ("req-2", 2, "run-a", Decimal("1.25"), 3),
+                ("req-3", 0, None, None, 1),
+            ]
+        )
+
+        result = await SpendLogsRepository().sum_ledger_rows_by_request_id(
+            session, ["req-1", "req-2", "req-3"], PERIOD, timeout=1.0
+        )
+
+        assert result == {
+            "req-1": RequestLedgerTotals(1, "run-1", 0.5, 2),
+            "req-2": RequestLedgerTotals(2, "run-a", 1.25, 3),
+            "req-3": RequestLedgerTotals(0, None, 0.0, 1),
+        }
+        assert all(type(totals.spend) is float for totals in result.values())
+
+    async def test_run_totals_collect_each_runs_rows_with_float_spend(self):
+        from decimal import Decimal
+        from unittest.mock import AsyncMock, MagicMock
+
+        from codemie.core.routing_ledger_costs import RunLedgerTotals
+        from codemie.repository.spend_logs_repository import SpendLogsRepository
+
+        rows = [
+            ("run-1", "gpt", "success", Decimal("0.5"), 2, 30),
+            ("run-1", None, "failure", Decimal("0"), 1, None),
+            ("run-2", "claude", "success", Decimal("1.25"), 1, 12),
+        ]
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(all=lambda: rows)
+
+        result = await SpendLogsRepository().sum_ledger_rows_by_run_id(session, ["run-1", "run-2"], PERIOD, timeout=1.0)
+
+        assert result == {
+            "run-1": [
+                RunLedgerTotals("gpt", "success", 0.5, 2, 30),
+                RunLedgerTotals(None, "failure", 0.0, 1, 0),
+            ],
+            "run-2": [RunLedgerTotals("claude", "success", 1.25, 1, 12)],
+        }
+        assert all(type(totals.spend) is float for run in result.values() for totals in run)

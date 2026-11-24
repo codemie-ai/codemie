@@ -52,9 +52,26 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import ColumnElement, Result, and_, false, func, null, or_, select, true, union_all
+from sqlalchemy import (
+    ColumnElement,
+    Result,
+    Text,
+    and_,
+    bindparam,
+    cast,
+    false,
+    func,
+    null,
+    or_,
+    select,
+    text,
+    true,
+    union_all,
+)
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from codemie.core.routing_ledger_costs import RequestLedgerTotals, RunLedgerTotals
 from codemie.service.spend.attribution import PROJECT_PREFIX
 from codemie.service.spend.coverage import SpendDimension, TimeRange
 from codemie.service.spend.spend_group import SpendGroup, spend_group_predicate
@@ -1072,6 +1089,79 @@ class SpendLogsRepository:
         )
         result = await session.execute(statement)
         return dict(result.tuples().all())
+
+    @staticmethod
+    def _unnest_ids(ids: Sequence[str]):
+        """One `text[]` parameter unnested to rows `r(id)`, so the statement does not grow with the ids."""
+        array = cast(bindparam("ids", list(ids), type_=ARRAY(Text)), ARRAY(Text))
+        return func.unnest(array).table_valued("id").render_derived(name="r")
+
+    @classmethod
+    def _sum_ledger_rows_by_request_id_statement(cls, request_ids: Sequence[str], period: TimeRange):
+        ids = cls._unnest_ids(request_ids)
+        return (
+            select(
+                Row.codemie_request_id.label("request_id"),
+                func.count(Row.codemie_run_id.distinct()).label("run_id_count"),
+                func.min(Row.codemie_run_id).label("run_id"),
+                func.sum(Row.spend).label("spend"),
+                func.count().label("rows"),
+            )
+            .select_from(ids.join(Row, Row.codemie_request_id == ids.c.id))
+            .where(within(period))
+            .group_by(Row.codemie_request_id)
+        )
+
+    @classmethod
+    def _sum_ledger_rows_by_run_id_statement(cls, run_ids: Sequence[str], period: TimeRange):
+        ids = cls._unnest_ids(run_ids)
+        return (
+            select(
+                Row.codemie_run_id.label("run_id"),
+                Row.model_group,
+                Row.status,
+                func.sum(Row.spend).label("spend"),
+                func.count().label("rows"),
+                func.sum(Row.prompt_tokens + Row.completion_tokens).label("tokens"),
+            )
+            .select_from(ids.join(Row, Row.codemie_run_id == ids.c.id))
+            .where(within(period))
+            .group_by(Row.codemie_run_id, Row.model_group, Row.status)
+        )
+
+    async def sum_ledger_rows_by_request_id(
+        self, session: AsyncSession, request_ids: Sequence[str], period: TimeRange, *, timeout: float
+    ) -> dict[str, RequestLedgerTotals]:
+        """Unlike the correlation-id lookup, `period` bounds `start_time` so the planner prunes partitions."""
+        if not request_ids:
+            return {}
+        await self._set_statement_timeout(session, timeout)
+        result = await session.execute(self._sum_ledger_rows_by_request_id_statement(request_ids, period))
+        return {
+            request_id: RequestLedgerTotals(int(run_id_count), run_id, float(spend or 0), int(rows))
+            for request_id, run_id_count, run_id, spend, rows in result.all()
+        }
+
+    async def sum_ledger_rows_by_run_id(
+        self, session: AsyncSession, run_ids: Sequence[str], period: TimeRange, *, timeout: float
+    ) -> dict[str, list[RunLedgerTotals]]:
+        """Unlike the correlation-id lookup, `period` bounds `start_time` so the planner prunes partitions."""
+        if not run_ids:
+            return {}
+        await self._set_statement_timeout(session, timeout)
+        result = await session.execute(self._sum_ledger_rows_by_run_id_statement(run_ids, period))
+        totals_by_run_id: dict[str, list[RunLedgerTotals]] = {}
+        for run_id, model_group, status, spend, rows, tokens in result.all():
+            totals = RunLedgerTotals(model_group, status, float(spend or 0), int(rows), int(tokens or 0))
+            totals_by_run_id.setdefault(run_id, []).append(totals)
+        return totals_by_run_id
+
+    @staticmethod
+    async def _set_statement_timeout(session: AsyncSession, timeout: float) -> None:
+        statement_timeout_ms = max(1, int(timeout * 1000))
+        await session.execute(
+            text("SELECT set_config('statement_timeout', :ms, true)"), {"ms": str(statement_timeout_ms)}
+        )
 
     @staticmethod
     def _sum_by_request_id_statement(period: TimeRange, *, cli: bool = True, access: AccessScope | None = None):

@@ -18,7 +18,7 @@ from typing import ClassVar, Literal, Self
 
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, computed_field, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict, BaseSettings
 
 
@@ -1111,6 +1111,15 @@ class Config(BaseSettings):
     LITELLM_SPEND_UPLOADER_LITELLM_DB_USER: str = ""
     LITELLM_SPEND_UPLOADER_LITELLM_DB_PASSWORD: str = ""
     LITELLM_SPEND_UPLOADER_LITELLM_DB_SSLMODE: str = ""  # libpq sslmode (e.g. require); empty keeps the driver default
+    # Spend backfill: after each successful spend uploader feed, overwrites metric document money with ledger figures
+    SPEND_BACKFILL_ENABLED: bool = False  # Master switch, read after each spend uploader feed
+    SPEND_BACKFILL_DRY_RUN: bool = False  # Compute and log only, write nothing
+    SPEND_BACKFILL_MAX_AGE_HOURS: int = Field(default=48, ge=0)  # Documents newer than this are rescanned every run
+    SPEND_BACKFILL_BATCH: int = Field(default=1000, ge=1, le=10_000)  # Documents per Elasticsearch page
+    SPEND_BACKFILL_TIMEOUT_SECONDS: int = Field(default=60, ge=1)  # Wall time per run
+    # ISO-8601 with a timezone: start of the one-off history pass; empty turns it off
+    SPEND_BACKFILL_HISTORY_START: AwareDatetime | None = None
+    SPEND_BACKFILL_PROJECTS: str = ""  # Comma-separated project names; empty means all
     BUDGET_STOP_ENABLED: bool = False  # Master flag — enables all inactive budget stop and restore jobs
     INACTIVE_PROJECT_BUDGET_STOP_SCHEDULE: str = _CRON_DAILY_MIDNIGHT  # Cron schedule (UTC) — daily midnight
     INACTIVE_COST_CENTER_BUDGET_STOP_SCHEDULE: str = _CRON_DAILY_MIDNIGHT  # Cron schedule (UTC) — daily midnight
@@ -1227,6 +1236,11 @@ class Config(BaseSettings):
         if not (0 <= minute_value <= 59 and 0 <= hour_value <= 23):
             return None
         return minute_value, hour_value
+
+    @field_validator("SPEND_BACKFILL_HISTORY_START", mode="before")
+    @classmethod
+    def _parse_empty_spend_backfill_history_start(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
 
     @field_validator("MCP_INSTRUCTIONS_NONCE_SECRET")
     @classmethod

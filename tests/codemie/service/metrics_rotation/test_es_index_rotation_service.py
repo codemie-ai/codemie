@@ -17,14 +17,17 @@
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from elasticsearch import NotFoundError
 
+from codemie.configs import config
+from codemie.repository.spend_backfill_metrics_repository import LEDGER_ATTRIBUTES_MAPPING
 from codemie.service.metrics_rotation.es_index_rotation_service import MetricsIndexRotationService
 
 WRITE_ALIAS = "codemie_metrics_logs_write"
+LEDGER_MAPPINGS = {"properties": {"attributes": {"properties": LEDGER_ATTRIBUTES_MAPPING}}}
 
 
 @pytest.mark.parametrize(
@@ -58,7 +61,7 @@ async def test_rotate_swaps_alias() -> None:
     new_index = "codemie_metrics_logs-2026-q2"
     await service.rotate(new_index=new_index)
 
-    mock_client.indices.create.assert_awaited_once_with(index=new_index)
+    mock_client.indices.create.assert_awaited_once_with(index=new_index, mappings=LEDGER_MAPPINGS)
     mock_client.indices.update_aliases.assert_awaited_once_with(
         actions=[
             {"remove": {"index": "codemie_metrics_logs-2026-q1", "alias": WRITE_ALIAS}},
@@ -126,8 +129,27 @@ async def test_rotate_works_without_an_index_template() -> None:
     service = MetricsIndexRotationService(client=mock_client)
     await service.rotate(new_index="codemie_metrics_logs-2026-q2")
 
-    mock_client.indices.create.assert_awaited_once_with(index="codemie_metrics_logs-2026-q2")
+    mock_client.indices.create.assert_awaited_once_with(index="codemie_metrics_logs-2026-q2", mappings=LEDGER_MAPPINGS)
     mock_client.indices.update_aliases.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backfill_enabled", [True, False])
+async def test_rotate_creates_index_with_ledger_mapping_even_when_backfill_is_disabled(backfill_enabled: bool) -> None:
+    """The ledger field types are fixed at creation so a later backfill cannot meet a wrongly typed index."""
+    mock_client = MagicMock()
+    mock_client.indices = MagicMock()
+    mock_client.indices.create = AsyncMock()
+    mock_client.indices.exists = AsyncMock(return_value=False)
+    mock_client.indices.update_aliases = AsyncMock()
+    mock_client.indices.get_alias = AsyncMock(
+        return_value={"codemie_metrics_logs-2026-q1": {"aliases": {WRITE_ALIAS: {"is_write_index": True}}}}
+    )
+
+    with patch.object(config, "SPEND_BACKFILL_ENABLED", backfill_enabled):
+        await MetricsIndexRotationService(client=mock_client).rotate(new_index="codemie_metrics_logs-2026-q2")
+
+    mock_client.indices.create.assert_awaited_once_with(index="codemie_metrics_logs-2026-q2", mappings=LEDGER_MAPPINGS)
 
 
 @pytest.mark.asyncio
