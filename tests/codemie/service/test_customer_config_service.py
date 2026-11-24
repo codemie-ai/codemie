@@ -240,6 +240,19 @@ async def test_runtime_components_are_appended_unchanged(patched_yaml):
     assert _find(components, "features:userManagement") is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_workflow_contracts_component_is_kept_only_when_linking_is_on(patched_yaml, enabled):
+    patched_yaml.get_runtime_components.return_value = [
+        Component(id="features:workflowContracts", settings=ComponentSetting(enabled=enabled)),
+    ]
+
+    with _patch_rows([]):
+        components = await resolve_components()
+
+    assert (_find(components, "features:workflowContracts") is not None) is enabled
+
+
 def test_cache_ttl_comes_from_configuration():
     cache = OverrideCache(ttl_seconds=5)
 

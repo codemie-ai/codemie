@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-11-04T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 22,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 29,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New shared save_validation pipeline (prepare/validate/advisory warnings) wired into create, update and saved dry-run in the workflow router; new POST /workflows/validate; new contract_issues shaping module; contract linker/models/policy/simulate and workflow_models/validation models extended; WorkflowService and WorkflowVersionService rewired. Four-plus components with a new abstraction." },
+    { "dimension": "technical_risk", "reason": "Refactors the core workflow write path (drops validate_for_update) with create/update/dry-run parity requirements and an all-errors-at-once rejection envelope. No exact precedent for the contract envelope; enumerated edge/error cases handled by new parity and issue tests; feature flag gating mitigates rollback." },
+    { "dimension": "file_change_estimate", "reason": "29 files changed (2776+/407-), 16+ so XXL by the diffstat mapping; about 11 are test files and 3 are docs/config." }
+  ],
+  "red_flags_applied": [
+    "Touches core shared workflow save path used by create, update and dry-run (already reflected in Component Scope XL)"
+  ],
+  "split_recommendation": null
+}

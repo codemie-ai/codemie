@@ -35119,9 +35119,201 @@
         "title": "UsersListResponse",
         "type": "object"
       },
+      "ValidateNewWorkflowRequest": {
+        "description": "Body of the pre-save dry-run: a workflow that does not exist yet and may not be named or described yet.",
+        "properties": {
+          "assistants": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkflowAssistant-Input"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": [],
+            "title": "Assistants"
+          },
+          "categories": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Categories",
+            "type": "array"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "guardrail_assignments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/GuardrailAssignmentItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guardrail Assignments"
+          },
+          "icon_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icon Url"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "meta_config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta Config"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/WorkflowMode",
+            "default": "Sequential"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "project": {
+            "title": "Project",
+            "type": "string"
+          },
+          "shared": {
+            "default": true,
+            "title": "Shared",
+            "type": "boolean"
+          },
+          "start_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Hint"
+          },
+          "states": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkflowState"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": [],
+            "title": "States"
+          },
+          "supervisor_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "",
+            "title": "Supervisor Prompt"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkflowTool-Input"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": [],
+            "title": "Tools"
+          },
+          "yaml_config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yaml Config"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "title": "ValidateNewWorkflowRequest",
+        "type": "object"
+      },
       "ValidateWorkflowResponse": {
         "description": "Dry-run validation response; mirrors the advisory warnings surface of the update endpoint.",
         "properties": {
+          "coverage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
+          },
           "message": {
             "title": "Message",
             "type": "string"
@@ -35134,6 +35326,17 @@
             },
             "title": "Warnings",
             "type": "array"
+          },
+          "warnings_truncated": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings Truncated"
           }
         },
         "required": [
@@ -38831,6 +39034,18 @@
       "WorkflowSaveResponse": {
         "description": "Save response that can carry non-blocking notes about the saved configuration.",
         "properties": {
+          "coverage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
+          },
           "data": {
             "title": "Data"
           },
@@ -38846,6 +39061,17 @@
             },
             "title": "Warnings",
             "type": "array"
+          },
+          "warnings_truncated": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings Truncated"
           }
         },
         "required": [
@@ -38894,6 +39120,17 @@
             "title": "Id",
             "type": "string"
           },
+          "input_schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Schema"
+          },
           "interrupt_before": {
             "default": false,
             "title": "Interrupt Before",
@@ -38926,6 +39163,15 @@
           "retry_policy": {
             "$ref": "#/components/schemas/WorkflowRetryPolicy",
             "default": {}
+          },
+          "save_validation": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Save Validation"
           },
           "task": {
             "default": "",
@@ -86702,6 +86948,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Workflow database is unavailable; no database details are returned."
           }
         },
         "security": [
@@ -87361,6 +87610,72 @@
         ]
       }
     },
+    "/v1/workflows/validate": {
+      "post": {
+        "description": "Dry-run the create-time validation of a workflow that is not saved yet. Nothing is persisted.\n\nCall it on an explicit user action or as a preview right before saving. It is not meant for a per-keystroke\ndebounce: every call lists MCP tools and compiles the workflow graph.\n\nA clean result guarantees that, in the same environment, creating the same configuration is not rejected by\ncontract validation. It does not cover the category, guardrail, autonomous-mode and access checks of create.\n`name` and `description` may be omitted. Only membership of the project is required, with no write check.",
+        "operationId": "validate_new_workflow_v1_workflows_validate_post",
+        "parameters": [
+          {
+            "description": "Error format: 'string' or 'json'",
+            "in": "query",
+            "name": "error_format",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/WorkflowErrorFormat",
+              "default": "string",
+              "description": "Error format: 'string' or 'json'"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateNewWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateWorkflowResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "Workflow database is unavailable; no database details are returned."
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Validate New Workflow",
+        "tags": [
+          "Workflow"
+        ]
+      }
+    },
     "/v1/workflows/{workflow_id}": {
       "delete": {
         "operationId": "delete_workflow_v1_workflows__workflow_id__delete",
@@ -87464,6 +87779,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Workflow database is unavailable; no database details are returned."
           }
         },
         "security": [
@@ -88938,6 +89256,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Workflow database is unavailable; no database details are returned."
           }
         },
         "security": [

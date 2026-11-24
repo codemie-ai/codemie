@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-11-02T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 23,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 34,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New workflows/contracts package (models, settings reader, simulator, derive, effects, policy, linker, input-contract stage, protocols) plus validation/tool_schemas.py resolver; new abstractions (ContractLinkReport, ToolSchemaResolver protocol, mode policy) hooked into validate_workflow, resource stage and workflow.py. All inside a single repo." },
+    { "dimension": "technical_risk", "reason": "No exact precedent: graph-wide save-time simulation that can reject user workflows (strict mode) with warning-ceiling corpus gating, failure isolation so the linker never raises, per-save resolver state, and sanitised names interpolated into <br> error markup. Extensive edge-case/corpus test suites were required. Rollback is softened by the mode policy (warn vs strict)." },
+    { "dimension": "file_change_estimate", "reason": "34 files changed (11406 insertions): ~13 new contracts/validation modules, ~13 test files, and modified workflow_models, constants, workflow.py, validation resources/schema/__init__, execution_config_schema.yaml and the openapi baseline." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk: save-path validation rejection and sanitisation of names rendered into HTML-style error strings (security-sensitive, no pre-existing reusable util)",
+    "Component Scope: touches the shared workflow save/validate path (validate_workflow, resource stage, workflow models)"
+  ],
+  "split_recommendation": null
+}

@@ -40,10 +40,26 @@ PUT routes are full-replace, not patch. Re-sending the same complete body leaves
 | `error` is reset to False on a metadata edit | google, git_faq, file PUT | Other routes that call `update_index` pass `reset_error=False`. |
 | Assistant context entries whose datasource is missing or has a different type are dropped silently | assistant PUT (`drop_missing_context`) | No error is returned. |
 | A masked sensitive prompt variable is restored from the stored value | assistant PUT | `_restore_existing_encrypted_values`. |
-| Workflow `yaml_config` is stored exactly as sent (comments, key order and defaults preserved); only `model` values are rewritten to deployment ids, and only when a model id changed | workflow PUT (`_rewrite_yaml_config_from_objects` in `routers/workflow.py`) | Re-sending the same body is a fixed point. |
+| Workflow `yaml_config` is stored exactly as sent (comments, key order and defaults preserved); only `model` values are rewritten to deployment ids, and only when a model id changed | workflow PUT (`rewrite_yaml_config_from_objects` in `service/workflow/save_validation.py`) | Re-sending the same body is a fixed point. |
 | `sanitize_for_save` only validates MCP servers (returns them unmutated, raises on violation) | assistant save | |
 | Ciphertext may change on resubmission of a plaintext secret under non-deterministic encryption (KMS, Vault, Azure) | settings, provider PUT | Masked values are not re-encrypted. Plain and Base64 are deterministic. |
 
 ## Create Semantics (POST)
 
 Assistants and workflows create a new entity on every POST with no id, even when an identical one exists. Skills and categories reject a duplicate name with 409; project and user settings reject a duplicate alias with 422. Pinned by `tests/codemie/rest_api/routers/test_create_always_new.py`.
+
+## Dry-Run Validation (POST)
+
+Workflows have two side-effect-free validation routes that return `ValidateWorkflowResponse` (`message`, `warnings`, and `coverage` / `warnings_truncated` only when present): `POST /v1/workflows/{workflow_id}/validate` for a stored workflow and `POST /v1/workflows/validate` for one not saved yet. The pre-save route takes `ValidateNewWorkflowRequest` (the create body with `name` and `description` optional), requires project read access, refuses autonomous mode with 410, and persists nothing. Saved validation keeps the workflow write-access check and returns 403 for autonomous mode before guardrail validation. The mode comes from the request; a top-level `mode` key in `yaml_config` is ignored.
+
+Compare new validation with create, and saved validation with update. Each pair shares preparation, model normalization, and contract validation. Findings and coverage match only for the same configuration, user, project, settings, and resource state, including MCP replies. A clean check does not guarantee later access, category, guardrail, or persistence success. Create/new validation defer parse failures to schema validation; update/saved validation retain their preparation-error behavior. Version restore does not run contract linking and is outside this comparison.
+
+All four routes return a safe HTTP 503 for database failures, including failures in advisory provider reads. YAML and contract failures keep their validation status and selected JSON/string format. Route order and schemas are pinned by the OpenAPI snapshot guard.
+
+| Avoid | Prefer |
+|---|---|
+| Duplicating create-time checks in a separate validate path | Call `save_validation.prepare` and `validate` from the route |
+| Declaring a return annotation on a response model that uses a wrapping `model_serializer` | Leave it unannotated so the OpenAPI schema is not replaced |
+
+Evidence: `src/codemie/rest_api/routers/workflow.py::validate_new_workflow`, `src/codemie/rest_api/routers/workflow.py::ValidateWorkflowResponse`, `src/codemie/rest_api/routers/workflow.py::validate_workflow` (saved dry-run); `src/codemie/core/workflow_models/workflow_models.py::ValidateNewWorkflowRequest`.
+

@@ -15,7 +15,7 @@
 
 from typing import List
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from fastapi import APIRouter, status, Depends, BackgroundTasks, Query
 from pydantic import BaseModel, Field
@@ -36,6 +36,7 @@ from codemie.rest_api.models.assistant import (
     CreatedByUser,
     MCPServerDetails,
     AssistantOrigin,
+    IntegrationValidationResult,
 )
 from codemie.rest_api.routers.assistant._shared import (
     _index_marketplace_assistant,
@@ -664,7 +665,14 @@ def _validate_assistant_integrations(request: AssistantRequest, user: User):
     """
     from codemie.service.assistant.assistant_integration_validator import AssistantIntegrationValidator
 
-    return AssistantIntegrationValidator.validate_integrations(request, user, request.project)
+    try:
+        return AssistantIntegrationValidator.validate_integrations(request, user, request.project)
+    except SQLAlchemyError as exc:
+        # The check cannot run without the database: report the integrations as valid rather than fail the save
+        logger.error(
+            f"Integration validation skipped for assistant {request.name}: database error ({type(exc).__name__})"
+        )
+        return IntegrationValidationResult(has_missing_integrations=False)
 
 
 def _filter_invalid_datasources(assistant: Assistant):

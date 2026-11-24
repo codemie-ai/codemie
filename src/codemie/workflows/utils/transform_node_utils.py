@@ -19,6 +19,7 @@ import re
 from codemie.configs import logger
 from codemie.workflows.utils import get_context_store_from_state_schema
 from codemie.workflows.models import AgentMessages
+from codemie.workflows.transform_constants import split_source_path
 
 
 def parse_array_index(input_key: str) -> tuple[str, Optional[int | slice], Optional[str]]:
@@ -154,7 +155,7 @@ def extract_field(source_data: dict, source_path: str, default=None) -> Any:
     # Try simple dot notation first
     try:
         value = source_data
-        for key in source_path.split('.'):
+        for key in split_source_path(source_path):
             if isinstance(value, dict):
                 value = value.get(key)
                 if value is None:

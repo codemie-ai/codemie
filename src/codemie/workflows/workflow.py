@@ -21,7 +21,6 @@ import uuid
 from codemie.core.constants import MermaidContentType
 from codemie.service.file_service.mermaid_service import MermaidService
 from typing import List, Callable, Any
-from typing import Optional
 
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -64,8 +63,10 @@ from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.workflow_execution import WorkflowExecutionService, ThoughtConsumer
 from codemie.service.workflow_service import WorkflowService
 from codemie.workflows.callbacks.graph_callback import LanggraphNodeCallback
+from codemie.workflows.validation.line_lookup import ValidationSourceContext
 from codemie.workflows.constants import (
     CONTEXT_STORE_VARIABLE,
+    FILE_NAMES_CONTEXT_KEY,
     FIRST_STATE_IN_ITERATION,
     ITER_SOURCE,
     ITERATION_NODE_NUMBER_KEY,
@@ -86,6 +87,7 @@ from codemie.workflows.constants import (
     WorkflowErrorType,
 )
 from codemie.workflows.checkpoint_saver import CheckpointSaver
+from codemie.workflows.context_rules import StateNodeType, iteration_branch_context, state_node_type
 from codemie.workflows.models import AgentMessages
 from codemie.workflows.nodes import BaseNode, AgentNode, ToolNode, ResultFinalizerNode, SummarizeConversationCommandNode
 from codemie.workflows.nodes.node_slot import NodeSlot
@@ -109,7 +111,12 @@ from codemie.workflows.validation import (
     WorkflowConfigResourcesValidationError,
     validate_workflow_config_resources_availability,
     PydanticErrorTransformer,
+    link_workflow_contracts,
+    build_contract_rejection,
+    contract_line_finder,
 )
+from codemie.workflows.contracts.models import ContractLinkReport
+from codemie.workflows.validation.tool_schemas import SaveTimeToolSchemaResolver
 from codemie.workflows.utils.json_utils import UnwrappingJsonPointerEvaluator
 from codemie.configs.pyroscope_config import pyroscope_profile
 
@@ -128,7 +135,7 @@ _SENSITIVE_HEADER_NAMES: frozenset[str] = frozenset(
 
 class WorkflowExecutor:
     INTERRUPT_CONFIRMATION_MSG = "**Workflow is stopped, waiting for confirmation to continue** <br>"
-    workflow_execution_config: Optional[WorkflowExecution] = None
+    workflow_execution_config: WorkflowExecution | None = None
 
     @classmethod
     def create_executor(
@@ -138,14 +145,14 @@ class WorkflowExecutor:
         user: User,
         resume_execution: bool = False,
         execution_id: str = None,
-        file_names: Optional[list[str]] = None,
+        file_names: list[str] | None = None,
         request_headers: dict[str, str] | None = None,
-        thought_queue: Optional[MessageQueue] = None,
-        session_id: Optional[str] = None,
-        disable_cache: Optional[bool] = False,
-        tags: Optional[list[str]] = None,
+        thought_queue: MessageQueue | None = None,
+        session_id: str | None = None,
+        disable_cache: bool | None = False,
+        tags: list[str] | None = None,
         delete_on_completion: bool = False,
-        compiled_graph: Optional[CompiledStateGraph] = None,
+        compiled_graph: CompiledStateGraph | None = None,
     ):
         """
         Create a workflow executor with the specified configuration.
@@ -226,7 +233,10 @@ class WorkflowExecutor:
     @staticmethod
     def validate_workflow(workflow_config: WorkflowConfig, user: User, error_format: str = "string"):
         """
-        Validate workflow configuration.
+        Validate workflow configuration and return the compiled graph.
+
+        Same stages as `validate_workflow_with_report` with the contract linker off. Use that method when the
+        caller needs the linker or its report.
 
         Args:
             workflow_config: The workflow configuration to validate
@@ -236,8 +246,42 @@ class WorkflowExecutor:
         Raises:
             ValueError: With either string message (error_format="string") or dict (error_format="json")
         """
+        return WorkflowExecutor.validate_workflow_with_report(workflow_config, user, error_format)[0]
+
+    @staticmethod
+    def validate_workflow_with_report(
+        workflow_config: WorkflowConfig,
+        user: User,
+        error_format: str = "string",
+        link_contracts: bool = False,
+        source_context: ValidationSourceContext | None = None,
+    ) -> tuple[CompiledStateGraph, ContractLinkReport]:
+        """
+        Validate workflow configuration; the single stage sequence behind every validation entry point.
+
+        Stages: YAML and schema, parse, states present, resource availability, graph compile and, when
+        `link_contracts` is set, the contract linker. With the flag off no analysis runs and the report is empty
+        (`status` is `NOT_RUN`). The report is created per call and never kept anywhere.
+
+        Args:
+            workflow_config: The workflow configuration to validate
+            user: The user performing the validation
+            error_format: Error format - "string" (default, HTML <br> tags) or "json" (structured dict)
+            link_contracts: Run the contract linker after the graph compiled (default off)
+
+        Returns:
+            The compiled graph and the contract report.
+
+        Raises:
+            ValueError: With either string message (error_format="string") or dict (error_format="json"). Contract
+                errors are collected into one error of type `contract_validation`.
+        """
+        source_context = source_context or ValidationSourceContext()
         try:
-            validate_workflow_execution_config_yaml(workflow_config.yaml_config)
+            # Validate the normalised text, but report lines of the client's own (comments and blank lines survive)
+            validate_workflow_execution_config_yaml(
+                workflow_config.yaml_config, getattr(workflow_config, "_source_yaml_config", None), source_context
+            )
         except WorkflowExecutionParsingError as e:
             error_dict = e.to_dict()
             WorkflowExecutor._raise_validation_error(
@@ -278,8 +322,13 @@ class WorkflowExecutor:
                 STATE_MISSING_ERR,
             )
 
+        # The resolver is created before the resource stage as a recorder of static MCP tool schemas; its lookup is
+        # enabled only after the stage returned without raising, and before that it answers UNKNOWN (EPMCDME-16503).
+        resolver = SaveTimeToolSchemaResolver() if link_contracts else None
         try:
-            validate_workflow_config_resources_availability(workflow_config, user)
+            validate_workflow_config_resources_availability(
+                workflow_config, user, schema_sink=resolver.record_mcp_args_schema if resolver else None
+            )
         except WorkflowConfigResourcesValidationError as e:
             error_dict = e.to_dict()
             # error_dict already has proper 'message' field from new format
@@ -289,12 +338,25 @@ class WorkflowExecutor:
             )
             WorkflowExecutor._raise_validation_error(error_format, error_dict, string_error)
 
-        return WorkflowExecutor.create_executor(
+        graph = WorkflowExecutor.create_executor(
             workflow_config=workflow_config,
             user_input="Validate graph. No actions required",
             user=user,
             execution_id=str(uuid.uuid4()),
         )._init_workflow()
+
+        if not link_contracts:
+            return graph, ContractLinkReport()
+
+        resolver.enable_lookup()
+        report = link_workflow_contracts(
+            workflow_config, resolver=resolver, document=source_context.source(workflow_config.yaml_config).parsed
+        )
+        if report.blocking_records():
+            contract_error = build_contract_rejection(report, contract_line_finder(workflow_config, source_context))
+            json_error, string_error = contract_error
+            WorkflowExecutor._raise_validation_error(error_format, json_error, string_error)
+        return graph, report
 
     @staticmethod
     def validate_workflow_and_draw(workflow_config: WorkflowConfig, user: User, error_format: str = "string"):
@@ -333,15 +395,15 @@ class WorkflowExecutor:
         user_input: str | None,
         user: User,
         thought_queue: MessageQueue = None,
-        file_names: Optional[list[str]] = None,
+        file_names: list[str] | None = None,
         resume_execution: bool = False,
         execution_id: str = None,
         request_headers: dict[str, str] | None = None,
-        session_id: Optional[str] = None,
-        disable_cache: Optional[bool] = False,
-        tags: Optional[list[str]] = None,
+        session_id: str | None = None,
+        disable_cache: bool | None = False,
+        tags: list[str] | None = None,
         delete_on_completion: bool = False,
-        compiled_graph: Optional[CompiledStateGraph] = None,
+        compiled_graph: CompiledStateGraph | None = None,
     ):
         self.workflow_config = workflow_config
         self.user_input = user_input
@@ -619,17 +681,18 @@ class WorkflowExecutor:
         )
 
         retry_policy = workflow_config.get_effective_retry_policy(state=state)
+        node_type = state_node_type(state)
 
-        if state.assistant_id:
+        if node_type is StateNodeType.AGENT:
             node = self.init_agent_node(state, map_states)
             workflow.add_node(state.id, node, retry=retry_policy, defer=is_convergence_node)
-        elif state.custom_node_id:
+        elif node_type is StateNodeType.CUSTOM:
             node = self.init_custom_node(state)
             workflow.add_node(state.id, node, retry=retry_policy, defer=is_convergence_node)
-        elif state.tool_id:
+        elif node_type is StateNodeType.TOOL:
             node = self.init_tool_node(state, map_states)
             workflow.add_node(state.id, node, retry=retry_policy, defer=is_convergence_node)
-        elif state.workflow_id:
+        elif node_type is StateNodeType.SUB_WORKFLOW:
             if not customer_config.is_feature_enabled("subWorkflow"):
                 raise FeatureDisabledError(
                     f"Sub-workflow node '{state.id}' is disabled. "
@@ -734,12 +797,9 @@ class WorkflowExecutor:
         For first-level parallelization a copy is made, filtered by include_in_iterator_context.
         ["*"] (default) copies the entire store; any other list whitelists specific keys.
         """
-        if is_in_iteration:
-            return context_store
-        include_keys = workflow_state.next.include_in_iterator_context
-        if include_keys == ["*"]:
-            return {**context_store}
-        return {k: v for k, v in context_store.items() if k in include_keys}
+        return iteration_branch_context(
+            context_store, workflow_state.next.include_in_iterator_context, nested=is_in_iteration
+        )
 
     def continue_iteration(self, state_schema: dict[str, Any], workflow_state: WorkflowState) -> Send:
         messages = get_messages_from_state_schema(state_schema=state_schema)
@@ -1219,7 +1279,7 @@ class WorkflowExecutor:
         if self.file_names:
             from codemie_tools.base.file_object import FileObject
 
-            initial_context["file_names"] = [FileObject.from_encoded_url(fn).name for fn in self.file_names]
+            initial_context[FILE_NAMES_CONTEXT_KEY] = [FileObject.from_encoded_url(fn).name for fn in self.file_names]
         if self.request_headers:
             safe_headers = {
                 k: v.replace("\r", "").replace("\n", "")
@@ -1259,7 +1319,7 @@ class WorkflowExecutor:
         message: str,
         interrupted_state: str,
         chunks_collector: List[str],
-        checkpoint_state: Optional[dict] = None,
+        checkpoint_state: dict | None = None,
     ) -> None:
         """Handle when workflow was interrupted by user"""
         self.workflow_execution_service.interrupt(interrupted_state, checkpoint_state)

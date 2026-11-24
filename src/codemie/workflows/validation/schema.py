@@ -47,17 +47,18 @@ Exceptions:
 """
 
 from collections import deque
-from typing import List, Optional
+from typing import List
 import uuid
 import yaml
 from jsonschema import Draft202012Validator, ValidationError
 from pathlib import Path
 from codemie.workflows.constants import WorkflowErrorType
+from codemie.workflows.contracts.input_contract_stage import INPUT_CONTRACT_VALIDATOR, validate_state_input_contracts
 from codemie.workflows.validation.models import WorkflowValidationErrorDetail, CrossRefError
 from codemie.workflows.validation.line_lookup import (
     YamlLineFinder,
     NullYamlLineFinder,
-    extract_line_numbers,
+    ValidationSourceContext,
     SECTIONS,
 )
 
@@ -98,7 +99,7 @@ class WorkflowExecutionConfigSchemaValidationError(WorkflowExecutionConfigError)
         schema_validation_errors: List[ValidationError],
         workflow_config: dict = None,
         line_number_map: dict[str, int] = None,
-        yaml_line_finder: Optional[YamlLineFinder] = None,
+        yaml_line_finder: YamlLineFinder | None = None,
     ):
         self.schema_validation_errors = schema_validation_errors
         self.workflow_config = workflow_config or {}
@@ -239,16 +240,24 @@ class WorkflowExecutionConfigSchemaValidationError(WorkflowExecutionConfigError)
             Item ID or None
         """
         items = workflow_config.get(section, [])
-        if index < len(items) and items[index]:
-            return items[index].get("id")
-        return None
+        if not isinstance(items, list) or index >= len(items):
+            return None
+        # A malformed entry (scalar, null, list) has no ID; the schema error for it is reported without one.
+        item = items[index]
+        return item.get("id") if isinstance(item, dict) else None
+
+    @staticmethod
+    def _state_mappings(workflow_config: dict, section: str) -> list[dict]:
+        """State entries of a section that are objects; malformed entries are skipped (schema reports them)."""
+        items = workflow_config.get(section, [])
+        return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
 
     @staticmethod
     def _find_state_using_assistant(workflow_config: dict, assistant_id: str) -> str | None:
         """Find state that uses the given assistant."""
         # Search both states and orphaned_states
         for section in [SECTIONS["STATES"], "orphaned_states"]:
-            for state in workflow_config.get(section, []):
+            for state in WorkflowExecutionConfigSchemaValidationError._state_mappings(workflow_config, section):
                 if state.get("assistant_id") == assistant_id:
                     return state.get("id")
         return None
@@ -258,7 +267,7 @@ class WorkflowExecutionConfigSchemaValidationError(WorkflowExecutionConfigError)
         """Find state that uses the given tool."""
         # Search both states and orphaned_states
         for section in [SECTIONS["STATES"], "orphaned_states"]:
-            for state in workflow_config.get(section, []):
+            for state in WorkflowExecutionConfigSchemaValidationError._state_mappings(workflow_config, section):
                 # Check tool_id field (for tool nodes)
                 if state.get("tool_id") == tool_id:
                     return state.get("id")
@@ -273,7 +282,7 @@ class WorkflowExecutionConfigSchemaValidationError(WorkflowExecutionConfigError)
         """Find state that uses the given custom node."""
         # Search both states and orphaned_states
         for section in [SECTIONS["STATES"], "orphaned_states"]:
-            for state in workflow_config.get(section, []):
+            for state in WorkflowExecutionConfigSchemaValidationError._state_mappings(workflow_config, section):
                 if state.get("custom_node_id") == node_id:
                     return state.get("id")
         return None
@@ -524,7 +533,7 @@ class WorkflowExecutionConfigSchemaValidationError(WorkflowExecutionConfigError)
         return f"{prefix}{fields_str} cannot be set at the same time"
 
     @staticmethod
-    def _format_validation_error_message(error: ValidationError, include_path: bool = True) -> str:
+    def _format_validation_error_message(error: ValidationError, include_path: bool = True) -> str:  # noqa: PLR0911 - flat decision table; early returns read clearer than a dispatch table
         path = WorkflowExecutionConfigSchemaValidationError._format_path(error.path)
         validator = error.validator
         value = error.validator_value
@@ -537,6 +546,8 @@ class WorkflowExecutionConfigSchemaValidationError(WorkflowExecutionConfigError)
                 return WorkflowExecutionConfigSchemaValidationError._format_anyof_oneof_error(prefix, validator, value)
             elif validator == "not" and isinstance(value, dict) and 'required' in value:
                 return WorkflowExecutionConfigSchemaValidationError._format_not_error(prefix, value)
+            elif validator == INPUT_CONTRACT_VALIDATOR:
+                return f"{prefix}{error.message}"
             elif validator == "type":
                 return f"{prefix}{value} is expected"
             else:
@@ -724,7 +735,11 @@ def _handle_next_state(cross_ref_errors, state, state_id, state_ids):
                 cross_ref_errors.append(CrossRefError(state_id, f'next.state_ids[{i}]', id, 'state'))
 
 
-def validate_workflow_execution_config_yaml(workflow_config_yaml: str):
+def validate_workflow_execution_config_yaml(
+    workflow_config_yaml: str,
+    line_source_yaml: str | None = None,
+    source_context: ValidationSourceContext | None = None,
+):
     """
     Validates the execution workflow configuration provided in YAML format.
 
@@ -738,6 +753,9 @@ def validate_workflow_execution_config_yaml(workflow_config_yaml: str):
     Args:
         workflow_config_yaml (str): A YAML-formatted string representing the execution
                                     workflow configuration.
+        line_source_yaml (str | None): The text the line numbers are taken from, when it differs from the
+                                    validated one: the client's own YAML before model ids were normalised and the
+                                    text re-dumped. Defaults to `workflow_config_yaml`.
 
     Raises:
         WorkflowExecutionParsingError: If the input YAML string cannot be parsed.
@@ -747,17 +765,16 @@ def validate_workflow_execution_config_yaml(workflow_config_yaml: str):
         WorkflowExecutionConfigCrossReferenceValidationError: If the parsed YAML contains
                                                       cross-references issues.
     """
-    # Extract line numbers first
-    line_number_map = extract_line_numbers(workflow_config_yaml)
-
-    try:
-        workflow_config = yaml.safe_load(workflow_config_yaml) or {}
-    except yaml.YAMLError:
-        raise WorkflowExecutionParsingError
+    source_context = source_context or ValidationSourceContext()
+    source = source_context.source(workflow_config_yaml)
+    if source.parse_error is not None:
+        raise WorkflowExecutionParsingError from source.parse_error
+    workflow_config = source.parsed or {}
+    line_number_map = source_context.source(line_source_yaml or workflow_config_yaml).line_number_map
 
     schema_validation_errors = _validate_workflow_execution_config_schema(
         WORKFLOW_EXECUTION_CONFIG_SCHEMA, workflow_config
-    )
+    ) + validate_state_input_contracts(workflow_config)
 
     if schema_validation_errors:
         raise WorkflowExecutionConfigSchemaValidationError(schema_validation_errors, workflow_config, line_number_map)

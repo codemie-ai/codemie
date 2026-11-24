@@ -85,6 +85,12 @@ properties:
     type: integer
     minimum: 1
 
+  save_validation:
+    type: string
+    enum: [strict, warn]
+
+  require_input_contracts: {type: boolean}
+
 $defs:
 
   Assistant:
@@ -243,6 +249,10 @@ $defs:
           iter_key: [state_id]
 
       output_schema: {type: string}
+      input_schema: {type: string}
+      save_validation:
+        type: string
+        enum: [strict, warn]
       retry_policy:
         type: object
         properties:

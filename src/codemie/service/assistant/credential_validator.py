@@ -19,7 +19,8 @@ This service checks if required credentials exist for toolkit tools,
 using shared utilities for metadata extraction and config resolution.
 """
 
-from typing import Optional
+from sqlalchemy.exc import SQLAlchemyError
+
 
 from pydantic import BaseModel
 
@@ -35,7 +36,7 @@ class ValidationResult(BaseModel):
     """Result of credential validation for a tool."""
 
     is_valid: bool
-    credential_type: Optional[str] = None
+    credential_type: str | None = None
 
 
 class CredentialValidator:
@@ -47,8 +48,8 @@ class CredentialValidator:
         tool_name: str,
         user: User,
         project_name: str,
-        tool_settings: Optional[SettingsBase] = None,
-        assistant_id: Optional[str] = None,
+        tool_settings: SettingsBase | None = None,
+        assistant_id: str | None = None,
     ) -> ValidationResult:
         """
         Check if credentials exist for a tool.
@@ -120,8 +121,8 @@ class CredentialValidator:
         tool_name: str,
         user: User,
         project_name: str,
-        tool_settings: Optional[SettingsBase] = None,
-        assistant_id: Optional[str] = None,
+        tool_settings: SettingsBase | None = None,
+        assistant_id: str | None = None,
     ) -> ValidationResult:
         """
         Check credentials for internal toolkits (Plugin, Git).
@@ -189,7 +190,11 @@ class CredentialValidator:
                 logger.warning(f"Unknown internal toolkit: {toolkit_name_str}")
                 return ValidationResult(is_valid=True)
 
+        except SQLAlchemyError:
+            raise
         except Exception as e:
             logger.error(f"Error checking credentials for {toolkit_name_str}: {e}", exc_info=True)
-            # Return valid on error (defensive programming) - assume credentials are okay if we can't check
+            # Return valid on any other error (defensive programming) - assume credentials are okay if we can't check.
+            # A database error propagates: the assistant routes then report the integrations as valid, while
+            # workflow validation answers 503.
             return ValidationResult(is_valid=True, credential_type=toolkit_name_str)

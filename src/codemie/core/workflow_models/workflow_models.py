@@ -18,7 +18,7 @@ import ast
 import httpx
 import requests
 from enum import Enum
-from typing import Annotated, List, Optional, Literal
+from typing import Annotated, Any, List, Literal
 
 from langgraph.types import default_retry_on
 from litellm.exceptions import BadRequestError as LiteLLMBadRequestError
@@ -49,23 +49,23 @@ class WorkflowErrorFormat(str, Enum):
 
 class WorkflowAssistantTool(BaseModel):
     name: str
-    integration_alias: Optional[str] = None
+    integration_alias: str | None = None
 
 
 class WorkflowAssistant(BaseModel):
-    id: Optional[str] = None
-    assistant_id: Optional[str] = None
-    name: Optional[str] = None
-    model: Optional[str] = None
-    temperature: Optional[float] = None
+    id: str | None = None
+    assistant_id: str | None = None
+    name: str | None = None
+    model: str | None = None
+    temperature: float | None = None
     effort: EffortLevel | None = None
-    system_prompt: Optional[str] = None
-    limit_tool_output_tokens: Optional[int] = Field(10000)
+    system_prompt: str | None = None
+    limit_tool_output_tokens: int | None = Field(10000)
     tools: list[WorkflowAssistantTool] = Field(default_factory=list)
-    datasource_ids: Optional[list[str]] = Field(default_factory=list)
+    datasource_ids: list[str] | None = Field(default_factory=list)
     exclude_extra_context_tools: bool = False
     mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
-    skill_ids: Optional[list[str]] = Field(default_factory=list)
+    skill_ids: list[str] | None = Field(default_factory=list)
     disabled_context_tools: list[str] = Field(default_factory=list)
 
     @field_validator('disabled_context_tools')
@@ -112,25 +112,25 @@ class WorkflowAssistant(BaseModel):
 class WorkflowTool(BaseModel):
     id: str
     tool: str
-    tool_args: Optional[dict] = None
-    integration_alias: Optional[str] = None
-    tool_result_json_pointer: Optional[str] = None
+    tool_args: dict | None = None
+    integration_alias: str | None = None
+    tool_result_json_pointer: str | None = None
     trace: bool = False
-    mcp_server: Optional[MCPServerDetails] = None
+    mcp_server: MCPServerDetails | None = None
     resolve_dynamic_values_in_response: bool = False
-    input_key: Optional[str] = None
-    tokens_size_limit: Optional[int] = None
+    input_key: str | None = None
+    tokens_size_limit: int | None = None
     # Tools a workspace script of this step may call, chosen like the tools of a workflow assistant: an alias pins the
     # integration, no alias means the automatic lookup. Only for the execute_workspace_script tool.
-    tool_access: Optional[list[WorkflowAssistantTool]] = None
+    tool_access: list[WorkflowAssistantTool] | None = None
 
 
 class CustomWorkflowNode(BaseModel):
     id: str
     custom_node_id: str
-    name: Optional[str] = Field(default_factory=str)
-    model: Optional[str] = None
-    system_prompt: Optional[str] = None
+    name: str | None = Field(default_factory=str)
+    model: str | None = None
+    system_prompt: str | None = None
     config: dict = Field(default_factory=dict)
 
     @model_validator(mode='before')
@@ -200,14 +200,14 @@ class WorkflowStateCondition(BaseModel):
 
 
 class WorkflowNextState(BaseModel):
-    state_id: Optional[str] = None
-    state_ids: Optional[list] = None
-    iter_key: Optional[str] = None
+    state_id: str | None = None
+    state_ids: list | None = None
+    iter_key: str | None = None
     keep_history: bool = True  # Deprecated: Use include_in_llm_history instead
     override_task: bool = False
-    condition: Optional[WorkflowStateCondition] = None
-    switch: Optional[WorkflowStateSwitch] = None
-    output_key: Optional[str] = None
+    condition: WorkflowStateCondition | None = None
+    switch: WorkflowStateSwitch | None = None
+    output_key: str | None = None
 
     # Context Store Configuration Flags
     store_in_context: bool = True
@@ -336,7 +336,7 @@ class WorkflowNextState(BaseModel):
         return values
 
     @model_validator(mode='after')
-    def validate_mutually_exclusive_fields(cls, values: "WorkflowNextState") -> "WorkflowNextState":
+    def validate_mutually_exclusive_fields(cls, values: WorkflowNextState) -> WorkflowNextState:
         if values.condition and values.switch:
             raise ValueError("Only one of 'condition' or 'switch' must be provided.")
         if values.state_ids and values.state_id:
@@ -351,10 +351,10 @@ class WorkflowNextState(BaseModel):
 
 
 class WorkflowRetryPolicy(BaseModel):
-    initial_interval: Optional[float] = None
-    backoff_factor: Optional[float] = None
-    max_interval: Optional[float] = None
-    max_attempts: Optional[int] = None
+    initial_interval: float | None = None
+    backoff_factor: float | None = None
+    max_interval: float | None = None
+    max_attempts: int | None = None
 
     @staticmethod
     def custom_retry_on(exc: Exception) -> bool:
@@ -392,19 +392,23 @@ class WorkflowPoolConfig(BaseModel):
 
 class WorkflowState(BaseModel):
     id: str
-    assistant_id: Optional[str] = None
-    custom_node_id: Optional[str] = None
+    assistant_id: str | None = None
+    custom_node_id: str | None = None
     task: str = ""
     finish_iteration: bool = False
     next: WorkflowNextState
-    output_schema: Optional[str] = None  # JSON schema
+    output_schema: str | None = None  # JSON schema
+    # Loading a stored workflow never fails on these two keys; the shape is enforced by the YAML-schema stage and the
+    # contract linker only. `input_schema` is typed as text and drops anything else (see its validator below).
+    input_schema: str | None = None  # JSON text of the node input contract
+    save_validation: Any | None = None  # contract save validation mode: "warn" or "strict"
     retry_policy: WorkflowRetryPolicy = WorkflowRetryPolicy()
     interrupt_before: bool = False
-    tool_id: Optional[str] = None
-    tool_args: Optional[dict] = None
+    tool_id: str | None = None
+    tool_args: dict | None = None
     resolve_dynamic_values_in_prompt: bool = False
     result_as_human_message: bool = False
-    workflow_id: Optional[str] = None
+    workflow_id: str | None = None
 
     _TYPE_UNDEFINED_ERROR = "One of 'assistant_id', 'custom_node_id', 'tool_id', or 'workflow_id' must be provided."
     _TYPE_OVERDEFINED_ERROR = (
@@ -437,41 +441,60 @@ class WorkflowState(BaseModel):
             raise ValueError(cls._TYPE_OVERDEFINED_ERROR)
         return values
 
+    # API Models, TODO: move to rest_api module
 
-# API Models, TODO: move to rest_api module
+    @field_validator("input_schema", mode="before")
+    @classmethod
+    def _input_schema_is_text_or_absent(cls, value: Any) -> str | None:
+        """A stored workflow may carry any value under this key (the key was ignored before the contract linker).
+
+        Anything but text is dropped, as it always was, so loading never fails on it. The YAML-schema stage still
+        rejects a non-text value on save, so the author hears about it there.
+        """
+        return value if isinstance(value, str) else None
+
+
 class CreateWorkflowRequest(BaseModel):
-    id: Optional[str] = None
+    id: str | None = None
     name: str
-    mode: Optional[WorkflowMode] = WorkflowMode.SEQUENTIAL
+    mode: WorkflowMode | None = WorkflowMode.SEQUENTIAL
     description: str
-    start_hint: Optional[str] = None
+    start_hint: str | None = None
     project: str
-    icon_url: Optional[str] = None
-    yaml_config: Optional[str] = None
+    icon_url: str | None = None
+    yaml_config: str | None = None
     shared: bool = True
-    assistants: Optional[list[WorkflowAssistant]] = []
-    tools: Optional[list[WorkflowTool]] = []
-    states: Optional[list[WorkflowState]] = []
-    supervisor_prompt: Optional[str] = ""
-    meta_config: Optional[str] = None
-    guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
+    assistants: list[WorkflowAssistant] | None = []
+    tools: list[WorkflowTool] | None = []
+    states: list[WorkflowState] | None = []
+    supervisor_prompt: str | None = ""
+    meta_config: str | None = None
+    guardrail_assignments: List[GuardrailAssignmentItem] | None = None
     categories: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=3)
 
 
+class ValidateNewWorkflowRequest(CreateWorkflowRequest):
+    """Body of the pre-save dry-run: a workflow that does not exist yet and may not be named or described yet."""
+
+    name: str | None = None
+    description: str | None = None
+    mode: WorkflowMode = WorkflowMode.SEQUENTIAL  # not nullable: an explicit null is a 422, not a 500
+
+
 class UpdateWorkflowRequest(BaseModel):
-    id: Optional[str] = None
+    id: str | None = None
     name: str
     description: str
-    start_hint: Optional[str] = None
+    start_hint: str | None = None
     project: str
     mode: WorkflowMode = WorkflowMode.SEQUENTIAL
-    icon_url: Optional[str] = None
+    icon_url: str | None = None
     shared: bool = True
-    yaml_config: Optional[str] = None
-    supervisor_prompt: Optional[str] = None
-    meta_config: Optional[str] = None
-    guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
-    categories: Optional[list[Annotated[str, Field(max_length=256)]]] = Field(default=None, max_length=3)
+    yaml_config: str | None = None
+    supervisor_prompt: str | None = None
+    meta_config: str | None = None
+    guardrail_assignments: List[GuardrailAssignmentItem] | None = None
+    categories: list[Annotated[str, Field(max_length=256)]] | None = Field(default=None, max_length=3)
 
 
 class WorkflowEvaluationRequest(BaseModel):

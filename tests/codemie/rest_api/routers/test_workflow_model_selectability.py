@@ -23,6 +23,8 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.workflow_models import CreateWorkflowRequest, UpdateWorkflowRequest, WorkflowConfig
 from codemie.rest_api.routers import workflow as workflow_router
 from codemie.rest_api.security.user import User
+from codemie.service.workflow import save_validation
+from codemie.service.workflow.save_validation import SaveValidationResult
 
 
 def _model_section(section: str, entries: list[tuple[str, str]]) -> dict:
@@ -63,9 +65,9 @@ async def test_workflow_rejects_unselectable_model_from_yaml(operation, model_na
     user = User(id="user-123", username="testuser")
 
     with (
-        patch.object(workflow_router.llm_service, "get_all_llm_model_info", return_value=[model]),
+        patch.object(save_validation.llm_service, "get_all_llm_model_info", return_value=[model]),
         patch.object(workflow_router, "project_access_check"),
-        patch.object(workflow_router, "_normalize_workflow_model_ids") as normalize,
+        patch.object(save_validation, "normalize_workflow_model_ids") as normalize,
         patch.object(workflow_router, "_persist_and_finalize_new_workflow") as create,
         patch.object(workflow_router, "_run_pre_persist_update_validation") as validate,
         patch.object(workflow_router.workflow_service, "get_workflow", return_value=workflow),
@@ -125,11 +127,12 @@ async def test_workflow_update_keeps_existing_deprecated_selection(operation, pr
     user = User(id="user-123", username="testuser")
 
     with (
-        patch.object(workflow_router.llm_service, "get_all_llm_model_info", return_value=[retired, active]),
+        patch.object(save_validation.llm_service, "get_all_llm_model_info", return_value=[retired, active]),
         patch.object(workflow_router, "project_access_check"),
-        patch.object(workflow_router, "_normalize_workflow_model_ids"),
-        patch.object(workflow_router, "_run_pre_persist_update_validation") as validate,
-        patch.object(workflow_router, "_consumer_slot_warnings", return_value=[]),
+        patch.object(save_validation, "normalize_workflow_model_ids"),
+        patch.object(
+            workflow_router, "_run_pre_persist_update_validation", return_value=SaveValidationResult([], None, 0)
+        ) as validate,
         patch.object(workflow_router.GuardrailService, "sync_guardrail_assignments_for_entity"),
         patch.object(workflow_router.GuardrailService, "get_entity_guardrail_assignments", return_value=None),
         patch.object(workflow_router.workflow_service, "get_workflow", return_value=workflow),
@@ -147,7 +150,7 @@ async def test_workflow_update_keeps_existing_deprecated_selection(operation, pr
             update.assert_not_called()
             proposed = validate.call_args.args[1]
 
-    validate.assert_awaited_once()
+    validate.assert_called_once()
     assert proposed.description == "Updated description"
     assert {item.id: item.model for item in getattr(proposed, section)} == {
         "a1": requested_name,
@@ -183,7 +186,7 @@ async def test_new_workflow_entry_cannot_reuse_another_existing_entries_deprecat
     request = UpdateWorkflowRequest(**payload)
     user = User(id="user-123", username="testuser")
     with (
-        patch.object(workflow_router.llm_service, "get_all_llm_model_info", return_value=[model]),
+        patch.object(save_validation.llm_service, "get_all_llm_model_info", return_value=[model]),
         patch.object(workflow_router, "project_access_check"),
         patch.object(workflow_router, "_run_pre_persist_update_validation") as validate,
         patch.object(workflow_router.workflow_service, "get_workflow", return_value=workflow),

@@ -27,66 +27,51 @@ from codemie.workflows.callbacks.base_callback import BaseCallback
 from codemie.workflows.constants import TASK_KEY
 from codemie.workflows.models import AgentMessages
 from codemie.workflows.nodes.base_node import BaseNode, StateSchemaType
+from codemie.workflows.transform_constants import (
+    CONFIG_KEY_ON_ERROR,
+    CONFIG_KEY_MAPPINGS,
+    CONFIG_KEY_OUTPUT_SCHEMA,
+    CONFIG_KEY_INPUT_SOURCE,
+    CONFIG_KEY_INPUT_KEY,
+    CONFIG_KEY_DEFAULT_OUTPUT,
+    ERROR_STRATEGY_FAIL,
+    ERROR_STRATEGY_SKIP,
+    ERROR_STRATEGY_DEFAULT,
+    ERROR_STRATEGY_PARTIAL,
+    INPUT_SOURCE_CONTEXT_STORE,
+    INPUT_SOURCE_MESSAGES,
+    INPUT_SOURCE_USER_INPUT,
+    INPUT_SOURCE_STATE_SCHEMA,
+    INPUT_SOURCE_COMBINED,
+    MAPPING_TYPE_EXTRACT,
+    MAPPING_TYPE_CONDITION,
+    MAPPING_TYPE_TEMPLATE,
+    MAPPING_TYPE_CONSTANT,
+    MAPPING_TYPE_SCRIPT,
+    MAPPING_TYPE_ARRAY_MAP,
+    MAPPING_KEY_OUTPUT_FIELD,
+    MAPPING_KEY_TYPE,
+    MAPPING_KEY_SOURCE_PATH,
+    MAPPING_KEY_DEFAULT,
+    MAPPING_KEY_CONDITION,
+    MAPPING_KEY_THEN_VALUE,
+    MAPPING_KEY_ELSE_VALUE,
+    MAPPING_KEY_TEMPLATE,
+    MAPPING_KEY_VALUE,
+    MAPPING_KEY_SCRIPT,
+    MAPPING_KEY_ITEM_FIELD,
+    MAPPING_KEY_FILTER_CONDITION,
+    SCHEMA_KEY_PROPERTIES,
+    SCHEMA_KEY_REQUIRED,
+    SCHEMA_KEY_TYPE,
+    SCALAR_COERCIONS,
+)
 from codemie.workflows.utils import DotDict, get_messages_from_state_schema
 from codemie.workflows.utils.safe_eval import SafeEvalError, safe_eval
 from codemie.workflows.utils.transform_node_utils import (
     extract_field,
     extract_from_context_store,
 )
-
-# Configuration keys
-CONFIG_KEY_ON_ERROR = 'on_error'
-CONFIG_KEY_MAPPINGS = 'mappings'
-CONFIG_KEY_OUTPUT_SCHEMA = 'output_schema'
-CONFIG_KEY_INPUT_SOURCE = 'input_source'
-CONFIG_KEY_INPUT_KEY = 'input_key'
-CONFIG_KEY_DEFAULT_OUTPUT = 'default_output'
-
-# Error strategies
-ERROR_STRATEGY_FAIL = 'fail'
-ERROR_STRATEGY_SKIP = 'skip'
-ERROR_STRATEGY_DEFAULT = 'default'
-ERROR_STRATEGY_PARTIAL = 'partial'
-
-# Input sources
-INPUT_SOURCE_CONTEXT_STORE = 'context_store'
-INPUT_SOURCE_MESSAGES = 'messages'
-INPUT_SOURCE_USER_INPUT = 'user_input'
-INPUT_SOURCE_STATE_SCHEMA = 'state_schema'
-INPUT_SOURCE_COMBINED = 'combined'
-
-# Mapping types
-MAPPING_TYPE_EXTRACT = 'extract'
-MAPPING_TYPE_CONDITION = 'condition'
-MAPPING_TYPE_TEMPLATE = 'template'
-MAPPING_TYPE_CONSTANT = 'constant'
-MAPPING_TYPE_SCRIPT = 'script'
-MAPPING_TYPE_ARRAY_MAP = 'array_map'
-
-# Mapping field keys
-MAPPING_KEY_OUTPUT_FIELD = 'output_field'
-MAPPING_KEY_TYPE = 'type'
-MAPPING_KEY_SOURCE_PATH = 'source_path'
-MAPPING_KEY_DEFAULT = 'default'
-MAPPING_KEY_CONDITION = 'condition'
-MAPPING_KEY_THEN_VALUE = 'then_value'
-MAPPING_KEY_ELSE_VALUE = 'else_value'
-MAPPING_KEY_TEMPLATE = 'template'
-MAPPING_KEY_VALUE = 'value'
-MAPPING_KEY_SCRIPT = 'script'
-MAPPING_KEY_ITEM_FIELD = 'item_field'
-MAPPING_KEY_FILTER_CONDITION = 'filter_condition'
-
-# Schema keys
-SCHEMA_KEY_PROPERTIES = 'properties'
-SCHEMA_KEY_REQUIRED = 'required'
-SCHEMA_KEY_TYPE = 'type'
-
-# Schema types
-SCHEMA_TYPE_STRING = 'string'
-SCHEMA_TYPE_INTEGER = 'integer'
-SCHEMA_TYPE_BOOLEAN = 'boolean'
-SCHEMA_TYPE_NUMBER = 'number'
 
 # State schema keys
 STATE_KEY_MESSAGES = 'messages'
@@ -639,17 +624,11 @@ class TransformNode(BaseNode[AgentMessages]):
             Any: Coerced value
         """
         field_type = field_schema.get(SCHEMA_KEY_TYPE)
-
-        if field_type == SCHEMA_TYPE_STRING and not isinstance(value, str):
-            return str(value)
-        elif field_type == SCHEMA_TYPE_INTEGER and not isinstance(value, int):
-            return int(value)
-        elif field_type == SCHEMA_TYPE_BOOLEAN and not isinstance(value, bool):
-            return bool(value)
-        elif field_type == SCHEMA_TYPE_NUMBER and not isinstance(value, (int, float)):
-            return float(value)
-        else:
+        coercion = SCALAR_COERCIONS.get(field_type) if isinstance(field_type, str) else None
+        if coercion is None:
             return value
+        kept_types, convert = coercion
+        return value if isinstance(value, kept_types) else convert(value)
 
     def _extract_from_context_store(
         self, state_schema: AgentMessages, input_key: Optional[str], source_data: dict

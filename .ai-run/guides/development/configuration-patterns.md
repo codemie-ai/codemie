@@ -22,6 +22,16 @@ Gate optional behavior through config at assembly points or service boundaries.
 
 Evidence: user-management routers are gated by config in `src/codemie/rest_api/main.py:706`.
 
+### Workflow Contract Linking
+
+`WORKFLOW_CONTRACT_LINKING_ENABLED` (bool, `False` in `config.py`) turns on save-time contract linking and validation for workflows. Validation reads it in one place, `contract_linking_enabled()`, and the pipeline passes the result down. It is also exposed to the UI as the `features:workflowContracts` runtime component (`customer_config.py`), which hides contract editing and Check while linking is off; that component reads `config.WORKFLOW_CONTRACT_LINKING_ENABLED` directly, like the other runtime components. A new flag is set in all three places: `config.py`, `.env.example` (`true` for local development) and the Helm `extraEnv` (`"false"`).
+
+| Avoid | Prefer |
+|---|---|
+| `config.WORKFLOW_CONTRACT_LINKING_ENABLED` checks in routers or the executor | Call `save_validation.contract_linking_enabled()`, or pass `link_contracts` into `WorkflowExecutor.validate_workflow_with_report` |
+
+Evidence: `src/codemie/configs/config.py::WORKFLOW_CONTRACT_LINKING_ENABLED`, `src/codemie/service/workflow/save_validation.py::contract_linking_enabled`, `src/codemie/configs/customer_config.py::workflowContracts`, `.env.example::WORKFLOW_CONTRACT_LINKING_ENABLED`, `deploy-templates/values.yaml::WORKFLOW_CONTRACT_LINKING_ENABLED`.
+
 ## Chat Contextual Naming
 
 | Setting | Type | Default | Toggle mechanism |

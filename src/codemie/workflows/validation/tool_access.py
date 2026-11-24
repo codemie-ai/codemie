@@ -146,18 +146,13 @@ def validate_tool_access(workflow_config: WorkflowConfig, user: User) -> list[To
     return errors
 
 
-def collect_tool_access_owner_integration_warnings(
-    workflow_config: WorkflowConfig, treat_as_global: bool
-) -> list[dict]:
-    """Tell the publisher which script-step tools will run under the author's integrations.
+def collect_tool_access_owner_integration_warnings(workflow_config: WorkflowConfig) -> list[dict]:
+    """Tell the author which script-step tools run under the author's integrations.
 
-    ``treat_as_global`` is the proposed state, not the stored flag: publishing flips ``is_global``
-    only after validation, so the stored value would hide the very transition this warns about.
+    The function itself does not look at the global flag. The save pipeline asks for it only when contract
+    linking is on or the stored workflow is global, the same rule on create, update and both dry-runs.
     Advisory only; never blocks.
     """
-    if not treat_as_global:
-        return []
-
     warnings: list[dict] = []
     for tool in workflow_config.tools or []:
         if not takes_tool_access(getattr(tool, "tool", None) or ""):
@@ -178,7 +173,7 @@ def collect_tool_access_owner_integration_warnings(
                     "integration_alias": alias,
                     "message": (
                         f"Step '{step_id}': tool '{access.name}' runs under the workflow author's "
-                        f"integration ({alias}) for everyone who runs this workflow."
+                        f"integration ({alias}) for anyone who runs this workflow."
                     ),
                 }
                 for step_id in step_ids

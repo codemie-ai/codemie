@@ -226,6 +226,26 @@ def test_get_workflow_parses_null_skill_ids_from_yaml(mock_get_by_id, workflow_s
     assert result.assistants[0].skill_ids == []
 
 
+@pytest.mark.parametrize("yaml_mode", ["Legacy", "Autonomous", "42"])
+@patch('codemie.core.workflow_models.WorkflowConfig.get_by_id')
+def test_get_workflow_ignores_mode_key_in_yaml(mock_get_by_id, workflow_service, yaml_mode):
+    """A top-level `mode` in stored yaml_config was accepted on save and never applied; loading must ignore it."""
+    import yaml
+
+    wf = WorkflowConfig(
+        id="workflow_with_yaml_mode",
+        name="Workflow With Yaml Mode",
+        description="Test",
+        yaml_config=f"mode: {yaml_mode}\n" + yaml.dump({"assistants": [{"id": "assistant_1"}], "states": []}),
+    )
+    mock_get_by_id.return_value = wf
+
+    result = workflow_service.get_workflow(wf.id)
+
+    assert result.mode == WorkflowMode.SEQUENTIAL
+    assert [assistant.id for assistant in result.assistants] == ["assistant_1"]
+
+
 @patch('codemie.core.workflow_models.WorkflowConfig.get_by_id')
 def test_get_workflow_invalid_id(mock_get_by_id, workflow_service):
     mock_get_by_id.side_effect = Exception("Workflow not found")

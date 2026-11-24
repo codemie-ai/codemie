@@ -1,0 +1,663 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved the check round: 15/15 prior findings resolved, 0 new. Verifier did not re-run tests; new untracked input_contract_stage.py was outside its changed-file list."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User chose request-changes after reviewing the brief: 15 blocking findings (CR-004, CR-007, CR-011 critical); one fix-up round."
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved the check round: 15/15 prior findings resolved, 0 new. Verifier did not re-run tests; new untracked input_contract_stage.py was outside its changed-file list."
+    }
+  ],
+  "reviewed_head": "64608f329eaf1558cdc54a55eb28f9224ac11197",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All 15 prior blocking findings graded: 14 code findings resolved on current source at the fix-up locations, CR-007 resolved by the mapped decision (filtered field UNVERIFIED on agent or tool first node, ERROR on transform first node) with matching code and tests. Tests were not re-run; lens coverage is not re-graded on this round.",
+  "confidence": "low",
+  "check_confidence": "high",
+  "risk_flags": [
+    "data-contract"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 14,
+    "moot": 0,
+    "decided": 1,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/contracts/derive.py",
+      "line": 282,
+      "title": "Jinja built-ins read as missing context fields",
+      "problem": "extract_placeholder_names treats any plain {{ name }} as a context requirement. loop / loop.index inside a for block and literals true, false, none, True, False, None match _PLAIN_REFERENCE and are not excluded; loop_locals holds only for/set targets.",
+      "impact": "Derived requirement no producer can satisfy yields a false ERROR labelled renders empty, contradicting the AR-18 no-false-ERROR claim; blocks the save under strict. Reachability: live for any agent task using loop.index.",
+      "recommendation": "In extract_placeholder_names skip roots loop, true, false, none, True, False, None (and add loop to the for-block locals) before recording a placeholder name.",
+      "status": "resolved",
+      "check_notes": "derive.py skips loop/true/false/none roots via _JINJA_BUILTIN_NAMES; tests added",
+      "fix": {
+        "change": "extract_placeholder_names skips loop/true/false/none/True/False/None roots",
+        "test": "test_contract_derive.py::test_extract_placeholder_names (loop-object, literals, lookalikes)"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/contracts/derive.py",
+      "title": "New contracts modules lack future annotations import",
+      "problem": "code-quality.md asks new modules to add from __future__ import annotations; none of the 11 new modules under src/codemie/workflows/contracts/ nor validation/tool_schemas.py has it.",
+      "impact": "Documented code-quality standard for new modules is unmet.",
+      "recommendation": "Add from __future__ import annotations after the module docstring in each new module (contracts/*.py and validation/tool_schemas.py).",
+      "status": "resolved",
+      "check_notes": "from __future__ import annotations present in every contracts module and tool_schemas.py",
+      "fix": {
+        "change": "from __future__ import annotations added to every new contracts module and tool_schemas.py",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/contracts/input_contract.py",
+      "line": 46,
+      "title": "Size cap measured on lossy encode",
+      "problem": "security-patterns.md forbids lossy repair (errors=replace) before a decision on untrusted input; the contract size cap uses text.encode(utf-8, errors=replace), so a lone surrogate is counted as one byte instead of being rejected. The same pattern is at contracts/reader.py:103.",
+      "impact": "The size-limit decision is made on data that differs from what was sent.",
+      "recommendation": "Encode strictly and treat UnicodeEncodeError as a rejection; apply the same in contracts/reader.py:103.",
+      "status": "resolved",
+      "check_notes": "utf8_size encodes strictly; input_contract and reader reject not_encodable; tests added",
+      "fix": {
+        "change": "strict utf8_size helper; unencodable text rejected as not_encodable in input_contract and reader",
+        "test": "test_input_contract_check.py and test_contract_output_reader.py lone-surrogate cases"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/workflows/contracts/policy.py",
+      "line": 289,
+      "title": "Analysis failure ignores state-level strict",
+      "problem": "Spec failure isolation requires an unexpected whole-analysis failure to reject under workflow or state strict, but failure_report sets reported_as from settings.mode only, so a state-level validation: strict does not make it reject.",
+      "impact": "Partial on a required spec requirement: a crashed analysis silently saves a workflow that declared strict on a state.",
+      "recommendation": "In failure_report set reported_as BLOCKS when the workflow mode or any state's effective mode is strict, not only settings.mode.",
+      "status": "resolved",
+      "check_notes": "failure_report blocks when workflow or any state mode is strict; tests added",
+      "fix": {
+        "change": "failure_report blocks when the workflow or any state mode is strict",
+        "test": "test_contract_policy.py::test_simulation_wide_failure_blocks_when_any_state_is_strict"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/contracts/policy.py",
+      "line": 359,
+      "title": "Render failure turns a rejecting record into INFO",
+      "problem": "_finish degrades an unrenderable record to _fallback_class(mode), which is INFO in warn mode; the fallback ignores the record's kind and outcome, so a declared ERROR that would block (_REJECTING_KINDS) becomes informational if its message fails to render.",
+      "impact": "A rendering bug fails open exactly where a rejection was due and the save goes through. Reachability of a render failure was not established.",
+      "recommendation": "Compute reported_as outside the try block, or make the fallback honour the record's kind and outcome so a rejecting ERROR still reports BLOCKS when its message cannot render.",
+      "status": "resolved",
+      "check_notes": "_finish computes reported_as before rendering; fallback record keeps it; test added",
+      "fix": {
+        "change": "_finish decides reported_as before rendering, so the fallback record keeps its class",
+        "test": "test_contract_policy.py::test_a_record_whose_message_cannot_be_rendered_keeps_the_class_it_would_have_had"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/contracts/simulate.py",
+      "line": 749,
+      "title": "Lookup budget spent by tools that need no service call",
+      "problem": "Spec bounds the 25-lookup budget to built-in find_tool_by_name lookups, but _mandatory_parameters counts every distinct tool key via len(self._lookups), including static MCP (in memory) and plugin tools.",
+      "impact": "A workflow with many MCP or plugin tools degrades later built-in tools to UNVERIFIED lookup_budget_exhausted without any service call spent; strict then blocks the save.",
+      "recommendation": "Count against LOOKUP_BUDGET only built-in find_tool_by_name lookups; keep static MCP and plugin tools out of the budget and the _lookups count.",
+      "status": "resolved",
+      "check_notes": "budget counts only built-in service lookups (_needs_service_call, _service_lookups); test added",
+      "fix": {
+        "change": "lookup budget and result.lookups count only built-in service lookups; MCP and plugin tools are free",
+        "test": "test_contract_simulate.py::test_only_built_in_tools_spend_the_lookup_budget"
+      }
+    },
+    {
+      "id": "CR-007",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/workflows/contracts/simulate.py",
+      "line": 823,
+      "title": "Filtered field is ERROR even with unknown sources",
+      "problem": "AC-9 says a required field excluded by include_in_iterator_context is ERROR when all sources are known, else UNVERIFIED. _branch_context marks it REMOVED and _outcome returns ERROR before consulting unknown_contribution (always true via the undeclared initial input). test_ac4_reset_key_stays_error_with_an_unknown_initial_input asserts the same for AC-5.",
+      "impact": "Partial on a required criterion. The runtime does drop the key, so ERROR is defensible, but a declared requirement then rejects the save where the ticket requires UNVERIFIED.",
+      "recommendation": "Decide whether a required field excluded by include_in_iterator_context is UNVERIFIED when any source on the path is unknown (ticket AC-9) or stays a definite ERROR (current behaviour); align code, test and ticket.",
+      "status": "decided",
+      "check_notes": "mapped decision present with rationale; code returns UNVERIFIED iteration_item_may_supply on agent/tool first node, transform stays ERROR; tests match",
+      "fix": {
+        "change": "agent/tool first node reading an iteration-filtered field is UNVERIFIED (iteration_item_may_supply); transform stays ERROR; new message template",
+        "test": "test_contract_simulate.py test_ac9_* (agent, tool, transform, second node; both initial-input values)"
+      },
+      "decision": {
+        "outcome": "Option 1: a field removed by include_in_iterator_context is UNVERIFIED on an agent or tool first node (the iteration item may supply it); a transform first node stays ERROR; second node onward stays UNVERIFIED; reset removal unchanged",
+        "rationale": "The whitelist is applied to the parent context but the iteration item is an unknown source for the first node (AC-9, AC-23); a transform does not see the item, and the initial input cannot pass the filter, so the decision is made on node kind, not on unknown_contribution."
+      }
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/contracts/simulate.py",
+      "line": 849,
+      "title": "Write-suppressed blame uses graph-wide suppressions",
+      "problem": "_absent and _provenance consult self.suppressed, filled by every node the pass visits and keyed by field name only; the suppressing node can be in a sibling branch, downstream, or another component.",
+      "impact": "A not-guaranteed field is reported as never written to the context, and Provenance.removed_by / mechanism name an unrelated node. Outcome stays ERROR, so only message and provenance are wrong.",
+      "recommendation": "Consult suppressions only from nodes that are ancestors of the consuming node (record them on the path context), in both _absent and _provenance.",
+      "status": "resolved",
+      "check_notes": "suppressions now travel on AbstractContext and merge by path; graph-wide self.suppressed removed; tests added",
+      "fix": {
+        "change": "write suppressions travel on AbstractContext and are merged along paths, so only ancestors are blamed",
+        "test": "test_contract_simulate.py::test_ac4_write_suppression_is_blamed_only_on_an_ancestor_of_the_consumer"
+      }
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/contracts/simulate.py",
+      "line": 1044,
+      "title": "Edge walk re-implements leads_to without parity check",
+      "problem": "Spec decision says edges come from WorkflowNextState.leads_to(); _out_edges re-implements the target walk and never calls it, and no test asserts its target set equals leads_to() on the same fixtures.",
+      "impact": "A further graph walker can drift from the runtime's definition of reachable targets, silently mis-modelling edges.",
+      "recommendation": "Add a parity test asserting the _out_edges target set equals WorkflowNextState.leads_to() over the fixtures, or derive the target set from leads_to() and only add kind and path.",
+      "status": "resolved",
+      "check_notes": "parity test compares _out_edges targets with leads_to() over eight shapes",
+      "fix": {
+        "change": "parity test between _out_edges targets and WorkflowNextState.leads_to()",
+        "test": "test_contract_simulate.py::test_edge_targets_equal_what_leads_to_says_apart_from_terminal_targets"
+      }
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/contracts/simulate.py",
+      "line": 1167,
+      "title": "Integer source against number requirement warns",
+      "problem": "_available_outcome compares declared requirement types with producer types by plain set intersection, so integer against number (or the reverse) has no common element and yields TYPE_MISMATCH although a JSON-schema integer is a valid number.",
+      "impact": "False WARNING; WARNING blocks in strict mode and counts toward the corpus ceiling.",
+      "recommendation": "Treat integer as compatible with number in _available_outcome before reporting TYPE_MISMATCH, and add a test for both directions.",
+      "status": "resolved",
+      "check_notes": "_types_overlap treats integer as number; both directions tested",
+      "fix": {
+        "change": "integer and number are one type in the mismatch comparison; null is ignored there",
+        "test": "test_contract_simulate.py::test_ac7_integer_and_number_are_compatible_in_both_directions"
+      }
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/workflows/contracts/simulate.py",
+      "line": 1167,
+      "title": "Nullable source never produces a WARNING",
+      "problem": "AC-7 requires WARNING for a source that is optional or nullable while the consumer requires it. A source whose type list includes null is accepted by the reader, but _available_outcome checks only optional and type mismatch; FieldState carries no nullable flag.",
+      "impact": "Partial on a required criterion: a nullable source gives OK or UNVERIFIED, and no test covers it.",
+      "recommendation": "Carry nullability from the reader into FieldState and return the optional/nullable WARNING in _available_outcome when the source type list contains null and the consumer requires a value (AC-7); add a nullable test.",
+      "status": "resolved",
+      "check_notes": "_available_outcome warns when a certain source type list has null and the consumer does not accept null; tests added",
+      "fix": {
+        "change": "nullable certain source warns (optional_source) unless the consumer accepts null",
+        "test": "test_contract_simulate.py::test_ac7_nullable_source_* "
+      }
+    },
+    {
+      "id": "CR-012",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/validation/resources.py",
+      "line": 371,
+      "title": "Optional and bare generics in new code",
+      "problem": "code-quality.md prefers X | None and parameterized generics; new code uses Optional[Callable[[str, Any], None]] (resources.py:33-34, 371, 385) and bare dict/list annotations across contracts/ (effects._bindings, derive._mapping_types, reader._load_document, _schema_fields, _list_contract). The Ruff gate does not select UP rules.",
+      "impact": "Documented type-hint standard is broken in new code and no automated gate catches it.",
+      "recommendation": "Annotate as Callable[[str, Any], None] | None and drop Optional from the typing import; parameterize bare dict and list annotations in contracts/ (for example dict[str, object], list[object]).",
+      "status": "resolved",
+      "check_notes": "Optional removed from resources.py; bare dict/list annotations parameterized at the cited sites",
+      "fix": {
+        "change": "Optional[Callable] to X | None in resources.py; bare dict/list/tuple annotations parameterised in contracts/",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-013",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/validation/schema.py",
+      "line": 651,
+      "title": "New concerns appended to large validation modules",
+      "problem": "code-quality.md Module Cohesion: the input_schema check wiring (_validate_state_input_contracts, INPUT_CONTRACT_VALIDATOR) is appended to schema.py (799 lines) and _record_tool_schema to resources.py (871 lines) instead of a module of its own.",
+      "impact": "Documented cohesion rule for files of about 500 lines or more is unmet.",
+      "recommendation": "Move _validate_state_input_contracts and INPUT_CONTRACT_VALIDATOR into the contracts package next to input_contract.py and _record_tool_schema into validation/tool_schemas.py, then import them from schema.py and resources.py.",
+      "status": "resolved",
+      "check_notes": "input-contract wiring moved to input_contract_stage.py; record_tool_schema moved to tool_schemas.py",
+      "fix": {
+        "change": "input-schema stage wiring moved to contracts/input_contract_stage.py; record_tool_schema moved to validation/tool_schemas.py",
+        "test": "test_input_contract_check.py schema-stage tests; test_tool_schema_resolver.py sink tests"
+      }
+    },
+    {
+      "id": "CR-014",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/workflows/validation/test_contract_corpus.py",
+      "title": "AC-40 end-to-end test skipped on a harness it never uses",
+      "problem": "test_ac40_full_reset_with_an_output_key_saves_with_only_the_key_available carries @requires_harness (skipif on tests/codemie/workflows/test_workflow_templates_validation.py, which is absent), yet its body builds its own WorkflowConfig and calls validate_workflow_with_report. The harness-path corpus run is skipped for the same reason.",
+      "impact": "A regression in the full save pipeline for a full reset with an output key is caught by no executed test; the ungated corpus run bypasses validate_workflow_with_report.",
+      "recommendation": "Drop @requires_harness from test_ac40_full_reset_with_an_output_key_saves_with_only_the_key_available and assert report.blocking_records() == [] and the input_schema.result record is OK; gate only tests that call the harness.",
+      "status": "resolved",
+      "check_notes": "requires_harness dropped from AC-40 test; runs with _stage_doubles and asserts no blocking records",
+      "fix": {
+        "change": "AC-40 end-to-end test ungated and run with the resource stage and executor doubled",
+        "test": "test_contract_corpus.py::test_ac40_full_reset_with_an_output_key_saves_with_only_the_key_available"
+      }
+    },
+    {
+      "id": "CR-015",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/workflows/validation/test_contract_simulate.py",
+      "title": "Timing bounds from the spec are not asserted",
+      "problem": "Spec requires largest template and a 200-state chain with 20 diamonds within 5x validate_workflow and under 2 s, and 20 built-in lookups warm under 1 s. The chain test uses 100 diamonds and asserts under 10 s; test_tool_schema_resolver.py only records the cold time; the LOOKUP_BUDGET comment still reads provisional.",
+      "impact": "Performance regressions of the linker on save are not caught by any assertion matching the spec.",
+      "recommendation": "Assert the spec bounds: largest template and a 200-state chain with 20 diamonds within 5x validate_workflow and under 2 s; assert warm 20 built-in lookups under 1 s in test_tool_schema_resolver.py and refresh the LOOKUP_BUDGET comment.",
+      "status": "resolved",
+      "check_notes": "5x/2 s linker timing tests, 2 s diamond chain test and warm under 1 s lookup assertion added; LOOKUP_BUDGET comment refreshed",
+      "fix": {
+        "change": "spec timing bounds asserted: linker within 5x validate_workflow and under 2 s on a 200-state 20-diamond chain and the largest template; warm 20 built-in lookups under 1 s",
+        "test": "test_contract_corpus.py timing tests; test_contract_simulate.py two-second chain; test_tool_schema_resolver.py warm lookups"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Keys: WorkflowState input_schema and validation; workflow-level keys via read_contract_settings",
+      "status": "pass",
+      "notes": "workflow_models.py Optional[Any] fields; settings.py; OpenAPI baseline regenerated"
+    },
+    {
+      "kind": "spec",
+      "item": "Mode enum defined once in constants.py and tested against the YAML schema enum",
+      "status": "pass",
+      "notes": "ContractValidationMode; enum equality test"
+    },
+    {
+      "kind": "spec",
+      "item": "Key names added to execution_config_schema.yaml",
+      "status": "pass",
+      "notes": "State and workflow hunks; bad values rejected at schema stage"
+    },
+    {
+      "kind": "spec",
+      "item": "check_input_contract (AC-16 rule, 64 KB / depth 32 bounds) wrapped by schema stage",
+      "status": "pass",
+      "notes": "input_contract.py; schema.py runs on all states in every mode"
+    },
+    {
+      "kind": "spec",
+      "item": "contracts/ imports only leaf modules; re-exported from validation/__init__.py",
+      "status": "pass",
+      "notes": "import-direction tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Node effects: one pure function per kind from a table",
+      "status": "pass",
+      "notes": "NODE_EFFECTS + unknown_kind_effect"
+    },
+    {
+      "kind": "spec",
+      "item": "Edges come from WorkflowNextState.leads_to()",
+      "status": "partial",
+      "notes": "_out_edges re-implements the walk; no parity test against leads_to() (CR-009)"
+    },
+    {
+      "kind": "spec",
+      "item": "Contract classification with parity test",
+      "status": "pass",
+      "notes": "reader.py; parity test with runtime"
+    },
+    {
+      "kind": "spec",
+      "item": "Derived requirements and the single coverage rule",
+      "status": "pass",
+      "notes": "derive.py _coverage"
+    },
+    {
+      "kind": "spec",
+      "item": "Simulation: forward pass, transfer rules, cycle rule, 100,000 work cap",
+      "status": "pass",
+      "notes": "simulate.py; per-rule tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Entry points: link_workflow_contracts, validate_workflow(link_contracts=False), validate_workflow_with_report",
+      "status": "pass",
+      "notes": "linker.py; workflow.py; concurrency tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Failure isolation: unexpected exception is one UNVERIFIED record; rejects under workflow or state strict",
+      "status": "partial",
+      "notes": "failure_report uses settings.mode only; state-level strict does not reject (CR-004)"
+    },
+    {
+      "kind": "spec",
+      "item": "Error type: schema_validation for AC-16, contract_validation for linker rejections",
+      "status": "pass",
+      "notes": "constants.py; linker.build_contract_error"
+    },
+    {
+      "kind": "spec",
+      "item": "Report: records with kind/outcome/reported_as/provenance; fixed sanitised templates",
+      "status": "pass",
+      "notes": "models.py; policy.py templates; sanitisation test"
+    },
+    {
+      "kind": "spec",
+      "item": "Tool parameter schemas: per-call resolver, static MCP recorded, built-in memoised, lookup budget 25",
+      "status": "partial",
+      "notes": "Budget also counts MCP and plugin tools that need no service call (CR-006)"
+    },
+    {
+      "kind": "spec",
+      "item": "Tests: AC-14 built-in and mocked MCP, no-schema, raising lookup, Provider.get_all once",
+      "status": "pass",
+      "notes": "test_tool_schema_resolver.py; test_contract_simulate.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Tests: concurrency, malformed shapes, injected names, stored workflow with bad keys",
+      "status": "pass",
+      "notes": "test_contract_linker.py; test_contract_keys.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Tests: parity against the real runtime",
+      "status": "pass",
+      "notes": "effects, reader and resolver parity tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Tests: timing - 5x validate_workflow, under 2 s; 20 built-in states warm under 1 s",
+      "status": "partial",
+      "notes": "Chain test has 100 diamonds and asserts under 10 s; no 5x, 2 s or warm 1 s assertion (CR-015)"
+    },
+    {
+      "kind": "spec",
+      "item": "OpenAPI baseline regenerated for WorkflowState new fields",
+      "status": "pass",
+      "notes": "openapi.json hunks"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-1: no contracts saves with UNVERIFIED; uncovered node never blocks",
+      "status": "pass",
+      "notes": "linker and simulate tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-2: known producer OK naming producer; unknown intermediate makes type UNVERIFIED",
+      "status": "pass",
+      "notes": "test_ac2_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-3: unproduced field with all sources known is ERROR naming sources",
+      "status": "pass",
+      "notes": "test_ac3_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-4: produced then removed, or output writing off, is ERROR naming node and mechanism",
+      "status": "pass",
+      "notes": "test_ac4_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-5: any unknown source on the path gives UNVERIFIED, never ERROR",
+      "status": "partial",
+      "notes": "REMOVED field is ERROR with an unknown initial input; defensible per ticket wording, folded into CR-007"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-6: conditional/switch WARNING; parallel any-guaranteeing OK",
+      "status": "pass",
+      "notes": "test_ac6_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-7: type mismatch or optional/nullable source is WARNING",
+      "status": "partial",
+      "notes": "Nullable source never warns (CR-011); integer vs number warns wrongly (CR-010)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-8: nested properties, items, enum, format, bounds yield no finding",
+      "status": "pass",
+      "notes": "reader reads top-level only"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-9: first-level iteration filter; ERROR if all sources known else UNVERIFIED",
+      "status": "partial",
+      "notes": "Filtered field is ERROR even with unknown sources (CR-007)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-10: output writing off, accumulating keys, sub-workflow, list output union",
+      "status": "pass",
+      "notes": "test_ac10_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-11: field produced only inside the consumer's own cycle is UNVERIFIED",
+      "status": "pass",
+      "notes": "test_ac11_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-12: unreachable nodes never sources, excluded from coverage",
+      "status": "pass",
+      "notes": "test_ac12_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-37: condition/switch identifiers and iteration key against own output contract",
+      "status": "pass",
+      "notes": "test_ac37_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-44: transform is a known source with mapping output fields",
+      "status": "pass",
+      "notes": "transform_effect; on_error parity tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-S1: agent placeholder names are derived requirements; conservative extraction",
+      "status": "pass",
+      "notes": "Built-in names still misread (CR-001)"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-S2: context extract roots required, input_key as root",
+      "status": "pass",
+      "notes": "test_s2_*"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-S3: state bindings replace tool bindings; input_key namespace UNVERIFIED",
+      "status": "pass",
+      "notes": "test_s3_*"
+    },
+    {
+      "kind": "spec",
+      "item": "AC-S4: file_names and propagated_headers always optional known sources",
+      "status": "pass",
+      "notes": "test_s4_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-13: binding to a context field nobody produces follows not-guaranteed rule",
+      "status": "pass",
+      "notes": "tool_args.<name> path"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-14: non-empty bindings omitting a mandatory parameter are ERROR-class",
+      "status": "pass",
+      "notes": "test_ac14b_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-15: literal binding plus same-named context field is WARNING",
+      "status": "pass",
+      "notes": "ORIGIN_TOOL_BINDING_OVERRIDE"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-38: no usable args schema is UNVERIFIED; no MCP call beyond resource check",
+      "status": "pass",
+      "notes": "tool_schemas.py UNKNOWN paths"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-16: input_schema structural check, schema_validation error, every mode",
+      "status": "pass",
+      "notes": "test_input_contract_check.py"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-17: default mode forms; workflow strict requires schema-form producers",
+      "status": "pass",
+      "notes": "test_contract_policy.py"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-18: default mode ERROR on derived saves as warning; declared rejects",
+      "status": "pass",
+      "notes": "test_ac18_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-19: strict mode rejects any ERROR, WARNING or UNVERIFIED in scope",
+      "status": "pass",
+      "notes": "policy._reported_as"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-20: state-level mode governs only that state's requirements",
+      "status": "pass",
+      "notes": "resolve_state_modes"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-21: require_input_contracts makes uncovered node a coverage ERROR",
+      "status": "pass",
+      "notes": "_coverage_findings"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-22: existing workflows and templates gain no rejection",
+      "status": "pass",
+      "notes": "linker default off; corpus test"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-39: linker off means no analysis, AC-16 and key schema still apply",
+      "status": "pass",
+      "notes": "empty ContractLinkReport"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-40: full reset plus explicit output key makes only the key available",
+      "status": "pass",
+      "notes": "Simulator case ungated; end-to-end test skipped (CR-014)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-43 / D2: template corpus run, 64-template floor, warning ceiling",
+      "status": "pass",
+      "notes": "Harness-path run is skipif-gated"
+    },
+    {
+      "kind": "spec",
+      "item": "Gating and ownership: MR text, pre-release scan, un-gating after rebase",
+      "status": "na",
+      "notes": "Process obligations, not expressible in the diff"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 10 subjects in the range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "12 new modules lack from __future__ import annotations; Optional and bare dict/list in new code; new concerns appended to schema.py (~800 lines) and resources.py (~870 lines)"
+    },
+    {
+      "kind": "security",
+      "status": "partial",
+      "notes": "Contract size caps measure text.encode with errors=replace (lossy repair before decision); no credential logging, injection or path-from-input issue found"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "All four lenses and the standards audit ran, but the diff is oversized so reachability was checked only around cited locations; 15 blocking findings including one decision_needed (AC-9 filtered-field ERROR vs UNVERIFIED) and three required-criterion partials. 13 candidates dismissed as noise or by-design, 0 deferred, no deferred backlog written.",
+    "confidence": "low",
+    "risk_flags": [
+      "data-contract"
+    ]
+  }
+}

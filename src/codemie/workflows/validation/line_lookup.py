@@ -15,7 +15,9 @@
 """YAML line number lookup for workflow validation errors."""
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any
+
+from codemie.workflows.contracts.models import ContractLocation, LocationSection
 import yaml
 
 # Workflow configuration field names
@@ -68,42 +70,7 @@ def extract_line_numbers(yaml_text: str) -> dict[str, int]:
     except yaml.YAMLError:
         return {}
 
-    line_map = {}
-    _walk_yaml_node(root_node, [], line_map)
-    return line_map
-
-
-def _walk_yaml_node(node, path: list, line_map: dict[str, int]) -> None:
-    """Recursively walk YAML nodes and extract line numbers."""
-    if node is None:
-        return
-
-    if isinstance(node, yaml.MappingNode):
-        for key_node, value_node in node.value:
-            _process_mapping_entry(key_node, value_node, path, line_map)
-    elif isinstance(node, yaml.SequenceNode):
-        for i, item_node in enumerate(node.value):
-            current_path = path + [i]
-            path_str = _convert_path_to_string(current_path)
-
-            if item_node.start_mark:
-                line_map[path_str] = item_node.start_mark.line + 1
-
-            _walk_yaml_node(item_node, current_path, line_map)
-
-
-def _process_mapping_entry(key_node, value_node, path: list, line_map: dict[str, int]) -> None:
-    """Process a single key-value pair from a YAML mapping node."""
-    if not isinstance(key_node, yaml.ScalarNode):
-        return
-    key = key_node.value
-    current_path = path + [key]
-    path_str = _convert_path_to_string(current_path)
-
-    if value_node.start_mark:
-        line_map[path_str] = value_node.start_mark.line + 1
-
-    _walk_yaml_node(value_node, current_path, line_map)
+    return _line_maps(root_node)[0]
 
 
 def _convert_path_to_string(path: list) -> str:
@@ -124,33 +91,37 @@ class YamlLineFinderBase(ABC):
     """Abstract base for YAML line number lookup."""
 
     @abstractmethod
-    def find_line_for_state_field(self, state_id: str, field_path: str, allow_fallback: bool = True) -> Optional[int]:
+    def find_line_for_state_field(self, state_id: str, field_path: str, allow_fallback: bool = True) -> int | None:
         """Find line number for state field. Returns 1-indexed line or None."""
         pass
 
     @abstractmethod
     def find_line_for_assistant_field(
         self, assistant_ref: str, field_path: str, allow_fallback: bool = True
-    ) -> Optional[int]:
+    ) -> int | None:
         """Find line number for assistant field. Returns 1-indexed line or None."""
         pass
 
     @abstractmethod
-    def find_line_for_tool_field(self, tool_ref: str, field_path: str, allow_fallback: bool = True) -> Optional[int]:
+    def find_line_for_tool_field(self, tool_ref: str, field_path: str, allow_fallback: bool = True) -> int | None:
         """Find line number for tool field. Returns 1-indexed line or None."""
         pass
 
     @abstractmethod
     def find_line_for_custom_node_field(
         self, node_ref: str, field_path: str, allow_fallback: bool = True
-    ) -> Optional[int]:
+    ) -> int | None:
         """Find line number for custom node field. Returns 1-indexed line or None."""
         pass
 
     @abstractmethod
-    def find_line_for_top_level_field(self, field_path: str) -> Optional[int]:
+    def find_line_for_top_level_field(self, field_path: str) -> int | None:
         """Find line number for top-level field. Returns 1-indexed line or None."""
         pass
+
+    def find_contract_line(self, location: ContractLocation) -> int | None:  # noqa: ARG002 - argument is part of the lookup interface
+        """Exact typed lookup; null finders have no source metadata."""
+        return None
 
 
 class YamlLineFinder(YamlLineFinderBase):
@@ -159,8 +130,9 @@ class YamlLineFinder(YamlLineFinderBase):
     def __init__(
         self,
         workflow_config: dict,
-        line_number_map: Optional[dict[str, int]] = None,
-        yaml_text: Optional[str] = None,
+        line_number_map: dict[str, int] | None = None,
+        yaml_text: str | None = None,
+        token_line_map: dict[tuple[str | int, ...], int] | None = None,
     ):
         """
         Initialize with workflow config and either line_number_map OR yaml_text.
@@ -169,11 +141,16 @@ class YamlLineFinder(YamlLineFinderBase):
             ValueError: If neither line_number_map nor yaml_text provided
         """
         self.workflow_config = workflow_config
+        self.token_line_map = token_line_map or {}
 
         if line_number_map is not None:
             self.line_number_map = line_number_map
         elif yaml_text is not None:
-            self.line_number_map = extract_line_numbers(yaml_text)
+            try:
+                root = yaml.compose(yaml_text)
+            except yaml.YAMLError:
+                root = None
+            self.line_number_map, self.token_line_map = _line_maps(root)
         else:
             raise ValueError("Must provide either line_number_map or yaml_text")
 
@@ -182,7 +159,7 @@ class YamlLineFinder(YamlLineFinderBase):
         """Convenience constructor from YAML text."""
         return cls(workflow_config=workflow_config, yaml_text=yaml_text)
 
-    def find_line_for_state_field(self, state_id: str, field_path: str, allow_fallback: bool = True) -> Optional[int]:
+    def find_line_for_state_field(self, state_id: str, field_path: str, allow_fallback: bool = True) -> int | None:
         """Find line number for state field."""
         return self._find_line_for_section_field(
             section_name=SECTIONS["STATES"],
@@ -193,7 +170,7 @@ class YamlLineFinder(YamlLineFinderBase):
 
     def find_line_for_assistant_field(
         self, assistant_ref: str, field_path: str, allow_fallback: bool = True
-    ) -> Optional[int]:
+    ) -> int | None:
         """Find line number for assistant field."""
         return self._find_line_for_section_field(
             section_name=SECTIONS["ASSISTANTS"],
@@ -202,7 +179,7 @@ class YamlLineFinder(YamlLineFinderBase):
             allow_fallback=allow_fallback,
         )
 
-    def find_line_for_tool_field(self, tool_ref: str, field_path: str, allow_fallback: bool = True) -> Optional[int]:
+    def find_line_for_tool_field(self, tool_ref: str, field_path: str, allow_fallback: bool = True) -> int | None:
         """Find line number for tool field."""
         return self._find_line_for_section_field(
             section_name=SECTIONS["TOOLS"],
@@ -213,7 +190,7 @@ class YamlLineFinder(YamlLineFinderBase):
 
     def find_line_for_custom_node_field(
         self, node_ref: str, field_path: str, allow_fallback: bool = True
-    ) -> Optional[int]:
+    ) -> int | None:
         """Find line number for custom node field."""
         return self._find_line_for_section_field(
             section_name=SECTIONS["CUSTOM_NODES"],
@@ -222,7 +199,7 @@ class YamlLineFinder(YamlLineFinderBase):
             allow_fallback=allow_fallback,
         )
 
-    def find_line_for_top_level_field(self, field_path: str) -> Optional[int]:
+    def find_line_for_top_level_field(self, field_path: str) -> int | None:
         """Find line number for top-level field."""
         return self.line_number_map.get(field_path)
 
@@ -232,7 +209,7 @@ class YamlLineFinder(YamlLineFinderBase):
         item_id: str,
         field_path: str,
         allow_fallback: bool = True,
-    ) -> Optional[int]:
+    ) -> int | None:
         """Generic lookup for any section field with optional fallback."""
         if not self.workflow_config or not self.line_number_map:
             return None
@@ -254,15 +231,38 @@ class YamlLineFinder(YamlLineFinderBase):
 
         return None
 
-    def _find_item_index(self, section_name: str, item_id: str) -> Optional[int]:
+    def find_contract_line(self, location: ContractLocation) -> int | None:
+        """Use exact keys and integer indices, with parent fields as the only fallback.
+
+        An explicitly empty location addresses its owner. A missing non-empty field never
+        falls back to the owner or an unrelated sibling field.
+        """
+        prefix: tuple[str | int, ...] = ()
+        if location.section is not LocationSection.WORKFLOW:
+            index = self._find_item_index(location.section.value, location.owner_id)
+            if index is None:
+                return None
+            prefix = (location.section.value, index)
+        segments = location.segments
+        if not segments:
+            return self.token_line_map.get(prefix)
+        for length in range(len(segments), 0, -1):
+            line = self.token_line_map.get(prefix + segments[:length])
+            if line is not None:
+                return line
+        return None
+
+    def _find_item_index(self, section_name: str, item_id: str) -> int | None:
         """Find array index for item by ID."""
         items = self.workflow_config.get(section_name, [])
+        if not isinstance(items, list):
+            return None
         for i, item in enumerate(items):
-            if item and item.get(FIELDS["ID"]) == item_id:
+            if isinstance(item, dict) and item.get(FIELDS["ID"]) == item_id:
                 return i
         return None
 
-    def _find_any_line_in_section(self, section_name: str, item_index: int) -> Optional[int]:
+    def _find_any_line_in_section(self, section_name: str, item_index: int) -> int | None:
         """Find any line number within section item using fallback fields."""
         fallback_fields = FALLBACK_FIELDS.get(section_name, [])
         for field in fallback_fields:
@@ -300,3 +300,72 @@ class NullYamlLineFinder(YamlLineFinderBase):
 
     def find_line_for_top_level_field(self, field_path: str) -> None:
         return None
+
+
+def _line_maps(root: Any) -> tuple[dict[str, int], dict[tuple[str | int, ...], int]]:
+    """Build legacy display paths and exact tokens from the same YAML node marks."""
+    legacy: dict[str, int] = {}
+    tokens: dict[tuple[str | int, ...], int] = {}
+    _record_lines(root, (), frozenset(), legacy, tokens)
+    return legacy, tokens
+
+
+def _record_lines(
+    node: Any,
+    path: tuple[str | int, ...],
+    active: frozenset[int],
+    legacy: dict[str, int],
+    tokens: dict[tuple[str | int, ...], int],
+) -> None:
+    """Record the 1-based start line of `node` and its children, depth first; `active` stops alias cycles."""
+    if node is None or id(node) in active:
+        return
+    active = active | {id(node)}
+    if node.start_mark:
+        tokens[path] = node.start_mark.line + 1
+        if path:
+            legacy[_convert_path_to_string(list(path))] = tokens[path]
+    for child, child_path in _child_nodes(node, path):
+        _record_lines(child, child_path, active, legacy, tokens)
+
+
+def _child_nodes(node: Any, path: tuple[str | int, ...]) -> list[tuple[Any, tuple[str | int, ...]]]:
+    """Children of a mapping (scalar keys only) or a sequence, with their paths, in document order."""
+    if isinstance(node, yaml.MappingNode):
+        return [(value, (*path, key.value)) for key, value in node.value if isinstance(key, yaml.ScalarNode)]
+    if isinstance(node, yaml.SequenceNode):
+        return [(value, (*path, index)) for index, value in enumerate(node.value)]
+    return []
+
+
+class SourceMetadata:
+    """Parsed source and both line maps, built from a single safe YAML node tree."""
+
+    def __init__(self, text: str):
+        self.parsed: Any = None
+        self.parse_error: yaml.YAMLError | None = None
+        self.finder: YamlLineFinderBase = NullYamlLineFinder()
+        self.line_number_map: dict[str, int] = {}
+        loader = yaml.SafeLoader(text)
+        try:
+            root = loader.get_single_node()
+            self.parsed = loader.construct_document(root) if root is not None else None
+            self.line_number_map, tokens = _line_maps(root)
+            if isinstance(self.parsed, dict):
+                self.finder = YamlLineFinder(self.parsed, self.line_number_map, token_line_map=tokens)
+        except yaml.YAMLError as exc:
+            self.parse_error = exc
+        finally:
+            loader.dispose()
+
+
+class ValidationSourceContext:
+    """Request-local source metadata. Exact text identity separates submitted and normalized YAML."""
+
+    def __init__(self):
+        self._sources: dict[str, SourceMetadata] = {}
+
+    def source(self, text: str) -> SourceMetadata:
+        if text not in self._sources:
+            self._sources[text] = SourceMetadata(text)
+        return self._sources[text]

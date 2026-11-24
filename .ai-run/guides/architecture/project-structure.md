@@ -23,6 +23,7 @@ Choose the narrowest existing package that owns the behavior.
 |---|---|
 | Adding integration logic to routers | Put provider logic in services or `codemie_tools` adapters |
 | Mixing workflow node behavior with generic service code | Use `src/codemie/workflows/nodes/` for node behavior |
+| Putting save-time contract analysis (derivation, simulation, mode policy) in nodes or services | `src/codemie/workflows/contracts/`, a leaf package; API issue shaping and the tool-schema resolver stay in `src/codemie/workflows/validation/`; see `.ai-run/guides/workflows/langgraph-workflows.md` (Contract Linker Package) |
 | Creating new top-level packages without precedent | Extend the existing package boundary |
 
 Evidence: integration-heavy tool packages exist under `src/codemie_tools/git/`, `src/codemie_tools/cloud/`, and `src/codemie_tools/qa/`.

@@ -31,9 +31,11 @@ Exceptions:
 """
 
 import uuid
-from typing import Optional
+from collections.abc import Callable
+from typing import Any
 
 import yaml
+from sqlalchemy.exc import SQLAlchemyError
 from codemie.core.workflow_models import WorkflowConfig, WorkflowTool
 from codemie.service.workflow_service import WorkflowService
 from codemie.rest_api.security.user import User
@@ -49,6 +51,7 @@ from codemie.workflows.validation.models import (
     ToolMeta,
     ToolkitType,
 )
+from codemie.workflows.validation.tool_schemas import record_tool_schema
 from codemie.workflows.validation.tool_access import (
     ToolAccessProblem,
     validate_tool_access,
@@ -367,7 +370,12 @@ def _is_assistant_available(assistant_id: str, user: User) -> bool:
     return len(assistants) > 0
 
 
-def _is_tool_available(workflow_config: WorkflowConfig, tool: str | WorkflowTool, user: User) -> bool:
+def _is_tool_available(
+    workflow_config: WorkflowConfig,
+    tool: str | WorkflowTool,
+    user: User,
+    schema_sink: Callable[[str, Any], None] | None = None,
+) -> bool:
     try:
         if isinstance(tool, WorkflowTool) and tool.mcp_server:
             if tool.mcp_server.resolve_dynamic_values_in_arguments:
@@ -379,7 +387,9 @@ def _is_tool_available(workflow_config: WorkflowConfig, tool: str | WorkflowTool
                 project_name=workflow_config.project,
                 conversation_id=workflow_config.id,  # we should reuse the tools from the same workflow_config
             )
+            workflow_tool = tool
             tool = next((mcp_tool for mcp_tool in mcp_tools if mcp_tool.name == tool.tool), None)
+            record_tool_schema(schema_sink, workflow_tool, tool)
 
             return tool is not None
         else:
@@ -451,6 +461,8 @@ def _tool_requires_missing_integration(
         # have nothing meaningful to display.
         credential_type = result.credential_type or toolkit_name or "Unknown"
         return (not result.is_valid), credential_type
+    except SQLAlchemyError:
+        raise
     except Exception as e:
         logger.warning(f"Failed to validate integration for tool '{tool_name}': {e}")
         return False, None
@@ -569,7 +581,7 @@ def _is_slot_left_to_the_user(db_assistant, tool_name: str, user: User = None) -
     return False
 
 
-def _slot_is_unpinned(db_assistant, tool_name: str) -> Optional[bool]:
+def _slot_is_unpinned(db_assistant, tool_name: str) -> bool | None:
     """Whether this assistant's own slot for ``tool_name`` is unpinned; None when it has no such slot."""
     for toolkit in getattr(db_assistant, "toolkits", None) or []:
         toolkit_pinned = bool(getattr(toolkit, "settings", None))
@@ -587,6 +599,8 @@ def _load_referenced_assistant(user: User, assistant_id: str):
     """Load a persisted assistant by id, returning None on failure or absence."""
     try:
         db_assistants = Assistant.get_by_ids(user, [assistant_id])
+    except SQLAlchemyError:
+        raise
     except Exception as e:
         logger.warning(f"Failed to load assistant '{assistant_id}' for integration validation: {e}")
         return None
@@ -597,6 +611,8 @@ def _safely_collect_missing_integrations(db_assistant, user: User, project_name:
     """Collect missing integrations for a persisted assistant, swallowing transient errors."""
     try:
         return AssistantIntegrationValidator.collect_missing_integrations(db_assistant, user, project_name)
+    except SQLAlchemyError:
+        raise
     except Exception as e:
         logger.warning(f"Failed to validate integrations for assistant '{db_assistant.id}': {e}")
         return []
@@ -695,12 +711,16 @@ def _validate_tools_from_assistants_availability(
     return unavailable_tools, invalid_integration_tools, missing_integration_tools
 
 
-def _validate_tools_avaiability(workflow_config: WorkflowConfig, user: User) -> list[tuple[str, str, str]]:
+def _validate_tools_avaiability(
+    workflow_config: WorkflowConfig,
+    user: User,
+    schema_sink: Callable[[str, Any], None] | None = None,
+) -> list[tuple[str, str, str]]:
     tools = workflow_config.tools
     unavailable_tools = []
 
     for tool in tools:
-        if not _is_tool_available(workflow_config, tool, user):
+        if not _is_tool_available(workflow_config, tool, user, schema_sink):
             states = _find_states_referencing_tool(workflow_config, tool.id)
             for state_id in states:
                 unavailable_tools.append((tool.id, tool.tool, state_id))
@@ -741,12 +761,18 @@ def _validate_sub_workflow_availability(workflow_config: WorkflowConfig, user: U
             sub_wf = WorkflowService().get_workflow(workflow_id, user)
             if sub_wf is None:
                 unavailable.append((state.id, workflow_id, "not found"))
+        except SQLAlchemyError:
+            raise
         except Exception:
             unavailable.append((state.id, workflow_id, "not found or access denied"))
     return unavailable
 
 
-def validate_workflow_config_resources_availability(workflow_config: WorkflowConfig, user: User):
+def validate_workflow_config_resources_availability(
+    workflow_config: WorkflowConfig,
+    user: User,
+    schema_sink: Callable[[str, Any], None] | None = None,
+):
     """
     Validates the availability of resources required by the workflow configuration.
 
@@ -759,6 +785,9 @@ def validate_workflow_config_resources_availability(workflow_config: WorkflowCon
         workflow_config (WorkflowConfig): The workflow configuration to validate.
         user (User): The user executing the workflow, used to check resource permissions
                      and availability.
+        schema_sink: Optional callable `(workflow_tool_id, args_schema)` that receives the args schema of every
+                     static MCP tool the check selects (EPMCDME-16503). It only observes: it adds no MCP call and
+                     never changes the result.
 
     Raises:
         WorkflowConfigResourcesValidationError: If one or more required resources
@@ -769,7 +798,7 @@ def validate_workflow_config_resources_availability(workflow_config: WorkflowCon
     # Lines are reported against the text the client sent, not the normalized YAML rewritten from the objects.
     line_source_yaml = getattr(workflow_config, "_source_yaml_config", None) or workflow_config.yaml_config
     unavailable_assistants = _validate_assistants_availability(workflow_config, user)
-    unavailable_tools = _validate_tools_avaiability(workflow_config, user)
+    unavailable_tools = _validate_tools_avaiability(workflow_config, user, schema_sink=schema_sink)
     (
         unavailable_tools_from_asst_integrations,
         invalid_integration_tools,

@@ -20,8 +20,9 @@ Contains Pydantic models and dataclasses used across validation modules.
 
 from collections import namedtuple
 from enum import Enum
-from typing import Optional, Union
 from pydantic import BaseModel, Field
+
+from codemie.workflows.contracts.models import StrictSource
 
 
 CrossRefError = namedtuple("CrossRefError", ["referrer", "key", "ref", "entity"])
@@ -50,16 +51,36 @@ class MCPMeta(BaseModel):
     mcp_name: str = Field(description="Name of the MCP server")
 
 
+class ContractMeta(BaseModel):
+    """Metadata for contract issues: the linker's label and, when strict made the issue block, which level set it."""
+
+    label: str | None = Field(None, description="Linker label of the issue")
+    strict_source: StrictSource | None = Field(
+        None,
+        description="Set only when the issue blocks because of strict: 'workflow' when the workflow-level mode is "
+        "strict, 'state' when a state's own override is",
+    )
+
+
 class WorkflowValidationErrorDetail(BaseModel):
     """Pydantic model for structured validation error details."""
 
     id: str = Field(description="Unique UUID for this error")
     message: str = Field(description="Short, actionable error message")
     path: str = Field(description="Field path (leaf field name)")
-    details: Optional[str] = Field(None, description="Optional detailed explanation")
-    state_id: Optional[str] = Field(None, description="State ID for node-specific errors")
-    config_line: Optional[int] = Field(None, description="1-indexed YAML line number")
-    meta: Optional[Union[ToolMeta, MCPMeta]] = Field(None, description="Additional metadata (tool or MCP info)")
+    details: str | None = Field(None, description="Optional detailed explanation")
+    state_id: str | None = Field(None, description="State ID for node-specific errors")
+    config_line: int | None = Field(None, description="1-indexed YAML line number")
+    config_path: str | None = Field(None, description="Dotted location of the field in the workflow config")
+    config_section: str | None = Field(
+        None,
+        description="Top-level section that owns config_path: states, tools or custom_nodes. "
+        "The item in it is state_id, or that state's tool_id / custom_node_id",
+    )
+    outcome: str | None = Field(None, description="Contract issue outcome: ERROR, WARNING or UNVERIFIED")
+    meta: ToolMeta | MCPMeta | ContractMeta | None = Field(
+        None, description="Additional metadata (tool, MCP or contract info)"
+    )
 
     class Config:
         populate_by_name = True

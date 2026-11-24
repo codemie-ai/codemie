@@ -1,0 +1,2 @@
+{"ts":"2026-11-09T11:19:15Z","gate_id":"spec.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User requested implementation of the concrete correction plan; requirements are reused without a new design gate.","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-11-09T11:19:15Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User requested work on fix-plan-cx.md; correction plan preserves that scope.","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

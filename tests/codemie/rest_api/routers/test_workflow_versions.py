@@ -327,6 +327,38 @@ class TestRollbackWorkflowVersion:
             change_notes="hotfix",
         )
 
+    @patch("codemie.service.workflow.workflow_version_service.validate")
+    @patch("codemie.rest_api.routers.workflow.Ability")
+    @patch("codemie.rest_api.routers.workflow.WorkflowConfig.get_by_id")
+    def test_database_error_during_validation_is_a_503_without_sql(
+        self, mock_get_by_id, mock_ability, mock_validate, user
+    ):
+        from sqlalchemy.exc import StatementError
+
+        from codemie.core.workflow_models.workflow_config import YamlConfigHistory
+        from codemie.rest_api.models.workflow_version import WorkflowRollbackRequest
+        from codemie.rest_api.routers.workflow import WORKFLOW_DATABASE_ERROR, rollback_workflow_version
+
+        stored = MagicMock(id="workflow-123", yaml_config="current: yaml", assistants=[], tools=[], is_global=False)
+        stored.yaml_config_history = [YamlConfigHistory(yaml_config="states: []", date="2026-01-01T00:00:00")]
+        mock_get_by_id.return_value = stored
+        mock_ability.return_value.can.return_value = True
+        mock_validate.side_effect = StatementError("db down", "SELECT secret_column", {"bind": "secret_value"}, None)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            rollback_workflow_version(
+                workflow_id="workflow-123",
+                request=WorkflowRollbackRequest(revision_index=0),
+                user=user,
+                background_tasks=MagicMock(),
+            )
+
+        assert exc_info.value.code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert exc_info.value.message == WORKFLOW_DATABASE_ERROR
+        assert "secret" not in f"{exc_info.value.details} {exc_info.value.help}"
+        assert stored.yaml_config == "current: yaml"
+        stored.update.assert_not_called()
+
     @patch("codemie.rest_api.routers.workflow.WorkflowVersionService")
     @patch("codemie.rest_api.routers.workflow.Ability")
     @patch("codemie.rest_api.routers.workflow.WorkflowConfig.get_by_id")

@@ -119,6 +119,13 @@ def test_valid_schema():
     assert _validate_workflow_execution_config_schema(WORKFLOW_EXECUTION_CONFIG_SCHEMA, workflow_config) == []
 
 
+@pytest.mark.parametrize("yaml_mode", ["Legacy", "Autonomous", "Sequential", 42])
+def test_schema_accepts_any_top_level_mode_key(yaml_mode):
+    """`mode` comes from the request, not the YAML: a YAML `mode` key is accepted on save and ignored."""
+    workflow_config = {**yaml.safe_load(valid_yaml), "mode": yaml_mode}
+    assert _validate_workflow_execution_config_schema(WORKFLOW_EXECUTION_CONFIG_SCHEMA, workflow_config) == []
+
+
 def test_invalid_schema():
     workflow_config = yaml.safe_load(invalid_schema_yaml)
     assert len(_validate_workflow_execution_config_schema(WORKFLOW_EXECUTION_CONFIG_SCHEMA, workflow_config)) > 0
@@ -826,3 +833,34 @@ def test_max_nesting_level_passes_schema():
     """)
     errors = _validate_workflow_execution_config_schema(WORKFLOW_EXECUTION_CONFIG_SCHEMA, config)
     assert errors == []
+
+
+_COMMENTED_CROSS_REF_YAML = """\
+# Notes the client typed
+# which the re-dump drops
+assistants: []
+
+tools: []
+custom_nodes: []
+
+states:
+  - id: state_1
+    assistant_id: unknown_assistant
+    next:
+      state_id: end
+"""
+
+
+def _cross_ref_line(line_source_yaml=None) -> int:
+    rewritten = yaml.safe_dump(yaml.safe_load(_COMMENTED_CROSS_REF_YAML), sort_keys=False)
+    with pytest.raises(WorkflowExecutionConfigCrossReferenceValidationError) as exc_info:
+        validate_workflow_execution_config_yaml(rewritten, line_source_yaml)
+    [error] = exc_info.value.to_dict()["errors"]
+    return error["config_line"]
+
+
+def test_validate_workflow_execution_config_yaml_reports_lines_of_the_line_source_text():
+    client_line = next(n for n, text in enumerate(_COMMENTED_CROSS_REF_YAML.splitlines(), 1) if "assistant_id" in text)
+
+    assert _cross_ref_line(_COMMENTED_CROSS_REF_YAML) == client_line
+    assert _cross_ref_line() != client_line  # without it the line comes from the re-dumped text

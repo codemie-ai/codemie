@@ -49,8 +49,6 @@ from codemie.service.workflow_execution import WorkflowExecutionService
 from codemie.service.workflow_service import WorkflowService
 from codemie.workflows.callbacks.base_callback import BaseCallback
 from codemie.workflows.constants import (
-    CLEAR_CONTEXT_STORE_KEEP_CURRENT,
-    CONTEXT_STORE_KEEP_NEW_ONLY_FLAG,
     CONTEXT_STORE_VARIABLE,
     END_NODE,
     FIRST_STATE_IN_ITERATION,
@@ -69,7 +67,7 @@ from codemie.workflows.constants import (
     PREVIOUS_EXECUTION_STATE_ID,
     SUMMARIZE_MEMORY_NODE,
 )
-from codemie.workflows.models import CONTEXT_STORE_DELETE_MARKER, CONTEXT_STORE_APPEND_MARKER
+from codemie.workflows.context_rules import build_context_update, output_key_context_value
 from codemie.workflows.utils import (
     prepare_messages,
     parse_from_string_representation,
@@ -634,13 +632,13 @@ class BaseNode(ABC, Generic[StateSchemaType]):
 
         actual_value = raw_output.result if hasattr(raw_output, 'result') else processed_output
 
-        if self.workflow_state.next.append_to_context:
-            # When accumulating, write only to context_store (not top-level state key)
-            # so consumers read the accumulated list from context_store
-            final_state[CONTEXT_STORE_VARIABLE][output_key] = {CONTEXT_STORE_APPEND_MARKER: [actual_value]}
-        else:
+        # When accumulating, write only to context_store (not top-level state key)
+        # so consumers read the accumulated list from context_store
+        if not self.workflow_state.next.append_to_context:
             final_state[output_key] = actual_value
-            final_state[CONTEXT_STORE_VARIABLE][output_key] = actual_value
+        final_state[CONTEXT_STORE_VARIABLE][output_key] = output_key_context_value(
+            self.workflow_state.next, actual_value
+        )
 
     @classmethod
     def _merge_list_to_dict(cls, parsed_output: list) -> dict:
@@ -689,17 +687,6 @@ class BaseNode(ABC, Generic[StateSchemaType]):
 
         return new_values
 
-    @classmethod
-    def _apply_deletion_markers(cls, dynamic_values: dict, keys_to_reset: list[str]) -> None:
-        """Mark specified keys for deletion in the context store.
-
-        Args:
-            dynamic_values: Dictionary to mark keys in
-            keys_to_reset: List of keys to mark for deletion
-        """
-        for key in keys_to_reset:
-            dynamic_values[key] = CONTEXT_STORE_DELETE_MARKER
-
     def _prepare_resolved_context_store(
         self, state_schema: Type[StateSchemaType], processed_output: str
     ) -> dict[str, Any] | None:
@@ -716,33 +703,9 @@ class BaseNode(ABC, Generic[StateSchemaType]):
         if not self.workflow_state:
             return {}
 
-        state_next = self.workflow_state.next
-
-        # Handle clear context store flag
-        clear_context_store = state_next.clear_context_store
-        if isinstance(clear_context_store, bool) and clear_context_store:
-            # Keep-new-only flag makes the reducer replace the prior store, leaving room for the output key
-            return {CONTEXT_STORE_KEEP_NEW_ONLY_FLAG: True} if state_next.output_key else None
-
-        if not state_next.store_in_context:
-            return {}
-
-        # Collect new values from task and output
-        new_values = self._collect_new_values(state_schema, processed_output)
-
-        # Wrap values for append keys with sentinel so the reducer accumulates them
-        if state_next.append_to_context:
-            new_values = {key: {CONTEXT_STORE_APPEND_MARKER: [value]} for key, value in new_values.items()}
-
-        # Insert sentinel AFTER wrapping so the reducer can recognize it as a plain flag
-        if clear_context_store == CLEAR_CONTEXT_STORE_KEEP_CURRENT:
-            new_values[CONTEXT_STORE_KEEP_NEW_ONLY_FLAG] = True
-
-        # Apply deletion markers if configured
-        if state_next.reset_keys_in_context_store:
-            self._apply_deletion_markers(new_values, state_next.reset_keys_in_context_store)
-
-        return new_values
+        return build_context_update(
+            self.workflow_state.next, lambda: self._collect_new_values(state_schema, processed_output)
+        )
 
     def finalize_and_update_state(
         self, raw_output: Any, processed_output: str, success: bool, state_schema: Type[StateSchemaType]

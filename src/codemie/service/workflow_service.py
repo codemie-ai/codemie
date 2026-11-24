@@ -16,7 +16,7 @@ import math
 import os
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
 import yaml
 from elasticsearch import NotFoundError
@@ -33,7 +33,6 @@ from codemie.core.models import TokensUsage, UserEntity
 from codemie.core.workflow_models import (
     WorkflowConfig,
     WorkflowConfigTemplate,
-    WorkflowErrorFormat,
     WorkflowExecution,
     WorkflowExecutionResponse,
     WorkflowExecutionState,
@@ -48,26 +47,23 @@ from codemie.rest_api.models.conversation import GeneratedMessage
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.default_applications import ensure_application_exists
 from codemie.service.agent_workspace_service import AgentWorkspaceService
-from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonitoringService
 from codemie.service.spend.coverage import SpendDimension, SpendResult, TimeRange
 from codemie.service.spend.hydration import hydrate_request_cost
 from codemie.service.spend.ledger import ComposedScope, DimensionScope, UserTerm
 from codemie.service.spend.rendering import RenderedSpend, render_composed_spend, render_spend, spend_fields
 from codemie.service.spend.spend_service import spend_service
-from codemie.service.workflow_config.workflow_marketplace_service import WorkflowMarketplaceService
 
 MAX_ITEMS_PER_PAGE = 10_000
 _EXECUTION_ID_KEYWORD = "execution_id.keyword"
 
-_marketplace_service = WorkflowMarketplaceService()
 _workflow_config_repository = WorkflowConfigRepository()
 
 
 async def _composed_per_workflow(
     workflow_ids: List[str],
-    user_term: Optional[UserTerm],
-    project: Optional[str],
+    user_term: UserTerm | None,
+    project: str | None,
     project_owners: tuple[str, ...],
     period: TimeRange,
 ) -> dict[str, SpendResult]:
@@ -89,9 +85,9 @@ async def _composed_per_workflow(
 def _workflow_breakdown_spend(
     workflow_ids: List[str],
     *,
-    user_term: Optional[UserTerm],
-    project: Optional[str],
-    period: Optional[TimeRange],
+    user_term: UserTerm | None,
+    project: str | None,
+    period: TimeRange | None,
     project_owners: tuple[str, ...] = (),
 ) -> List[RenderedSpend]:
     """Each workflow's own figure, read with the report's **whole** scope carried on every id.
@@ -126,7 +122,7 @@ def _workflow_breakdown_spend(
     return [render_composed_spend(results.get(workflow_id)) for workflow_id in workflow_ids]
 
 
-def _average_cost(figure: Optional[float], item_count: int) -> Optional[float]:
+def _average_cost(figure: float | None, item_count: int) -> float | None:
     """The per-execution cost, or **nothing at all** where no such cost exists.
 
     Two absences used to arrive as `0.0`, and on a report a zero is a claim: *this workflow costs
@@ -156,7 +152,7 @@ class WorkflowService:
     }
 
     @staticmethod
-    def _yaml_content_changed(old_yaml: Optional[str], new_yaml: Optional[str]) -> bool:
+    def _yaml_content_changed(old_yaml: str | None, new_yaml: str | None) -> bool:
         if old_yaml == new_yaml:
             return False
         try:
@@ -164,7 +160,7 @@ class WorkflowService:
         except yaml.YAMLError:
             return old_yaml != new_yaml
 
-    def get_workflow(self, workflow_id: str, user: Optional[User] = None) -> WorkflowConfig:
+    def get_workflow(self, workflow_id: str, user: User | None = None) -> WorkflowConfig:
         try:
             workflow = WorkflowConfig.get_by_id(workflow_id)
             if user:
@@ -248,22 +244,6 @@ class WorkflowService:
             )
             raise e
 
-    def validate_for_update(
-        self,
-        workflow: WorkflowConfig,
-        updated_config: WorkflowConfig,
-        user: User,
-        error_format: WorkflowErrorFormat = WorkflowErrorFormat.STRING,
-    ) -> None:
-        """Validate a replacement config before it is persisted; strips inline MCP config from it in-place."""
-        # Lazy import: workflows.workflow imports WorkflowService, causing a circular dependency at module level.
-        from codemie.workflows.workflow import WorkflowExecutor
-
-        MCPAccessControlService.validate_and_strip_workflow_mcp_servers(updated_config)
-        if workflow.is_global:
-            _marketplace_service.validate(updated_config, user)
-        WorkflowExecutor.validate_workflow(workflow_config=updated_config, user=user, error_format=error_format)
-
     def update_workflow(self, stored_config: WorkflowConfig, updated_workflow_config: WorkflowConfig, user: User):
         try:
             self._update_workflow_values(stored_config, updated_workflow_config, user)
@@ -275,7 +255,7 @@ class WorkflowService:
 
     @staticmethod
     def _get_or_create_conversation(
-        conversation_id: Optional[str],
+        conversation_id: str | None,
         workflow_config: WorkflowConfig,
         user: UserEntity,
     ) -> tuple:
@@ -316,10 +296,10 @@ class WorkflowService:
     def create_workflow_execution(
         workflow_config: WorkflowConfig,
         user: UserEntity,
-        user_input: Optional[str] = '',
-        file_names: Optional[list[str]] = None,
-        conversation_id: Optional[str] = None,
-        parent_execution_id: Optional[str] = None,
+        user_input: str | None = '',
+        file_names: list[str] | None = None,
+        conversation_id: str | None = None,
+        parent_execution_id: str | None = None,
         attributes: dict[str, str] | None = None,
     ) -> WorkflowExecution:
         execution_id: str | None = None
@@ -465,7 +445,7 @@ class WorkflowService:
             raise e
 
     @classmethod
-    async def hydrate_execution_cost(cls, execution: WorkflowExecution) -> Optional[TokensUsage]:
+    async def hydrate_execution_cost(cls, execution: WorkflowExecution) -> TokensUsage | None:
         """The execution's usage with a pending cost settled from the ledger where it can be.
 
         AD-28 rule 7, at the execution's own grain: every LLM call of an execution left for the
@@ -520,7 +500,7 @@ class WorkflowService:
         return depth
 
     @classmethod
-    def find_execution_state_output(cls, state_id: str) -> Optional[str]:
+    def find_execution_state_output(cls, state_id: str) -> str | None:
         try:
             state = WorkflowExecutionState.get_by_id(id_=state_id)
             return state.output if state else None
@@ -529,7 +509,7 @@ class WorkflowService:
             return None
 
     @classmethod
-    def find_last_execution_state_output(cls, execution_id: str) -> Optional[str]:
+    def find_last_execution_state_output(cls, execution_id: str) -> str | None:
         try:
             states = WorkflowExecutionState.get_all_by_fields(
                 fields={_EXECUTION_ID_KEYWORD: execution_id},
@@ -773,7 +753,7 @@ class WorkflowService:
         self._cached_prebuilt_workflows = sorted(prebuilt_workflows, key=lambda wf: wf.name)
         return self._cached_prebuilt_workflows
 
-    def get_prebuilt_workflow_by_slug(self, slug: str) -> Optional[WorkflowConfigTemplate]:
+    def get_prebuilt_workflow_by_slug(self, slug: str) -> WorkflowConfigTemplate | None:
         prebuilt_workflows = self.get_prebuilt_workflows()
         matches = [item for item in prebuilt_workflows if item.slug == slug]
         if len(matches) == 1:
@@ -847,13 +827,13 @@ class WorkflowService:
     @classmethod
     def get_workflow_spending_analytics(
         cls,
-        workflow_id: Optional[str] = None,
-        project: Optional[str] = None,
-        since_date: Optional[datetime] = None,
+        workflow_id: str | None = None,
+        project: str | None = None,
+        since_date: datetime | None = None,
         include_breakdown: bool = False,
         *,
-        user_term: Optional[UserTerm] = None,
-        period: Optional[TimeRange] = None,
+        user_term: UserTerm | None = None,
+        period: TimeRange | None = None,
         project_owners: tuple[str, ...] = (),
     ) -> dict:
         """
@@ -980,7 +960,7 @@ class WorkflowService:
         )
 
     @staticmethod
-    def _augment_user_input_with_history(user_input: str, conversation_id: Optional[str], workflow_id: str) -> str:
+    def _augment_user_input_with_history(user_input: str, conversation_id: str | None, workflow_id: str) -> str:
         """
         Augment user input with previous workflow execution history for chat mode.
 
@@ -1021,10 +1001,10 @@ class WorkflowService:
 
     @staticmethod
     def _build_workflow_filters(
-        user_id: Optional[str] = None,
-        workflow_id: Optional[str] = None,
-        project: Optional[str] = None,
-        since_date: Optional[datetime] = None,
+        user_id: str | None = None,
+        workflow_id: str | None = None,
+        project: str | None = None,
+        since_date: datetime | None = None,
     ) -> List:
         """Build filter conditions for workflow execution queries.
 
@@ -1090,9 +1070,9 @@ class WorkflowService:
         session: Session,
         filters: List,
         *,
-        user_term: Optional[UserTerm] = None,
-        project: Optional[str] = None,
-        period: Optional[TimeRange] = None,
+        user_term: UserTerm | None = None,
+        project: str | None = None,
+        period: TimeRange | None = None,
         project_owners: tuple[str, ...] = (),
     ) -> List[dict]:
         """Get spending breakdown by individual workflows.

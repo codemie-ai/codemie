@@ -20,6 +20,7 @@ This package provides functionality for validating workflow configurations:
 - Cross-reference validation between workflow components
 - Resource availability validation (assistants, tools, datasources)
 - YAML line number tracking for precise error reporting
+- Contract linking (re-exported from `codemie.workflows.contracts.linker`)
 """
 
 # Schema validation
@@ -48,6 +49,7 @@ from .transformers import (
 # Data models
 from .models import (
     WorkflowValidationErrorDetail,
+    ContractMeta,
     CrossRefError,
 )
 
@@ -56,6 +58,19 @@ from .line_lookup import (
     YamlLineFinder,
     NullYamlLineFinder,
     extract_line_numbers,
+)
+
+# Contract linker (EPMCDME-16503): leaf modules only, so this import cannot cycle with `core.workflow_models`
+from ..contracts.linker import link_workflow_contracts
+
+# Contract issue shaping (EPMCDME-16504)
+from .contract_issues import (
+    CONTRACT_WARNINGS_CAP,
+    ContractIssues,
+    build_contract_issues,
+    build_contract_rejection,
+    contract_line_finder,
+    format_config_path,
 )
 
 __all__ = [
@@ -75,9 +90,19 @@ __all__ = [
     "PydanticErrorTransformer",
     # Data models
     "WorkflowValidationErrorDetail",
+    "ContractMeta",
     "CrossRefError",
     # Line lookup
     "YamlLineFinder",
     "NullYamlLineFinder",
     "extract_line_numbers",
+    # Contract linker
+    "link_workflow_contracts",
+    # Contract issues
+    "CONTRACT_WARNINGS_CAP",
+    "ContractIssues",
+    "build_contract_issues",
+    "build_contract_rejection",
+    "contract_line_finder",
+    "format_config_path",
 ]

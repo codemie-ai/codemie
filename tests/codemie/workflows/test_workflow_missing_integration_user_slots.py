@@ -242,12 +242,12 @@ def _script_workflow(access):
     return workflow_config
 
 
-def test_tool_access_owner_integration_warning_for_proposed_global():
+def test_tool_access_owner_integration_warning_for_script_tool_with_alias():
     from codemie.workflows.validation.tool_access import collect_tool_access_owner_integration_warnings
 
     config = _script_workflow([("jira_tool", "work"), ("git_tool", None)])
 
-    warnings = collect_tool_access_owner_integration_warnings(config, treat_as_global=True)
+    warnings = collect_tool_access_owner_integration_warnings(config)
 
     assert len(warnings) == 1
     item = warnings[0]
@@ -258,12 +258,18 @@ def test_tool_access_owner_integration_warning_for_proposed_global():
     assert "author" in item["message"]
 
 
-def test_tool_access_owner_integration_warning_absent_when_not_global():
+def test_tool_access_owner_integration_warning_is_independent_of_global_flag():
     from codemie.workflows.validation.tool_access import collect_tool_access_owner_integration_warnings
 
-    config = _script_workflow([("jira_tool", "work")])
+    private = _script_workflow([("jira_tool", "work")])
+    private.is_global = False
+    published = _script_workflow([("jira_tool", "work")])
+    published.is_global = True
 
-    assert collect_tool_access_owner_integration_warnings(config, treat_as_global=False) == []
+    assert collect_tool_access_owner_integration_warnings(private) == collect_tool_access_owner_integration_warnings(
+        published
+    )
+    assert len(collect_tool_access_owner_integration_warnings(private)) == 1
 
 
 def test_tool_access_owner_integration_warning_absent_without_aliases():
@@ -271,4 +277,4 @@ def test_tool_access_owner_integration_warning_absent_without_aliases():
 
     config = _script_workflow([("jira_tool", None)])
 
-    assert collect_tool_access_owner_integration_warnings(config, treat_as_global=True) == []
+    assert collect_tool_access_owner_integration_warnings(config) == []

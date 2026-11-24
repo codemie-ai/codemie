@@ -59,6 +59,7 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.encryption.base_encryption_service import Base64EncryptionService, PlainEncryptionService
 from codemie.service.encryption.encryption_factory import EncryptionFactory
+from codemie.service.workflow.save_validation import SaveValidationResult
 from codemie.service.settings.base_settings import BaseSettingsService
 from codemie_tools.base.models import CredentialTypes
 from tests.codemie.rest_api.routers.idempotency_helpers import assert_stored_unchanged
@@ -358,6 +359,7 @@ WORKFLOW_DOC = {
     "yaml_config": WORKFLOW_YAML,
 }
 WORKFLOW = f"{ROUTERS}.workflow"
+SAVE_VALIDATION = "codemie.service.workflow.save_validation"
 WORKFLOW_SERVICE = "codemie.service.workflow_service.WorkflowService"
 
 
@@ -365,9 +367,9 @@ WORKFLOW_SERVICE = "codemie.service.workflow_service.WorkflowService"
 def workflow_env(db):
     targets = (
         f"{WORKFLOW}.project_access_check",
-        f"{WORKFLOW}._consumer_slot_warnings_sync",
-        f"{WORKFLOW}.MCPAccessControlService.validate_workflow_mcp",
-        f"{WORKFLOW_SERVICE}.validate_for_update",
+        f"{SAVE_VALIDATION}.collect_advisory_warnings",
+        "codemie.service.mcp.access_control.MCPAccessControlService.validate_workflow_mcp",
+        "codemie.service.mcp.access_control.MCPAccessControlService.validate_on_save",
         f"{WORKFLOW_SERVICE}.save_workflow_schema",
         "codemie.service.monitoring.workflow_monitoring_service.WorkflowMonitoringService.send_update_workflow_metric",
         "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw",
@@ -375,8 +377,16 @@ def workflow_env(db):
     with ExitStack() as stack:
         for target in targets:
             stack.enter_context(patch(target))
-        stack.enter_context(patch(f"{WORKFLOW}.collect_consumer_slot_integration_warnings", return_value=[]))
-        stack.enter_context(patch(f"{WORKFLOW}._get_project_for_workflow", return_value=None))  # applications table
+        stack.enter_context(
+            patch(
+                f"{SAVE_VALIDATION}.validate",
+                return_value=SaveValidationResult(warnings=[], coverage=None, warnings_truncated=0),
+            )
+        )
+        stack.enter_context(patch(f"{SAVE_VALIDATION}.collect_consumer_slot_integration_warnings", return_value=[]))
+        stack.enter_context(
+            patch(f"{SAVE_VALIDATION}._get_project_for_workflow", return_value=None)
+        )  # applications table
         stack.enter_context(patch(f"{WORKFLOW}.Ability.can", return_value=True))
         yield db
 

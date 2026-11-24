@@ -1,0 +1,419 @@
+{
+  "decision": "request-changes",
+  "rationale": "All four lenses ran and five findings were verified against source; none were deferred or dismissed. The expected standards audit is missing because the worktree review had no usable diff_base, so standards coverage remains unverified and confidence is low. Full QA evidence is pending Stage 7; the reported full suite was interrupted with failures and is not a passing gate.",
+  "confidence": "low",
+  "risk_flags": [
+    "breaking-change",
+    "public-api"
+  ],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Plan A: consume typed linker locations and retain executor/report contracts",
+      "status": "pass",
+      "notes": "contract_issues.py replaces path/owner reconstruction with record.location; workflow.py adds only an optional context argument and keeps the graph/report tuple."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan A: one request-local source build per distinct text, shared by schema and both response paths",
+      "status": "pass",
+      "notes": "ValidationSourceContext keys metadata by exact text; save_validation.validate and WorkflowExecutor pass one context to schema and issue formatting."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan A: separate original and normalized text; no persistent or cross-request cache; null invalid-source lookup",
+      "status": "pass",
+      "notes": "SourceMetadata and contract_line_finder provide null lookup; test_source_metadata_is_built_once_per_distinct_text_and_never_shared_between_requests covers changed text and two requests."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan A: preserve exact numeric, punctuation, Unicode, and list-index tokens",
+      "status": "pass",
+      "notes": "_line_maps keeps mapping keys as strings and sequence indices as integers; test_contract_locations covers 1, 01, literal dots/brackets, Unicode, and true indices."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan A: preserve existing public config_path, config_section, IDs, warning and coverage contracts",
+      "status": "partial",
+      "notes": "_detail now emits location.section.value for every location; graph failures carry LocationSection.WORKFLOW, introducing config_section=workflow despite the public model and v6.1 limiting sections to s"
+    },
+    {
+      "kind": "spec",
+      "item": "Plan A: use only known parent fields for absent exact fields",
+      "status": "pass",
+      "notes": "find_contract_line shortens only the typed field segments under the matched owner; it does not fall back to a bare owner for nonempty segments; existing value-node line semantics remain unchanged."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan A: avoid a rejection finder on success; retain raw and parsed MCP checks",
+      "status": "pass",
+      "notes": "WorkflowExecutor checks report.blocking_records before rejection formatting; save_validation._gate_mcp_servers retains both input checks; successful-executor finder test added."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan A: real derive/report/format tests for state/tool ownership, empty bindings, custom nodes, transitions",
+      "status": "pass",
+      "notes": "test_real_linker_locations_reach_issue_lines_for_state_or_tool_bindings and test_custom_mapping_and_transition_locations_survive_real_report_formatting exercise production reports."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan A: real model normalization retains original comment and blank-line navigation",
+      "status": "pass",
+      "notes": "test_real_model_normalization_preserves_findings_and_original_lines_on_all_routes changes o1 to o1-2024-12-17 and checks submitted-source lines on all four routes."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan A: measure parses without pinning incidental totals",
+      "status": "pending-stage-7",
+      "notes": "Single-build tests are present; verification.md records separate parse measurements; execution and measurement validation belong to Stage 7."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan B: safe fixed database 503 responses at create, update, new validation, saved validation",
+      "status": "pass",
+      "notes": "All four handlers use _database_errors; the mapper emits fixed message/details and logs only the exception class; four OpenAPI 503 entries added."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan B: preserve SQLAlchemyError throughout shared validation and provider stages",
+      "status": "partial",
+      "notes": "Resource helpers now rethrow SQLAlchemyError, but collect_advisory_warnings catches it again at save_validation.py:175-184, logs its full text, and allows a success response after a warning-only datab"
+    },
+    {
+      "kind": "spec",
+      "item": "Plan B: parameterized StatementError tests in both formats, each route, and applicable provider stages",
+      "status": "partial",
+      "notes": "Provider tests cover main stages but miss later advisory failures and the inline-tool resource wrapper; direct credential tests do not protect that catch."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan B: pre-persistence failures prevent writes and persistence failures prevent success follow-up",
+      "status": "pass",
+      "notes": "test_database_errors_are_safe_at_every_route_stage checks create/update, guardrail dry-run flags, draw, and save_schema; provider-boundary tests also check assignment/removal methods."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan B: retain configuration/contract rejection and access/autonomous behavior",
+      "status": "partial",
+      "notes": "Explicit Autonomous mode can be overwritten by Sequential YAML on create; the paired new-validation route still refuses it."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan C: final fallback does not read damaged record; fixed bounded serializable text and local unique IDs",
+      "status": "pass",
+      "notes": "_shape constructs the final dict from fallback_outcome and index only; fallback tests check serialization, IDs, fixed text, and absence of raw exception text."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan C: preserve blocking/advisory classification and recoverable strict_source",
+      "status": "pass",
+      "notes": "Caller supplies known outcomes; _minimal retains strict_source; all-route tests exercise recoverable fallback and independent ID-generation failure."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan C: normal/minimal/double/ID failures retain structured rejection without weakening records",
+      "status": "pass",
+      "notes": "Existing _detail-failure tests remain; new double-helper and _issue_id failure tests plus all-route structured 400 test cover the added fallback; report validation is unchanged."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan D: effective autonomous update/saved refusal precedes guardrails, validation, persistence",
+      "status": "pass",
+      "notes": "test_autonomous_update_refusal_precedes_guardrails_and_shared_validation covers top-level and YAML mode; all downstream calls remain unused."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan D: new validation rejects YAML-only Autonomous after preparation and retains early top-level refusal",
+      "status": "pass",
+      "notes": "workflow_config.py parses YAML mode; new route checks prepared mode; test_new_validation_refuses_autonomous_mode_found_only_in_yaml checks preparation and no validation."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan D: real catalogue normalization and paired findings/coverage on all routes",
+      "status": "pass",
+      "notes": "Real preparation and normalization are used in the new o1 catalogue test; findings and coverage are compared across all four responses."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan D: real read access for new validation, write access retained for saved validation",
+      "status": "pass",
+      "notes": "Membership test leaves project_access_check and Ability.can active; real member/nonmember cases return 200/403 and saved validation retains its existing write refusal."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan D: rejected comparisons contain errors and warnings, IDs/locations/outcomes/coverage/truncation",
+      "status": "pass",
+      "notes": "Existing comparison now requires nonempty warnings; new 110-warning test requires 100 returned and 10 truncated in JSON and string modes."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan D: strict-source workflow/state, label-free form, graph, coverage/settings exceptions across routes and fallback",
+      "status": "pass",
+      "notes": "New route matrix covers these cases with and without _detail failure; existing policy tests include state-caused graph failure and workflow precedence."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan D: environment allowlist and explicit linker flag isolation",
+      "status": "pass",
+      "notes": "test_env_example REQUIRED_KEYS adds WORKFLOW_CONTRACT_LINKING_ENABLED; create test is parameterized on/off and parity fixture sets the flag explicitly."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan E: JSON semantic names stay data and exact tokens are not display-normalized",
+      "status": "partial",
+      "notes": "Ordinary Unicode and <>& survive. Public config_path bypasses raw_name control removal and the display bound; exact internal tokens must remain unchanged."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan E: trace field and legacy consumers and record the render-boundary contract",
+      "status": "pass",
+      "notes": "consumer-research.local.md traces React field messages and legacy DOMPurify toast handling; backend guide and shared v6.1 document the boundary and remaining UI work."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan E: UI malicious-name rendering/navigation regression",
+      "status": "na",
+      "notes": "User explicitly assigned UI work to a separate 16505 agent; the local consumer report records the needed fixture and legacy-toast follow-up."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan E: explicit Unicode escapes and no broad sanitizer/naming refactor",
+      "status": "pass",
+      "notes": "policy.py replaces literal separators with \\u2028 and \\u2029; focused C0/C1/separator test added; naming architecture remains unchanged."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan documentation: v6.1 response/error/access, strict_source, JSON/string differences, equality limits",
+      "status": "pass",
+      "notes": "Shared v6.1 sections 7.1-7.5 and change list, updated task spec, and two backend guides contain these contracts; v6.0 is retained separately."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan gates: focused/full enterprise checks, live verification, intended OpenAPI changes, final review",
+      "status": "pending-stage-7",
+      "notes": "Implementation and tests exist; runtime results and reported harness/scan limitations are owned by Stage 7; frozen OpenAPI diff contains only four 503 descriptions."
+    },
+    {
+      "kind": "spec",
+      "item": "Plan MR evidence publication and reviewer agreement before resolution",
+      "status": "na",
+      "notes": "Session scope explicitly separates commit, push, MR replies, and resolution; verification.md contains an unposted review-note evidence map."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: static default-off flag read once; executor default stays off; structural validation remains",
+      "status": "pass",
+      "notes": "Modified save_validation.validate reads the flag once and passes linked to the executor; workflow.py preserves its default False and schema-first order; explicit flag tests retained."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: sync prepare/validate service, normalization/rewrite, per-entry parse-failure policy",
+      "status": "pass",
+      "notes": "Modified prepare preserves defer=True/False paths; all four handlers call the shared service; real normalization and invalid-YAML route tests cover the paths."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: MCP raw/fresh parsed gates, stored-global marketplace, executor, then advisory/contract outputs",
+      "status": "pass",
+      "notes": "Current save_validation.validate and _gate_mcp_servers, called by the changed handlers, retain this stage order and return SaveValidationResult."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: routers retain access, autonomous checks, guardrails, categories, persistence",
+      "status": "partial",
+      "notes": "Entry checks remain, but create checks only parsed mode and permits an explicit Autonomous request when YAML says Sequential."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: rollback and other non-save paths remain unlinked",
+      "status": "pass",
+      "notes": "Optional executor context does not change link_contracts=False defaults; shared service supports explicit unlinked rollback; no rollback/generator edits in the diff."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: new endpoint optional name/description, project access only, no persistence",
+      "status": "pass",
+      "notes": "Real-member test sends only project and YAML, requires 200, and checks no create/update call; saved workflow write check remains separate."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: contract shaping remains separate from linker; deterministic IDs",
+      "status": "pass",
+      "notes": "contract_issues remains the shaping owner and imports leaf contract models; _issue_id seed is unchanged; route comparisons check equal IDs."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: bare path, consumer state, typed config_path, source line, mapped outcome",
+      "status": "pass",
+      "notes": "_detail keeps field/path and consumer state separate from location; format_config_path and exact lookup replace diagnostic parsing; outcomes still map reported_as."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: message/provenance separation and label/strict-source metadata",
+      "status": "pass",
+      "notes": "_detail retains message, optional _provenance_line, and _meta; route strict-source tests cover label-free findings and recoverable fallback."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: public source-location table and section vocabulary stay compatible",
+      "status": "partial",
+      "notes": "Input-schema and indexed public paths retain their format, but graph failures now expose config_section=workflow through _detail; this section is outside the documented public vocabulary."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: errors selected by blocks; non-OK advisory entries append with contract_validation kind",
+      "status": "pass",
+      "notes": "build_contract_issues retains selection predicates and warning kind; fallback uses caller outcomes, so warnings cannot become ERROR from formatter failure."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: warning cap 100, uncapped blocking errors, truncation only when cut",
+      "status": "pass",
+      "notes": "build_contract_issues keeps the 100-entry warning slice; new route truncation test verifies the omitted count in both formats."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: success shaping failure remains advisory; coverage and flag-off serialization remain",
+      "status": "pass",
+      "notes": "save_validation.validate retains its shaping-only fail-soft block and response result; _coverage retains analysed/cap fields; flag-off route coverage tests remain."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec: JSON rejection envelope versus legacy text representation",
+      "status": "pass",
+      "notes": "build_contract_rejection retains JSON errors/warnings/coverage and optional truncation; string tests require outcome text, truncation, and coverage summary."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec AC1: no contract output with flag off; structural rejection still runs",
+      "status": "pass",
+      "notes": "Schema still executes before link flag selection; explicit on/off create test and preserved service/executor flag-off tests cover the retained behavior."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec AC2/AC3: additive issue fields and existing envelope compatibility",
+      "status": "partial",
+      "notes": "Envelope, string path, outcome, and coverage behavior remain; the new workflow config_section value violates the specified section vocabulary and needs an explicit compatibility decision or omission."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec AC4/AC5: advisory success plus aggregated 400 errors/warnings/coverage",
+      "status": "pass",
+      "notes": "Real mixed-rejection fixture, all-route equality checks, and fallback/truncation tests cover the implemented response paths."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec AC6/AC7: earlier layer stops linker; success/rejection coverage and failed analysis marker",
+      "status": "pass",
+      "notes": "Executor schema/resource/graph stages remain ahead of linker; graph-failure strict-source test uses real failure report and coverage implementation preserves analysed=False."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec AC8: non-global and stored-global comparison under equal resource state",
+      "status": "pass",
+      "notes": "Existing global/non-global comparison tests remain; revised mixed and real-normalization fixtures strengthen the all-route comparisons without changing MCP state assumptions."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec AC9/AC10/AC11: read-only new check, real source lines, stable IDs",
+      "status": "pass",
+      "notes": "New access test proves read-only membership flow; real location/normalization tests verify source lines and equal issue IDs across routes."
+    },
+    {
+      "kind": "spec",
+      "item": "Original spec negative constraints: no UI/runtime/migration/persisted issues, warning rename, global handler change, or rollback linking",
+      "status": "pass",
+      "notes": "Frozen changes are backend source, tests, and guides; contract classification is unchanged apart from explicit Unicode literals and declared source-location refinement; no excluded persistence or hand"
+    },
+    {
+      "kind": "spec",
+      "item": "Original correction: all applicable database failures retain type until safe route mapping",
+      "status": "partial",
+      "notes": "Same Plan B gap: post-executor consumer-slot collection catches SQLAlchemyError in collect_advisory_warnings and continues, despite newly rethrowing lower helpers."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Expected full-profile standards audit was not supplied: worktree scope had no usable diff_base. Guides were supplied, but no audit artifact was produced."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Expected full-profile standards audit was not supplied: worktree scope had no usable diff_base. Guides were supplied, but no audit artifact was produced."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Expected full-profile standards audit was not supplied: worktree scope had no usable diff_base. Guides were supplied, but no audit artifact was produced."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "source": "blind",
+      "file": "src/codemie/rest_api/routers/workflow.py",
+      "line": 536,
+      "title": "Check explicit mode before YAML replaces it",
+      "problem": "create_workflow checks only the prepared mode. parse_execution_config now replaces this with YAML mode, so a request with mode=Autonomous and YAML mode=Sequential passes create while the new validation route rejects the same request with 410.",
+      "impact": "Create loses its explicit autonomous refusal and disagrees with the paired validation route for conflicting mode inputs.",
+      "recommendation": "Refuse explicit request Autonomous mode before preparation on create, retain the effective parsed-mode refusal, and add paired create/new-validation regression coverage for both conflicting modes."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "source": "acceptance",
+      "file": "src/codemie/service/workflow/save_validation.py",
+      "line": 177,
+      "title": "Propagate database errors from advisory provider reads",
+      "problem": "Both advisory collectors catch Exception, including SQLAlchemyError rethrown by resource helpers. After executor validation succeeds, a later assistant/integration query can fail in collect_advisory_warnings and still return a successful result. The fixed plan requires database failures in shared validation to retain their type until safe route mapping.",
+      "impact": "A database failure can produce HTTP 200 and allow persistence instead of the required safe 503. Generic logs also interpolate the database exception text.",
+      "recommendation": "Rethrow SQLAlchemyError before both generic advisory catches. Keep non-database advisory failures non-blocking. Add provider-boundary tests that let validation reads succeed and fail a later advisory read, checking safe503 in both formats and no persistence."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "source": "edge",
+      "file": "src/codemie/workflows/validation/contract_issues.py",
+      "line": 76,
+      "title": "Bound and clean the public configuration path",
+      "problem": "format_config_path directly joins exact location segments. Policy sanitizes record.path and record.field with raw_name, but deliberately preserves record.location. Controls and names longer than MAX_PATH_LENGTH therefore escape the documented JSON display policy through config_path.",
+      "impact": "Public issue output contains removed controls or unbounded names, contrary to the accepted name policy. Exact internal keys must remain available for source lookup.",
+      "recommendation": "Apply the existing raw_name control removal and length limit to the formatted public config_path only. Keep ContractLocation and typed lookup unchanged. Add output tests for C0/C1, U+2028/U+2029 and long names, while retaining Unicode and <>& and the correct original source line."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "source": "acceptance",
+      "file": "src/codemie/workflows/validation/contract_issues.py",
+      "line": 185,
+      "title": "Keep internal workflow section out of public output",
+      "problem": "_detail emits every internal location.section value. failure_report constructs ContractLocation.workflow() for graph/settings failure records, so responses now publish config_section=workflow. The retained public contract lists states, tools and custom_nodes and previously omitted a section for these graph-level records.",
+      "impact": "Graph/settings responses introduce an unsupported section value despite the required public response compatibility.",
+      "recommendation": "Keep workflow-root locations internal and omit public config_section for them. Preserve section output for states, tools and custom_nodes, and assert graph/settings response shape through the real report formatter."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "source": "verification",
+      "file": "tests/codemie/workflows/validation/test_contract_parity.py",
+      "line": 588,
+      "title": "Test database failure through inline tool validation",
+      "problem": "The provider matrix tests referenced assistants but not the inline-assistant caller of _tool_requires_missing_integration. The new credential tests invoke CredentialValidator or ToolMetadataService directly. They still pass if the SQLAlchemyError rethrow at resources.py464 is removed and its broad catch silently returns (False,None).",
+      "impact": "The required provider-boundary regression coverage does not protect this changed failure path from silently accepting a workflow when an inline tool credential query fails.",
+      "recommendation": "Add a regression through a real inline-assistant resource/route caller. Inject StatementError at SettingsService.get_git_creds or get_config, keep the resource wrapper and credential validator real, and assert safe503 plus no persistence in the applicable route and error-format matrix."
+    }
+  ]
+}

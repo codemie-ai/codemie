@@ -152,7 +152,10 @@ class TestGetVersionHistory:
 class TestRollbackToVersion:
     @pytest.fixture(autouse=True)
     def _stub_save_path_validation(self):
-        with patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"):
+        with patch(
+            "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
+            return_value=(MagicMock(), MagicMock()),
+        ):
             yield
 
     def test_rolls_back_autonomous_workflow(self, user_entity):
@@ -312,7 +315,10 @@ class TestRollbackToVersion:
                 "codemie.service.mcp.access_control.MCPAccessControlService.strip_inline_config",
                 side_effect=lambda servers: servers,
             ),
-            patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+            patch(
+                "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
+                return_value=(MagicMock(), MagicMock()),
+            ),
         ):
             WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
 
@@ -365,7 +371,10 @@ class TestRollbackToVersion:
                 "codemie.service.mcp.access_control.MCPAccessControlService.strip_inline_config",
                 side_effect=lambda servers: servers,
             ),
-            patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+            patch(
+                "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
+                return_value=(MagicMock(), MagicMock()),
+            ),
         ):
             WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
 
@@ -420,7 +429,10 @@ class TestRollbackToVersion:
                 "codemie.service.mcp.access_control.MCPAccessControlService.strip_inline_config",
                 side_effect=lambda servers: servers,
             ),
-            patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow") as mock_validate,
+            patch(
+                "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
+                return_value=(MagicMock(), MagicMock()),
+            ) as mock_validate,
         ):
             manager.attach_mock(mock_mcp, "mcp")
             manager.attach_mock(mock_validate, "validate")
@@ -432,6 +444,43 @@ class TestRollbackToVersion:
         assert names.index("validate") < names.index("update")
         mock_mcp.assert_called_once()
         mock_validate.assert_called_once()
+
+    def test_rollback_never_links_contracts_even_when_the_platform_flag_is_on(self, user_entity):
+        from unittest.mock import patch
+
+        from codemie.configs import config
+        from codemie.core.workflow_models.workflow_config import WorkflowConfig
+        from codemie.service.workflow.workflow_version_service import WorkflowVersionService
+
+        prior_yaml = "assistants: []\ntools: []\nstates: []\n"
+        workflow = WorkflowConfig(
+            id="workflow-123",
+            name="Test Workflow",
+            description="desc",
+            yaml_config="assistants: []\ntools: []\nstates: []\n",
+            yaml_config_history=[_make_entry(prior_yaml)],
+        )
+        mock_user = MagicMock()
+        mock_user.as_user_model.return_value = user_entity
+
+        with (
+            patch.object(config, "WORKFLOW_CONTRACT_LINKING_ENABLED", True),
+            patch.object(WorkflowConfig, "update", return_value=None),
+            patch("codemie.service.mcp.access_control.MCPAccessControlService.validate_on_save"),
+            patch(
+                "codemie.service.mcp.access_control.MCPAccessControlService.strip_inline_config",
+                side_effect=lambda servers: servers,
+            ),
+            patch(
+                "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
+                return_value=(MagicMock(), MagicMock()),
+            ) as mock_validate,
+        ):
+            WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
+
+        mock_validate.assert_called_once()
+        link_contracts = mock_validate.call_args.args[3]
+        assert link_contracts is False
 
     def test_validate_on_save_receives_restored_mcp_servers(self, user_entity):
         from unittest.mock import patch
@@ -477,7 +526,10 @@ class TestRollbackToVersion:
                 "codemie.service.mcp.access_control.MCPAccessControlService._strip_one",
                 side_effect=lambda server: server,
             ),
-            patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+            patch(
+                "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
+                return_value=(MagicMock(), MagicMock()),
+            ),
         ):
             WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
 
@@ -504,7 +556,7 @@ class TestRollbackToVersion:
         assert exc_info.value.message == "Workflow Configuration error"
         workflow.update.assert_not_called()
 
-    def test_raises_400_when_validate_workflow_raises_valueerror(self, user_entity):
+    def test_raises_400_when_the_executor_raises_valueerror(self, user_entity):
         from codemie.core.exceptions import ExtendedHTTPException
         from codemie.service.workflow.workflow_version_service import WorkflowVersionService
 
@@ -513,7 +565,7 @@ class TestRollbackToVersion:
         mock_user.as_user_model.return_value = user_entity
 
         with patch(
-            "codemie.workflows.workflow.WorkflowExecutor.validate_workflow",
+            "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
             side_effect=ValueError("invalid graph"),
         ):
             with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -637,7 +689,7 @@ class TestRollbackToVersion:
         workflow.is_global = True
         mock_user = MagicMock()
         mock_user.as_user_model.return_value = user_entity
-        with patch("codemie.service.workflow_service._marketplace_service") as mock_marketplace:
+        with patch("codemie.service.workflow.save_validation._marketplace_service") as mock_marketplace:
             WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
 
         mock_marketplace.validate.assert_called_once_with(workflow, mock_user)
@@ -650,7 +702,7 @@ class TestRollbackToVersion:
         mock_user = MagicMock()
         mock_user.as_user_model.return_value = user_entity
 
-        with patch("codemie.service.workflow_service._marketplace_service") as mock_marketplace:
+        with patch("codemie.service.workflow.save_validation._marketplace_service") as mock_marketplace:
             WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
 
         mock_marketplace.validate.assert_not_called()
@@ -683,7 +735,7 @@ class TestRollbackToVersion:
                 side_effect=lambda s: s,
             ),
             patch(
-                "codemie.workflows.workflow.WorkflowExecutor.validate_workflow",
+                "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
                 side_effect=ValueError("graph rejected"),
             ),
         ):
@@ -702,7 +754,7 @@ class TestRollbackToVersion:
         mock_user = MagicMock()
         mock_user.as_user_model.return_value = user_entity
 
-        with patch("codemie.service.workflow_service._marketplace_service") as mock_marketplace:
+        with patch("codemie.service.workflow.save_validation._marketplace_service") as mock_marketplace:
             mock_marketplace.validate.side_effect = ValidationException("external assistants")
             with pytest.raises(ValidationException, match="external assistants"):
                 WorkflowVersionService.rollback_to_version(workflow, revision_index=0, user=mock_user)
@@ -729,7 +781,10 @@ class TestRollbackDisablesUnavailableMcpLinks:
     def _stub_catalog_and_graph(self):
         with (
             patch("codemie.service.mcp.access_control.MCPConfig.get_by_ids", return_value=[]),
-            patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+            patch(
+                "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
+                return_value=(MagicMock(), MagicMock()),
+            ),
         ):
             yield
 

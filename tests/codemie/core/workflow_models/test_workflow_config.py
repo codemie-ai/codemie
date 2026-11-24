@@ -519,3 +519,24 @@ def test_template_from_yaml_returns_none_when_execution_config_is_not_a_mapping(
     from codemie.core.workflow_models.workflow_config import WorkflowConfigTemplate
 
     assert WorkflowConfigTemplate.from_yaml(raw) is None
+
+
+@pytest.mark.parametrize("yaml_mode", ["Legacy", "Autonomous", "42"])
+def test_parse_execution_config_ignores_mode_key_in_yaml(yaml_mode):
+    """The run path parses yaml_config too: a top-level `mode` in it must not change or break the workflow mode."""
+    from codemie.core.workflow_models import WorkflowMode
+
+    workflow = WorkflowConfig(
+        name="wf",
+        description="d",
+        yaml_config=(
+            f"mode: {yaml_mode}\n"
+            "assistants:\n- id: helper\n"
+            "states:\n- id: ask\n  assistant_id: helper\n  task: Say hello\n  next:\n    state_id: end\n"
+        ),
+    )
+
+    workflow.parse_execution_config()
+
+    assert workflow.mode == WorkflowMode.SEQUENTIAL
+    assert [state.id for state in workflow.states] == ["ask"]

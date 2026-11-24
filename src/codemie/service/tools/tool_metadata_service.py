@@ -23,7 +23,9 @@ This module provides utilities for:
 
 from collections import defaultdict
 from functools import lru_cache
-from typing import Optional, Type
+from sqlalchemy.exc import SQLAlchemyError
+
+from typing import Type
 
 from pydantic import BaseModel
 from codemie_tools.base import toolkit_provider
@@ -65,7 +67,7 @@ GIT_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 
-def get_enum_value(enum_or_value) -> Optional[str]:
+def get_enum_value(enum_or_value) -> str | None:
     """
     Extract string value from an enum or return the value as-is if it's already a string.
 
@@ -159,7 +161,7 @@ class ToolMetadataService:
         return tool_requires or toolkit_requires
 
     @staticmethod
-    def get_config_class(tool_name: str, toolkit_name: str) -> Optional[Type]:
+    def get_config_class(tool_name: str, toolkit_name: str) -> Type | None:
         """
         Get config_class for a tool.
 
@@ -187,7 +189,7 @@ class ToolMetadataService:
         return config_class
 
     @staticmethod
-    def get_credential_type(config_class: Type) -> Optional[str]:
+    def get_credential_type(config_class: Type) -> str | None:
         """
         Extract credential_type from config_class.
 
@@ -285,10 +287,10 @@ class ToolMetadataService:
         toolkit_name: str,
         user_id: str,
         project_name: str,
-        assistant_id: Optional[str] = None,
-        tool_config: Optional[ToolConfig] = None,
-        tool_settings: Optional[SettingsBase] = None,
-    ) -> Optional[BaseModel]:
+        assistant_id: str | None = None,
+        tool_config: ToolConfig | None = None,
+        tool_settings: SettingsBase | None = None,
+    ) -> BaseModel | None:
         """
         Resolve tool configuration with priority:
         1. Inline credentials (tool_config.tool_creds or tool_settings.credential_values)
@@ -332,12 +334,14 @@ class ToolMetadataService:
                 tool_config=tool_config,
             )
             return config
+        except SQLAlchemyError:
+            raise
         except Exception as e:
             logger.debug(f"Could not resolve config for {toolkit_name}.{tool_name}: {e}")
             return None
 
     @staticmethod
-    def _convert_settings_to_config(tool_settings: SettingsBase) -> Optional[ToolConfig]:
+    def _convert_settings_to_config(tool_settings: SettingsBase) -> ToolConfig | None:
         """
         Convert SettingsBase to ToolConfig format.
 

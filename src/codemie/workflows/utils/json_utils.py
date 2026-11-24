@@ -15,6 +15,8 @@
 import json
 from typing import Any, List
 
+from codemie.workflows.context_rules import json_pointer_parts
+
 
 class UnwrappingJsonPointerEvaluator:
     """
@@ -83,7 +85,7 @@ class UnwrappingJsonPointerEvaluator:
         of the final node 'as-is'
 
         """
-        path_parts = pointer.strip('/').split('/')
+        path_parts = json_pointer_parts(pointer)
         result = cls.traverse(source, path_parts)
 
         # Handling trailing slash to (possibly) unwrap the found node

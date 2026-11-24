@@ -1,0 +1,191 @@
+{
+  "schema": 1,
+  "branch": "epmcdme-16504",
+  "head": "b6e7b4c8b0f81d35d29c74181cbc749f9c9e49db",
+  "runner": "poetry",
+  "started_at": "2026-11-09T12:55:40.891645+00:00",
+  "completed_at": "2026-11-09T13:00:09.353005+00:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "source_changed_during_gates": false,
+  "source_test_diff_sha256": "bd32a638ef4da5b5fe8712be8310badd91d41ee38abf763c9231e02faf0854bc",
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1192,
+      "command": "make ruff",
+      "exit_code": 0,
+      "log": "docs/superpowers/tasks/2026-11-09-epmcdme-16504-fix-cx/qa-final-lint.local.log"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6222,
+      "command": "make build",
+      "exit_code": 0,
+      "log": "docs/superpowers/tasks/2026-11-09-epmcdme-16504-fix-cx/qa-final-build.local.log"
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": null,
+      "command": "make license-check",
+      "exit_code": 0,
+      "log": "docs/superpowers/tasks/2026-11-09-epmcdme-16504-fix-cx/qa-final-license.local.log",
+      "notes": "Final check: 3162 files, 0 missing headers. Wall duration was not captured."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": null,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "log": "/tmp/16504-gitleaks.log",
+      "notes": "Reused the same-head full-tree scan. Eight generic-api-key matches are synthetic test session IDs in pre-existing 16503 local evidence. No source match; no exclusions or old evidence were altered. This is a failed full-tree gate."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 179399,
+      "command": "make test",
+      "execution_argv": [
+        "nix",
+        "shell",
+        "--impure",
+        "--expr",
+        "let pkgs = (builtins.getFlake \"nixpkgs\").legacyPackages.${builtins.currentSystem}; in pkgs.texlive.combine { inherit (pkgs.texlive) scheme-small collection-fontsrecommended fvextra footnotehyper upquote; }",
+        "--command",
+        "env",
+        "PYTEST_ADDOPTS=-rs --junitxml=docs/superpowers/tasks/2026-11-09-epmcdme-16504-fix-cx/qa-final-broad.local.xml --deselect=tests/codemie_tools/git/test_gitlab_budget_attribution.py::test_gitlab_toolkit_extracts_model_name_from_string --deselect=tests/codemie_tools/git/test_gitlab_budget_attribution.py::test_gitlab_toolkit_extracts_model_name_from_llm_instance --deselect=tests/codemie_tools/git/test_gitlab_budget_attribution.py::test_gitlab_toolkit_handles_llm_with_deployment_name",
+        "make",
+        "test"
+      ],
+      "exit_code": 2,
+      "log": "docs/superpowers/tasks/2026-11-09-epmcdme-16504-fix-cx/qa-final-broad.local.log",
+      "junit": "docs/superpowers/tasks/2026-11-09-epmcdme-16504-fix-cx/qa-final-broad.local.xml",
+      "deselected": [
+        "tests/codemie_tools/git/test_gitlab_budget_attribution.py::test_gitlab_toolkit_extracts_model_name_from_string",
+        "tests/codemie_tools/git/test_gitlab_budget_attribution.py::test_gitlab_toolkit_extracts_model_name_from_llm_instance",
+        "tests/codemie_tools/git/test_gitlab_budget_attribution.py::test_gitlab_toolkit_handles_llm_with_deployment_name"
+      ],
+      "notes": "This limited rerun excludes three unchanged external-network tests after an interrupted full run. It cannot establish a complete test gate pass. Final result: 42 failed, 32754 passed, 554 skipped, 5 xfailed, 658 warnings in 171.48s. All 42 failed node IDs match the recorded linker baseline; none are new. Classification: qa-final-classification.local.json.",
+      "execution_command": "nix shell --impure --expr 'let pkgs = (builtins.getFlake \"nixpkgs\").legacyPackages.${builtins.currentSystem}; in pkgs.texlive.combine { inherit (pkgs.texlive) scheme-small collection-fontsrecommended fvextra footnotehyper upquote; }' --command env 'PYTEST_ADDOPTS=-rs --junitxml=docs/superpowers/tasks/2026-11-09-epmcdme-16504-fix-cx/qa-final-broad.local.xml --deselect=tests/codemie_tools/git/test_gitlab_budget_attribution.py::test_gitlab_toolkit_extracts_model_name_from_string --deselect=tests/codemie_tools/git/test_gitlab_budget_attribution.py::test_gitlab_toolkit_extracts_model_name_from_llm_instance --deselect=tests/codemie_tools/git/test_gitlab_budget_attribution.py::test_gitlab_toolkit_handles_llm_with_deployment_name' make test"
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": null,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "log": null,
+      "notes": "No changes touch CLI Analytics SQL."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": null,
+      "command": "make coverage",
+      "exit_code": null,
+      "log": null,
+      "notes": "Coverage was not requested."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "log": "/tmp/16504-sonar.log",
+      "notes": "Self-skip: [sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set. Same environment; no retry."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": null,
+      "command": "make verify",
+      "exit_code": null,
+      "log": null,
+      "notes": "Composite target not repeated. Its constituent gates are recorded separately; secrets and unit failures block verification."
+    },
+    {
+      "id": "harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "make test-harness",
+      "exit_code": null,
+      "log": "/tmp/16504-harness.log",
+      "notes": "The explicit equivalent harness command was attempted against the local API: uvx codemie-test-harness --api-domain http://127.0.0.1:18081 run sanity-api -n 2 --reruns 2 --results-dir /tmp/16504-harness-results. It stopped before tests because /v1/local-auth/login returned 404 and no harness credentials are configured. This is unverified, not passed."
+    },
+    {
+      "id": "alembic",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": null,
+      "command": "make check-alembic",
+      "exit_code": 0,
+      "log": "/tmp/16504-alembic.log",
+      "notes": "Reused the same-head local check. No migration files changed. CI main-target check fetches a fresh origin/main separately."
+    },
+    {
+      "id": "staged-secrets",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": null,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": null,
+      "log": null,
+      "notes": "No staged correction or commit was requested; staged-only scan cannot cover this working tree. Full-tree and final diff scans are reported separately."
+    },
+    {
+      "id": "commit-message",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": null,
+      "command": "bash scripts/git-hooks/commit_msg.sh <message-file>",
+      "exit_code": null,
+      "log": null,
+      "notes": "No commit was requested; no commit message exists to check."
+    },
+    {
+      "id": "remote-ci-contexts",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": null,
+      "command": "wait-ci-init (ci-pipeline, compliance-report)",
+      "exit_code": null,
+      "log": null,
+      "notes": "Remote MR/CI context gate needs GitLab pipeline infrastructure. Target is the linker branch, not main; the main-target guard is not exercised locally."
+    },
+    {
+      "id": "secrets-diff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": null,
+      "command": "docker run --rm -i -v \"$PWD:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 stdin --no-banner --redact --config=/workspace/.gitleaks.toml < docs/superpowers/tasks/2026-11-09-epmcdme-16504-fix-cx/qa-final-code.local.diff",
+      "exit_code": 0,
+      "log": "docs/superpowers/tasks/2026-11-09-epmcdme-16504-fix-cx/qa-final-secrets.local.log",
+      "notes": "Final source/test diff only: 110.95 KB, no leaks. This does not replace the failed full-tree gate."
+    }
+  ],
+  "failures": {
+    "secrets": "Secret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.530639\nFile:        /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json\nLine:        98\nFingerprint: /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json:generic-api-key:98\n\nFinding:     \"KeyError: '\u001b[1;3;mREDACTED\u001b[0m'\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.530639\nFile:        /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json\nLine:        102\nFingerprint: /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json:generic-api-key:102\n\nFinding:     \"KeyError: '\u001b[1;3;mREDACTED\u001b[0m'\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.530639\nFile:        /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json\nLine:        106\nFingerprint: /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json:generic-api-key:106\n\nFinding:     \"KeyError: '\u001b[1;3;mREDACTED\u001b[0m'\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.708966\nFile:        /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json\nLine:        464\nFingerprint: /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json:generic-api-key:464\n\nFinding:     \"KeyError: '\u001b[1;3;mREDACTED\u001b[0m'\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.708966\nFile:        /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json\nLine:        468\nFingerprint: /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json:generic-api-key:468\n\nFinding:     \"KeyError: '\u001b[1;3;mREDACTED\u001b[0m'\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.708966\nFile:        /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json\nLine:        472\nFingerprint: /workspace/docs/superpowers/tasks/2026-11-09-epmcdme-16503-fix-cx/gate-baseline-comparison.local.json:generic-api-key:472\n\n\u001b[90m12:31PM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~86623250 bytes (86.62 MB) in 14.9s\u001b[0m\n\u001b[90m12:31PM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 8\u001b[0m\nmake: *** [gitleaks] Error 1",
+    "unit": "SKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:103: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:128: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:151: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:176: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:212: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:234: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:268: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:309: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:342: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_service.py:855: Requires database connection for conversation creation - integration test\nSKIPPED [1] tests/codemie/rest_api/routers/test_workflow_generator.py:65: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/rest_api/routers/test_workflow_generator.py:84: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/rest_api/routers/test_workflow_generator.py:105: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [2] tests/codemie/service/project/test_live_registration_lifecycle.py:115: TEST_LOCAL_PG_URL is not set: no database to run against\nSKIPPED [2] tests/codemie/service/project/test_live_registration_lifecycle.py:132: TEST_LOCAL_PG_URL is not set: no database to run against\nSKIPPED [1] tests/codemie/service/project/test_live_registration_lifecycle.py:154: TEST_LOCAL_PG_URL is not set: no database to run against\nSKIPPED [1] tests/codemie/rest_api/security/test_authentication.py:54: Test needs refactoring for new authentication architecture\nSKIPPED [1] tests/codemie/rest_api/security/test_authentication.py:65: Test needs refactoring for new authentication architecture\nSKIPPED [1] tests/codemie/workflows/test_context_store_management.py:529: JSON pointer extraction is tested in test_tool_node_context.py (TC_TNC_003)\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:33: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:45: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:50: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:60: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:71: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:85: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:90: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:108: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:105: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:130: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:166: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:183: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:227: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:247: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:265: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:297: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:338: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:345: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_refine_planner.py:72: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_refine_planner.py:102: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_refine_planner.py:126: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_refine_planner.py:153: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_graph.py:103: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_graph.py:124: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_graph.py:146: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_refiner.py:30: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_refiner.py:37: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_refiner.py:68: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie_tools/core/vcs/gitlab/test_diffnote_integration.py:38: Set the GitLab DiffNote validation variables documented in docs/superpowers/tasks/2026-09-18-EPMCDME-13495/inline-diffnote-validation.md\n= 42 failed, 32754 passed, 554 skipped, 5 xfailed, 658 warnings in 171.48s (0:02:51) =\nmake: *** [test] Error 1"
+  },
+  "notes": [
+    "Code corrections are uncommitted. HEAD plus the source/test diff SHA-256 identifies the validated state.",
+    "Full initial test run was interrupted; final broad rerun deselected three known external-network tests.",
+    "The local .gitlab-ci.yml is present. The quality guide statement that no pipeline exists is stale.",
+    "Live API and focused test evidence are owned by the parent and are not substituted for full gates."
+  ]
+}

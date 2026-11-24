@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ import yaml
 from fastapi import status
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy.exc import SQLAlchemyError
 
 from codemie_tools.base.file_object import FileObject
 
@@ -48,9 +50,15 @@ from codemie.service.file_service.mermaid_service import (
     MermaidNotConfiguredError,
     MermaidServiceUnavailableError,
 )
+from codemie.workflows.validation.line_lookup import ValidationSourceContext
+from codemie.service.workflow import save_validation
 from codemie.workflows.workflow import WorkflowExecutor
+from codemie.service.workflow.save_validation import SaveValidationResult
+from codemie.workflows.validation.contract_issues import ContractIssues
 
 CREATE_DIAGRAM_PATH = "/v1/workflows/diagram"
+_VALID_SAVE = SaveValidationResult([], None, 0)
+_COMPILED = (MagicMock(), MagicMock())  # (graph, contract report) as WorkflowExecutor.validate_workflow_with_report
 
 client = TestClient(app)
 
@@ -325,8 +333,10 @@ async def test_get_workflow_by_id_access_denied(workflow_config, request_header)
 
 @pytest.mark.asyncio
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
-async def test_create_workflow(mock_get_guardrail_assignments, create_workflow_request, request_header):
+@pytest.mark.parametrize("linker_enabled", [False, True])
+async def test_create_workflow(mock_get_guardrail_assignments, create_workflow_request, request_header, linker_enabled):
     with (
+        patch.object(config, "WORKFLOW_CONTRACT_LINKING_ENABLED", linker_enabled),
         patch(
             "codemie.service.workflow_service.WorkflowService.create_workflow",
             return_value=workflow_config_data,
@@ -335,7 +345,9 @@ async def test_create_workflow(mock_get_guardrail_assignments, create_workflow_r
             "codemie.service.workflow_service.WorkflowService.save_workflow_schema",
         ),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow") as workflow_executor,
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED
+        ) as workflow_executor,
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
         mock_get_guardrail_assignments.return_value = None
@@ -351,10 +363,12 @@ async def test_create_workflow(mock_get_guardrail_assignments, create_workflow_r
         # and rewrites yaml_config from the parsed objects before validating - mirror that here.
         expected_config = WorkflowConfig(**create_workflow_request.model_dump())
         expected_config.parse_execution_config()
-        workflow_router._normalize_workflow_model_ids(expected_config, user)
-        workflow_router._rewrite_yaml_config_from_objects(expected_config)
-        workflow_executor.assert_called_once_with(workflow_config=expected_config, user=user, error_format='string')
-        assert workflow_executor.call_args.kwargs["workflow_config"].yaml_config == create_workflow_request.yaml_config
+        save_validation.normalize_workflow_model_ids(expected_config, user)
+        save_validation.rewrite_yaml_config_from_objects(expected_config)
+        workflow_executor.assert_called_once()
+        assert workflow_executor.call_args.args == (expected_config, user, "string", linker_enabled)
+        assert isinstance(workflow_executor.call_args.kwargs["source_context"], ValidationSourceContext)
+        assert workflow_executor.call_args.args[0].yaml_config == create_workflow_request.yaml_config
 
 
 yaml_config_with_foreign_keys = """
@@ -445,7 +459,7 @@ states:
 def test_rewrite_yaml_config_stores_foreign_keys_byte_for_byte():
     config = _rewrite_from_yaml(yaml_config_with_foreign_keys)
 
-    workflow_router._rewrite_yaml_config_from_objects(config)
+    save_validation.rewrite_yaml_config_from_objects(config)
 
     assert config.yaml_config == yaml_config_with_foreign_keys
 
@@ -453,7 +467,7 @@ def test_rewrite_yaml_config_stores_foreign_keys_byte_for_byte():
 def test_rewrite_yaml_config_stores_minimal_yaml_byte_for_byte_without_defaults():
     config = _rewrite_from_yaml(minimal_yaml_config)
 
-    workflow_router._rewrite_yaml_config_from_objects(config)
+    save_validation.rewrite_yaml_config_from_objects(config)
 
     assert config.yaml_config == minimal_yaml_config
     loaded = yaml.safe_load(config.yaml_config)
@@ -466,7 +480,7 @@ def test_rewrite_yaml_config_changes_only_normalized_model_ids():
     config = _rewrite_from_yaml(yaml_config_with_foreign_keys)
     config.assistants[0].model = "gpt-4o-2024-11-20"
 
-    workflow_router._rewrite_yaml_config_from_objects(config)
+    save_validation.rewrite_yaml_config_from_objects(config)
 
     expected = yaml.safe_load(yaml_config_with_foreign_keys)
     expected["assistants"][0]["model"] = "gpt-4o-2024-11-20"
@@ -477,7 +491,7 @@ def test_rewrite_yaml_config_changes_only_normalized_model_ids():
 def test_rewrite_yaml_config_tolerates_missing_or_non_mapping_yaml(raw_yaml):
     config = WorkflowConfig(id="wf", name="wf", description="d", project="demo", yaml_config=raw_yaml)
 
-    workflow_router._rewrite_yaml_config_from_objects(config)
+    save_validation.rewrite_yaml_config_from_objects(config)
 
     assert config.yaml_config == raw_yaml
 
@@ -570,7 +584,7 @@ async def test_create_workflow_persists_minimal_yaml_as_sent(
             "codemie.workflows.workflow.WorkflowExecutor.create_executor",
             return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
         ),
-        patch("codemie.rest_api.routers.workflow.llm_service.get_allowed_chat_models", return_value=[]),
+        patch("codemie.service.workflow.save_validation.llm_service.get_allowed_chat_models", return_value=[]),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
         mock_get_guardrail_assignments.return_value = None
@@ -604,8 +618,8 @@ async def test_create_workflow_changes_only_normalized_model_in_persisted_yaml(
             "codemie.workflows.workflow.WorkflowExecutor.create_executor",
             return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
         ),
-        patch("codemie.rest_api.routers.workflow.llm_service.get_allowed_chat_models", return_value=catalog),
-        patch("codemie.rest_api.routers.workflow._get_project_for_workflow", return_value=None),
+        patch("codemie.service.workflow.save_validation.llm_service.get_allowed_chat_models", return_value=catalog),
+        patch("codemie.service.workflow.save_validation._get_project_for_workflow", return_value=None),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
         mock_get_guardrail_assignments.return_value = None
@@ -636,10 +650,10 @@ async def test_create_workflow_reports_consumer_slot_warnings(
         ),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
         patch(
-            "codemie.rest_api.routers.workflow.collect_consumer_slot_integration_warnings",
+            "codemie.service.workflow.save_validation.collect_consumer_slot_integration_warnings",
             return_value=[warning],
         ),
     ):
@@ -662,11 +676,12 @@ async def test_create_workflow_script_step_warning_is_advisory(
     warning = {"kind": "tool_access_owner_integration", "step_id": "s1", "tool_name": "t", "integration_alias": "a"}
     collector_patch = (
         patch(
-            "codemie.rest_api.routers.workflow.collect_tool_access_owner_integration_warnings", return_value=[warning]
+            "codemie.service.workflow.save_validation.collect_tool_access_owner_integration_warnings",
+            return_value=[warning],
         )
         if script_collector == "returns"
         else patch(
-            "codemie.rest_api.routers.workflow.collect_tool_access_owner_integration_warnings",
+            "codemie.service.workflow.save_validation.collect_tool_access_owner_integration_warnings",
             side_effect=RuntimeError("boom"),
         )
     )
@@ -674,10 +689,12 @@ async def test_create_workflow_script_step_warning_is_advisory(
         patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
+        patch("codemie.service.workflow.save_validation._marketplace_service"),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
-        patch("codemie.rest_api.routers.workflow.collect_consumer_slot_integration_warnings", return_value=[]),
-        collector_patch as collector,
+        patch("codemie.service.workflow.save_validation.contract_linking_enabled", return_value=True),
+        patch("codemie.service.workflow.save_validation.collect_consumer_slot_integration_warnings", return_value=[]),
+        collector_patch,
     ):
         mock_get_guardrail_assignments.return_value = None
 
@@ -687,11 +704,10 @@ async def test_create_workflow_script_step_warning_is_advisory(
 
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["warnings"] == ([warning] if script_collector == "returns" else [])
-    assert collector.call_args.kwargs["treat_as_global"] == bool(workflow_config_data.is_global)
 
 
 @pytest.mark.asyncio
-@patch("codemie.rest_api.routers.workflow.llm_service.assert_model_selectable")
+@patch("codemie.service.workflow.save_validation.llm_service.assert_model_selectable")
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
 async def test_create_workflow_rejects_unselectable_model(
     mock_get_guardrail_assignments, mock_assert_selectable, create_workflow_request, request_header
@@ -711,7 +727,7 @@ async def test_create_workflow_rejects_unselectable_model(
         ),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
         transport = ASGITransport(app=app)
@@ -741,7 +757,7 @@ async def test_create_workflow_with_selectable_model_succeeds(
         ),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
         transport = ASGITransport(app=app)
@@ -759,7 +775,7 @@ async def test_create_autonomous_workflow(create_autonomous_workflow_request, re
             "codemie.service.workflow_service.WorkflowService.create_workflow",
             return_value=workflow_config_data,
         ),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
@@ -787,7 +803,8 @@ async def test_update_workflow(
         patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
         patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            "codemie.service.workflow.save_validation.validate",
+            return_value=_VALID_SAVE,
         ) as mock_validate,
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
@@ -808,7 +825,7 @@ async def test_update_workflow(
 
 
 @pytest.mark.asyncio
-@patch("codemie.rest_api.routers.workflow.llm_service.assert_model_selectable")
+@patch("codemie.service.workflow.save_validation.llm_service.assert_model_selectable")
 @patch("codemie.core.ability.Ability.can")
 @patch("codemie.service.workflow_service.WorkflowService.get_workflow")
 async def test_update_workflow_rejects_unselectable_model(
@@ -838,7 +855,7 @@ async def test_update_workflow_rejects_unselectable_model(
 
 
 @pytest.mark.asyncio
-@patch("codemie.rest_api.routers.workflow.llm_service.assert_model_selectable")
+@patch("codemie.service.workflow.save_validation.llm_service.assert_model_selectable")
 @patch("codemie.core.ability.Ability.can")
 @patch("codemie.service.workflow_service.WorkflowService.get_workflow")
 async def test_validate_workflow_rejects_unselectable_model(
@@ -877,15 +894,10 @@ async def test_update_workflow_with_selectable_model_succeeds(
     mock_get_wf.return_value = workflow_config
     mock_ability.return_value = True
 
-    from unittest.mock import AsyncMock
-
     with (
         patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
         patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
-        patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
-        ),
+        patch("codemie.service.workflow.save_validation.validate", return_value=_VALID_SAVE),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
@@ -1004,7 +1016,7 @@ async def test_update_workflow_persists_minimal_yaml_as_sent(
             "codemie.workflows.workflow.WorkflowExecutor.create_executor",
             return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
         ),
-        patch("codemie.rest_api.routers.workflow.llm_service.get_allowed_chat_models", return_value=[]),
+        patch("codemie.service.workflow.save_validation.llm_service.get_allowed_chat_models", return_value=[]),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
         mock_get_guardrail_assignments.return_value = None
@@ -1044,8 +1056,8 @@ async def test_update_workflow_changes_only_normalized_model_in_persisted_yaml(
             "codemie.workflows.workflow.WorkflowExecutor.create_executor",
             return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
         ),
-        patch("codemie.rest_api.routers.workflow.llm_service.get_allowed_chat_models", return_value=catalog),
-        patch("codemie.rest_api.routers.workflow._get_project_for_workflow", return_value=None),
+        patch("codemie.service.workflow.save_validation.llm_service.get_allowed_chat_models", return_value=catalog),
+        patch("codemie.service.workflow.save_validation._get_project_for_workflow", return_value=None),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
         mock_get_guardrail_assignments.return_value = None
@@ -1120,8 +1132,9 @@ async def test_update_workflow_pins_id_from_path_param(
 
     captured: list = []
 
-    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None, request_dump=None):
         captured.append(proposed)
+        return _VALID_SAVE
 
     with (
         patch(
@@ -1165,8 +1178,9 @@ async def test_update_workflow_ignores_mismatched_body_id(
 
     captured: list = []
 
-    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None, request_dump=None):
         captured.append(proposed)
+        return _VALID_SAVE
 
     with (
         patch(
@@ -1205,7 +1219,8 @@ async def test_update_workflow_exception(mock_get_wf, mock_ability, update_workf
             side_effect=Exception("Update failed"),
         ),
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            "codemie.service.workflow.save_validation.validate",
+            return_value=_VALID_SAVE,
         ),
     ):
         transport = ASGITransport(app=app)
@@ -1241,7 +1256,7 @@ async def test_update_published_workflow_with_external_assistant_blocked(
     mock_ability.return_value = True
 
     with patch(
-        "codemie.service.workflow_service.WorkflowService.validate_for_update",
+        "codemie.service.workflow.save_validation.validate",
         side_effect=ValidationException("Marketplace workflows cannot use external (non-virtual) assistants or skills"),
     ):
         transport = ASGITransport(app=app)
@@ -1274,10 +1289,10 @@ async def test_update_non_published_workflow_skips_marketplace_validation(
     mock_get_wf.return_value = workflow_config_data  # is_global=False
     mock_ability.return_value = True
 
-    mock_validate: MagicMock = MagicMock()
+    mock_validate: MagicMock = MagicMock(return_value=_VALID_SAVE)
 
     with (
-        patch("codemie.service.workflow_service.WorkflowService.validate_for_update", mock_validate),
+        patch("codemie.service.workflow.save_validation.validate", mock_validate),
         patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
@@ -1585,7 +1600,7 @@ async def test_create_workflow_calls_project_access_check(
             "codemie.service.workflow_service.WorkflowService.save_workflow_schema",
         ),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
         patch("codemie.rest_api.routers.workflow.project_access_check") as mock_project_access_check,
     ):
         mock_get_guardrail_assignments.return_value = None
@@ -1608,7 +1623,10 @@ async def test_update_workflow_calls_project_access_check(
         patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
         patch("codemie.core.ability.Ability.can", return_value=True),
         patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
+            return_value=(MagicMock(), MagicMock()),
+        ),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
         patch("codemie.rest_api.routers.workflow.project_access_check") as mock_project_access_check,
@@ -1640,7 +1658,7 @@ async def test_create_workflow_project_access_denied(create_workflow_request, re
             "codemie.service.workflow_service.WorkflowService.save_workflow_schema",
         ),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
         patch(
             "codemie.rest_api.routers.workflow.project_access_check",
             side_effect=ExtendedHTTPException(
@@ -1679,7 +1697,7 @@ async def test_update_workflow_project_access_denied(workflow_config, update_wor
         patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
         patch("codemie.core.ability.Ability.can", return_value=True),
         patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=None) as mock_update,
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
         patch(
@@ -1927,7 +1945,8 @@ async def test_validate_workflow_valid_config(mock_get_wf, mock_ability, update_
 
     with (
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            "codemie.service.workflow.save_validation.validate",
+            return_value=_VALID_SAVE,
         ) as mock_validate,
         patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
         patch("codemie.rest_api.routers.workflow.project_access_check"),
@@ -1956,7 +1975,7 @@ async def test_validate_workflow_missing_assistant(mock_get_wf, mock_ability, up
 
     with (
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            "codemie.service.workflow.save_validation.validate",
             side_effect=ValidationException("Assistant 'missing-id' does not exist"),
         ),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
@@ -2033,7 +2052,7 @@ async def test_validate_workflow_load_error_not_mapped_to_404(
 @pytest.mark.asyncio
 @patch("codemie.core.ability.Ability.can")
 @patch("codemie.service.workflow_service.WorkflowService.get_workflow")
-async def test_validate_global_workflow_calls_validate_for_update(
+async def test_validate_global_workflow_calls_save_validation(
     mock_get_wf, mock_ability, update_workflow_request, request_header
 ):
     published_workflow = WorkflowConfig(
@@ -2049,7 +2068,8 @@ async def test_validate_global_workflow_calls_validate_for_update(
 
     with (
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            "codemie.service.workflow.save_validation.validate",
+            return_value=_VALID_SAVE,
         ) as mock_validate,
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
@@ -2092,7 +2112,8 @@ async def test_update_workflow_guardrail_sync_403_wrapped_as_400(
     with (
         patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            "codemie.service.workflow.save_validation.validate",
+            return_value=_VALID_SAVE,
         ),
         patch(
             "codemie.service.guardrail.guardrail_service.GuardrailService.sync_guardrail_assignments_for_entity",
@@ -2146,7 +2167,8 @@ async def test_update_workflow_guardrail_dry_run_blocks_persist(
             mock_update_workflow,
         ),
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            "codemie.service.workflow.save_validation.validate",
+            return_value=_VALID_SAVE,
         ),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
@@ -2181,8 +2203,9 @@ async def test_validate_workflow_proposed_id_set_from_path_param(
 
     captured: list = []
 
-    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None, request_dump=None):
         captured.append(proposed)
+        return _VALID_SAVE
 
     with (
         patch(
@@ -2219,8 +2242,6 @@ async def test_validate_workflow_returns_consumer_slot_warnings(
     request_header,
 ):
     """Validate endpoint must include advisory warnings so it is a faithful dry-run of update."""
-    from unittest.mock import AsyncMock
-
     mock_get_wf.return_value = workflow_config_data
     mock_ability.return_value = True
 
@@ -2228,12 +2249,8 @@ async def test_validate_workflow_returns_consumer_slot_warnings(
 
     with (
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
-        ),
-        patch(
-            "codemie.rest_api.routers.workflow._consumer_slot_warnings",
-            new_callable=AsyncMock,
-            return_value=expected_warnings,
+            "codemie.service.workflow.save_validation.validate",
+            return_value=SaveValidationResult(expected_warnings, None, 0),
         ),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
@@ -2264,8 +2281,9 @@ async def test_validate_workflow_ignores_mismatched_body_id(
 
     captured: list = []
 
-    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None, request_dump=None):
         captured.append(proposed)
+        return _VALID_SAVE
 
     with (
         patch(
@@ -2309,7 +2327,8 @@ async def test_validate_workflow_dry_runs_guardrail_assignment_checks(
 
     with (
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            "codemie.service.workflow.save_validation.validate",
+            return_value=_VALID_SAVE,
         ),
         patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
         patch(
@@ -2364,7 +2383,8 @@ async def test_validate_workflow_guardrail_403_wrapped_as_400(
 
     with (
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            "codemie.service.workflow.save_validation.validate",
+            return_value=_VALID_SAVE,
         ),
         patch(
             "codemie.rest_api.routers.workflow.GuardrailService.sync_guardrail_assignments_for_entity",
@@ -2415,7 +2435,8 @@ async def test_pre_persist_guardrail_dry_run_uses_proposed_project_on_cross_proj
 
     with (
         patch(
-            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            "codemie.service.workflow.save_validation.validate",
+            return_value=_VALID_SAVE,
         ),
         patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
         patch(
@@ -2714,7 +2735,7 @@ async def _post_yaml_only_workflow(request_header, yaml_config, *, restricted: b
         patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -2830,7 +2851,7 @@ async def test_create_workflow_open_mode_allows_handwritten_mcp_server(mock_guar
         patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -2889,7 +2910,9 @@ async def test_create_workflow_dedupes_categories(request_header):
         patch(
             "codemie.rest_api.routers.workflow.category_service.validate_category_ids", return_value=["a", "b"]
         ) as mock_validate,
-        patch("codemie.rest_api.routers.workflow.WorkflowExecutor.validate_workflow"),
+        patch(
+            "codemie.rest_api.routers.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED
+        ),
         patch("codemie.rest_api.routers.workflow.workflow_service.create_workflow") as mock_create,
     ):
         mock_create.side_effect = RuntimeError("stop")
@@ -2976,7 +2999,9 @@ async def test_create_workflow_preserves_unavailable_assistant_models(
             "codemie.service.workflow_service.WorkflowService.save_workflow_schema",
         ),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow") as workflow_executor,
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED
+        ) as workflow_executor,
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
         mock_get_guardrail_assignments.return_value = None
@@ -2994,7 +3019,7 @@ async def test_create_workflow_preserves_unavailable_assistant_models(
         workflow_executor.assert_called_once()
 
 
-# ---- Script step owner-integration warning uses the stored global state ----
+# ---- Script step owner-integration warning does not depend on the global state ----
 
 
 _SCRIPT_STEP_WARNING = {
@@ -3010,7 +3035,7 @@ _SCRIPT_STEP_WARNING = {
 @patch("codemie.core.ability.Ability.can", return_value=True)
 @patch("codemie.service.workflow_service.WorkflowService.get_workflow")
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
-async def test_update_workflow_script_step_warning_uses_stored_global_state(
+async def test_update_workflow_script_step_warning_ignores_global_state(
     mock_get_guardrail_assignments, mock_get_wf, _mock_ability, is_global, update_workflow_request, request_header
 ):
     mock_get_guardrail_assignments.return_value = None
@@ -3026,15 +3051,17 @@ async def test_update_workflow_script_step_warning_uses_stored_global_state(
 
     with (
         patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
-        patch("codemie.service.workflow_service.WorkflowService.validate_for_update"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
+        patch("codemie.service.workflow.save_validation._marketplace_service"),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
-        patch("codemie.rest_api.routers.workflow.collect_consumer_slot_integration_warnings", return_value=[]),
+        patch("codemie.service.workflow.save_validation.contract_linking_enabled", return_value=True),
+        patch("codemie.service.workflow.save_validation.collect_consumer_slot_integration_warnings", return_value=[]),
         patch(
-            "codemie.rest_api.routers.workflow.collect_tool_access_owner_integration_warnings",
+            "codemie.service.workflow.save_validation.collect_tool_access_owner_integration_warnings",
             return_value=[_SCRIPT_STEP_WARNING],
-        ) as collector,
+        ),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -3044,14 +3071,13 @@ async def test_update_workflow_script_step_warning_uses_stored_global_state(
 
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["warnings"] == [_SCRIPT_STEP_WARNING]
-    assert collector.call_args.kwargs["treat_as_global"] is is_global
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_global", [True, False])
 @patch("codemie.core.ability.Ability.can", return_value=True)
 @patch("codemie.service.workflow_service.WorkflowService.get_workflow")
-async def test_validate_workflow_script_step_warning_uses_stored_global_state(
+async def test_validate_workflow_script_step_warning_ignores_global_state(
     mock_get_wf, _mock_ability, is_global, update_workflow_request, request_header
 ):
     existing = WorkflowConfig(
@@ -3065,13 +3091,15 @@ async def test_validate_workflow_script_step_warning_uses_stored_global_state(
     mock_get_wf.return_value = existing
 
     with (
-        patch("codemie.service.workflow_service.WorkflowService.validate_for_update"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
+        patch("codemie.service.workflow.save_validation._marketplace_service"),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
-        patch("codemie.rest_api.routers.workflow.collect_consumer_slot_integration_warnings", return_value=[]),
+        patch("codemie.service.workflow.save_validation.contract_linking_enabled", return_value=True),
+        patch("codemie.service.workflow.save_validation.collect_consumer_slot_integration_warnings", return_value=[]),
         patch(
-            "codemie.rest_api.routers.workflow.collect_tool_access_owner_integration_warnings",
+            "codemie.service.workflow.save_validation.collect_tool_access_owner_integration_warnings",
             return_value=[_SCRIPT_STEP_WARNING],
-        ) as collector,
+        ),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -3083,7 +3111,6 @@ async def test_validate_workflow_script_step_warning_uses_stored_global_state(
 
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["warnings"] == [_SCRIPT_STEP_WARNING]
-    assert collector.call_args.kwargs["treat_as_global"] is is_global
 
 
 from types import SimpleNamespace  # noqa: E402
@@ -3258,7 +3285,7 @@ async def test_create_workflow_accepts_existing_namespace_icon(
         patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
         patch("codemie.rest_api.routers.workflow.WorkflowConfig.get_by_icon_url", return_value=[]),
     ):
@@ -3293,7 +3320,7 @@ async def test_create_workflow_saves_plain_https_icon_unchanged(
         patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
-        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report", return_value=_COMPILED),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
         transport = ASGITransport(app=app)
@@ -3403,3 +3430,400 @@ async def test_update_workflow_keeps_unchanged_stale_icon_url(
 
     assert "referenced icon" not in response.text
     icon_store.read_file.assert_not_called()
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Save pipeline wiring (EPMCDME-16504, T7): create, update and the saved dry-run share prepare -> validate
+# ---------------------------------------------------------------------------------------------------------------------
+
+_SAVE_VALIDATION = "codemie.service.workflow.save_validation"
+_PRODUCER = '{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}'
+_NEEDS_X = '{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}'
+_CUSTOM_MCP = {"name": "srv", "use_custom_config": True, "config": {"command": "npx", "args": []}}
+
+
+def _contract_yaml(*, declared_need: bool) -> str:
+    """s1 produces x, s2 removes it and c1 needs it: a declared need blocks, a placeholder read only warns."""
+    consumer = {"id": "c1", "assistant_id": "a1", "next": {"state_id": "end"}}
+    if declared_need:
+        consumer["input_schema"] = _NEEDS_X
+    else:
+        consumer.update({"task": "use {{ x }}", "resolve_dynamic_values_in_prompt": True})
+    return yaml.safe_dump(
+        {
+            "assistants": [{"id": "a1", "system_prompt": "do it"}],
+            "states": [
+                {"id": "s1", "assistant_id": "a1", "output_schema": _PRODUCER, "next": {"state_id": "s2"}},
+                {"id": "s2", "assistant_id": "a1", "next": {"state_id": "c1", "reset_keys_in_context_store": ["x"]}},
+                consumer,
+            ],
+        }
+    )
+
+
+def _enter_pipeline_patches(stack: ExitStack, *, flag: bool) -> None:
+    """Real prepare/validate with the flag set; only persistence, catalog and resource lookups are stubbed."""
+    stack.enter_context(patch.object(config, "WORKFLOW_CONTRACT_LINKING_ENABLED", flag))
+    for target, kwargs in (
+        ("codemie.service.workflow_service.WorkflowService.create_workflow", {"return_value": workflow_config_data}),
+        ("codemie.service.workflow_service.WorkflowService.update_workflow", {"return_value": workflow_config_data}),
+        ("codemie.service.workflow_service.WorkflowService.get_workflow", {"return_value": workflow_config_data}),
+        ("codemie.service.workflow_service.WorkflowService.save_workflow_schema", {}),
+        ("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw", {}),
+        ("codemie.workflows.workflow.validate_workflow_config_resources_availability", {}),
+        (
+            "codemie.workflows.workflow.WorkflowExecutor.create_executor",
+            {"return_value": MagicMock(_init_workflow=MagicMock(return_value=None))},
+        ),
+        ("codemie.core.ability.Ability.can", {"return_value": True}),
+        ("codemie.rest_api.routers.workflow.project_access_check", {}),
+        (
+            "codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments",
+            {"return_value": None},
+        ),
+        (f"{_SAVE_VALIDATION}.llm_service.get_allowed_chat_models", {"return_value": []}),
+        (f"{_SAVE_VALIDATION}._get_project_for_workflow", {"return_value": None}),
+        (f"{_SAVE_VALIDATION}.collect_consumer_slot_integration_warnings", {"return_value": []}),
+        (f"{_SAVE_VALIDATION}.collect_tool_access_owner_integration_warnings", {"return_value": []}),
+    ):
+        stack.enter_context(patch(target, **kwargs))
+
+
+async def _send(method: str, url: str, body: dict, headers: dict, **params):
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        return await ac.request(method, url, json=body, headers=headers, params=params)
+
+
+def _create_body(create_workflow_request, yaml_text: str, **extra) -> dict:
+    return {**create_workflow_request.model_copy(update={"yaml_config": yaml_text}).model_dump(), **extra}
+
+
+def _update_body(update_workflow_request, yaml_text: str) -> dict:
+    return update_workflow_request.model_copy(update={"yaml_config": yaml_text}).model_dump()
+
+
+@pytest.mark.asyncio
+async def test_create_flag_on_unsatisfied_input_contract_is_rejected_with_the_contract_envelope(
+    create_workflow_request, request_header
+):
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=True)
+        response = await _send(
+            "POST",
+            "/v1/workflows",
+            _create_body(create_workflow_request, _contract_yaml(declared_need=True)),
+            request_header,
+            error_format="json",
+        )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    details = response.json()["error"]["details"]
+    assert details["errors"][0]["config_path"] == "input_schema.properties.x"
+    assert "coverage" in details
+    assert "warnings" in details
+    assert "warnings_truncated" not in details
+
+
+@pytest.mark.asyncio
+async def test_update_flag_on_clean_save_returns_coverage_and_the_contract_warning(
+    update_workflow_request, request_header
+):
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=True)
+        response = await _send(
+            "PUT",
+            f"/v1/workflows/{workflow_config_data.id}",
+            _update_body(update_workflow_request, _contract_yaml(declared_need=False)),
+            request_header,
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    body = response.json()
+    assert body["coverage"]["analysed"] is True
+    assert [w["kind"] for w in body["warnings"]] == ["contract_validation"]
+    assert "warnings_truncated" not in body
+
+
+@pytest.mark.asyncio
+async def test_update_flag_on_reports_the_number_of_warnings_the_cap_cut(update_workflow_request, request_header):
+    cut = ContractIssues([], [{"kind": "contract_validation"}], {"analysed": True}, 50)
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=True)
+        stack.enter_context(patch(f"{_SAVE_VALIDATION}.build_contract_issues", return_value=cut))
+        response = await _send(
+            "PUT",
+            f"/v1/workflows/{workflow_config_data.id}",
+            _update_body(update_workflow_request, _contract_yaml(declared_need=False)),
+            request_header,
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["warnings_truncated"] == 50
+
+
+@pytest.mark.asyncio
+async def test_saved_dry_run_flag_on_returns_coverage_and_the_contract_warning(update_workflow_request, request_header):
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=True)
+        response = await _send(
+            "POST",
+            f"/v1/workflows/{workflow_config_data.id}/validate",
+            _update_body(update_workflow_request, _contract_yaml(declared_need=False)),
+            request_header,
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    body = response.json()
+    assert body["message"] == "Workflow configuration is valid"
+    assert body["coverage"]["analysed"] is True
+    assert [w["kind"] for w in body["warnings"]] == ["contract_validation"]
+    assert "warnings_truncated" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["create", "update", "validate"])
+async def test_flag_off_bodies_carry_neither_coverage_nor_warnings_truncated(
+    route, create_workflow_request, update_workflow_request, request_header
+):
+    yaml_text = _contract_yaml(declared_need=False)
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=False)
+        if route == "create":
+            response = await _send(
+                "POST", "/v1/workflows", _create_body(create_workflow_request, yaml_text), request_header
+            )
+        else:
+            suffix = "/validate" if route == "validate" else ""
+            method = "POST" if route == "validate" else "PUT"
+            response = await _send(
+                method,
+                f"/v1/workflows/{workflow_config_data.id}{suffix}",
+                _update_body(update_workflow_request, yaml_text),
+                request_header,
+            )
+
+    assert response.status_code == status.HTTP_200_OK
+    body = response.json()
+    assert "coverage" not in body
+    assert "warnings_truncated" not in body
+    assert body["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_create_in_restricted_mcp_mode_surfaces_the_governance_refusal(create_workflow_request, request_header):
+    body = _create_body(
+        create_workflow_request,
+        _contract_yaml(declared_need=False),
+        assistants=[{"id": "a1", "mcp_servers": [_CUSTOM_MCP]}],
+    )
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=False)
+        customer = stack.enter_context(patch("codemie.service.mcp.access_control.customer_config"))
+        customer.is_component_enabled.side_effect = lambda name: name == "mcpCustomServersDisabled"
+        response = await _send("POST", "/v1/workflows", body, request_header)
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    message = response.json()["error"]["message"]
+    assert "custom server" in message
+    assert message != "Workflow Configuration error"
+
+
+@pytest.mark.asyncio
+async def test_create_database_error_during_validation_is_a_503(create_workflow_request, request_header):
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=False)
+        stack.enter_context(patch(f"{_SAVE_VALIDATION}.validate", side_effect=SQLAlchemyError("db down")))
+        response = await _send(
+            "POST",
+            "/v1/workflows",
+            _create_body(create_workflow_request, _contract_yaml(declared_need=False)),
+            request_header,
+        )
+
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert response.json()["error"]["message"] == "Workflow database is unavailable"
+    assert "db down" not in response.text
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# POST /v1/workflows/validate (EPMCDME-16504, T8): pre-save dry-run of a workflow that does not exist yet
+# ---------------------------------------------------------------------------------------------------------------------
+_VALIDATE_NEW = "/v1/workflows/validate"
+
+
+def _validate_new_body(yaml_text: str, **extra) -> dict:
+    """What a UI sends before the user has named the workflow: no name, no description."""
+    return {"project": "demo", "yaml_config": yaml_text, **extra}
+
+
+@pytest.mark.asyncio
+async def test_validate_new_workflow_without_name_or_description_returns_coverage_and_saves_nothing(request_header):
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=True)
+        create = stack.enter_context(patch("codemie.service.workflow_service.WorkflowService.create_workflow"))
+        update = stack.enter_context(patch("codemie.service.workflow_service.WorkflowService.update_workflow"))
+        response = await _send(
+            "POST", _VALIDATE_NEW, _validate_new_body(_contract_yaml(declared_need=False)), request_header
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    body = response.json()
+    assert body["message"] == "Workflow configuration is valid"
+    assert body["coverage"]["analysed"] is True
+    assert [w["kind"] for w in body["warnings"]] == ["contract_validation"]
+    assert "warnings_truncated" not in body
+    create.assert_not_called()
+    update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_validate_new_workflow_flag_off_carries_neither_coverage_nor_warnings_truncated(request_header):
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=False)
+        response = await _send(
+            "POST", _VALIDATE_NEW, _validate_new_body(_contract_yaml(declared_need=False)), request_header
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert "coverage" not in response.json()
+    assert "warnings_truncated" not in response.json()
+
+
+@pytest.mark.asyncio
+async def test_validate_new_workflow_rejects_an_unsatisfied_contract_with_the_envelope(request_header):
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=True)
+        response = await _send(
+            "POST",
+            _VALIDATE_NEW,
+            _validate_new_body(_contract_yaml(declared_need=True)),
+            request_header,
+            error_format="json",
+        )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    details = response.json()["error"]["details"]
+    assert details["error_type"] == "contract_validation"
+    assert details["errors"][0]["config_path"] == "input_schema.properties.x"
+    assert "coverage" in details
+
+
+@pytest.mark.asyncio
+async def test_validate_new_workflow_for_a_non_member_is_refused_before_any_lookup(request_header):
+    refusal = ExtendedHTTPException(
+        code=status.HTTP_403_FORBIDDEN, message="Access denied", details="No access to 'demo'.", help=""
+    )
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=True)
+        stack.enter_context(patch("codemie.rest_api.routers.workflow.project_access_check", side_effect=refusal))
+        prepare = stack.enter_context(patch(f"{_SAVE_VALIDATION}.prepare"))
+        validate = stack.enter_context(patch(f"{_SAVE_VALIDATION}.validate"))
+        response = await _send(
+            "POST", _VALIDATE_NEW, _validate_new_body(_contract_yaml(declared_need=False)), request_header
+        )
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    prepare.assert_not_called()
+    validate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_validate_new_workflow_autonomous_mode_is_gone_before_any_lookup(request_header):
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=True)
+        prepare = stack.enter_context(patch(f"{_SAVE_VALIDATION}.prepare"))
+        response = await _send(
+            "POST",
+            _VALIDATE_NEW,
+            _validate_new_body(_contract_yaml(declared_need=False), mode="Autonomous", supervisor_prompt="x"),
+            request_header,
+        )
+
+    assert response.status_code == status.HTTP_410_GONE
+    prepare.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_validate_new_workflow_in_restricted_mcp_mode_refuses_a_raw_request_custom_server(request_header):
+    body = _validate_new_body(
+        _contract_yaml(declared_need=False), assistants=[{"id": "a1", "mcp_servers": [_CUSTOM_MCP]}]
+    )
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=False)
+        customer = stack.enter_context(patch("codemie.service.mcp.access_control.customer_config"))
+        customer.is_component_enabled.side_effect = lambda name: name == "mcpCustomServersDisabled"
+        response = await _send("POST", _VALIDATE_NEW, body, request_header)
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    message = response.json()["error"]["message"]
+    assert "custom server" in message
+    assert message != "Workflow Configuration error"
+
+
+@pytest.mark.asyncio
+async def test_validate_new_workflow_database_error_is_a_safe_503(request_header):
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=False)
+        stack.enter_context(patch(f"{_SAVE_VALIDATION}.validate", side_effect=SQLAlchemyError("db down")))
+        response = await _send(
+            "POST", _VALIDATE_NEW, _validate_new_body(_contract_yaml(declared_need=False)), request_header
+        )
+
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert "db down" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_validate_new_workflow_null_mode_is_a_422_and_leaves_the_table_flag_on(request_header):
+    from codemie.core.workflow_models import WorkflowConfig
+
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=False)
+        response = await _send(
+            "POST", _VALIDATE_NEW, _validate_new_body(_contract_yaml(declared_need=False), mode=None), request_header
+        )
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert WorkflowConfig.model_config.get("table") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure,expected_status", [(SQLAlchemyError("db down"), 503), (RuntimeError("model lookup failed"), 400)]
+)
+async def test_validate_new_workflow_failure_while_preparing_the_candidate_is_classified(
+    request_header, failure, expected_status
+):
+    with ExitStack() as stack:
+        _enter_pipeline_patches(stack, flag=False)
+        stack.enter_context(patch(f"{_SAVE_VALIDATION}.prepare", side_effect=failure))
+        response = await _send(
+            "POST", _VALIDATE_NEW, _validate_new_body(_contract_yaml(declared_need=False)), request_header
+        )
+
+    assert response.status_code == expected_status
+    assert response.json()["error"]["message"] == (
+        "Workflow database is unavailable" if expected_status == 503 else "Workflow Configuration error"
+    )
+
+
+def _openapi_response_schema(path: str, method: str) -> dict:
+    schema = app.openapi()
+    ref = schema["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
+    return schema["components"]["schemas"][ref["$ref"].rsplit("/", 1)[-1]]
+
+
+@pytest.mark.parametrize(
+    "path, method",
+    [
+        ("/v1/workflows", "post"),
+        ("/v1/workflows/{workflow_id}", "put"),
+        ("/v1/workflows/validate", "post"),
+        ("/v1/workflows/{workflow_id}/validate", "post"),
+    ],
+)
+def test_openapi_documents_the_save_and_dry_run_response_fields(path, method):
+    properties = _openapi_response_schema(path, method)["properties"]
+
+    assert {"warnings", "coverage", "warnings_truncated"} <= set(properties)

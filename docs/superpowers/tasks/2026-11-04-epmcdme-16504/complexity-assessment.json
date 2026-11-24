@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Add the save-time contract API surface (platform flag, contract_validation issue fields, coverage object, all-errors-at-once rejection, create/update/dry-run parity and a new validate-before-first-save endpoint) to the workflow save/dry-run pipeline.",
+  "generated": "2026-11-04T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the workflow router (create, update, dry-run, response models, error envelope, new endpoint), WorkflowService.validate_for_update and the version service, the WorkflowExecutor stage sequence, the contracts linker/models/policy, validation models and line_lookup, and Config. The report currently never reaches the routers, so a new carrier abstraction is needed. Single repo." },
+    { "dimension": "requirements_clarity", "reason": "The technical analysis lists several ticket-vs-code contradictions: path and details semantics differ from the linker output, the config_path table does not match the linker's record paths and omits task and config.input_key, the warning kind is misnamed, UNVERIFIED records are info rather than warning, and 'both dry-run shapes' is undefined. Design decisions are open, with rework risk." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the existing kind-keyed warnings and structured error dicts. It does not cover a structured carrier for warnings and coverage when error_format=string, or the authorization rules of the new unsaved-workflow endpoint (project read access only, with no stored workflow for the global/marketplace/guardrail checks). Create, update and dry-run diverge today in parse failure handling, model-id normalization and MCP checks. 13 validate_workflow callers are exposed to any default change. Several enumerated edge cases (UNVERIFIED, rejected-save coverage with failure_report zero counts) have no covering test template. Authorization red flag applied." },
+    { "dimension": "file_change_estimate", "reason": "About 8-10 source files modified (routers/workflow.py, workflows/workflow.py, contracts/linker.py, contracts/models.py, validation/models.py, line_lookup.py, workflow_service.py, workflow_version_service.py, configs/config.py), 1-2 new, plus router, linker and parity tests across 3+ directories." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: affects authorization (new endpoint with project read-access-only check) and adds a platform-flag-controlled behavior switch",
+    "Requirements Clarity held at L: ticket acceptance criteria contradict current code in several places (path/details semantics, config_path table, warning kind name)"
+  ],
+  "split_recommendation": null
+}

@@ -2094,6 +2094,58 @@ class TestSkipIntegrationValidationAuthorization:
         assert result is None
 
 
+class TestIntegrationValidationDatabaseError:
+    """A database error during the integration check reports the integrations as valid on the assistant routes."""
+
+    _GET_CONFIG = "codemie.service.tools.tool_metadata_service.SettingsService.get_config"
+
+    @staticmethod
+    def _jira_request():
+        from codemie.rest_api.models.assistant import AssistantRequest, ToolDetails, ToolKitDetails
+
+        return AssistantRequest(
+            name="My Assistant",
+            description="d",
+            system_prompt="p",
+            project="demo",
+            llm_model_type="gpt-4o",
+            toolkits=[ToolKitDetails(toolkit="Project Management", tools=[ToolDetails(name="generic_jira_tool")])],
+        )
+
+    @staticmethod
+    def _database_failure():
+        from sqlalchemy.exc import StatementError
+
+        return StatementError("database failure", "SELECT secret", {"bind": "secret"}, None)
+
+    def test_missing_integration_is_still_reported_without_a_database_error(self):
+        from codemie.rest_api.routers.assistant.management import _validate_assistant_integrations
+
+        with patch(self._GET_CONFIG, return_value=None):
+            result = _validate_assistant_integrations(self._jira_request(), MagicMock(id="user-1"))
+
+        assert result.has_missing_integrations is True
+
+    def test_database_error_reports_integrations_as_valid(self):
+        from codemie.rest_api.routers.assistant.management import _validate_assistant_integrations
+
+        with patch(self._GET_CONFIG, side_effect=self._database_failure()):
+            result = _validate_assistant_integrations(self._jira_request(), MagicMock(id="user-1"))
+
+        assert result.has_missing_integrations is False
+
+    def test_create_and_update_proceed_on_database_error(self):
+        from codemie.rest_api.routers.assistant.management import (
+            _update_validation_response,
+            _validate_integrations_or_response,
+        )
+
+        user = MagicMock(id="user-1")
+        with patch(self._GET_CONFIG, side_effect=self._database_failure()):
+            assert _validate_integrations_or_response(self._jira_request(), user) is None
+            assert _update_validation_response(self._jira_request(), user, "asst-abc") is None
+
+
 from types import SimpleNamespace  # noqa: E402
 
 from codemie.rest_api.routers.assistant.catalog import _apply_template_filters  # noqa: E402

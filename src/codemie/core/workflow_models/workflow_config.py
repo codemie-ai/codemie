@@ -66,7 +66,7 @@ from sqlalchemy import Text
 class YamlConfigHistory(BaseModel):
     yaml_config: str
     date: datetime
-    created_by: Optional[UserEntity] = None
+    created_by: UserEntity | None = None
     change_notes: str | None = None
 
 
@@ -77,54 +77,50 @@ class BedrockFlowData(BaseModel):
 
 
 class WorkflowConfigBase(CommonBaseModel, Owned):
-    assistants: Optional[List[WorkflowAssistant]] = SQLField(
+    assistants: List[WorkflowAssistant] | None = SQLField(
         default_factory=list, sa_column=Column(PydanticListType(WorkflowAssistant))
     )
-    custom_nodes: Optional[List[CustomWorkflowNode]] = SQLField(
+    custom_nodes: List[CustomWorkflowNode] | None = SQLField(
         default_factory=list, sa_column=Column(PydanticListType(CustomWorkflowNode))
     )
-    created_by: Optional[UserEntity] = SQLField(default=None, sa_column=Column(PydanticType(UserEntity)))
-    tools: Optional[List[WorkflowTool]] = SQLField(
-        default_factory=list, sa_column=Column(PydanticListType(WorkflowTool))
-    )
+    created_by: UserEntity | None = SQLField(default=None, sa_column=Column(PydanticType(UserEntity)))
+    tools: List[WorkflowTool] | None = SQLField(default_factory=list, sa_column=Column(PydanticListType(WorkflowTool)))
     description: str
-    start_hint: Optional[str] = None
-    icon_url: Optional[str] = None
+    start_hint: str | None = None
+    icon_url: str | None = None
     mode: WorkflowMode = WorkflowMode.SEQUENTIAL
     name: str
-    type: Optional[str] = None
+    type: str | None = None
     project: str = SQLField(default=DEMO_PROJECT, index=True)
     shared: bool = SQLField(default=True, index=True)
-    states: Optional[List[WorkflowState]] = SQLField(
+    states: List[WorkflowState] | None = SQLField(
         default_factory=list, sa_column=Column(PydanticListType(WorkflowState))
     )
-    schema_url: Optional[str] = None
-    supervisor_prompt: Optional[str] = None
-    updated_by: Optional[UserEntity] = SQLField(default=None, sa_column=Column(PydanticType(UserEntity)))
-    user_abilities: Optional[List[Action]] = SQLField(default_factory=list, sa_column=Column(JSONB))
-    yaml_config: Optional[str] = None
+    schema_url: str | None = None
+    supervisor_prompt: str | None = None
+    updated_by: UserEntity | None = SQLField(default=None, sa_column=Column(PydanticType(UserEntity)))
+    user_abilities: List[Action] | None = SQLField(default_factory=list, sa_column=Column(JSONB))
+    yaml_config: str | None = None
     yaml_config_history: List[YamlConfigHistory] = SQLField(
         default_factory=list, sa_column=Column(PydanticListType(YamlConfigHistory))
     )
 
-    tokens_limit_before_summarization: Optional[int] = None
+    tokens_limit_before_summarization: int | None = None
     retry_policy: WorkflowRetryPolicy = SQLField(default=None, sa_column=Column(PydanticType(WorkflowRetryPolicy)))
-    messages_limit_before_summarization: Optional[int] = None
-    enable_summarization_node: Optional[bool] = True
-    recursion_limit: Optional[int] = None
-    max_concurrency: Optional[int] = None
-    verbose: Optional[bool] = True  # Write thoughts or not
-    max_iteration_key_output_limit: Optional[int] = 200
-    are_tools_migrated: Optional[bool] = None
-    bedrock: Optional[BedrockFlowData] = SQLField(default=None, sa_column=Column(PydanticType(BedrockFlowData)))
-    meta_config: Optional[str] = SQLField(default=None, sa_column=Column(Text))
+    messages_limit_before_summarization: int | None = None
+    enable_summarization_node: bool | None = True
+    recursion_limit: int | None = None
+    max_concurrency: int | None = None
+    verbose: bool | None = True  # Write thoughts or not
+    max_iteration_key_output_limit: int | None = 200
+    are_tools_migrated: bool | None = None
+    bedrock: BedrockFlowData | None = SQLField(default=None, sa_column=Column(PydanticType(BedrockFlowData)))
+    meta_config: str | None = SQLField(default=None, sa_column=Column(Text))
     is_global: bool = SQLField(default=False)
     categories: list[str] = SQLField(default_factory=list, sa_column=Column(JSONB))
     unique_users_count: int = SQLField(default=0)
-    pool_config: Optional[WorkflowPoolConfig] = SQLField(
-        default=None, sa_column=Column(PydanticType(WorkflowPoolConfig))
-    )
-    max_nesting_level: Optional[int] = SQLField(default=None)
+    pool_config: WorkflowPoolConfig | None = SQLField(default=None, sa_column=Column(PydanticType(WorkflowPoolConfig)))
+    max_nesting_level: int | None = SQLField(default=None)
 
     # Custom PostgreSQL indexes
     __table_args__ = (
@@ -177,7 +173,7 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
 
     @computed_field(return_type=Optional[List[GuardrailAssignmentItem]])
     @property
-    def guardrail_assignments(self) -> Optional[List[GuardrailAssignmentItem]]:
+    def guardrail_assignments(self) -> List[GuardrailAssignmentItem] | None:
         """
         Transient guardrail_assignments field - not stored in database
 
@@ -186,7 +182,7 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
         return getattr(self, '_guardrail_assignments', None)
 
     @guardrail_assignments.setter
-    def guardrail_assignments(self, value: Optional[List[GuardrailAssignmentItem]]):
+    def guardrail_assignments(self, value: List[GuardrailAssignmentItem] | None):
         self._guardrail_assignments = value
 
     @classmethod
@@ -328,13 +324,13 @@ class WorkflowConfig(BaseModelWithSQLSupport, WorkflowConfigBase, table=True):
 
     # The YAML text exactly as a client sent it, kept only so validation errors can point at the lines the client
     # sees: yaml_config itself is rewritten from the parsed objects before validation. Never persisted.
-    _source_yaml_config: Optional[str] = PrivateAttr(default=None)
+    _source_yaml_config: str | None = PrivateAttr(default=None)
 
     def update(
         self,
         refresh=False,
         validate=True,
-        yaml_config_history: Optional[List[YamlConfigHistory]] = None,
+        yaml_config_history: List[YamlConfigHistory] | None = None,
     ):
         current = self.__class__.find_by_id(self.id)
         if current is None:
@@ -430,7 +426,7 @@ class WorkflowConfig(BaseModelWithSQLSupport, WorkflowConfigBase, table=True):
 
 class WorkflowConfigTemplate(WorkflowConfigBase):
     slug: str
-    video_link: Optional[str] = None
+    video_link: str | None = None
     required_variables: list[str] = Field(default_factory=list)
     template_source: str = Field(default="", exclude=True)
 
@@ -497,21 +493,21 @@ class WorkflowConfigTemplate(WorkflowConfigBase):
 class WorkflowConfigListResponse(BaseModel):
     """Minimal response model for workflow list (excludes heavy fields for performance)"""
 
-    id: Optional[str] = None
+    id: str | None = None
     name: str
     description: str
-    start_hint: Optional[str] = None
-    icon_url: Optional[str] = None
-    created_by: Optional[UserEntity] = None
-    updated_by: Optional[UserEntity] = None
+    start_hint: str | None = None
+    icon_url: str | None = None
+    created_by: UserEntity | None = None
+    updated_by: UserEntity | None = None
     project: str
     shared: bool
     mode: WorkflowMode
-    type: Optional[str] = None
-    schema_url: Optional[str] = None
-    date: Optional[datetime] = None
-    update_date: Optional[datetime] = None
-    user_abilities: Optional[List[Action]] = None
+    type: str | None = None
+    schema_url: str | None = None
+    date: datetime | None = None
+    update_date: datetime | None = None
+    user_abilities: List[Action] | None = None
     is_global: bool = False
     categories: List[str] = Field(default_factory=list)
     unique_users_count: int = 0

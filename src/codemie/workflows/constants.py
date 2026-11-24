@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
+from typing import Any
 from pydantic import BaseModel
 
 
@@ -25,6 +26,14 @@ class WorkflowErrorType(str, Enum):
     SCHEMA_VALIDATION = "schema_validation"
     CROSS_REFERENCE_VALIDATION = "cross_reference_validation"
     RESOURCE_VALIDATION = "resource_validation"
+    CONTRACT_VALIDATION = "contract_validation"
+
+
+class ContractValidationMode(str, Enum):
+    """Contract validation mode; mirrors the `save_validation` enum in execution_config_schema.yaml."""
+
+    STRICT = "strict"
+    WARN = "warn"
 
 
 class WorkflowErrorResourceType(str, Enum):
@@ -77,8 +86,45 @@ ABORTED_MSG: str = "Execution aborted by user"
 NEXT_CMD_STATE: str = "next_command_state"
 CLEAR_CONTEXT_STORE_KEEP_CURRENT: str = "keep_current"
 CONTEXT_STORE_KEEP_NEW_ONLY_FLAG: str = "context_store_keep_new_only"
+# Sentinel value to mark keys for deletion in context store
+CONTEXT_STORE_DELETE_MARKER: str = "__DELETE_KEY__"
+# Sentinel wrapper key for accumulating values as a list in context store.
+# When a value in `right` is a dict with this key, the reducer appends the
+# wrapped list to the existing value instead of overwriting it.
+CONTEXT_STORE_APPEND_MARKER: str = "__APPEND_VALUE__"
 GUARDRAIL_CHECKED_FLAG: str = "_guardrail_checked"
 PREVIOUS_EXECUTION_STATE_ID: str = "previous_execution_state_id"
 PREVIOUS_EXECUTION_STATE_NAMES: str = "previous_execution_state_names"
 PREV_STATE_NAMES_TO_MERGE: str = "prev_state_names_to_merge"
 PROPAGATED_HEADERS_CONTEXT_KEY: str = "propagated_headers"
+FILE_NAMES_CONTEXT_KEY: str = "file_names"
+# Plugin tools are named with this prefix.
+PLUGIN_TOOL_PREFIX: str = "_"
+
+# The functions a workflow expression may call (`utils/safe_eval.py`); kept here so that the save-time contract
+# linker can read the names without importing `codemie.workflows.utils`, which pulls in services.
+SAFE_EVAL_ALLOWED_FUNCTIONS: dict[str, Any] = {
+    "len": len,
+    "min": min,
+    "max": max,
+    "sum": sum,
+    "abs": abs,
+    "str": str,
+    "int": int,
+    "float": float,
+    "bool": bool,
+    "list": list,
+    "dict": dict,
+    "set": set,
+    "tuple": tuple,
+    "any": any,
+    "all": all,
+    "isinstance": isinstance,
+    "round": round,
+    "sorted": sorted,
+    "reversed": reversed,
+    "enumerate": enumerate,
+    "zip": zip,
+    "map": map,
+    "filter": filter,
+}

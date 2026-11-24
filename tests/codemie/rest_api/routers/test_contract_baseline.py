@@ -49,11 +49,13 @@ from codemie.rest_api.models.skill import SkillDetailResponse, SkillVisibility
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.access_control import MCPAccessControlService
+from codemie.service.workflow.save_validation import SaveValidationResult
 
 ROUTERS = "codemie.rest_api.routers"
 INDEX = f"{ROUTERS}.index"
 ASSISTANT = f"{ROUTERS}.assistant.management"
 WORKFLOW = f"{ROUTERS}.workflow"
+SAVE_VALIDATION = "codemie.service.workflow.save_validation"
 PROJECT = "demo"
 
 USER = User(id="user-1", username="tester", name="Tester", is_admin=True, is_maintainer=True, project_names=[PROJECT])
@@ -518,16 +520,23 @@ def _workflow_patches(stack: ExitStack, stored: WorkflowConfig):
         f"{WORKFLOW}.project_access_check",
         f"{WORKFLOW}.GuardrailService.sync_guardrail_assignments_for_entity",
         f"{WORKFLOW}.GuardrailService.get_entity_guardrail_assignments",
-        f"{WORKFLOW}._consumer_slot_warnings_sync",
-        f"{WORKFLOW}.MCPAccessControlService.validate_workflow_mcp",
-        "codemie.service.workflow_service.WorkflowService.validate_for_update",
+        f"{SAVE_VALIDATION}.collect_advisory_warnings",
+        "codemie.service.mcp.access_control.MCPAccessControlService.validate_workflow_mcp",
+        "codemie.service.mcp.access_control.MCPAccessControlService.validate_on_save",
+        "codemie.service.workflow.save_validation.validate",
         "codemie.service.workflow_service.WorkflowService.save_workflow_schema",
         "codemie.service.workflow_service.WorkflowService.create_workflow",
         "codemie.workflows.workflow.WorkflowExecutor.validate_workflow",
         "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw",
     )
-    stack.enter_context(patch(f"{WORKFLOW}._get_project_for_workflow", return_value=None))
-    stack.enter_context(patch(f"{WORKFLOW}.collect_consumer_slot_integration_warnings", return_value=[]))
+    stack.enter_context(
+        patch(
+            f"{SAVE_VALIDATION}.validate",
+            return_value=SaveValidationResult(warnings=[], coverage=None, warnings_truncated=0),
+        )
+    )
+    stack.enter_context(patch(f"{SAVE_VALIDATION}._get_project_for_workflow", return_value=None))
+    stack.enter_context(patch(f"{SAVE_VALIDATION}.collect_consumer_slot_integration_warnings", return_value=[]))
     stack.enter_context(patch(f"{WORKFLOW}.Ability.can", return_value=True))
     stack.enter_context(patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=stored))
     return stack.enter_context(

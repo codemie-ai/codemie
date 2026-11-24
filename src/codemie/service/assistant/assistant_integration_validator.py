@@ -19,7 +19,9 @@ This service orchestrates validation of toolkit credentials for assistants,
 with lazy loading and no recursion (orchestrators cannot have orchestrators as sub-assistants).
 """
 
-from typing import List, Optional
+from sqlalchemy.exc import SQLAlchemyError
+
+from typing import List
 
 from codemie.configs.logger import logger
 from codemie.rest_api.models.assistant import (
@@ -169,6 +171,8 @@ class AssistantIntegrationValidator:
                         )
                     )
 
+            except SQLAlchemyError:
+                raise
             except Exception as e:
                 logger.warning(f"Error validating sub-assistant {assistant_id}: {e}")
                 continue
@@ -217,7 +221,7 @@ class AssistantIntegrationValidator:
         toolkits: List[ToolKitDetails],
         user: User,
         project_name: str,
-        assistant_id: Optional[str] = None,
+        assistant_id: str | None = None,
     ) -> List[MissingIntegration]:
         """
         Validate credentials for all toolkits.
@@ -250,7 +254,7 @@ class AssistantIntegrationValidator:
         toolkit: ToolKitDetails,
         user: User,
         project_name: str,
-        assistant_id: Optional[str],
+        assistant_id: str | None,
     ) -> List[MissingIntegration]:
         """
         Validate all tools in a single toolkit.
@@ -298,8 +302,8 @@ class AssistantIntegrationValidator:
         cls,
         toolkit_name: str,
         tool_name: str,
-        tool_settings: Optional[object],
-        toolkit_settings: Optional[object],
+        tool_settings: object | None,
+        toolkit_settings: object | None,
     ) -> None:
         """Log tool validation details with settings source information."""
         if tool_settings:

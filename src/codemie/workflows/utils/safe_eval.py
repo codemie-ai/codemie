@@ -24,36 +24,12 @@ import ast
 import operator
 from typing import Any
 
+from codemie.workflows.constants import SAFE_EVAL_ALLOWED_FUNCTIONS as ALLOWED_FUNCTIONS
+
 
 class SafeEvalError(ValueError):
     """Raised when an expression uses disallowed constructs."""
 
-
-ALLOWED_FUNCTIONS: dict[str, Any] = {
-    "len": len,
-    "min": min,
-    "max": max,
-    "sum": sum,
-    "abs": abs,
-    "str": str,
-    "int": int,
-    "float": float,
-    "bool": bool,
-    "list": list,
-    "dict": dict,
-    "set": set,
-    "tuple": tuple,
-    "any": any,
-    "all": all,
-    "isinstance": isinstance,
-    "round": round,
-    "sorted": sorted,
-    "reversed": reversed,
-    "enumerate": enumerate,
-    "zip": zip,
-    "map": map,
-    "filter": filter,
-}
 
 _COMPARE_OPS = {
     ast.Eq: operator.eq,

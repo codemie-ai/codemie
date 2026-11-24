@@ -54,6 +54,8 @@ extraEnv:
     value: "gcp"
   - name: TRIGGER_ENGINE_ENABLED
     value: "false"
+  - name: WORKFLOW_CONTRACT_LINKING_ENABLED
+    value: "false"
   - name: SUBWORKFLOW_MAX_NESTING_DEPTH
     value: "1"
   - name: SUBWORKFLOW_POOL_ENABLED

@@ -14,6 +14,7 @@
 
 from unittest.mock import patch, MagicMock
 import pytest
+from pydantic import ValidationError
 from enum import auto
 from typing import Optional, Dict, Any
 
@@ -205,3 +206,15 @@ def test_sql_update_with_touch_timestamp_false_leaves_update_date_unchanged(mock
     assert model.update_date == old_update_date
     mock_session.merge.assert_called_once_with(model)
     mock_session.commit.assert_called_once()
+
+
+def test_table_flag_is_restored_when_validation_fails():
+    class FlagModel(BaseModelWithSQLSupport, table=True):
+        __tablename__ = "test_flag_model"
+
+        count: int = Field(default=0)
+
+    with pytest.raises(ValidationError):
+        FlagModel(count="not a number")
+
+    assert FlagModel.model_config["table"] is True

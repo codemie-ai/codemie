@@ -1,0 +1,304 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Check round approved: CR-001..CR-004 resolved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Fix CR-001..CR-004"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Check round approved: CR-001..CR-004 resolved"
+    }
+  ],
+  "reviewed_head": "3204070ba33334079b8fa9bbf03bc3c3d3575672",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "Targeted check: all 4 prior blocking findings (CR-001..CR-004) are resolved on current source at HEAD (Optional replaced by unions, generics parameterized, rollback link_contracts=False asserted, entry id seed extended and tested); no new findings discovered this round, 0 deferred re-checked. Tests were not run here; green execution is Stage 7 evidence.",
+  "confidence": "medium",
+  "check_confidence": "high",
+  "risk_flags": [
+    "public-api",
+    "data-contract"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 4,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/workflow_models/workflow_models.py",
+      "line": 452,
+      "title": "Use X | None unions in new models",
+      "problem": "code-quality.md requires X | None unions over typing.Optional[X] in new code. The new ValidateNewWorkflowRequest (workflow_models.py) and ContractMeta plus the new config_path/outcome fields (validation/models.py) use Optional[...].",
+      "impact": "A documented code-quality standard is broken in newly added code, so the change is not conformant with the project's blocking quality bar.",
+      "recommendation": "Write the new annotations as str | None, WorkflowMode | None and list[...] | None instead of Optional[...].",
+      "status": "resolved",
+      "check_notes": "ValidateNewWorkflowRequest fields and ContractMeta/config_path/outcome now use X | None unions; remaining Optional lines are pre-existing fields.",
+      "fix": {
+        "change": "ValidateNewWorkflowRequest, ContractMeta.label, config_path, outcome and meta now use X | None unions",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/workflow/save_validation.py",
+      "line": 52,
+      "title": "Parameterize bare dict/list annotations",
+      "problem": "code-quality.md says to prefer parameterized generics over bare list/dict annotations in new code. New modules use request_dump: dict, coverage: dict | None, items: list | None (save_validation.py:52,64,100,125,217) and ContractIssues errors/warnings: list[dict], coverage: dict, tuple[dict, str] (contract_issues.py:70-72,104).",
+      "impact": "A documented code-quality standard is broken in newly added modules, so the change is not conformant.",
+      "recommendation": "Parameterize the generics, for example dict[str, Any], dict[str, object], list[dict[str, Any]] and tuple[dict[str, Any], str].",
+      "status": "resolved",
+      "check_notes": "Annotations parameterized to dict[str, Any] / list[dict[str, Any]] / tuple[dict[str, Any], str] in save_validation.py and contract_issues.py; no bare dict/list annotations remain.",
+      "fix": {
+        "change": "Parameterized bare dict/list annotations in save_validation.py and contract_issues.py (dict[str, Any], list[dict[str, Any]], tuple[dict[str, Any], str])",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/workflow/workflow_version_service.py",
+      "line": 105,
+      "title": "Assert rollback never links contracts",
+      "problem": "_validate_restored_workflow passes link_contracts=False to keep rollback out of contract linking, but no test asserts it at the rollback entry point. test_workflow_version_service.py only asserts the validator mock was called; the only no-link test calls save_validation.validate directly.",
+      "impact": "If link_contracts=False is removed or defaulted to None, rollback on a flag-on platform starts linking and could reject a restore of an older version with a blocking contract record; no test would fail.",
+      "recommendation": "In tests/codemie/service/test_workflow_version_service.py, run rollback_to_version with WORKFLOW_CONTRACT_LINKING_ENABLED patched True and a wrapped validate_workflow_with_report, then assert the linked argument is False (or link_workflow_contracts is not called).",
+      "status": "resolved",
+      "check_notes": "test_rollback_never_links_contracts_even_when_the_platform_flag_is_on runs rollback with the flag patched True and asserts the linked arg (args[3]) is False; matches validate_workflow_with_report call signature.",
+      "fix": {
+        "change": "Added rollback test with the contract flag on asserting validate_workflow_with_report receives link_contracts False",
+        "test": "tests/codemie/service/test_workflow_version_service.py::TestRollbackToVersion::test_rollback_never_links_contracts_even_when_the_platform_flag_is_on"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/validation/contract_issues.py",
+      "line": 198,
+      "title": "Entry id seed can collide within one response",
+      "problem": "_issue_id seeds uuid5 on state|path|kind|message only. Two records identical on those but differing by field or provenance producers (e.g. strict consumer-form findings) get the same id in one response.",
+      "impact": "Clients keying cards or parity checks on id collapse or mis-attribute issues. Reachability was unconfirmed: the seed follows the spec and message templates may usually differ, so this is capped at major.",
+      "recommendation": "Add the record field and provenance producers to the seed, e.g. f\"{consumer_state_id}|{path}|{kind}|{message}|{field}|{provenance.producers}\", and add a test with two records differing only by producer.",
+      "status": "resolved",
+      "check_notes": "_issue_id seed now includes record.field and provenance producers; test covers records differing only by field or producer.",
+      "fix": {
+        "change": "_issue_id seed now includes record.field and provenance producers (tolerates missing provenance)",
+        "test": "tests/codemie/workflows/validation/test_contract_issues.py::test_ids_differ_for_records_that_differ_only_by_field_or_producer"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Flag WORKFLOW_CONTRACT_LINKING_ENABLED: static Config bool, default False, true in dev env file, read once in the pipeline validate step",
+      "status": "pass",
+      "notes": "config.py default False; read only in save_validation.contract_linking_enabled(); executor default untouched"
+    },
+    {
+      "kind": "spec",
+      "item": "Shared sync pipeline in save_validation.py with prepare(request_dump, user, defer_parse_failure)",
+      "status": "pass",
+      "notes": "prepare/normalize/rewrite/advisory moved; routers offload via asyncio.to_thread"
+    },
+    {
+      "kind": "spec",
+      "item": "validate(): MCP gate, marketplace when stored is_global, executor with link_contracts, advisory then contract warnings, coverage",
+      "status": "pass",
+      "notes": "order follows spec; covered by test_save_validation.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Raises the same exceptions as today so router error wrapping is unchanged",
+      "status": "partial",
+      "notes": "create's wrapper now re-raises ValidationException/NotFoundException; no raiser reachable from those steps, so no observed client change"
+    },
+    {
+      "kind": "spec",
+      "item": "Entry-specific steps stay in routers",
+      "status": "pass",
+      "notes": "access, autonomous refusal, guardrail sync, categories and persistence remain in routers/workflow.py"
+    },
+    {
+      "kind": "spec",
+      "item": "treat_as_global False for create/new endpoint, stored is_global for update; validate_for_update replaced; rollback unlinked",
+      "status": "pass",
+      "notes": "implemented; rollback entry-point assertion missing (CR-003)"
+    },
+    {
+      "kind": "spec",
+      "item": "POST /v1/workflows/validate: project_access_check only, persists nothing, optional name/description",
+      "status": "pass",
+      "notes": "validate_new_workflow and ValidateNewWorkflowRequest match spec"
+    },
+    {
+      "kind": "spec",
+      "item": "linker.py owns build_contract_issues(report, line_finder) -> (errors, warnings, coverage)",
+      "status": "partial",
+      "notes": "lives in validation/contract_issues.py and returns a 4-field ContractIssues (extra warnings_truncated); internal, no client impact"
+    },
+    {
+      "kind": "spec",
+      "item": "Entries are WorkflowValidationErrorDetail with optional config_path/outcome; deterministic uuid5 id",
+      "status": "pass",
+      "notes": "implemented per spec seed; collision risk noted in CR-004"
+    },
+    {
+      "kind": "spec",
+      "item": "Issue shape: path = bare field, outcome from reported_as, details = provenance line, meta.label kept",
+      "status": "pass",
+      "notes": "contract_issues._detail and tests"
+    },
+    {
+      "kind": "spec",
+      "item": "config_path closed translation table; config_line via line finder, omitted when not found",
+      "status": "pass",
+      "notes": "to_config_path and _config_line; table test covers every row"
+    },
+    {
+      "kind": "spec",
+      "item": "Selection: errors = blocks; contract warnings = non-blocking non-OK, kind contract_validation, after existing advisory kinds",
+      "status": "pass",
+      "notes": "build_contract_issues; shaping failure on success is advisory"
+    },
+    {
+      "kind": "spec",
+      "item": "Coverage dict optional on WorkflowSaveResponse and ValidateWorkflowResponse, omitted when flag off",
+      "status": "pass",
+      "notes": "wrap serializer drops empty contract fields; flag-off tests assert absence"
+    },
+    {
+      "kind": "spec",
+      "item": "Rejection envelope: json details and string form with errors, warnings (cap 100), coverage",
+      "status": "partial",
+      "notes": "adds unspecified warnings_truncated key/line only when the cap cuts; additive"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals respected: no migration, no executor default change, no marketplace on create, no guardrail on new endpoint",
+      "status": "pass",
+      "notes": "none violated in the diff"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1 Flag off: no contract issues and no coverage key; existing router tests pass unchanged",
+      "status": "pending-stage-7",
+      "notes": "implemented; full-suite green run is Stage 7 evidence"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2 Flag on: every issue has state_id, path, config_path, config_line, outcome, message, details",
+      "status": "pass",
+      "notes": "test_entry_carries_the_closed_set_of_keys"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3 Client ignoring new keys parses every response unchanged",
+      "status": "pass",
+      "notes": "additive keys only; label-only details moved to meta.label per spec"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4 Success puts non-OK non-blocking records in warnings[] with kind contract_validation",
+      "status": "pass",
+      "notes": "test_warnings_never_hold_an_error_outcome"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5 Several contract errors in one 400 with warnings and coverage",
+      "status": "pass",
+      "notes": "build_contract_rejection; create rejection test"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6 Earlier-layer failure is rejected as today and the linker does not run",
+      "status": "pass",
+      "notes": "earlier-stage test never reaches the linker"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7 Coverage on success and rejection; failed analysis returns analysed false",
+      "status": "pass",
+      "notes": "validate returns coverage; failure-report coverage test"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8 Parity across four entries for non-global; separate global test",
+      "status": "pass",
+      "notes": "test_contract_parity.py covers both cases"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9 POST /v1/workflows/validate accepts body without name/description, membership only, persists nothing",
+      "status": "pass",
+      "notes": "test_validate_new_workflow_without_name_or_description_returns_coverage_and_saves_nothing"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC10 Every config_path table row resolves config_line to its own line in a real YAML",
+      "status": "pass",
+      "notes": "15-row real-YAML test and no-fallback test"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC11 Entry ids stable across calls for the same config",
+      "status": "pass",
+      "notes": "uuid5 ids; test_ids_are_identical_across_calls_and_differ_per_message"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 8 commit subjects in the review range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "Types And Imports rule unmet in new code: bare dict/list annotations in save_validation.py and contract_issues.py, and typing.Optional in the new request and meta models."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "New POST /workflows/validate uses Depends(authenticate), runs project_access_check and the autonomous-mode refusal before any lookup, and persists nothing."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "All four lenses and the standards audit ran (no coverage gap); 4 blocking findings: two code-quality typing violations, an unasserted rollback link_contracts=False invariant, and a possible entry-id collision whose reachability stayed unconfirmed. 15 candidates dismissed as spec-sanctioned, pre-existing or non-reachable (incl. extra warnings_truncated key and wrapper re-raise, both without client impact); 0 deferred, no backlog file written.",
+    "confidence": "medium",
+    "risk_flags": [
+      "public-api",
+      "data-contract"
+    ]
+  }
+}

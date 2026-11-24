@@ -874,17 +874,18 @@ def _workflow_update_body(spec: dict[str, Any]) -> dict[str, Any]:
 @contextmanager
 def _workflow_persistence(workflow: Any) -> Iterator[None]:
     from codemie.core.workflow_models import WorkflowConfig
+    from codemie.service.workflow.save_validation import SaveValidationResult
 
     router = "codemie.rest_api.routers.workflow"
+    validation = "codemie.service.workflow.save_validation"
     with (
         patch("codemie.service.iac_export.exporters.workflow.workflow_service.get_workflow", return_value=workflow),
         patch(f"{router}.workflow_service.get_workflow", return_value=workflow),
         patch(f"{router}.project_access_check"),
-        patch(f"{router}._normalize_workflow_model_ids"),
-        patch(f"{router}._run_pre_persist_update_validation"),
+        patch(f"{validation}.normalize_workflow_model_ids"),
+        patch(f"{validation}.validate", return_value=SaveValidationResult([], None, 0)),
         patch(f"{router}.GuardrailService.sync_guardrail_assignments_for_entity"),
         patch(f"{router}.GuardrailService.get_entity_guardrail_assignments", return_value=[]),
-        patch(f"{router}._consumer_slot_warnings", return_value=[]),
         patch(f"{router}.update_workflow_schema"),
         patch.object(WorkflowConfig, "update"),
     ):

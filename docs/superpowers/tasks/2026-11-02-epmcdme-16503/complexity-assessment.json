@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Add a save-time contract linker to CodeMie workflows: new input_schema/validation/require_input_contracts keys, graph-wide data-availability simulation with OK/ERROR/WARNING/UNVERIFIED outcomes and provenance, derived requirements, strict/warn modes and a template-corpus warning ceiling (EPMCDME-16503).",
+  "generated": "2026-11-02T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New analysis abstraction (linker/simulator with outcome and provenance model) under workflows/validation, plus WorkflowState/WorkflowConfig models, execution_config_schema.yaml and a hook in WorkflowExecutor.validate_workflow; it must mirror runtime rules spread over about eight modules (base_node, models reducer, workflow iteration/routing, tool_node, transform_node, dynamic_value_utils) without changing them." },
+    { "dimension": "technical_risk", "reason": "No exact precedent: nearest patterns are the stage-by-stage validate_workflow, the advisory warnings list and the generator ValidationNode producer/consumer checks, none of which cover graph-wide availability simulation. Risks are rule drift against runtime, a single-exception contract that generator retry-loop callers rely on, tool parameter schemas not available at save (UNVERIFIED will dominate), lenient parsing of example-form contracts in about 56 templates, and a dependency on the unmerged bug-fix-codemie. Closest pattern has no security-sensitive aspect, so no security bump. The AC enumerate many edge and variant cases (append, keep_current, reset, iteration, parallel, cycles) with no existing table-driven test template for them, so Technical Risk was bumped to XL." },
+    { "dimension": "file_change_estimate", "reason": "About 7-8 modified (workflow_models.py, workflow_config.py, execution_config_schema.yaml, workflow.py, validation/__init__.py, validation/models.py, openapi.json baseline, possibly templates) and 4-6 new (linker/simulator modules and several test files). Spans src/core, src/workflows/validation, config and tests." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped to XL: acceptance criteria enumerate edge/error/variant cases with no existing parameterized edge-case test template",
+    "Technical Risk: no exact precedent and validate_workflow contract is relied on by multiple callers (create, update, dry-run, generator)",
+    "Component Scope: touches multiple workflow behaviours (routing, iteration, parallel, tool binding, transform) that the simulation must mirror"
+  ],
+  "split_recommendation": null
+}

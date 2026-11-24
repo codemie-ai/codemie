@@ -17,9 +17,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import status
+from sqlalchemy.exc import SQLAlchemyError
 
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException, NotFoundException, ValidationException
+from codemie.core.workflow_models import WorkflowErrorFormat
 from codemie.core.workflow_models.workflow_config import WorkflowConfig, YamlConfigHistory
 from codemie.rest_api.models.mcp_restore import DisabledMcpServer
 from codemie.rest_api.models.workflow_version import (
@@ -34,9 +36,7 @@ from codemie.service.mcp.access_control import (
     catalog_unavailable_error,
 )
 from codemie.service.mcp.workflow_yaml_editor import WorkflowYamlEditError, disable_dead_links_in_yaml
-from codemie.service.workflow_service import WorkflowService
-
-WORKFLOW_CONFIGURATION_ERROR = "Workflow Configuration error"
+from codemie.service.workflow.save_validation import WORKFLOW_CONFIGURATION_ERROR, validate
 
 
 class WorkflowVersionService:
@@ -126,7 +126,7 @@ class WorkflowVersionService:
             workflow.parse_execution_config()
             workflow.updated_by = user.as_user_model()
             cls._validate_restored_workflow(workflow, user)
-        except (ExtendedHTTPException, ValidationException, NotFoundException):
+        except (ExtendedHTTPException, ValidationException, NotFoundException, SQLAlchemyError):
             workflow.yaml_config = original_yaml
             raise
         except Exception as exc:
@@ -144,4 +144,11 @@ class WorkflowVersionService:
 
     @staticmethod
     def _validate_restored_workflow(workflow: WorkflowConfig, user: User) -> None:
-        WorkflowService().validate_for_update(workflow, workflow, user)
+        validate(
+            workflow,
+            None,
+            user,
+            WorkflowErrorFormat.STRING,
+            stored_workflow=workflow,
+            link_contracts=False,
+        )

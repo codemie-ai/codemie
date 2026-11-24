@@ -18,16 +18,11 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 from pydantic import Field, BaseModel
 
-from codemie.workflows.constants import CONTEXT_STORE_KEEP_NEW_ONLY_FLAG
-
-
-# Sentinel value to mark keys for deletion in context store
-CONTEXT_STORE_DELETE_MARKER = "__DELETE_KEY__"
-
-# Sentinel wrapper key for accumulating values as a list in context store.
-# When a value in `right` is a dict with this key, the reducer appends the
-# wrapped list to the existing value instead of overwriting it.
-CONTEXT_STORE_APPEND_MARKER = "__APPEND_VALUE__"
+from codemie.workflows.constants import (
+    CONTEXT_STORE_APPEND_MARKER,
+    CONTEXT_STORE_DELETE_MARKER,
+    CONTEXT_STORE_KEEP_NEW_ONLY_FLAG,
+)
 
 
 def _coerce_to_list(value: Any) -> list:

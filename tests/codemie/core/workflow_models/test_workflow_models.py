@@ -556,3 +556,85 @@ class TestCustomWorkflowNodeIdBackfill:
     def test_empty_custom_node_id_is_backfilled_from_id(self):
         node = CustomWorkflowNode(id="node-1", custom_node_id="")
         assert node.custom_node_id == "node-1"
+
+
+class TestWorkflowStateInputSchemaIsText:
+    """`input_schema` is typed as text, but a stored workflow may carry anything under that key (it was ignored
+    before the contract linker), so a value that is not text is dropped and loading never fails."""
+
+    @staticmethod
+    def _state(**overrides) -> WorkflowState:
+        return WorkflowState(id="s1", assistant_id="a1", next=WorkflowNextState(state_id="end"), **overrides)
+
+    def test_text_is_kept_as_it_is(self):
+        text = '{"type": "object", "properties": {}}'
+
+        assert self._state(input_schema=text).input_schema == text
+
+    def test_an_empty_string_is_kept_so_the_structural_check_can_report_it(self):
+        assert self._state(input_schema="").input_schema == ""
+
+    def test_absent_and_null_are_none(self):
+        assert self._state().input_schema is None
+        assert self._state(input_schema=None).input_schema is None
+
+    @pytest.mark.parametrize(
+        "legacy_value",
+        [{"type": "object"}, ["a"], 5, 1.5, True],
+        ids=["mapping", "list", "int", "float", "bool"],
+    )
+    def test_a_value_that_is_not_text_is_dropped_and_loading_does_not_fail(self, legacy_value):
+        assert self._state(input_schema=legacy_value).input_schema is None
+
+    def test_the_declared_type_is_text_or_null(self):
+        assert WorkflowState.model_json_schema()["properties"]["input_schema"] == {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "default": None,
+            "title": "Input Schema",
+        }
+
+    def test_a_stored_workflow_with_a_non_text_input_schema_still_parses(self):
+        import yaml
+
+        yaml_config = yaml.dump(
+            {
+                "assistants": [{"id": "a1", "model": "gpt-4.1"}],
+                "states": [
+                    {"id": "s1", "assistant_id": "a1", "input_schema": {"note": "docs"}, "next": {"state_id": "s2"}},
+                    {
+                        "id": "s2",
+                        "assistant_id": "a1",
+                        "input_schema": '{"type":"object"}',
+                        "next": {"state_id": "end"},
+                    },
+                ],
+            }
+        )
+        workflow = WorkflowConfig(id="wf1", name="WF", description="", yaml_config=yaml_config)
+
+        workflow.parse_execution_config()
+
+        assert [state.input_schema for state in workflow.states] == [None, '{"type":"object"}']
+
+
+class TestValidateNewWorkflowRequest:
+    """The pre-save dry-run accepts what create accepts, except that a draft may not be named or described yet."""
+
+    def test_carries_every_create_field(self):
+        from codemie.core.workflow_models.workflow_models import CreateWorkflowRequest, ValidateNewWorkflowRequest
+
+        assert set(CreateWorkflowRequest.model_fields) <= set(ValidateNewWorkflowRequest.model_fields)
+
+    def test_name_and_description_may_be_omitted(self):
+        from codemie.core.workflow_models.workflow_models import ValidateNewWorkflowRequest
+
+        request = ValidateNewWorkflowRequest(project="demo")
+
+        assert request.name is None
+        assert request.description is None
+
+    def test_an_explicit_null_mode_is_rejected(self):
+        from codemie.core.workflow_models.workflow_models import ValidateNewWorkflowRequest
+
+        with pytest.raises(ValidationError):
+            ValidateNewWorkflowRequest(project="demo", mode=None)

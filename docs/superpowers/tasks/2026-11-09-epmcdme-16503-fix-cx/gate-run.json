@@ -1,0 +1,171 @@
+{
+  "schema": 1,
+  "branch": "epmcdme-16503",
+  "head": "57f1d6348aeef27e41024470504d27d50c3c9505",
+  "runner": "poetry",
+  "started_at": "2026-11-09T11:40:24.626Z",
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 16402,
+      "command": "make ruff",
+      "exit_code": 0,
+      "log": "/tmp/16503-gate-lint.log",
+      "notes": "3479 files left unchanged; all Ruff checks passed."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 13401,
+      "command": "make build",
+      "exit_code": 0,
+      "log": "/tmp/16503-gate-build.log"
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9237,
+      "command": "make license-check",
+      "exit_code": 0,
+      "log": "/tmp/16503-gate-license.log"
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 26823,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "log": "/tmp/16503-gate-secrets.log",
+      "notes": "Docker scan completed with no leaks; required socket escalation."
+    },
+    {
+      "id": "workflow-model-tests",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 43800,
+      "command": "poetry run pytest tests/codemie/workflows tests/codemie/core/workflow_models -q -rs",
+      "exit_code": 0,
+      "log": "/tmp/16503-gate-workflows.log",
+      "summary": "2576 passed, 29 skipped, 6 warnings in 43.80s",
+      "notes": "Existing skip reasons retained in the log; no dependency skip flags were used."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 162620,
+      "command": "make test",
+      "environment": {
+        "PYTEST_ADDOPTS": "-rs"
+      },
+      "exit_code": 2,
+      "log": "/tmp/16503-gate-test-network.log",
+      "summary": "42 failed, 32399 passed, 556 skipped, 5 xfailed, 598 warnings in 162.62s",
+      "notes": "Run with sandbox network restrictions removed. All 42 failing IDs also fail on unchanged base fb45cbfa668646b10f299809c3e44a7b2b003ccf. The suite still fails; baseline evidence does not change its gate status. Two missing-LaTeX skips later passed with an isolated Nix tool environment."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 176,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "log": "/tmp/16503-gate-sonar.log",
+      "notes": "Self-skip: [sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set. Configure SONAR_TOKEN to run the scan."
+    },
+    {
+      "id": "alembic",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": null,
+      "command": "make check-alembic",
+      "exit_code": 0,
+      "log": "/tmp/16503-gate-alembic.log",
+      "notes": "Also covers the local form of the CI migration check; uses the existing origin/main ref without a fetch. Duration was not captured."
+    },
+    {
+      "id": "sql-live",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "The change does not touch CLI Analytics SQL; skipped under the guide condition."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Coverage was not requested; Sonar cannot run without its token."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Aggregate target not independently run. Its lint, license, secret-scan, and test components run separately. Successful tests are not repeated without a new cause."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "This is local iteration; no MR is being opened. The required 16499 offline template harness is included in the workflow tests."
+    },
+    {
+      "id": "staged-secrets",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": null,
+      "notes": "There are no staged changes or commit request. The full working-tree secret scan ran."
+    },
+    {
+      "id": "commit-message",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh",
+      "exit_code": null,
+      "notes": "No commit message or commit request."
+    },
+    {
+      "id": "ci-compliance",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "wait-ci-init",
+      "exit_code": null,
+      "notes": "External GitLab ci-pipeline and compliance-report contexts require a remote MR pipeline. No MR or push is requested."
+    }
+  ],
+  "failures": {
+    "unit": "SKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:128: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:151: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:176: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:212: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:234: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:268: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:309: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_generator_service.py:342: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/service/test_workflow_service.py:855: Requires database connection for conversation creation - integration test\nSKIPPED [2] tests/codemie/service/project/test_live_registration_lifecycle.py:115: TEST_LOCAL_PG_URL is not set: no database to run against\nSKIPPED [2] tests/codemie/service/project/test_live_registration_lifecycle.py:132: TEST_LOCAL_PG_URL is not set: no database to run against\nSKIPPED [1] tests/codemie/service/project/test_live_registration_lifecycle.py:154: TEST_LOCAL_PG_URL is not set: no database to run against\nSKIPPED [1] tests/codemie/workflows/test_context_store_management.py:529: JSON pointer extraction is tested in test_tool_node_context.py (TC_TNC_003)\nSKIPPED [1] tests/codemie/rest_api/routers/test_marketplace_approval_lifecycle.py:589: live-stack lifecycle tests are opt-in: set RUN_LIVE_STACK_TESTS=1\nSKIPPED [1] tests/codemie/rest_api/routers/test_marketplace_approval_lifecycle.py:674: live-stack lifecycle tests are opt-in: set RUN_LIVE_STACK_TESTS=1\nSKIPPED [1] tests/codemie/rest_api/routers/test_marketplace_approval_lifecycle.py:734: live-stack lifecycle tests are opt-in: set RUN_LIVE_STACK_TESTS=1\nSKIPPED [1] tests/codemie/rest_api/routers/test_marketplace_approval_lifecycle.py:778: live-stack lifecycle tests are opt-in: set RUN_LIVE_STACK_TESTS=1\nSKIPPED [1] tests/codemie/rest_api/routers/test_marketplace_approval_lifecycle.py:828: live-stack lifecycle tests are opt-in: set RUN_LIVE_STACK_TESTS=1\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:33: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:45: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:50: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:60: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:71: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:85: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:90: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_models.py:108: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:105: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:130: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:166: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:183: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:227: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:247: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:265: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:297: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:338: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_nodes.py:345: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_refine_planner.py:72: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_refine_planner.py:102: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_refine_planner.py:126: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_refine_planner.py:153: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_graph.py:103: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_graph.py:124: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_graph.py:146: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_refiner.py:30: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_refiner.py:37: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie/workflows/workflow_generator/test_workflow_refiner.py:68: WORKFLOW_GENERATION_ENABLED is False\nSKIPPED [1] tests/codemie_tools/core/vcs/gitlab/test_diffnote_integration.py:38: Set the GitLab DiffNote validation variables documented in docs/superpowers/tasks/2026-09-18-EPMCDME-13495/inline-diffnote-validation.md\nSKIPPED [1] tests/codemie/rest_api/routers/test_user_kata_progress.py:467: Endpoint bug: response_model=UserKataProgressResponse but returns None. This causes ResponseValidationError. The endpoint should either use response_model=UserKataProgressResponse | None or raise 404 instead of returning None.\n= 42 failed, 32399 passed, 556 skipped, 5 xfailed, 598 warnings in 162.62s (0:02:42) =\nmake: *** [test] Error 1"
+  },
+  "drift_detected": false,
+  "status": "BLOCKED",
+  "completed_at": "2026-11-09T11:56:30.851Z",
+  "artifacts": {
+    "comparison": "gate-baseline-comparison.local.json",
+    "skips": "gate-skips.local.json",
+    "supplemental": "gate-supplemental.local.json"
+  },
+  "notes": [
+    "HEAD remained 57f1d6348aeef27e41024470504d27d50c3c9505. Gates validate the final uncommitted correction source.",
+    "The unit gate remains failed. Base reproduction is diagnostic evidence, not a pass or skip.",
+    "No source/test changes, dependency manifest edits, or git mutations were made by the gate runner."
+  ]
+}

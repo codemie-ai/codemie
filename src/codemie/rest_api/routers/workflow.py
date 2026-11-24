@@ -15,27 +15,22 @@
 import asyncio
 import base64
 import json
-import yaml
-from typing import Annotated, Any, Dict, List, Optional, cast
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Annotated, Any, Dict, List
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import APIRouter, status, Depends, Query, BackgroundTasks, Request, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 from codemie.rest_api.dependencies.core import require_core
-from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.workflow_generator import WorkflowGeneratorRequest, WorkflowGeneratorResponse
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.service.workflow_generator_service import WorkflowGeneratorService
-from codemie.service.llm_service.llm_service import llm_service
 
-from codemie.clients.postgres import get_session
-from codemie.configs.llm_config import LLMModel
-from codemie.repository.application_repository import application_repository
 from codemie.configs import config, logger
 from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
-from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.rest_api.models.files import WriteFileResponse
 from codemie.service.workflow_icon_service import WORKFLOW_ICON_MAX_BYTES, WorkflowIconService
 from codemie.core.constants import MermaidMimeType
@@ -55,7 +50,6 @@ from codemie.service.file_service.mermaid_service import (
 from codemie.core.exceptions import (
     ExtendedHTTPException,
     MissingPlaceholderVariablesException,
-    ModelNotSelectableError,
     NotFoundException,
     ValidationException,
     WorkflowGenerationError,
@@ -65,6 +59,7 @@ from codemie.core.search_ranking import rank_by_search
 from codemie.core.workflow_models import (
     CreateWorkflowRequest,
     UpdateWorkflowRequest,
+    ValidateNewWorkflowRequest,
     WorkflowConfig,
     WorkflowConfigTemplate,
     WorkflowEvaluationRequest,
@@ -76,8 +71,6 @@ from codemie.rest_api.models.guardrail import GuardrailAssignmentItem, Guardrail
 from codemie.rest_api.models.mcp_restore import DisabledMcpResponse, message_with_disabled
 from codemie.rest_api.routers.assistant._model_selection import validate_model_selection
 from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden, run_in_thread_pool, raise_not_found
-from codemie.workflows.validation.resources import collect_consumer_slot_integration_warnings
-from codemie.workflows.validation.tool_access import collect_tool_access_owner_integration_warnings
 from codemie.rest_api.security.authentication import authenticate, project_access_check
 from codemie.rest_api.security.user import User
 from codemie.rest_api.models.workflow_generator import (
@@ -97,7 +90,9 @@ from codemie.rest_api.models.workflow_version import (
     WorkflowRollbackRequest,
     WorkflowVersionHistoryResponse,
 )
-from codemie.service.workflow.workflow_version_service import WorkflowVersionService, WORKFLOW_CONFIGURATION_ERROR
+from codemie.service.workflow import save_validation
+from codemie.service.workflow.save_validation import WORKFLOW_CONFIGURATION_ERROR, SaveValidationResult
+from codemie.service.workflow.workflow_version_service import WorkflowVersionService
 from codemie.workflows.custom_node_info import CustomNodeInfoService
 from codemie.core.workflow_models import CustomNodeSchemaResponse
 from codemie.workflows.workflow import WorkflowExecutor
@@ -114,148 +109,51 @@ WORKFLOW_STARTED_BG_MSG = "Workflow has been triggered in the background"
 WORKFLOW_ERROR_FORMAT_DESCRIPTION = "Error format: 'string' or 'json'"
 
 
-def _get_project_for_workflow(project_name: str):
-    """
-    Fetch Application for project filtering when normalizing model ids.
-    We keep this local to avoid import cycles elsewhere.
-    """
-    if not project_name:
-        return None
-    with get_session() as session:
-        return application_repository.get_by_name(session, project_name)
+WORKFLOW_DATABASE_ERROR = "Workflow database is unavailable"
+WORKFLOW_DATABASE_DETAILS = "The workflow operation could not be completed. Please try again later."
+_DATABASE_RESPONSE = {503: {"description": "Workflow database is unavailable; no database details are returned."}}
 
 
-def _normalize_workflow_model_ids(workflow_config: WorkflowConfig, user: User) -> None:
-    """
-    Normalize assistant/custom-node model ids from base_name (e.g. 'o1') to deployment_name
-    (e.g. 'o1-2024-12-17') so that:
-      - YAML saved to DB/storage is consistent
-      - model whitelist checks work reliably
-      - executions don't unexpectedly fall back
-    """
-    project = None if workflow_config.is_global else _get_project_for_workflow(workflow_config.project)
-
-    # Build base_name -> deployment_name mapping using the same catalog as /v1/llm_models
-    models = list(llm_service.get_allowed_chat_models(user, include_all=True, project=project))
-    by_base = {
-        cast(LLMModel, m).base_name: cast(LLMModel, m).deployment_name
-        for m in models
-        if isinstance(m, LLMModel) and getattr(m, "deployment_name", None)
-    }
-
-    for assistant in workflow_config.assistants or []:
-        if assistant.model and assistant.model in by_base:
-            assistant.model = by_base[assistant.model]
-
-    for cn in workflow_config.custom_nodes or []:
-        if cn.model and cn.model in by_base:
-            cn.model = by_base[cn.model]
-
-
-def _patch_model_ids_in_yaml(config: dict[str, Any], section: str, items: list | None) -> bool:
-    """Copy normalized item.model values into the parsed YAML entry with the same id."""
-    entries = {e["id"]: e for e in config.get(section) or [] if isinstance(e, dict) and "id" in e}
-    changed = False
-    for item in items or []:
-        entry = entries.get(item.id)
-        if entry is not None and "model" in entry and item.model and entry["model"] != item.model:
-            entry["model"] = item.model
-            changed = True
-    return changed
-
-
-def _rewrite_yaml_config_from_objects(workflow_config: WorkflowConfig) -> None:
-    """
-    The UI YAML panel is driven by workflow_config.yaml_config (raw YAML string).
-    We normalize models in assistants/custom_nodes, so yaml_config must carry the resulting
-    deployment_name identifiers (e.g. o1-2024-12-17).
-
-    Only those `model` values are rewritten; everything else (orphaned_states, meta_states,
-    comments, key order, absent defaults) is stored exactly as sent. When no model id changed,
-    yaml_config is left untouched.
-    """
-    original = yaml.safe_load(workflow_config.yaml_config or "")
-    if not isinstance(original, dict):
-        return
-
-    assistants_changed = _patch_model_ids_in_yaml(original, "assistants", workflow_config.assistants)
-    custom_nodes_changed = _patch_model_ids_in_yaml(original, "custom_nodes", workflow_config.custom_nodes)
-
-    if assistants_changed or custom_nodes_changed:
-        if workflow_config._source_yaml_config is None:
-            workflow_config._source_yaml_config = workflow_config.yaml_config  # validation errors point at this text
-        workflow_config.yaml_config = yaml.safe_dump(original, sort_keys=False)
-
-
-def _collect_workflow_mcp_servers(workflow_config: WorkflowConfig) -> list[MCPServerDetails]:
-    """Collect all MCP server entries from workflow assistants and tools."""
-    servers: list[MCPServerDetails] = []
-    for assistant in workflow_config.assistants or []:
-        servers.extend(assistant.mcp_servers or [])
-    for tool in workflow_config.tools or []:
-        if tool.mcp_server:
-            servers.append(tool.mcp_server)
-    return servers
-
-
-def _strip_workflow_mcp_servers(workflow_config: WorkflowConfig) -> None:
-    """Strip inline config fields from catalog-ref MCP servers in-place."""
-    for assistant in workflow_config.assistants or []:
-        if assistant.mcp_servers:
-            assistant.mcp_servers = MCPAccessControlService.strip_inline_config(assistant.mcp_servers)
-    for tool in workflow_config.tools or []:
-        if tool.mcp_server:
-            tool.mcp_server = MCPAccessControlService._strip_one(tool.mcp_server)
-
-
-def _assert_workflow_model_selections_selectable(
-    workflow_config: WorkflowConfig, previous_config: WorkflowConfig | None = None
-) -> None:
-    """Reject unavailable models newly selected for workflow assistants or custom nodes.
-
-    A stored deprecated model remains valid when its owning entry keeps the same model.
-    ``get_workflow()`` hydrates assistants and custom nodes from the persisted YAML, so
-    matching entries by their stable workflow id preserves that legacy selection on edit.
-    """
-    selection_groups = (
-        (workflow_config.assistants, previous_config.assistants if previous_config else None),
-        (workflow_config.custom_nodes, previous_config.custom_nodes if previous_config else None),
-    )
-    for selections, previous_selections in selection_groups:
-        previous_models = {item.id: item.model for item in previous_selections or []}
-        for selection in selections or []:
-            if not selection.model:
-                continue
-            try:
-                llm_service.assert_model_selectable(
-                    selection.model, previous_model_name=previous_models.get(selection.id)
-                )
-            except ModelNotSelectableError as e:
-                raise ExtendedHTTPException(
-                    code=status.HTTP_400_BAD_REQUEST,
-                    message="Model not selectable",
-                    details=str(e),
-                ) from e
-
-
-async def _run_pre_persist_update_validation(
-    workflow: WorkflowConfig,
-    proposed: WorkflowConfig,
-    user: User,
-    error_format: WorkflowErrorFormat,
-    guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None,
-) -> None:
-    """MCP, autonomous-mode, executor, and guardrail validation without persisting."""
+@contextmanager
+def _database_errors() -> Iterator[None]:
+    """Map database failures without logging SQL, connection strings, or bind values."""
     try:
-        GuardrailService.sync_guardrail_assignments_for_entity(
-            user=user,
-            entity_type=GuardrailEntity.WORKFLOW,
-            entity_id=str(workflow.id),
-            entity_project_name=proposed.project if proposed.project else workflow.project,
-            guardrail_assignments=guardrail_assignments,
-            dry_run=True,
-        )
-    except (ValidationException, NotFoundException):
+        yield
+    except SQLAlchemyError as exc:
+        logger.error("Workflow database operation failed (%s)", type(exc).__name__)
+        raise ExtendedHTTPException(
+            code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message=WORKFLOW_DATABASE_ERROR,
+            details=WORKFLOW_DATABASE_DETAILS,
+            help="",
+        ) from exc
+
+
+@contextmanager
+def _wrap_validation_errors(error_format: WorkflowErrorFormat) -> Iterator[None]:
+    """Preserve typed HTTP errors and map database and configuration errors separately."""
+    with _database_errors():
+        try:
+            yield
+        except (SQLAlchemyError, ValidationException, NotFoundException, ExtendedHTTPException):
+            raise
+        except Exception as e:
+            details = (
+                e.args[0]
+                if error_format == WorkflowErrorFormat.JSON and e.args and isinstance(e.args[0], dict)
+                else str(e).strip()
+            )
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST, message=WORKFLOW_CONFIGURATION_ERROR, details=details, help=""
+            ) from e
+
+
+@contextmanager
+def _guardrail_errors() -> Iterator[None]:
+    """Report a failed guardrail assignment as a 400 configuration error, the same on create and update."""
+    try:
+        yield
+    except (SQLAlchemyError, ValidationException, NotFoundException):
         raise
     except Exception as guardrail_exc:
         details = (
@@ -264,57 +162,48 @@ async def _run_pre_persist_update_validation(
         raise ExtendedHTTPException(
             code=status.HTTP_400_BAD_REQUEST, message=WORKFLOW_CONFIGURATION_ERROR, details=details, help=""
         ) from guardrail_exc
-    try:
-        if proposed.mode == WorkflowMode.AUTONOMOUS:
-            raise ExtendedHTTPException(
-                code=status.HTTP_403_FORBIDDEN,
-                message="Autonomous workflows are disabled",
-                details="Updating workflows to autonomous mode is not allowed. Only sequential workflows can be used.",
-                help="Please set the workflow mode to 'SEQUENTIAL' instead.",
-            )
-        workflow_service.validate_for_update(workflow, proposed, user, error_format)
-    except (ValidationException, NotFoundException, ExtendedHTTPException):
-        raise
-    except Exception as e:
-        details = (
-            e.args[0]
-            if error_format == WorkflowErrorFormat.JSON and e.args and isinstance(e.args[0], dict)
-            else str(e).strip()
-        )
+
+
+def _refuse_autonomous_update(mode: WorkflowMode | None) -> None:
+    if mode == WorkflowMode.AUTONOMOUS:
         raise ExtendedHTTPException(
-            code=status.HTTP_400_BAD_REQUEST, message=WORKFLOW_CONFIGURATION_ERROR, details=details, help=""
-        ) from e
-
-
-def _consumer_slot_warnings_sync(
-    workflow_config: WorkflowConfig, user: User, treat_as_global: bool = False
-) -> list[dict[str, object]]:
-    """Collect the advisory warnings for an already-saved workflow.
-
-    Failures stay here: the workflow is already stored at this point, so a broken advisory must
-    never turn a successful save into an error the client would read as "nothing was saved".
-    ``treat_as_global`` is the proposed global state, used by the script-step owner warning.
-    """
-    warnings: list[dict[str, object]] = []
-    try:
-        warnings.extend(collect_consumer_slot_integration_warnings(workflow_config, user))
-    except Exception as e:
-        logger.warning(f"Failed to collect consumer slot warnings for a saved workflow: {e}")
-    try:
-        warnings.extend(
-            collect_tool_access_owner_integration_warnings(workflow_config, treat_as_global=treat_as_global)
+            code=status.HTTP_403_FORBIDDEN,
+            message="Autonomous workflows are disabled",
+            details="Updating workflows to autonomous mode is not allowed. Only sequential workflows can be used.",
+            help="Please set the workflow mode to 'SEQUENTIAL' instead.",
         )
-    except Exception as e:
-        logger.warning(f"Failed to collect script step warnings for a saved workflow: {e}")
-    return warnings
 
 
-async def _consumer_slot_warnings(
-    workflow_config: WorkflowConfig, user: User, treat_as_global: bool = False
-) -> list[dict[str, object]]:
-    """Same, for async handlers: collecting reads assistants and integrations, so keep it off the
-    event loop."""
-    return await asyncio.to_thread(_consumer_slot_warnings_sync, workflow_config, user, treat_as_global)
+def _run_pre_persist_update_validation(  # noqa: PLR0913 - keyword-only builder/internal helper; a parameter object would add indirection without clarity
+    workflow: WorkflowConfig,
+    proposed: WorkflowConfig,
+    user: User,
+    error_format: WorkflowErrorFormat,
+    guardrail_assignments: List[GuardrailAssignmentItem] | None,
+    request_dump: dict,
+) -> SaveValidationResult:
+    """Autonomous-mode, guardrail and save-pipeline validation of a prepared update, without persisting.
+
+    Sync: async handlers run it with `asyncio.to_thread`.
+    """
+    _refuse_autonomous_update(proposed.mode)
+    with _guardrail_errors():
+        GuardrailService.sync_guardrail_assignments_for_entity(
+            user=user,
+            entity_type=GuardrailEntity.WORKFLOW,
+            entity_id=str(workflow.id),
+            entity_project_name=proposed.project if proposed.project else workflow.project,
+            guardrail_assignments=guardrail_assignments,
+            dry_run=True,
+        )
+    with _wrap_validation_errors(error_format):
+        return save_validation.validate(
+            proposed,
+            request_dump,
+            user,
+            error_format,
+            stored_workflow=workflow,
+        )
 
 
 @router.get(
@@ -342,7 +231,7 @@ def get_workflow_users(
 )
 def get_sub_workflow_candidates(
     user: User = Depends(authenticate),
-    exclude_id: Optional[str] = None,
+    exclude_id: str | None = None,
     page: int = 0,
     per_page: int = 100,
 ):
@@ -377,7 +266,7 @@ def get_workflows(
     filter_by_user: bool = Query(False),
     page: int = 0,
     per_page: int = 10,
-    filters: Optional[str] = None,
+    filters: str | None = None,
     minimal_response: bool = True,
     scope: WorkflowScope | None = None,
 ):
@@ -410,10 +299,10 @@ def get_workflows(
     summary="Get prebuilt workflows",
     description="Retrieves a list of prebuilt workflows available in the system.",
 )
-def get_prebuilt_workflows(filters: Optional[str] = None):
+def get_prebuilt_workflows(filters: str | None = None):
     all_templates = workflow_service.get_prebuilt_workflows()
 
-    parsed_filters: Optional[Dict[str, Any]] = None
+    parsed_filters: Dict[str, Any] | None = None
     if filters:
         try:
             parsed_filters = json.loads(filters)
@@ -561,56 +450,79 @@ def get_workflow(workflow_id: str, user: User = Depends(authenticate)):
     return workflow_config
 
 
-class WorkflowSaveResponse(BaseResponseWithData):
-    """Save response that can carry non-blocking notes about the saved configuration."""
-
-    warnings: list[dict[str, object]] = []
+def _drop_empty_contract_fields(serialized: dict[str, Any]) -> dict[str, Any]:
+    """`coverage` is sent only when contracts were linked, `warnings_truncated` only when the cap cut something."""
+    if serialized.get("coverage") is None:
+        serialized.pop("coverage", None)
+    if not serialized.get("warnings_truncated"):
+        serialized.pop("warnings_truncated", None)
+    return serialized
 
 
 class ValidateWorkflowResponse(BaseResponse):
     """Dry-run validation response; mirrors the advisory warnings surface of the update endpoint."""
 
     warnings: list[dict[str, object]] = []
+    coverage: dict | None = None
+    # Snake-case on the wire like every key of the contract envelope, whatever the alias generator says
+    warnings_truncated: int | None = Field(default=None, alias="warnings_truncated")
+
+    @model_serializer(mode="wrap")
+    # No return annotation on purpose: a declared one would replace the OpenAPI response schema.
+    def _serialize(self, handler: SerializerFunctionWrapHandler):
+        return _drop_empty_contract_fields(handler(self))
 
 
-def _persist_and_finalize_new_workflow(
+class WorkflowSaveResponse(ValidateWorkflowResponse):
+    """Save response that can carry non-blocking notes about the saved configuration."""
+
+    data: Any = None
+
+
+def _refuse_autonomous_creation(mode: WorkflowMode | None) -> None:
+    """Autonomous workflows cannot be created: 410, shared by create and the pre-save dry-run."""
+    if mode == WorkflowMode.AUTONOMOUS:
+        raise ExtendedHTTPException(
+            code=status.HTTP_410_GONE,
+            message="Autonomous workflows are disabled",
+            details="Creating autonomous workflows is not allowed. Only sequential workflows can be created.",
+            help="Please set the workflow mode to 'SEQUENTIAL' instead.",
+        )
+
+
+def _persist_and_finalize_new_workflow(  # noqa: PLR0913 - keyword-only builder/internal helper; a parameter object would add indirection without clarity
     workflow_config: WorkflowConfig,
     request: CreateWorkflowRequest,
+    request_dump: dict,
     background_tasks: BackgroundTasks,
     user: User,
     error_format: WorkflowErrorFormat,
 ) -> dict:
     """Validate, save, and enrich a newly created workflow, raising a formatted error on failure."""
-    # workflow_config has already been parsed/normalized by the caller, which overwrites
-    # assistants/tools from yaml_config and would hide a server hand-written directly on the
-    # request's own assistants/tools fields. Re-check the raw request fields as submitted, and
-    # also a freshly parsed copy for clients (UI/SDK) that send only yaml_config - a parse failure
-    # there is left to validate_workflow below to report.
-    raw_from_request = WorkflowConfig(**request.model_dump())
-    parsed_from_yaml = WorkflowConfig(**request.model_dump())
-    try:
-        parsed_from_yaml.parse_execution_config()
-    except Exception as e:
-        logger.warning(f"Could not parse workflow yaml_config before MCP validation: {e}")
-    # Outside the try: the generic except below would wrap the governance ValidationException
-    # into "Workflow Configuration error" with the reason in details; update_workflow re-raises it as-is.
-    for candidate in (raw_from_request, parsed_from_yaml):
-        MCPAccessControlService.validate_workflow_mcp(candidate)
-    MCPAccessControlService.strip_workflow_mcp_servers(workflow_config)
-    try:
+    with _wrap_validation_errors(error_format):
         if request.categories is not None:
             # config was built from the request before validation, so dedupe it too
             workflow_config.categories = request.categories = category_service.validate_category_ids(request.categories)
-        WorkflowExecutor.validate_workflow(workflow_config=workflow_config, user=user, error_format=error_format)
+        result = save_validation.validate(workflow_config, request_dump, user, error_format)
+        with _guardrail_errors():
+            GuardrailService.sync_guardrail_assignments_for_entity(
+                user=user,
+                entity_type=GuardrailEntity.WORKFLOW,
+                entity_id=str(workflow_config.id),
+                entity_project_name=workflow_config.project,
+                guardrail_assignments=request.guardrail_assignments,
+                dry_run=True,
+            )
         workflow_config = workflow_service.create_workflow(workflow_config, user)
 
-        GuardrailService.sync_guardrail_assignments_for_entity(
-            user=user,
-            entity_type=GuardrailEntity.WORKFLOW,
-            entity_id=str(workflow_config.id),
-            entity_project_name=workflow_config.project,
-            guardrail_assignments=request.guardrail_assignments,
-        )
+        with _guardrail_errors():
+            GuardrailService.sync_guardrail_assignments_for_entity(
+                user=user,
+                entity_type=GuardrailEntity.WORKFLOW,
+                entity_id=str(workflow_config.id),
+                entity_project_name=workflow_config.project,
+                guardrail_assignments=request.guardrail_assignments,
+            )
 
         background_tasks.add_task(run_in_thread_pool, update_workflow_schema, workflow_config, user)
 
@@ -623,30 +535,10 @@ def _persist_and_finalize_new_workflow(
         return {
             "message": "Workflow created successfully",
             "data": workflow_config,
-            "warnings": _consumer_slot_warnings_sync(
-                workflow_config, user, treat_as_global=bool(workflow_config.is_global)
-            ),
+            "warnings": result.warnings,
+            "coverage": result.coverage,
+            "warnings_truncated": result.warnings_truncated or None,
         }
-    except SQLAlchemyError as e:
-        raise ExtendedHTTPException(
-            code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            message="Database error during workflow creation",
-            details=str(e).strip(),
-            help="",
-        ) from e
-    except Exception as e:
-        formatted_exception = e.message if isinstance(e, ExtendedHTTPException) else str(e).strip()
-        details = (
-            e.args[0]
-            if error_format == WorkflowErrorFormat.JSON and e.args and isinstance(e.args[0], dict)
-            else formatted_exception
-        )
-        raise ExtendedHTTPException(
-            code=status.HTTP_400_BAD_REQUEST,
-            message=WORKFLOW_CONFIGURATION_ERROR,
-            details=details,
-            help="",
-        ) from e
 
 
 @router.post("/workflows/icon", response_model=WriteFileResponse, dependencies=[Depends(authenticate)])
@@ -670,6 +562,7 @@ def upload_workflow_icon(file: UploadFile) -> WriteFileResponse:
     status_code=status.HTTP_200_OK,
     response_model=WorkflowSaveResponse,
     response_model_by_alias=True,
+    responses=_DATABASE_RESPONSE,
 )
 def create_workflow(
     request: CreateWorkflowRequest,
@@ -679,66 +572,63 @@ def create_workflow(
         WorkflowErrorFormat.STRING, description=WORKFLOW_ERROR_FORMAT_DESCRIPTION
     ),
 ):
-    request.icon_url = WorkflowConfig.validate_icon_url(request.icon_url, user)
-    workflow_config = WorkflowConfig(**request.model_dump())
-    # Ensure assistants/custom_nodes/states are populated from yaml_config (if present).
-    # Parsing errors are deferred to WorkflowExecutor.validate_workflow below, which validates
-    # the original yaml_config against the JSON schema and reports a precise, path-aware error -
-    # a plain `except Exception: raise` here would short-circuit with a raw pydantic error instead,
-    # and (if we still normalized/rewrote yaml_config afterwards) could persist a half-parsed config.
-    try:
-        workflow_config.parse_execution_config()
-    except Exception as e:
-        logger.warning(f"Could not parse workflow yaml_config before model-id normalization: {e}")
-    else:
-        _assert_workflow_model_selections_selectable(workflow_config)
-        # Normalize model ids early so validation/save/execution use deployment ids
-        _normalize_workflow_model_ids(workflow_config, user)
-        _rewrite_yaml_config_from_objects(workflow_config)
-
-    # Prevent creation of autonomous workflows
-    if workflow_config.mode == WorkflowMode.AUTONOMOUS:
-        raise ExtendedHTTPException(
-            code=status.HTTP_410_GONE,
-            message="Autonomous workflows are disabled",
-            details="Creating autonomous workflows is not allowed. Only sequential workflows can be created.",
-            help="Please set the workflow mode to 'SEQUENTIAL' instead.",
-        )
-    project_access_check(user, request.project)
-
-    return _persist_and_finalize_new_workflow(workflow_config, request, background_tasks, user, error_format)
-
-
-def _build_updated_workflow_config(
-    request: UpdateWorkflowRequest, workflow: WorkflowConfig, user: User
-) -> WorkflowConfig:
-    """Validate the icon and build the normalized WorkflowConfig for an update request."""
-    if request.icon_url != workflow.icon_url:
+    with _database_errors():
+        _refuse_autonomous_creation(request.mode)
         request.icon_url = WorkflowConfig.validate_icon_url(request.icon_url, user)
-    try:
-        updated_config = WorkflowConfig(**request.model_dump())
-        updated_config.parse_execution_config()
-        _assert_workflow_model_selections_selectable(updated_config, workflow)
-        if request.categories is None:
-            # WorkflowConfig coerces None to []; keep None so an omitted field preserves stored categories
-            updated_config.categories = None
+        request_dump = request.model_dump()
+        # A yaml_config parse failure is deferred to the executor, which reports it path-aware inside validate
+        workflow_config = save_validation.prepare(request_dump, user, defer_parse_failure=True)
 
-        # Normalize model ids before validation/save so YAML persists deployment ids
-        _normalize_workflow_model_ids(updated_config, user)
-        _rewrite_yaml_config_from_objects(updated_config)
-    except ExtendedHTTPException:
-        # _assert_workflow_model_selections_selectable raises a fully-populated ExtendedHTTPException
-        # (message + details). ExtendedHTTPException never calls super().__init__(), so re-wrapping
-        # it below via str(e) would silently discard that message/details - re-raise it as-is.
-        raise
-    except Exception as e:
-        raise ExtendedHTTPException(
-            code=status.HTTP_400_BAD_REQUEST,
-            message=WORKFLOW_CONFIGURATION_ERROR,
-            details=str(e).strip(),
-            help="",
-        ) from e
-    return updated_config
+        # Prevent creation of autonomous workflows
+        _refuse_autonomous_creation(workflow_config.mode)
+        project_access_check(user, request.project)
+
+        return _persist_and_finalize_new_workflow(
+            workflow_config, request, request_dump, background_tasks, user, error_format
+        )
+
+
+@router.post(
+    "/workflows/validate",
+    status_code=status.HTTP_200_OK,
+    response_model=ValidateWorkflowResponse,
+    response_model_by_alias=True,
+    responses=_DATABASE_RESPONSE,
+)
+def validate_new_workflow(
+    request: ValidateNewWorkflowRequest,
+    user: User = Depends(authenticate),
+    error_format: WorkflowErrorFormat = Query(
+        WorkflowErrorFormat.STRING, description=WORKFLOW_ERROR_FORMAT_DESCRIPTION
+    ),
+) -> ValidateWorkflowResponse:
+    """Dry-run the create-time validation of a workflow that is not saved yet. Nothing is persisted.
+
+    Call it on an explicit user action or as a preview right before saving. It is not meant for a per-keystroke
+    debounce: every call lists MCP tools and compiles the workflow graph.
+
+    A clean result guarantees that, in the same environment, creating the same configuration is not rejected by
+    contract validation. It does not cover the category, guardrail, autonomous-mode and access checks of create.
+    `name` and `description` may be omitted. Only membership of the project is required, with no write check.
+    """
+    # Access and the autonomous refusal come first, so a refused caller triggers no lookups
+    with _database_errors():
+        project_access_check(user, request.project)
+        _refuse_autonomous_creation(request.mode)
+
+        dump = request.model_dump()
+        # Missing values become "" when the WorkflowConfig is built
+        request_dump = {**dump, "name": dump["name"] or "", "description": dump["description"] or ""}
+        with _wrap_validation_errors(error_format):
+            # A yaml_config parse failure is deferred to the executor, which reports it path-aware inside validate
+            candidate = save_validation.prepare(request_dump, user, defer_parse_failure=True)
+            result = save_validation.validate(candidate, request_dump, user, error_format)
+        return ValidateWorkflowResponse(
+            message="Workflow configuration is valid",
+            warnings=result.warnings,
+            coverage=result.coverage,
+            warnings_truncated=result.warnings_truncated or None,
+        )
 
 
 @router.put(
@@ -746,6 +636,7 @@ def _build_updated_workflow_config(
     status_code=status.HTTP_200_OK,
     response_model=WorkflowSaveResponse,
     response_model_by_alias=True,
+    responses=_DATABASE_RESPONSE,
 )
 async def update_workflow(
     workflow_id: str,
@@ -756,72 +647,85 @@ async def update_workflow(
         WorkflowErrorFormat.STRING, description=WORKFLOW_ERROR_FORMAT_DESCRIPTION
     ),
 ):
-    try:
-        workflow = workflow_service.get_workflow(workflow_id=workflow_id)
-    except Exception:
-        raise_not_found(resource_id=workflow_id, resource_type="Workflow")
+    with _database_errors():
+        try:
+            workflow = workflow_service.get_workflow(workflow_id=workflow_id)
+        except SQLAlchemyError:
+            raise
+        except Exception:
+            raise_not_found(resource_id=workflow_id, resource_type="Workflow")
 
-    project_access_check(user, request.project)
+        project_access_check(user, request.project)
 
-    if not Ability(user).can(Action.WRITE, workflow):
-        raise_access_denied("update")
+        if not Ability(user).can(Action.WRITE, workflow):
+            raise_access_denied("update")
 
-    updated_config = _build_updated_workflow_config(request, workflow, user)
-    updated_config.id = workflow_id
-    logger.debug(f"Update workflow. Request: {request}")
-    was_global = bool(workflow.is_global)  # the request carries no is_global; the stored state decides
-    await _run_pre_persist_update_validation(
-        workflow, updated_config, user, error_format, request.guardrail_assignments
-    )
-    try:
-        if request.categories is not None:
-            updated_config.categories = request.categories = category_service.validate_category_ids(request.categories)
-        updated_workflow = workflow_service.update_workflow(workflow, updated_config, user)
+        _refuse_autonomous_update(request.mode)
+        if request.icon_url != workflow.icon_url:
+            request.icon_url = WorkflowConfig.validate_icon_url(request.icon_url, user)
+        request_dump = request.model_dump()
+        updated_config = await asyncio.to_thread(save_validation.prepare, request_dump, user, False, workflow)
+        if request.categories is None:
+            # WorkflowConfig coerces None to []; keep None so an omitted field preserves stored categories
+            updated_config.categories = None
 
-        GuardrailService.sync_guardrail_assignments_for_entity(
-            user=user,
-            entity_type=GuardrailEntity.WORKFLOW,
-            entity_id=str(updated_workflow.id),
-            entity_project_name=updated_workflow.project,
-            guardrail_assignments=request.guardrail_assignments,
-        )
-
-        background_tasks.add_task(run_in_thread_pool, update_workflow_schema, updated_workflow, user)
-
-        updated_workflow.guardrail_assignments = GuardrailService.get_entity_guardrail_assignments(
+        updated_config.id = workflow_id
+        logger.debug(f"Update workflow. Request: {request}")
+        result = await asyncio.to_thread(
+            _run_pre_persist_update_validation,
+            workflow,
+            updated_config,
             user,
-            GuardrailEntity.WORKFLOW,
-            str(updated_workflow.id),
+            error_format,
+            request.guardrail_assignments,
+            request_dump,
         )
-        return {
-            "message": "Workflow updated successfully",
-            "data": updated_workflow,
-            "warnings": await _consumer_slot_warnings(
-                updated_config, user, treat_as_global=was_global or bool(updated_config.is_global)
-            ),
-        }
-    except (ValidationException, NotFoundException):
-        raise
-    except SQLAlchemyError as e:
-        raise ExtendedHTTPException(
-            code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            message="Database error during workflow update",
-            details=str(e).strip(),
-            help="",
-        ) from e
-    except Exception as e:
-        formatted_exception = e.message if isinstance(e, ExtendedHTTPException) else str(e).strip()
-        details = (
-            e.args[0]
-            if error_format == WorkflowErrorFormat.JSON and e.args and isinstance(e.args[0], dict)
-            else formatted_exception
-        )
-        raise ExtendedHTTPException(
-            code=status.HTTP_400_BAD_REQUEST,
-            message=WORKFLOW_CONFIGURATION_ERROR,
-            details=details,
-            help="",
-        ) from e
+        try:
+            if request.categories is not None:
+                updated_config.categories = request.categories = category_service.validate_category_ids(
+                    request.categories
+                )
+            updated_workflow = workflow_service.update_workflow(workflow, updated_config, user)
+
+            GuardrailService.sync_guardrail_assignments_for_entity(
+                user=user,
+                entity_type=GuardrailEntity.WORKFLOW,
+                entity_id=str(updated_workflow.id),
+                entity_project_name=updated_workflow.project,
+                guardrail_assignments=request.guardrail_assignments,
+            )
+
+            background_tasks.add_task(run_in_thread_pool, update_workflow_schema, updated_workflow, user)
+
+            updated_workflow.guardrail_assignments = GuardrailService.get_entity_guardrail_assignments(
+                user,
+                GuardrailEntity.WORKFLOW,
+                str(updated_workflow.id),
+            )
+            return {
+                "message": "Workflow updated successfully",
+                "data": updated_workflow,
+                "warnings": result.warnings,
+                "coverage": result.coverage,
+                "warnings_truncated": result.warnings_truncated or None,
+            }
+        except (ValidationException, NotFoundException):
+            raise
+        except SQLAlchemyError:
+            raise
+        except Exception as e:
+            formatted_exception = e.message if isinstance(e, ExtendedHTTPException) else str(e).strip()
+            details = (
+                e.args[0]
+                if error_format == WorkflowErrorFormat.JSON and e.args and isinstance(e.args[0], dict)
+                else formatted_exception
+            )
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message=WORKFLOW_CONFIGURATION_ERROR,
+                details=details,
+                help="",
+            ) from e
 
 
 @router.post(
@@ -829,49 +733,48 @@ async def update_workflow(
     status_code=status.HTTP_200_OK,
     response_model=ValidateWorkflowResponse,
     response_model_by_alias=True,
+    responses=_DATABASE_RESPONSE,
 )
 async def validate_workflow(
     workflow_id: str,
     request: UpdateWorkflowRequest,
     user: User = Depends(authenticate),
-    error_format: WorkflowErrorFormat = Query(
+    error_format: WorkflowErrorFormat = Query(  # noqa: B008 - FastAPI dependency declaration
         WorkflowErrorFormat.STRING, description=WORKFLOW_ERROR_FORMAT_DESCRIPTION
     ),
 ) -> ValidateWorkflowResponse:
-    try:
-        workflow = workflow_service.get_workflow(workflow_id=workflow_id)
-    except KeyError as e:
-        logger.error(str(e).strip())
-        raise_not_found(resource_id=workflow_id, resource_type="Workflow")
+    with _database_errors():
+        try:
+            workflow = workflow_service.get_workflow(workflow_id=workflow_id)
+        except KeyError as e:
+            logger.error(str(e).strip())
+            raise_not_found(resource_id=workflow_id, resource_type="Workflow")
 
-    project_access_check(user, request.project)
+        project_access_check(user, request.project)
 
-    if not Ability(user).can(Action.WRITE, workflow):
-        raise_access_denied("validate")
+        if not Ability(user).can(Action.WRITE, workflow):
+            raise_access_denied("validate")
 
-    try:
-        proposed = WorkflowConfig(**request.model_dump())
-        proposed.parse_execution_config()
-        _assert_workflow_model_selections_selectable(proposed, workflow)
-    except ExtendedHTTPException:
-        # Same as update_workflow: re-raise the guard's populated exception instead of re-wrapping it.
-        raise
-    except Exception as e:
-        raise ExtendedHTTPException(
-            code=status.HTTP_400_BAD_REQUEST,
-            message=WORKFLOW_CONFIGURATION_ERROR,
-            details=str(e).strip(),
-            help="",
-        ) from e
+        _refuse_autonomous_update(request.mode)
+        request_dump = request.model_dump()
+        proposed = await asyncio.to_thread(save_validation.prepare, request_dump, user, False, workflow)
+        proposed.id = workflow_id
 
-    proposed.id = workflow_id
-
-    await _run_pre_persist_update_validation(workflow, proposed, user, error_format, request.guardrail_assignments)
-
-    warnings = await _consumer_slot_warnings(
-        proposed, user, treat_as_global=bool(workflow.is_global) or bool(proposed.is_global)
-    )
-    return ValidateWorkflowResponse(message="Workflow configuration is valid", warnings=warnings)
+        result = await asyncio.to_thread(
+            _run_pre_persist_update_validation,
+            workflow,
+            proposed,
+            user,
+            error_format,
+            request.guardrail_assignments,
+            request_dump,
+        )
+        return ValidateWorkflowResponse(
+            message="Workflow configuration is valid",
+            warnings=result.warnings,
+            coverage=result.coverage,
+            warnings_truncated=result.warnings_truncated or None,
+        )
 
 
 @router.delete(
@@ -1134,17 +1037,18 @@ def rollback_workflow_version(
     workflow_id: str,
     request: WorkflowRollbackRequest,
     background_tasks: BackgroundTasks,
-    user: User = Depends(authenticate),
+    user: User = Depends(authenticate),  # noqa: B008 - FastAPI dependency declaration
 ) -> DisabledMcpResponse:
     workflow = _load_workflow_record(workflow_id)
     if not Ability(user).can(Action.WRITE, workflow):
         raise_access_denied("update")
-    rolled_back, disabled_mcp = WorkflowVersionService.rollback_to_version(
-        workflow=workflow,
-        revision_index=request.revision_index,
-        user=user,
-        change_notes=request.change_notes,
-    )
+    with _database_errors():
+        rolled_back, disabled_mcp = WorkflowVersionService.rollback_to_version(
+            workflow=workflow,
+            revision_index=request.revision_index,
+            user=user,
+            change_notes=request.change_notes,
+        )
     background_tasks.add_task(run_in_thread_pool, update_workflow_schema, rolled_back, user)
     return DisabledMcpResponse(
         message=message_with_disabled(

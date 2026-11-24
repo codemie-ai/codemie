@@ -58,6 +58,7 @@ CONFIG_IDS = {
     "analyticsInsights": "features:analyticsInsights",
     "analyticsCLIInsights": "features:analyticsCLIInsights",
     "usageAttribution": "features:usageAttribution",
+    "workflowContracts": "features:workflowContracts",
 }
 
 
@@ -443,6 +444,15 @@ class CustomerConfig(BaseModel):
                 settings=ComponentSetting(
                     enabled=self._yaml_declared_enabled("features:projectChargeback") and is_enterprise
                 ),
+            )
+        )
+
+        # Save-time contract linking is env-only (WORKFLOW_CONTRACT_LINKING_ENABLED, restart to flip); the UI
+        # hides contract editing and Check while it is off, since nothing would analyse the contracts.
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["workflowContracts"],
+                settings=ComponentSetting(enabled=config.WORKFLOW_CONTRACT_LINKING_ENABLED),
             )
         )
 

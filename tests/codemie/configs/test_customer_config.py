@@ -126,6 +126,7 @@ class TestCustomerConfig(unittest.TestCase):
         with patch("codemie.configs.customer_config.Path.read_text") as mock_read_text:
             mock_read_text.return_value = yaml.dump(self.valid_yaml)
             mock_config.ENABLE_USER_MANAGEMENT = False
+            mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
             mock_config.IDP_PROVIDER = "local"
             mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
             mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -175,6 +176,7 @@ class TestCustomerConfig(unittest.TestCase):
         with patch("codemie.configs.customer_config.Path.read_text") as mock_read_text:
             mock_read_text.return_value = yaml.dump(yaml_with_domains)
             mock_config.ENABLE_USER_MANAGEMENT = False
+            mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
             mock_config.IDP_PROVIDER = "local"
             mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
             mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -353,6 +355,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         """Test runtime features when enterprise package is installed"""
         mock_read_text.return_value = yaml.dump(self.valid_yaml)
         mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -399,6 +402,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         (gate flag AND management), not the raw gate flag or the console switch."""
         mock_read_text.return_value = yaml.dump(self.valid_yaml)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -435,6 +439,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         """Test runtime features when enterprise package is NOT installed"""
         mock_read_text.return_value = yaml.dump(self.valid_yaml)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -477,6 +482,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         """Test is_feature_enabled works for runtime-computed features"""
         mock_read_text.return_value = yaml.dump(self.valid_yaml)
         mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
 
         config = CustomerConfig()
 
@@ -503,6 +509,7 @@ class TestRuntimeFeatures(unittest.TestCase):
 
         mock_read_text.return_value = yaml.dump(yaml_with_runtime_ids)
         mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -542,6 +549,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         """Test is_component_enabled works for runtime features"""
         mock_read_text.return_value = yaml.dump(self.valid_yaml)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
 
         config = CustomerConfig()
 
@@ -556,6 +564,7 @@ class TestRuntimeFeatures(unittest.TestCase):
     def _set_full_runtime_mock_config(mock_config) -> None:
         """Every attribute `_get_runtime_config()` reads, so the whole method can run."""
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -671,6 +680,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         }
         mock_read_text.return_value = yaml.dump(yaml_data)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -720,6 +730,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         """OAuth env flags surface as enabled-only runtime components."""
         mock_read_text.return_value = yaml.dump(self.valid_yaml)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -740,6 +751,32 @@ class TestRuntimeFeatures(unittest.TestCase):
         self.assertIn("features:confluenceOauth", ids)
         self.assertNotIn("features:jiraOauth", ids)
 
+    @patch("codemie.configs.customer_config.config")
+    def test_runtime_workflow_contracts_follows_linking_flag(self, mock_config):
+        """The UI shows contract editing and Check only when the backend actually links contracts."""
+        mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.IDP_PROVIDER = "local"
+        mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
+        mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED = False
+        mock_config.GITLAB_OAUTH_ENABLED = False
+        mock_config.JIRA_OAUTH_ENABLED = False
+        mock_config.CONFLUENCE_OAUTH_ENABLED = False
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = False
+
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = enabled
+
+                # Only the customer config read is patched: other config modules read their own YAML files
+                with patch("codemie.configs.customer_config.Path.read_text", return_value=yaml.dump(self.valid_yaml)):
+                    customer_config = CustomerConfig()
+                components = {c.id: c for c in customer_config.get_runtime_components()}
+
+                self.assertIn("features:workflowContracts", components)
+                self.assertIs(components["features:workflowContracts"].settings.enabled, enabled)
+
     @patch("codemie.configs.marketplace_management.is_marketplace_management_enabled")
     @patch("codemie.configs.customer_config.Path.read_text")
     @patch("codemie.configs.customer_config.config")
@@ -750,6 +787,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         """
         mock_read_text.return_value = yaml.dump(self.valid_yaml)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -782,6 +820,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         }
         mock_read_text.return_value = yaml.dump(yaml_data)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "keycloak"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -809,6 +848,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         }
         mock_read_text.return_value = yaml.dump(yaml_data)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -835,6 +875,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         }
         mock_read_text.return_value = yaml.dump(yaml_data)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "https://codemie.example.com"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -860,6 +901,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         }
         mock_read_text.return_value = yaml.dump(yaml_data)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://host.docker.internal:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -887,6 +929,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         }
         mock_read_text.return_value = yaml.dump(yaml_data)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -917,6 +960,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         }
         mock_read_text.return_value = yaml.dump(yaml_data)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -949,6 +993,7 @@ class TestMermaidRuntimeFeature(unittest.TestCase):
             patch("codemie.service.file_service.mermaid_service.config") as mermaid_config,
         ):
             mock_config.ENABLE_USER_MANAGEMENT = False
+            mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
             mock_config.IDP_PROVIDER = "local"
             mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
             mock_config.STANDALONE = standalone
@@ -991,6 +1036,7 @@ class TestPublishedAvailabilityComponents(unittest.TestCase):
             patch.object(redis_client_module.config, "GOOGLE_OAUTH_ENABLED", google_oauth_enabled),
         ):
             mock_config.ENABLE_USER_MANAGEMENT = False
+            mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
             mock_config.IDP_PROVIDER = "local"
             mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
             mock_config.STANDALONE = standalone
@@ -1222,6 +1268,7 @@ class TestCapabilityHidingFlags(unittest.TestCase):
     def _base_mock(self, mock_config, mock_read_text):
         mock_read_text.return_value = yaml.dump(self.valid_yaml)
         mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
         mock_config.IDP_PROVIDER = "local"
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
@@ -1400,6 +1447,7 @@ class TestCoreRuntimeComponent(unittest.TestCase):
             ) as availability_mock,
         ):
             mock_config.ENABLE_USER_MANAGEMENT = False
+            mock_config.WORKFLOW_CONTRACT_LINKING_ENABLED = False
             mock_config.IDP_PROVIDER = "local"
             mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
             mock_config.STANDALONE = standalone

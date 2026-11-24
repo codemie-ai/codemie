@@ -15,7 +15,7 @@
 from __future__ import annotations
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Optional, Dict, Any, Generic, TypeVar, Type, List, get_origin, Union, get_args, Self
+from typing import Dict, Any, Generic, TypeVar, Type, List, get_origin, Union, get_args, Self
 from uuid import uuid4
 
 from elasticsearch import Elasticsearch, NotFoundError
@@ -36,9 +36,9 @@ from sqlalchemy.orm.exc import StaleDataError
 class CommonBaseModel(SQLModel):
     """Base model containing common fields without any database-specific methods"""
 
-    id: Optional[str] = Field(default=None, primary_key=True)
-    date: Optional[datetime] = None
-    update_date: Optional[datetime] = Field(default=None)
+    id: str | None = Field(default=None, primary_key=True)
+    date: datetime | None = None
+    update_date: datetime | None = Field(default=None)
 
     def __init__(self, **data):
         # Trick to make SQLModel properly validate Pydantic model
@@ -47,13 +47,16 @@ class CommonBaseModel(SQLModel):
             # Clean null bytes from string values
             cleaned_data = _remove_null_bytes(data)
             self.model_config["table"] = False
-            super().__init__(**cleaned_data)
-            self.model_config["table"] = True
+            try:
+                super().__init__(**cleaned_data)
+            finally:
+                # A ValidationError must not leave the class-wide flag off for every later instance
+                self.model_config["table"] = True
         else:
             super().__init__(**data)
 
     @classmethod
-    def get_by_fields(cls: Type[T], fields: Dict[str, Any]) -> Optional[T]:
+    def get_by_fields(cls: Type[T], fields: Dict[str, Any]) -> T | None:
         """Get a single entity by matching fields
 
         Args:
@@ -73,7 +76,7 @@ class CommonBaseModel(SQLModel):
 
 
 class BaseModelWithElasticSupport(CommonBaseModel):
-    _elastic_client: Optional[Elasticsearch] = None
+    _elastic_client: Elasticsearch | None = None
     _index: str
 
     @classmethod
@@ -82,7 +85,7 @@ class BaseModelWithElasticSupport(CommonBaseModel):
         cls._client().indices.refresh(index=cls._index.default)
 
     @classmethod
-    def as_objects(cls, result: list, klass: Optional[BaseModel] = None) -> list:
+    def as_objects(cls, result: list, klass: BaseModel | None = None) -> list:
         """Convert the result of a search query to a list of objects"""
         if klass:
             return [klass(**hit["_source"]) for hit in result["hits"]["hits"]]
@@ -474,7 +477,7 @@ class BaseModelWithSQLSupport(CommonBaseModel):
         return getattr(cls, parts[0]).contains([result])
 
     @classmethod
-    def get_by_fields(cls, fields: Dict[str, Any]) -> Optional[BaseModelWithSQLSupport]:
+    def get_by_fields(cls, fields: Dict[str, Any]) -> BaseModelWithSQLSupport | None:
         with Session(cls.get_engine()) as session:
             statement = select(cls)
             for key, value in fields.items():
@@ -491,7 +494,7 @@ class BaseModelWithSQLSupport(CommonBaseModel):
     @classmethod
     def get_all_by_fields(
         cls, fields: Dict[str, Any], order_by: str | None = None, order_desc: bool = False
-    ) -> List["BaseModelWithSQLSupport"]:
+    ) -> List[BaseModelWithSQLSupport]:
         with Session(cls.get_engine()) as session:
             statement = select(cls)
             for key, value in fields.items():
