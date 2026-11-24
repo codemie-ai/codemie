@@ -105,6 +105,9 @@ class MetricName(str, Enum):
     # Routing metrics
     ROUTING_CALL_USAGE = "routing_call_usage"
 
+    # Headroom metrics
+    HEADROOM_COMPACTION_USAGE = "headroom_compaction_usage"
+
     @classmethod
     def to_list(cls, *metrics: MetricName) -> list[str]:
         """Convert metric enum values to list of strings.

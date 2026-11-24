@@ -37,6 +37,8 @@ from codemie.rest_api.models.base import BaseModelWithSQLSupport
 from codemie.rest_api.models.index import IndexInfo
 from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
+from codemie.service.headroom.models import HeadroomOverride
+from codemie.service.headroom.scope import WorkflowHeadroomLayers
 from codemie.workflows.constants import (
     TRIPLE_BACKTICKS,
     TRIPLE_TILDES,
@@ -531,6 +533,13 @@ class AssistantExecutionOptions:
     disable_cache: Optional[bool] = False
     owner_user_id: str | None = None
     is_global: bool = False
+    headroom_workflow: HeadroomOverride | None = None
+
+
+def workflow_headroom_override(workflow_config: Any) -> HeadroomOverride | None:
+    """The workflow-level Headroom override, or None when absent or not a HeadroomOverride (e.g. a Mock)."""
+    override = getattr(workflow_config, "headroom_config", None)
+    return override if isinstance(override, HeadroomOverride) else None
 
 
 def initialize_assistant(
@@ -559,6 +568,9 @@ def initialize_assistant(
         disable_cache=options.disable_cache,
         owner_user_id=options.owner_user_id,
         is_global=options.is_global,
+        headroom_layers=WorkflowHeadroomLayers(
+            node=getattr(workflow_assistant, "headroom", None), workflow=options.headroom_workflow
+        ),
     )
 
 

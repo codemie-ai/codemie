@@ -61,6 +61,7 @@ from codemie.service.assistant.agent_build_policy import (
 from codemie.service.assistant.assistant_user_mapping_service import assistant_user_mapping_service
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.llm.model_availability_service import ModelAvailabilityService, resolve_assistant_model
+from codemie.service.headroom.scope import WorkflowHeadroomLayers, resolve_headroom_config
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.mcp.server_instructions import (
     MCPServerInstructions,
@@ -782,6 +783,8 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             agent_kwargs["is_subagent"] = is_subagent
             if not is_subagent:
                 agent_kwargs["received_request"] = received_request
+            if (headroom_config := resolve_headroom_config(assistant)) is not None:
+                agent_kwargs["headroom_config"] = headroom_config
 
         agent = agent_class(**agent_kwargs)
         logger.info(
@@ -941,7 +944,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         return LangGraphAgent if condition else AIToolsAgent
 
     @classmethod
-    def build_agent_for_workflow(
+    def build_agent_for_workflow(  # noqa: PLR0913 - one argument per workflow execution option
         cls,
         user_input: str,
         user: User,
@@ -960,6 +963,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         disable_cache: Optional[bool] = False,
         owner_user_id: str | None = None,
         is_global: bool = False,
+        headroom_layers: WorkflowHeadroomLayers | None = None,
     ):
         # Load and configure assistant for workflow execution
         assistant = cls._load_and_configure_workflow_assistant(
@@ -1115,6 +1119,9 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             )
             # The agent re-applies the LLM context on every invocation; keep it on the saved assistant.
             agent_kwargs["billing_assistant"] = billing_asset
+            layers = headroom_layers or WorkflowHeadroomLayers()
+            if (headroom_config := resolve_headroom_config(assistant, layers.node, layers.workflow)) is not None:
+                agent_kwargs["headroom_config"] = headroom_config
 
         agent = agent_class(**agent_kwargs)
 

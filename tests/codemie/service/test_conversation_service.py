@@ -1997,3 +1997,117 @@ def test_the_conversation_files_endpoint_lists_uploads_not_published_files():
         ability.return_value.can.return_value = True
 
         assert set(get_conversation_files("c", MagicMock())) == {"upload"}
+
+
+@patch("codemie.service.monitoring.headroom_monitoring_service.HeadroomMonitoringService.send_compaction_metric")
+@patch(
+    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
+)
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.save")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.service.conversation_service.AgentWorkspaceService.sync_uploaded_files")
+@pytest.mark.parametrize("with_savings", [True, False])
+def test_upsert_chat_history_forwards_headroom_savings_to_the_metric(
+    mock_sync_uploaded_files,
+    mock_metrics_get,
+    mock_conv_find,
+    mock_conv_save,
+    mock_metrics_save,
+    mock_calculate_metrics,
+    _mock_send_conversation_metric,
+    mock_send_headroom_metric,
+    with_savings,
+    mock_request,
+    mock_assistant,
+    mock_admin_user,
+):
+    """The completed turn hands tokens_usage.headroom to the monitoring service (which ignores empty savings)."""
+    from codemie.core.headroom_savings import HeadroomSavings
+
+    mock_conv_find.return_value = None
+    mock_metrics_get.side_effect = KeyError("not found")
+    mock_conv_save.return_value = True
+    savings = (
+        HeadroomSavings(tokens_original=100, tokens_compacted=40, tokens_saved=60, mode="sdk", strategy="balanced")
+        if with_savings
+        else None
+    )
+
+    ConversationService.upsert_chat_history(
+        UpsertChatHistoryParams(
+            assistant_response='response',
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=10, input_tokens=5, money_spent=0.01, headroom=savings),
+            user=mock_admin_user,
+            assistant=mock_assistant,
+            request=mock_request,
+            request_id="req-1",
+        )
+    )
+
+    mock_send_headroom_metric.assert_called_once()
+    kwargs = mock_send_headroom_metric.call_args.kwargs
+    assert kwargs["savings"] == savings
+    assert kwargs["user"] is mock_admin_user
+    assert kwargs["request_id"] == "req-1"
+
+
+@patch("codemie.service.monitoring.headroom_monitoring_service.HeadroomMonitoringService.send_compaction_metric")
+@patch(
+    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
+)
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.save")
+@patch("codemie.rest_api.models.conversation.Conversation.update_chat_history")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.service.conversation_service.AgentWorkspaceService.sync_uploaded_files")
+@pytest.mark.parametrize("with_savings", [True, False])
+def test_upsert_chat_history_persists_headroom_savings_on_the_assistant_turn(
+    mock_sync_uploaded_files,
+    mock_metrics_get,
+    mock_conv_find,
+    mock_update_chat_history,
+    mock_conv_save,
+    mock_metrics_save,
+    mock_calculate_metrics,
+    _mock_send_conversation_metric,
+    _mock_send_headroom_metric,
+    with_savings,
+    mock_request,
+    mock_assistant,
+    mock_admin_user,
+):
+    """TokensUsage.headroom reaches the ChatTurnData handed to the conversation, which persists it per message."""
+    from codemie.core.headroom_savings import HeadroomSavings
+
+    mock_conv_find.return_value = None
+    mock_metrics_get.side_effect = KeyError("not found")
+    mock_conv_save.return_value = True
+    savings = (
+        HeadroomSavings(tokens_original=100, tokens_compacted=40, tokens_saved=60, mode="sdk", strategy="balanced")
+        if with_savings
+        else None
+    )
+
+    ConversationService.upsert_chat_history(
+        UpsertChatHistoryParams(
+            assistant_response='response',
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=10, input_tokens=5, money_spent=0.01, headroom=savings),
+            user=mock_admin_user,
+            assistant=mock_assistant,
+            request=mock_request,
+            request_id="req-1",
+        )
+    )
+
+    mock_update_chat_history.assert_called_once()
+    turn = mock_update_chat_history.call_args.args[0]
+    assert turn.headroom == savings

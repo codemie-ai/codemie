@@ -670,6 +670,7 @@ ASSISTANT_NOT_EXPORTED = {
     "custom_metadata",
     "hide_tool_outputs",
     "effort",
+    "headroom_config",
 }
 
 

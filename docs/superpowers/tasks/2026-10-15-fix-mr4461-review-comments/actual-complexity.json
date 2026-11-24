@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-15T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 13,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 13 files (XL by count), but most are git mv renames of compressors into a subpackage with small import edits; net change is only 187 insertions and 103 deletions, so the count overstates real effort." },
+    { "dimension": "technical_risk", "reason": "Behavior-preserving, but SDK module globals became a lock-guarded _SDKRuntime singleton (double-checked locking, sticky unavailable flag, executor lifecycle) and factory globals became lru_cache helpers (process-wide cached compressor, cached one-shot warnings). Concurrency and cache-lifetime semantics need care and a test reset hook; no new security surface. No calibration examples were found under .ai-run, so no anchor example was compared." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15645_headroom-per-assistant-workflow",
+  "head": "6671f55fac156533190465e9c30d96d5699e9e79",
+  "runner": "poetry",
+  "started_at": "2026-10-08T16:36:55Z",
+  "completed_at": "2026-10-08T16:40:50Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1622,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Also covers hook codemie-pre-commit ruff check."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7013,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1507,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Also covers hook codemie-pre-commit license check. Checked 2459 files, 0 missing."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 59034,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "no leaks found (full working tree scan via Docker)."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 141011,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "19571 passed, 184 skipped. Pre-push hook (opt-in) runs pytest with --ignore=tests/enterprise and coverage; not separately run."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 146,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN (env or SONAR_TOKEN in .env.local) to run locally; also the opt-in pre-push hook step. CI/Sonar server must settle this."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Requires docker stack, superadmin fixtures and ~/.codemie/test-harness.json; only needed when opening an MR."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if coverage not requested; tests already run via make test."
+    }
+  ],
+  "failures": {}
+}

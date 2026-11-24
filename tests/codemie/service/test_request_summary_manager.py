@@ -399,3 +399,45 @@ def test_request_summary_calculate_all_settled_is_not_pending(sample_request_id,
 
     assert request_summary.tokens_usage.money_spent_pending is False
     assert request_summary.tokens_usage.money_spent_unavailable is False
+
+
+def _savings(original, compacted, strategy="balanced"):
+    from codemie.core.headroom_savings import HeadroomSavings
+
+    return HeadroomSavings(
+        tokens_original=original,
+        tokens_compacted=compacted,
+        tokens_saved=original - compacted,
+        mode="sdk",
+        strategy=strategy,
+    )
+
+
+def test_calculate_without_headroom_events_leaves_headroom_none(sample_request_id):
+    summary = RequestSummary(request_id=sample_request_id)
+    summary.calculate()
+
+    assert summary.tokens_usage.headroom is None
+
+
+def test_calculate_sums_two_headroom_events(sample_request_id):
+    manager = request_summary_manager
+    manager.clear_summary(sample_request_id)
+    manager.add_headroom(sample_request_id, _savings(1000, 400))
+    manager.add_headroom(sample_request_id, _savings(500, 300))
+
+    summary = manager.get_summary(sample_request_id)
+
+    headroom = summary.tokens_usage.headroom
+    assert (headroom.tokens_original, headroom.tokens_compacted, headroom.tokens_saved) == (1500, 700, 800)
+    assert headroom.calls == 2
+    assert headroom.mode == "sdk"
+    assert headroom.strategy == "balanced"
+    manager.clear_summary(sample_request_id)
+
+
+def test_headroom_merge_drops_strategy_when_it_differs():
+    merged = _savings(100, 50, "lossless").merged(_savings(100, 50, "aggressive"))
+
+    assert merged.strategy is None
+    assert merged.tokens_saved == 100

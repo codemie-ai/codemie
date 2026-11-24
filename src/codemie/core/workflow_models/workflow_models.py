@@ -33,6 +33,7 @@ from codemie.workflows.exceptions import IteratorInputNotFoundError
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem
 from codemie.service.default_tool_names import DEFAULT_CONTEXT_TOOL_NAMES
+from codemie.service.headroom.models import HeadroomOverride
 
 
 class WorkflowMode(str, Enum):
@@ -67,6 +68,7 @@ class WorkflowAssistant(BaseModel):
     mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
     skill_ids: list[str] | None = Field(default_factory=list)
     disabled_context_tools: list[str] = Field(default_factory=list)
+    headroom: HeadroomOverride | None = None
 
     @field_validator('disabled_context_tools')
     @classmethod

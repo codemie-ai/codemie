@@ -91,6 +91,7 @@ def test_a_caller_who_may_view_it_gets_the_totals(client, conversation, hydratio
         money_spent_unavailable=False,
     )
     conversation.get_total_classifier_cost_usd.return_value = 0
+    conversation.get_headroom_savings.return_value = None
     with patch(f"{ROUTER}.Ability") as ability:
         ability.return_value.can.return_value = True
         response = client.get(f"/v1/assistants/metrics/{CONVERSATION_ID}")

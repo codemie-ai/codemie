@@ -28,6 +28,7 @@ from codemie.rest_api.routers.analytics import (
     cli_enriched_users,
     cli_insights,
     cli_insights_projects,
+    headroom,
     leaderboard,
     routing,
     spending,
@@ -47,5 +48,6 @@ router.include_router(spending.router)
 router.include_router(leaderboard.router)
 router.include_router(routing.router)
 router.include_router(usage_attribution.router)
+router.include_router(headroom.router)
 
 __all__ = ["router"]

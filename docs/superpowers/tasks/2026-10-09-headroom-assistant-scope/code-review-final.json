@@ -1,0 +1,58 @@
+{
+  "decision": "request-changes",
+  "rationale": "All lenses and the standards audit ran; acceptance A1-A8 pass, with 3 minor blockers (a standards Optional[X] violation, a migration test pinned to the repo-wide head, and an untested subagent-inheritance path). 0 deferred, 10 dismissed as noise or already handled (slice 1 imports, accepted model-level 422 coverage, PydanticType already converts dicts, doc-only remarks). Brief and fix pack written; no deferred backlog.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "A1. Migration adds nullable JSONB assistants.headroom_config; single head; down_revision f88ad134467d", "status": "pass", "notes": "upgrade/downgrade covered by migration test"},
+    {"kind": "spec", "item": "A2. AssistantRequest and AssistantBase accept, serialize and round-trip headroom_config", "status": "pass", "notes": "default None; model-level tests cover round trip"},
+    {"kind": "spec", "item": "A3. API create/update/get round-trip headroom_config; invalid strategy returns 422", "status": "pass", "notes": "model-level 422 coverage accepted at plan gate"},
+    {"kind": "spec", "item": "A4. Hook last in single-agent and supervisor pre-model chains; absent with None", "status": "pass", "notes": "langgraph_agent.py appends hook last; ordering tests present"},
+    {"kind": "spec", "item": "A5. build_agent passes headroom_config only to LangGraphAgent when resolved", "status": "pass", "notes": "AIToolsAgent and Bedrock tests cover no kwarg"},
+    {"kind": "spec", "item": "A6. Unconfigured behaviour byte-identical (no headroom_config kwarg)", "status": "pass", "notes": "parametrized test covers gate-off and not-configured cases"},
+    {"kind": "spec", "item": "A7. Mock(spec=Assistant) assistants work unchanged in build_agent", "status": "pass", "notes": "getattr plus isinstance guard"},
+    {"kind": "spec", "item": "A8. Integration guide and AGENTS.md row", "status": "pass", "notes": "guide sections present; row follows FAQ Git"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 5 commit subjects in the review range match the documented EPMCDME-####: Description format (EPMCDME-15645 prefix, colon, capitalized description)."},
+    {"kind": "code-quality", "status": "partial", "notes": "code-quality.md prefers X | None over typing.Optional[X] in new code; new headroom_config fields in assistant.py (346, 675) use Optional[HeadroomConfig], mirroring adjacent hedging_config. Module cohesion holds."},
+    {"kind": "security", "status": "pass", "notes": "security-patterns.md checked against the changed source: no auth or endpoint changes, no secrets logged or hardcoded, no untrusted-input parsing added. Migration adds a nullable JSONB column only."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/assistant.py",
+      "line": 346,
+      "title": "New headroom_config fields use typing.Optional",
+      "problem": "code-quality.md (Types And Imports) lists typing.Optional[X] as the pattern to avoid in favor of X | None; the new headroom_config fields at lines 346 and 675 are declared Optional[HeadroomConfig].",
+      "impact": "Documented code-quality standard is not met by newly added code (the standards audit marks it blocking), although it mirrors the adjacent hedging_config fields and file-local style.",
+      "recommendation": "Declare both fields as HeadroomConfig | None, keeping the same defaults and sa_column (or confirm the file-local Optional convention is the accepted exception)."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/migrations/test_add_headroom_config_to_assistants.py",
+      "line": 71,
+      "title": "Migration test pins repo-wide head",
+      "problem": "test_migration_graph_has_single_head asserts get_heads() == [REVISION], pinning f8bd0b700a64 as the head of the whole repo rather than asserting there is a single head. Another migration test (test_credentialtypes_enum_migrations.py:88-90) asserts len(heads) == 1.",
+      "impact": "The test fails as soon as any later migration lands on top of this one, even though the graph is healthy, forcing unrelated changes to edit it. Reachability confirmed by reading the test.",
+      "recommendation": "Assert len(get_heads()) == 1 and that REVISION is among the walked revisions, instead of equality with [REVISION]."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/test_assistant_service_headroom.py",
+      "title": "Subagent headroom inheritance untested",
+      "problem": "The guide documents that builtin subagent clones inherit the parent's headroom_config (via parent.model_copy(deep=False) in assistant_engine_builder.py:160) and that sub-assistants resolve their own via build_agent(is_subagent=True), but no test covers either; tests only call build_agent with the default is_subagent.",
+      "impact": "If a later edit resets the field on the clone or switches to a field-allowlist copy, builtin subagents silently stop compressing and the new tests still pass.",
+      "recommendation": "Add a test that a builtin subagent clone of a parent with HeadroomConfig(enabled=True) and gates on reaches build_agent with headroom_config=ResolvedHeadroomConfig(...), plus a build_agent(..., is_subagent=True) case asserting the kwarg is still passed."
+    }
+  ]
+}

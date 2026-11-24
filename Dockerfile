@@ -14,6 +14,8 @@
 
 ARG PYTHON_VERSION=3.12.12
 ARG INSTALL_ENTERPRISE=true
+# false: no in-process Headroom SDK; true: extra headroom-sdk; ml: extra headroom-sdk-ml (adds Kompress, large)
+ARG INSTALL_HEADROOM_SDK=false
 
 FROM codemie/codemie-base-python:${PYTHON_VERSION}-debian-builder AS builder
 
@@ -24,16 +26,25 @@ WORKDIR /app
 COPY ./pyproject.toml ./poetry.lock ./
 
 ARG INSTALL_ENTERPRISE
+ARG INSTALL_HEADROOM_SDK
+# hadolint ignore=SC2086
 RUN --mount=type=secret,id=google_credentials,dst=/kaniko/google_credentials.json \
+    EXTRAS=""; \
+    case "$INSTALL_HEADROOM_SDK" in \
+    true) EXTRAS="-E headroom-sdk" ;; \
+    ml) EXTRAS="-E headroom-sdk-ml" ;; \
+    false|"") ;; \
+    *) echo "ERROR: INSTALL_HEADROOM_SDK must be one of: true, ml, false (got '$INSTALL_HEADROOM_SDK')" >&2; exit 1 ;; \
+    esac; \
     if [ "$INSTALL_ENTERPRISE" = "true" ]; then \
     echo "Installing with enterprise features..."; \
     export GOOGLE_APPLICATION_CREDENTIALS=/kaniko/google_credentials.json; \
     poetry self add keyrings.google-artifactregistry-auth; \
-    poetry install --only main -E enterprise --no-root; \
+    poetry install --only main -E enterprise $EXTRAS --no-root; \
     poetry self remove keyrings.google-artifactregistry-auth; \
     else \
     echo "Installing base dependencies only..."; \
-    poetry install --only main --no-root; \
+    poetry install --only main $EXTRAS --no-root; \
     fi; \
     chmod 555 "$VIRTUAL_ENV"
 

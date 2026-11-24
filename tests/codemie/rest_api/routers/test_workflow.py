@@ -3827,3 +3827,172 @@ def test_openapi_documents_the_save_and_dry_run_response_fields(path, method):
     properties = _openapi_response_schema(path, method)["properties"]
 
     assert {"warnings", "coverage", "warnings_truncated"} <= set(properties)
+
+
+headroom_yaml_config = """
+headroom:
+  enabled: true
+  strategy: aggressive
+assistants:
+  - id: dev
+    assistant_id: d98bd4b7-e8b9-4bb9-92d8-9fbc19b250b0
+    model: 'gpt-4o-2024-11-20'
+    headroom:
+      enabled: false
+states:
+  - id: dev
+    assistant_id: dev
+    task: do it
+    next:
+      state_id: end
+"""
+
+headroom_removed_yaml_config = headroom_yaml_config.replace(
+    "headroom:\n  enabled: true\n  strategy: aggressive\n", ""
+).replace("    headroom:\n      enabled: false\n", "")
+
+malformed_headroom_yaml_config = headroom_yaml_config.replace("strategy: aggressive", "strategy: turbo")
+
+
+def _headroom_write_patches(catalog=()):
+    """Patches shared by the headroom POST/PUT tests; the first two entered contexts are the service writes."""
+    return (
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.validate_workflow_config_resources_availability"),
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.create_executor",
+            return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
+        ),
+        patch(f"{_SAVE_VALIDATION}.llm_service.get_allowed_chat_models", return_value=list(catalog)),
+        patch(f"{_SAVE_VALIDATION}._get_project_for_workflow", return_value=None),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    )
+
+
+async def _post_workflow(create_workflow_request, request_header, yaml_text, catalog=()):
+    from contextlib import ExitStack
+
+    request = create_workflow_request.model_copy(update={"yaml_config": yaml_text})
+    with ExitStack() as stack:
+        create_workflow = stack.enter_context(
+            patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data)
+        )
+        stack.enter_context(
+            patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+        )
+        for p in _headroom_write_patches(catalog):
+            stack.enter_context(p)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+    return response, create_workflow
+
+
+async def _put_workflow(workflow_config, update_workflow_request, request_header, yaml_text, catalog=()):
+    from contextlib import ExitStack
+
+    request = update_workflow_request.model_copy(update={"yaml_config": yaml_text})
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config)
+        )
+        update_workflow = stack.enter_context(
+            patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data)
+        )
+        stack.enter_context(patch("codemie.core.ability.Ability.can", return_value=True))
+        guardrails = stack.enter_context(
+            patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+        )
+        guardrails.return_value = None
+        for p in _headroom_write_patches(catalog):
+            stack.enter_context(p)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}", json=request.model_dump(), headers=request_header
+            )
+    return response, update_workflow
+
+
+@pytest.mark.asyncio
+async def test_post_workflow_preserves_headroom_blocks(create_workflow_request, request_header):
+    response, create_workflow = await _post_workflow(create_workflow_request, request_header, headroom_yaml_config)
+
+    assert response.status_code == status.HTTP_200_OK
+    stored = create_workflow.call_args.args[0]
+    assert stored.yaml_config == headroom_yaml_config
+    assert stored.headroom_config.enabled is True
+    assert stored.headroom_config.strategy.value == "aggressive"
+    assert stored.assistants[0].headroom.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_put_workflow_preserves_headroom_blocks(workflow_config, update_workflow_request, request_header):
+    response, update_workflow = await _put_workflow(
+        workflow_config, update_workflow_request, request_header, headroom_yaml_config
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    stored = update_workflow.call_args.args[1]
+    assert stored.yaml_config == headroom_yaml_config
+    assert stored.headroom_config.enabled is True
+    assert stored.assistants[0].headroom.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_put_workflow_headroom_survives_model_id_normalization(
+    workflow_config, update_workflow_request, request_header
+):
+    catalog = [LLMModel(base_name="gpt-4o-2024-11-20", deployment_name="gpt-4o-deployment-x", enabled=True)]
+
+    response, update_workflow = await _put_workflow(
+        workflow_config, update_workflow_request, request_header, headroom_yaml_config, catalog
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    persisted = yaml.safe_load(update_workflow.call_args.args[1].yaml_config)
+    assert persisted["assistants"][0]["model"] == "gpt-4o-deployment-x"
+    assert persisted["headroom"] == {"enabled": True, "strategy": "aggressive"}
+    assert persisted["assistants"][0]["headroom"] == {"enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_put_workflow_removing_headroom_clears_headroom_config(
+    workflow_config, update_workflow_request, request_header
+):
+    response, update_workflow = await _put_workflow(
+        workflow_config, update_workflow_request, request_header, headroom_removed_yaml_config
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    stored = update_workflow.call_args.args[1]
+    assert stored.headroom_config is None
+    assert stored.assistants[0].headroom is None
+    assert "headroom" not in stored.yaml_config
+
+
+@pytest.mark.asyncio
+async def test_put_workflow_malformed_headroom_returns_400(workflow_config, update_workflow_request, request_header):
+    response, update_workflow = await _put_workflow(
+        workflow_config, update_workflow_request, request_header, malformed_headroom_yaml_config
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert response.json()["error"]["message"] == workflow_router.WORKFLOW_CONFIGURATION_ERROR
+    update_workflow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_post_workflow_malformed_headroom_defers_to_validation(create_workflow_request, request_header):
+    with patch(
+        "codemie.workflows.workflow.WorkflowExecutor.validate_workflow_with_report",
+        side_effect=ValueError("schema: headroom.strategy"),
+    ) as validate:
+        response, create_workflow = await _post_workflow(
+            create_workflow_request, request_header, malformed_headroom_yaml_config
+        )
+
+    # Parsing failed and was deferred: yaml_config reaches validation untouched, and nothing is persisted.
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    validate.assert_called_once()
+    assert validate.call_args.args[0].yaml_config == malformed_headroom_yaml_config
+    create_workflow.assert_not_called()

@@ -27,6 +27,7 @@ from codemie.configs import config, logger
 from codemie.core.ability import Owned, Action
 from codemie.core.db_utils import escape_like_wildcards
 from codemie.core.exceptions import ValidationException
+from codemie.core.headroom_savings import HeadroomSavings
 from codemie.core.models import CodeIndexType, ChatMessage, ChatRole, ConfiguredModel, ToolCallPolicy
 from codemie.core.run_attributes import CONVERSATION_RUN_ATTRIBUTES_RESPONSE_DESC
 from codemie.core.routing_info import RoutingInfo
@@ -83,6 +84,7 @@ class ChatTurnData:
     #: Encoded tokens of the files published during this turn (the assistant message's `file_names`;
     #: the user's `file_names` are the uploads).
     generated_file_names: list[str] = field(default_factory=list)
+    headroom: HeadroomSavings | None = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +219,7 @@ class GeneratedMessage(ChatMessage):
     assistant_id: Optional[str] = None
     thoughts: Optional[List[Thought]] = None
     routing: Optional[RoutingInfo] = None
+    headroom: HeadroomSavings | None = None
     in_progress: Optional[bool] = None
     status: Optional[str] = None
     ## Workflow execution reference fields
@@ -341,6 +344,19 @@ class ConversationMetricsOut(BaseModel):
     #: Whether `total_money_spent` above is the whole cost, spelled exactly as on `ConversationMetrics`.
     money_spent_pending: bool | None = None
     money_spent_unavailable: bool | None = None
+    # Present only when Headroom saved tokens in this conversation (None is dropped from the JSON).
+    headroom_tokens_saved: int | None = None
+    headroom_tokens_original: int | None = None
+
+    @classmethod
+    def headroom_fields(cls, savings: HeadroomSavings | None) -> dict[str, int | None]:
+        """Field values for a conversation total; both None unless tokens were actually saved."""
+        if savings is None or savings.tokens_saved <= 0:
+            return {"headroom_tokens_saved": None, "headroom_tokens_original": None}
+        return {
+            "headroom_tokens_saved": savings.tokens_saved,
+            "headroom_tokens_original": savings.tokens_original,
+        }
 
 
 class Conversation(BaseModelWithSQLSupport, Owned, table=True):
@@ -495,6 +511,14 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                     total += classifier_cost_usd
         return total
 
+    def get_headroom_savings(self) -> HeadroomSavings | None:
+        """Sum of the Headroom savings persisted on the assistant messages; None when there are none."""
+        total: HeadroomSavings | None = None
+        for message in self.history:
+            if isinstance(message, GeneratedMessage) and message.headroom is not None:
+                total = message.headroom if total is None else total.merged(message.headroom)
+        return total
+
     @staticmethod
     def _routing_from_thoughts(thoughts: List[Thought]) -> RoutingInfo | None:
         """Derive message-level RoutingInfo from the turn's thoughts — the single source of
@@ -569,6 +593,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             assistant_id=turn.assistant_id,
             a2ui_envelopes=turn.a2ui_envelopes,
             routing=Conversation._routing_from_thoughts(turn.thoughts),
+            headroom=turn.headroom,
             in_progress=turn.in_progress,
             status=turn.status.value if turn.status else None,
         )

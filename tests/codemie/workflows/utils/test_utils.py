@@ -58,3 +58,63 @@ def test_get_documents_tree_by_datasource_id_returns_documents_when_retrieval_av
 
     assert result == [{"source": "doc1"}]
     mock_index_info.find_by_id.assert_called_once_with("ds-id")
+
+
+class TestInitializeAssistantHeadroomLayers:
+    """initialize_assistant forwards the node and workflow Headroom overrides as one grouped argument."""
+
+    def test_forwards_node_and_workflow_layers(self):
+        from codemie.core.workflow_models import WorkflowAssistant
+        from codemie.service.headroom.scope import WorkflowHeadroomLayers
+        from codemie.service.headroom.models import HeadroomOverride
+        from codemie.workflows.utils.utils import AssistantExecutionOptions, initialize_assistant
+
+        node = HeadroomOverride(enabled=True)
+        workflow = HeadroomOverride(strategy="aggressive")
+
+        with patch("codemie.workflows.utils.utils.AssistantService.build_agent_for_workflow") as build:
+            initialize_assistant(
+                user_input="hi",
+                user=Mock(),
+                workflow_assistant=WorkflowAssistant(id="a", headroom=node),
+                options=AssistantExecutionOptions(headroom_workflow=workflow),
+            )
+
+        assert build.call_args.kwargs["headroom_layers"] == WorkflowHeadroomLayers(node=node, workflow=workflow)
+
+    def test_defaults_give_empty_layers(self):
+        from codemie.core.workflow_models import WorkflowAssistant
+        from codemie.service.headroom.scope import WorkflowHeadroomLayers
+        from codemie.workflows.utils.utils import initialize_assistant
+
+        with patch("codemie.workflows.utils.utils.AssistantService.build_agent_for_workflow") as build:
+            initialize_assistant(user_input="hi", user=Mock(), workflow_assistant=WorkflowAssistant(id="a"))
+
+        assert build.call_args.kwargs["headroom_layers"] == WorkflowHeadroomLayers()
+
+    def test_mock_workflow_assistant_without_headroom_attribute(self):
+        from codemie.core.workflow_models import WorkflowAssistant
+        from codemie.service.headroom.scope import WorkflowHeadroomLayers
+        from codemie.workflows.utils.utils import initialize_assistant
+
+        with patch("codemie.workflows.utils.utils.AssistantService.build_agent_for_workflow") as build:
+            initialize_assistant(user_input="hi", user=Mock(), workflow_assistant=Mock(spec=WorkflowAssistant))
+
+        assert build.call_args.kwargs["headroom_layers"] == WorkflowHeadroomLayers()
+
+
+class TestWorkflowHeadroomOverride:
+    def test_returns_override_only_for_headroom_override(self):
+        from codemie.core.workflow_models import WorkflowConfig
+        from codemie.service.headroom.models import HeadroomOverride
+        from codemie.workflows.utils.utils import workflow_headroom_override
+
+        override = HeadroomOverride(enabled=True)
+
+        assert (
+            workflow_headroom_override(WorkflowConfig(name="n", description="d", headroom_config=override)) == override
+        )
+        assert workflow_headroom_override(WorkflowConfig(name="n", description="d")) is None
+        assert workflow_headroom_override(Mock()) is None
+        assert workflow_headroom_override(Mock(spec=WorkflowConfig)) is None
+        assert workflow_headroom_override(None) is None

@@ -34,6 +34,7 @@ __all__ = [
     "should_summarize_memory",
     "exclude_prior_messages",
     "get_context_store_from_state_schema",
+    "workflow_headroom_override",
 ]
 from .safe_eval import SafeEvalError, safe_eval
 from .utils import (
@@ -56,4 +57,5 @@ from .utils import (
     should_summarize_memory,
     exclude_prior_messages,
     get_context_store_from_state_schema,
+    workflow_headroom_override,
 )

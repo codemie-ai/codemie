@@ -466,6 +466,7 @@ class TestTheAssistantPathHydratesThroughTheConversationService:
 
         conversation = MagicMock(is_workflow_conversation=False)
         conversation.get_total_classifier_cost_usd.return_value = 0.0
+        conversation.get_headroom_savings.return_value = None
         metrics = ConversationMetrics(conversation_id="conv-1", money_spent_pending=True)
         hydrated = ConversationMetrics(
             conversation_id="conv-1",

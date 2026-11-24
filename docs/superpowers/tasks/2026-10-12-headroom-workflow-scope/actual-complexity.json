@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-10-12T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 18,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Workflow config model, workflow DB model, YAML execution schema, agent node, workflow builder, workflow utils and assistant service all touched to resolve node/workflow Headroom config." },
+    { "dimension": "file_change_estimate", "reason": "18 files per diffstat maps to XXL by count (1 doc, 8 source, 1 new alembic migration, 8 test files); roughly half are tests, so the score overstates effort." },
+    { "dimension": "affected_layers", "reason": "API/config model, Service, workflow runtime, and DB persistence via new workflows.headroom_config migration." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

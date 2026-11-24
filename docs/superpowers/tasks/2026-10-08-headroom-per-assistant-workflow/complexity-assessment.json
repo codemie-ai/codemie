@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "task": "Integrate Headroom context compression into the CodeMie backend with per-assistant, per-workflow and per-workflow-node configuration via a LangGraph pre_model_hook (sidecar or in-process SDK), including persistence, YAML schema, feature flag, deployment, docs and tests.",
+  "generated": "2026-10-08T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 5, "label": "XL" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 27,
+  "size": "XL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New service/headroom package (~8 modules: models, resolver, strategies, compressor protocol, sidecar and SDK compressors, factory, hook) plus LangGraphAgent hook chain (single and supervisor), AssistantService.build_agent / build_agent_for_workflow, AssistantExecutionOptions with three call sites, WorkflowConfigBase/WorkflowAssistant parsing, and workflow router YAML handling. New external service integration (sidecar) and new abstractions." },
+    { "dimension": "technical_risk", "reason": "Closest patterns are the history-compaction and image-artifact pre_model_hooks and hedging_config/pool_config persistence, but none covers a sync network call or native SDK inside a graph node, fail-open behavior, or message-shape handling (list content, image blocks, handoff metadata). Gaps: AIToolsAgent/Bedrock/A2A-remote silent no-op, structured-output bypass, Claude prompt-cache invalidation. Workflow YAML rewrite on save drops top-level keys and the fix (EPMCDME-15759) is not on this branch, a prerequisite. Spike items (Linux wheel, sidecar lossless mode, offline SDK) are unresolved. Conversation content is sent to a sidecar (data-handling and token concerns). Edge-case tables for strategies and message shapes have no existing parameterized test template." },
+    { "dimension": "file_change_estimate", "reason": "About 15 modified source files (langgraph_agent, assistant_service, workflows/utils, agent_node, workflow, assistant.py, workflow_config, workflow_models, routers/workflow, execution_config_schema.yaml, config.py, customer-config.yaml, docker-compose.yml, pyproject/lock, AGENTS.md) plus 8+ new package modules, an alembic migration, a guide doc and about 9 new test areas." },
+    { "dimension": "dependencies", "reason": "New headroom-ai dependency (Rust core, ~15 MB wheel, pins litellm>=1.96.2,<2.0 so transitive conflict possible), new docker sidecar image, new settings, license allow-list entry and /sanity handoff." },
+    { "dimension": "affected_layers", "reason": "Agent runtime/Service, API models, DB persistence (two JSONB columns plus migration), validation/schema, Infrastructure (docker-compose, config, feature flag) and External integration (Headroom sidecar/SDK); cross-cutting config precedence node > workflow > assistant." }
+  ],
+  "red_flags_applied": [
+    "Integration with new external service (Headroom sidecar): Component Scope and Affected Layers already scored XL, no further bump (cap on judgment, not double counted)",
+    "Changes database schema (two nullable JSONB columns): Affected Layers and Technical Risk reflected at L/XL",
+    "Borderline 26/27: leaned higher because Component Scope is XL"
+  ],
+  "split_recommendation": {
+    "strategy": "by-dependency",
+    "secondary_strategy": "by-feature",
+    "ordering_note": "Single repo (codemie backend): foundation package first, then assistant-scope wiring, then workflow/node-scope config (which also depends on the workflow YAML save fix from EPMCDME-15759).",
+    "slices": [
+      {
+        "title": "Headroom core package, settings, feature flag, dependency and deployment",
+        "slice_slug": "headroom-core",
+        "component": "codemie",
+        "feature": "headroom-compression",
+        "scope": "New service/headroom package (config model, resolver, strategies, sidecar and SDK compressors, factory, fail-open pre_model_hook), Config settings, customer-config flag, headroom-ai dependency, docker-compose sidecar service, with unit tests. Resolves the spike items and has no runtime wiring yet.",
+        "depends_on": null
+      },
+      {
+        "title": "Per-assistant Headroom configuration and agent wiring",
+        "slice_slug": "assistant-scope",
+        "component": "codemie",
+        "feature": "headroom-compression",
+        "scope": "assistants.headroom_config column and migration, AssistantRequest/AssistantBase field, LangGraphAgent kwarg and hook appended last in single and supervisor chains, build_agent wiring (LangGraph-only), chat-path, sub-assistant and unconfigured-behavior regression tests, and the integration guide.",
+        "depends_on": "Headroom core package, settings, feature flag, dependency and deployment"
+      },
+      {
+        "title": "Per-workflow and per-node Headroom configuration",
+        "slice_slug": "workflow-scope",
+        "component": "codemie",
+        "feature": "headroom-compression",
+        "scope": "workflows.headroom_config column and migration, workflow YAML schema (both validators), WorkflowConfigBase/WorkflowAssistant parsing, preservation of the headroom block on workflow save, AssistantExecutionOptions plumbing through build_agent_for_workflow, node > workflow > assistant precedence, and tests.",
+        "depends_on": "Per-assistant Headroom configuration and agent wiring"
+      }
+    ]
+  }
+}

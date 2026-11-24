@@ -110,9 +110,10 @@ docker compose up --build codemie postgres elasticsearch
 | Base + codemie | `app` |
 | Base + codemie + LiteLLM | `app,litellm` |
 | Base + codemie + observability (jaeger, kibana, prometheus, grafana, pyroscope) | `app,observability` |
+| Base + codemie + Headroom context-compression sidecar | `app,headroom` |
 | Everything | `full` |
 
-When codemie runs on the host, set `CODE_EXECUTOR_KUBECONFIG_PATH=./.kube-local/kubeconfig.yaml` so the code executor reaches k3s. With the `app` profile this is wired automatically. LiteLLM is only started by its profile; enable `LLM_PROXY_ENABLED` / `LLM_PROXY_MODE` in `.env` for codemie to use it.
+When codemie runs on the host, set `CODE_EXECUTOR_KUBECONFIG_PATH=./.kube-local/kubeconfig.yaml` so the code executor reaches k3s. With the `app` profile this is wired automatically. LiteLLM is only started by its profile; enable `LLM_PROXY_ENABLED` / `LLM_PROXY_MODE` in `.env` for codemie to use it. The Headroom sidecar is also started only by its profile (`headroom` or `full`): set `HEADROOM_PROXY_TOKEN` in `.env` (the sidecar exits without it), plus `HEADROOM_MODE=sidecar` and the `features:headroom` flag for codemie to use it.
 
 **API Docs**: http://localhost:8080/docs
 

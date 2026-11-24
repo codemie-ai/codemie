@@ -864,3 +864,88 @@ def test_validate_workflow_execution_config_yaml_reports_lines_of_the_line_sourc
 
     assert _cross_ref_line(_COMMENTED_CROSS_REF_YAML) == client_line
     assert _cross_ref_line() != client_line  # without it the line comes from the re-dumped text
+
+
+_HEADROOM_STATES = """
+    states:
+      - id: s1
+        assistant_id: asst-1
+        task: ""
+        next:
+          state_id: end
+"""
+
+
+def _headroom_errors(text):
+    return _validate_workflow_execution_config_schema(WORKFLOW_EXECUTION_CONFIG_SCHEMA, yaml.safe_load(text))
+
+
+def test_headroom_blocks_pass_schema():
+    errors = _headroom_errors(
+        """
+    headroom:
+      enabled: true
+      compress_user_messages: false
+      compress_tool_outputs: true
+      strategy: aggressive
+    assistants:
+      - id: a1
+        system_prompt: hi
+        headroom:
+          enabled: false
+          strategy: lossless
+"""
+        + _HEADROOM_STATES
+    )
+    assert errors == []
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "headroom:\n      bogus: 1",
+        "headroom:\n      strategy: turbo",
+        "headroom:\n      enabled: maybe",
+    ],
+)
+def test_top_level_headroom_invalid_rejected(block):
+    assert _headroom_errors("    " + block + "\n" + _HEADROOM_STATES) != []
+
+
+@pytest.mark.parametrize("inner", ["bogus: 1", "strategy: turbo"])
+def test_node_headroom_invalid_rejected(inner):
+    errors = _headroom_errors(
+        f"""
+    assistants:
+      - id: a1
+        system_prompt: hi
+        headroom:
+          {inner}
+"""
+        + _HEADROOM_STATES
+    )
+    assert errors != []
+
+
+def test_unknown_keys_elsewhere_still_accepted():
+    errors = _headroom_errors(
+        """
+    some_unknown_key: 1
+    assistants:
+      - id: a1
+        system_prompt: hi
+        unknown_node_key: 2
+"""
+        + _HEADROOM_STATES
+    )
+    assert errors == []
+
+
+def test_schema_strategy_enum_matches_headroom_strategy():
+    from codemie.service.headroom.models import HeadroomStrategy
+
+    ref = {"$ref": "#/$defs/HeadroomOverride"}
+    assert WORKFLOW_EXECUTION_CONFIG_SCHEMA["properties"]["headroom"] == ref
+    assert WORKFLOW_EXECUTION_CONFIG_SCHEMA["$defs"]["Assistant"]["properties"]["headroom"] == ref
+    strategy = WORKFLOW_EXECUTION_CONFIG_SCHEMA["$defs"]["HeadroomOverride"]["properties"]["strategy"]
+    assert set(strategy["enum"]) == {s.value for s in HeadroomStrategy}

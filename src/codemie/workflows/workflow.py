@@ -102,6 +102,7 @@ from codemie.workflows.utils import (
     get_context_store_from_state_schema,
     serialize_state,
     check_state_size,
+    workflow_headroom_override,
 )
 from codemie.workflows.validation import (
     WorkflowExecutionParsingError,
@@ -765,6 +766,7 @@ class WorkflowExecutor:
                     is_global=self.workflow_config.is_global,
                     request_headers=self.request_headers,
                     disable_cache=self.disable_cache,
+                    headroom_workflow=workflow_headroom_override(self.workflow_config),
                 ),
             )
 

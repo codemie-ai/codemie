@@ -1,0 +1,144 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec was supplied (acceptance skipped), so confidence is low; reachability was verified for the surviving candidates and the standards audit had no coverage gap. 11 blocking findings: legacy SDK mode with the now-optional extra and blank HEADROOM_MODE fail silently or at startup, the SDK privacy env is no longer enforced, mixed-strategy savings drop from by-strategy analytics, and test/compose gaps; 0 deferred, ~17 dismissed as noise (e.g. RequestSummaryManager is a singleton, chat metric is only emitted on completed turns, Kompress probe is an import check). The poetry.lock shared-version bumps are known to the author and need the /sanity handoff.",
+  "confidence": "low",
+  "risk_flags": ["dependencies", "public-api", "breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 6 commit subjects in the range match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "partial", "notes": "code-quality.md says avoid typing.Optional[X] and unannotated parameters in new code, but new lines use Optional[...] (conversation.py:76, 139; conversation_service.py:353) and _emit_headroom_metric leaves the conversation parameter unannotated (conversation_service.py:351)."},
+    {"kind": "security", "status": "pass", "notes": "new /headroom/* analytics endpoints use Depends(authenticate) and a feature-flag guard; no secrets logged, no lossy input parsing or unsafe query construction seen in the patterns checked"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "Dockerfile",
+      "line": 29,
+      "title": "Validate INSTALL_HEADROOM_SDK values",
+      "problem": "The Dockerfile maps INSTALL_HEADROOM_SDK only for the exact strings 'true' and 'ml'. Any other value (True, TRUE, ML, yes, 1) silently builds an image with neither extra, and $EXTRAS is expanded unquoted in the poetry install line.",
+      "impact": "An image built with a mistyped build arg ships without headroom-ai; SDK mode later fails open on every request with no build-time signal.",
+      "recommendation": "Fail the build on any value other than true, ml, false or empty (e.g. a case statement that exits 1), and quote the extras handling."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "docker-compose.yml",
+      "title": "Sidecar compose settings are uncommitted",
+      "problem": "The Headroom guide states docker-compose.yml sets HEADROOM_OFFLINE=0 and mem_limit: 2g for the sidecar so Kompress runs, but the docker-compose.yml change exists only as an uncommitted working-tree modification and is not in this run's commits.",
+      "impact": "If shipped from the commits, the sidecar still logs 'Kompress model not ready' and aggressive equals balanced, contradicting the documented parity.",
+      "recommendation": "Commit the docker-compose.yml change that the guide describes (without the local customer-config.yaml edit), or correct the guide."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/configs/config.py",
+      "line": 618,
+      "title": "Blank HEADROOM_MODE aborts backend startup",
+      "problem": "HEADROOM_MODE is Literal['off','sdk','sidecar'] | None with no pre-validator and Config sets no env_ignore_empty. An empty string (the common ${HEADROOM_MODE:-} compose/Helm pattern), different casing, or a typo raises a pydantic validation error when Config loads.",
+      "impact": "The whole backend fails to start because of an optional feature flag instead of Headroom failing safe.",
+      "recommendation": "Add a field_validator('HEADROOM_MODE', mode='before') mapping blank/whitespace to None and normalizing case."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/conversation.py",
+      "line": 76,
+      "title": "Use X | None and annotate new parameters",
+      "problem": "code-quality.md prefers X | None over typing.Optional[X] and requires parameter annotations in new code; the added lines use Optional[HeadroomSavings] / Optional[str] (conversation.py:76, 139; conversation_service.py:353) and _emit_headroom_metric takes an unannotated conversation parameter (conversation_service.py:351).",
+      "impact": "Documented code-quality standard is not met for the added lines.",
+      "recommendation": "Use HeadroomSavings | None and str | None and annotate conversation with Conversation in the added lines."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/analytics_service.py",
+      "line": 1350,
+      "title": "AnalyticsService headroom delegation untested",
+      "problem": "AnalyticsService.get_headroom_* delegate to HeadroomHandler. The router test patches AnalyticsService wholesale and the handler test calls the handler directly, so the delegation seam is covered by neither.",
+      "impact": "A wrong handler method name or a dropped users/projects/page/per_page argument would pass both tests and could return data outside the requested scope or raise AttributeError.",
+      "recommendation": "Add a unit test with the handler patched asserting each get_headroom_* calls the matching handler method with time_period, start_date, end_date, users, projects and paging arguments."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/headroom_handler.py",
+      "line": 189,
+      "title": "Mixed-strategy savings drop from by-strategy report",
+      "problem": "HeadroomSavings.merged (src/codemie/core/headroom_savings.py) sets strategy=None when two merged events differ (workflow nodes, supervisor plus subagents with different configs), and it keeps only self.mode so mixed-mode merges are mislabeled. The by-strategy report is a terms aggregation on the strategy keyword with no 'missing' bucket, so those events are omitted.",
+      "impact": "By-strategy rows do not reconcile with the summary and silently under-count mixed-strategy savings; no test covers merged() with differing strategies or modes.",
+      "recommendation": "Use a 'mixed' label in merged() (and handle mode similarly) and/or add \"missing\": \"mixed\" to the terms aggregation; add tests for the merge and for the by-strategy totals."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/conversation_service.py",
+      "line": 489,
+      "title": "Upsert to persisted headroom hop untested",
+      "problem": "ChatTurnData(headroom=params.tokens_usage.headroom) is the only link from TokensUsage.headroom to the persisted assistant message, and no test exercises it: the model tests hand-build ChatTurnData and the new service test asserts only the metric kwargs.",
+      "impact": "If the kwarg is dropped, GeneratedMessage.headroom stays None, Conversation.get_headroom_savings() returns None and GET /assistants/metrics/{id} never shows headroom_tokens_saved, while the ES metric still fires so nothing looks broken.",
+      "recommendation": "Add a test calling upsert_chat_history with TokensUsage(headroom=SAVINGS) and asserting the ChatTurnData passed to update_chat_history (or the saved last GeneratedMessage) carries headroom == SAVINGS."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/headroom/factory.py",
+      "title": "Legacy mode infers sdk with no extra and no startup signal",
+      "problem": "headroom-ai moved to an optional extra and the Dockerfile default is INSTALL_HEADROOM_SDK=false, but the legacy path (HEADROOM_ENABLED=true, LiteLLM disabled) still infers 'sdk' in get_compressor_mode. Nothing at startup or config validation checks that the package is importable; the import failure is logged once, _unavailable is set, and every request fails open.",
+      "impact": "An existing deployment on that combination upgrades with no package and silently stops compressing (reachability for deployments with HEADROOM_ENABLED=true and LiteLLM off; unconfirmed which deployments use it).",
+      "recommendation": "When the resolved mode is 'sdk', check importlib.util.find_spec('headroom') at startup or in get_compressor_mode and log an error (or treat as off) once; do not rely on per-request fail-open."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/headroom/sdk_compressor.py",
+      "line": 93,
+      "title": "SDK no-telemetry env no longer enforced",
+      "problem": "_apply_sdk_env now uses os.environ.setdefault for HEADROOM_OFFLINE, HEADROOM_BEACON, DO_NOT_TRACK and HEADROOM_CCR_BACKEND, where it previously forced them and warned on overrides. Any inherited value (HEADROOM_BEACON=on, DO_NOT_TRACK=0, HEADROOM_CCR_BACKEND=sqlite) now wins; the test only asserts the new behavior.",
+      "impact": "The documented offline/no-telemetry and in-memory-CCR guarantee silently no longer holds: SDK telemetry or a disk-backed store can be enabled by inherited environment (reachability depends on such env being set; unconfirmed).",
+      "recommendation": "Force HEADROOM_BEACON=off, DO_NOT_TRACK=1 and HEADROOM_CCR_BACKEND=memory again (warn when overriding an inherited value) and keep only HEADROOM_OFFLINE operator-controlled."
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/workflow_execution/workflow_execution_service.py",
+      "line": 99,
+      "title": "Workflow terminal paths untested for headroom metric",
+      "problem": "Four terminal paths (failure, abort, success, _flush_llm_usage_metric) now call self._finish_summary(), which emits headroom_compaction_usage. The new tests call _finish_summary directly and none drive those paths.",
+      "impact": "If a site reverts to request_summary_manager.clear_summary (merge conflict, refactor), those workflow endings silently stop emitting the metric and the analytics endpoints undercount workflow savings.",
+      "recommendation": "Add tests running the failure, abort, success and flush finalisation with a summary holding headroom events and asserting HeadroomMonitoringService.send_compaction_metric is called once."
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/headroom/test_sdk_compressor.py",
+      "line": 475,
+      "title": "SDK/sidecar parity test is vacuous",
+      "problem": "test_sidecar_and_sdk_compressors_return_equivalent_outcomes feeds the same canned (messages, 100, 40) to a mocked httpx response and to a fake SDK and asserts equal outcomes; it does not assert the strategy-dependent request or compress kwargs. The real-Kompress test is opt-in via HEADROOM_TEST_KOMPRESS and never runs normally.",
+      "impact": "The sidecar and SDK strategy mapping could drift apart and the test would still pass, giving false assurance for the 'both Headroom options work the same' requirement.",
+      "recommendation": "Assert the sidecar POST config and the SDK compress kwargs against one shared per-strategy fixture (strategies.sidecar_config / sdk_compress_kwargs) instead of identical canned outputs."
+    }
+  ]
+}

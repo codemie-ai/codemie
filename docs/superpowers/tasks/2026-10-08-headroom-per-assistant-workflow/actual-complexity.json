@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-08T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 4, "label": "L" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 26,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New service/headroom package with 9 modules (models, resolver, strategies, compressor protocol, factory, SDK and sidecar compressors, pre-model hook) plus config.py, customer config and docker-compose; introduces a new compressor abstraction. Scoped to slice 1 (core) only." },
+    { "dimension": "technical_risk", "reason": "No exact precedent: fail-open pre-model hook on the LLM path, HTTP sidecar client with Bearer token handling (errors carry only exception types or status codes, never content), lazy SDK import with offline/no-telemetry env, response validation. Enumerated error and edge paths are covered by dedicated test modules." },
+    { "dimension": "file_change_estimate", "reason": "26 files per diffstat (about 6 modified, about 20 new, roughly half tests and docs), which maps to XXL under the diffstat table. Source-only churn is closer to L, so this dimension overstates effort." },
+    { "dimension": "dependencies", "reason": "pyproject.toml and poetry.lock changed for the headroom-ai SDK (lazily imported, may be absent) plus a new Headroom sidecar service in docker-compose." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk: security-sensitive aspect (sidecar auth token, content-free error messages) not fully covered by an existing pattern, treated as divergence",
+    "Technical Risk: acceptance criteria enumerate error and variant cases (timeouts, non-2xx, non-JSON, malformed responses, message count mismatch); new test modules were required"
+  ],
+  "split_recommendation": null
+}

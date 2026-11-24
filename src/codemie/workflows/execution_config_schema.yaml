@@ -81,6 +81,9 @@ properties:
       max_size: {type: integer, minimum: 1, maximum: 50, default: 5}
       refill_interval_seconds: {type: integer, minimum: 5, default: 30}
 
+  headroom:
+    $ref: "#/$defs/HeadroomOverride"
+
   max_nesting_level:
     type: integer
     minimum: 1
@@ -92,6 +95,17 @@ properties:
   require_input_contracts: {type: boolean}
 
 $defs:
+
+  HeadroomOverride:
+    type: object
+    additionalProperties: false
+    properties:
+      enabled: {type: boolean}
+      compress_user_messages: {type: boolean}
+      compress_tool_outputs: {type: boolean}
+      strategy:
+        type: string
+        enum: [lossless, balanced, aggressive]
 
   Assistant:
     type: object
@@ -123,6 +137,8 @@ $defs:
         items:
           type: string
       exclude_extra_context_tools: {type: boolean, default: false}
+      headroom:
+        $ref: "#/$defs/HeadroomOverride"
 
     anyOf:
       - required: [assistant_id]

@@ -118,6 +118,22 @@ def test_workflow_fields_the_envelope_models_are_exported_and_the_rest_are_not()
     assert spec["workflow"]["assistants"]["a2"]["skill_ids"] == ["Release Skill"]  # a name, never the id
 
 
+def test_headroom_blocks_are_not_exported_because_the_envelope_has_no_field_for_them():
+    stored = yaml.safe_dump(
+        {
+            "headroom": {"enabled": True},
+            "assistants": [{"id": "a1", "assistant_id": "asst-id-1", "headroom": {"enabled": False}}],
+            "states": [{"id": "s1", "assistant_id": "a1"}],
+        },
+        sort_keys=False,
+    )
+
+    definition = json.loads(to_canonical_bytes(_export(_workflow(stored))))["spec"]["workflow"]
+
+    assert "headroom" not in definition
+    assert "headroom" not in definition["assistants"]["a1"]
+
+
 def test_credential_values_list_the_assistant_mcp_auth_tokens():
     spec = json.loads(to_canonical_bytes(_export()))["spec"]
     assert spec["credential_values"] == [{"key": "Release Flow_a2_docs", "ref": "env:RELEASE_FLOW_A2_DOCS_AUTH_TOKEN"}]

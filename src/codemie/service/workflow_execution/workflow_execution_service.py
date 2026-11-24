@@ -28,6 +28,7 @@ from codemie.core.thread import MessageQueue
 from codemie.core.constants import ChatRole
 from codemie.rest_api.security.user import User
 from codemie.service.request_summary_manager import request_summary_manager
+from codemie.service.monitoring.headroom_monitoring_service import HeadroomMonitoringService
 from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonitoringService
 
 REFRESH_WAIT_FOR = 'wait_for'
@@ -127,7 +128,7 @@ class WorkflowExecutionService:
             additional_attributes={"error_class": error_class, "error_cause": error_message},
             run_attributes=self._run_attributes,
         )
-        request_summary_manager.clear_summary(self.workflow_execution_id)
+        self._finish_summary()
 
     def _cleanup_inflight_states(
         self, target_status: WorkflowExecutionStatusEnum = WorkflowExecutionStatusEnum.FAILED
@@ -186,7 +187,7 @@ class WorkflowExecutionService:
             request_id=self.workflow_execution_id,
             run_attributes=self._run_attributes,
         )
-        request_summary_manager.clear_summary(self.workflow_execution_id)
+        self._finish_summary()
         self._abort_active_sub_execution()
 
     @staticmethod
@@ -372,7 +373,7 @@ class WorkflowExecutionService:
             request_id=self.workflow_execution_id,
             run_attributes=self._run_attributes,
         )
-        request_summary_manager.clear_summary(self.workflow_execution_id)
+        self._finish_summary()
 
     def _compute_current_history_index(self) -> int:
         """Return the history_index for states created in this execution run.
@@ -561,6 +562,31 @@ class WorkflowExecutionService:
         summary = request_summary_manager.get_summary(workflow_execution_id)
         return summary.tokens_usage if summary else None
 
+    def _finish_summary(self) -> None:
+        """Emit the execution's Headroom saving once, then drop the in-memory summary."""
+        self._emit_headroom_metric()
+        request_summary_manager.clear_summary(self.workflow_execution_id)
+
+    def _emit_headroom_metric(self) -> None:
+        """Emit headroom_compaction_usage from the request summary; the events are consumed so it never repeats."""
+        try:
+            summary = request_summary_manager.get_summary(self.workflow_execution_id)
+            headroom = summary.tokens_usage.headroom if summary and summary.tokens_usage else None
+            if headroom is None:
+                return
+            summary.headroom_events.clear()
+            execution = self.workflow_execution
+            HeadroomMonitoringService.send_compaction_metric(
+                user=self.user,
+                savings=headroom,
+                conversation_id=getattr(execution, "conversation_id", None),
+                assistant_id=None,
+                project=str(self.workflow_config.project or ""),
+                request_id=self.workflow_execution_id,
+            )
+        except Exception as exc:
+            logger.warning(f"Headroom metric skipped for workflow execution ({type(exc).__name__})")
+
     def _flush_llm_usage_metric(
         self, status: WorkflowExecutionStatusEnum, additional_attributes: Optional[dict] = None
     ):
@@ -577,7 +603,7 @@ class WorkflowExecutionService:
                 additional_attributes=additional_attributes,
                 run_attributes=self._run_attributes,
             )
-        request_summary_manager.clear_summary(self.workflow_execution_id)
+        self._finish_summary()
 
     def _update_assistant_response_in_history(self, assistant_response: str | None):
         """

@@ -55,6 +55,8 @@ services:
       - KEYCLOAK_LOGOUT_URL=http://localhost:5010/docs
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
       - CODE_EXECUTOR_KUBECONFIG_PATH=/kube/kubeconfig-internal.yaml
+      - HEADROOM_SIDECAR_URL=${HEADROOM_SIDECAR_URL:-http://headroom:8787}
+      - HEADROOM_PROXY_TOKEN=${HEADROOM_PROXY_TOKEN:-} # Bearer token for the headroom sidecar; same value as the headroom service
     command: poetry run uvicorn codemie.rest_api.main:app --host=0.0.0.0 --port=8080 --reload
 
   # Local Kubernetes for the code executor sandbox (pods are created and driven via pods/exec).
@@ -208,6 +210,51 @@ services:
       timeout: 10s # Health check command times out after 10 seconds
       retries: 3 # Retry up to 3 times if health check fails
       start_period: 40s # Wait 40 seconds after container start before beginning health checks
+
+  headroom:
+    # Context-compression sidecar. Reachable only on the internal compose network at
+    # http://headroom:8787 - no host port is published and no service depends_on it.
+    # Opt-in: it needs HEADROOM_PROXY_TOKEN in .env and exits without it, so it is not a base service.
+    # Start it with COMPOSE_PROFILES=app,headroom (or full) and set HEADROOM_MODE=sidecar for codemie.
+    image: ghcr.io/headroomlabs-ai/headroom:0.40.0
+    container_name: headroom
+    profiles: [headroom, full]
+    environment:
+      # "0" lets the sidecar download the Kompress ML model (chopratejas/kompress-v2-base) from HuggingFace on first
+      # start; the `aggressive` strategy and prose compression need it. "1" air-gaps the sidecar, so Kompress never
+      # loads and only structured content (JSON, logs, code) is compressed - pre-load the model to use that.
+      HEADROOM_OFFLINE: "0"
+      HEADROOM_BEACON: "off"
+      DO_NOT_TRACK: "1"
+      HEADROOM_COMPRESS_ALLOW_REMOTE: "1" # /v1/compress is loopback-only otherwise
+      HEADROOM_LOSSLESS: "1" # unset-mode requests become lossless-only; required for the `lossless` strategy
+      HEADROOM_HOST: "0.0.0.0" # image default is 127.0.0.1; the backend must be able to reach it
+      HEADROOM_SKIP_UPSTREAM_CHECK: "1" # readiness probe must not call api.anthropic.com
+      # Bearer auth for non-loopback callers; must match HEADROOM_PROXY_TOKEN of the backend (codemie service).
+      # Set it in .env. With no token the server refuses to bind 0.0.0.0 and this container exits;
+      # nothing depends on it, so the rest of the stack still starts.
+      HEADROOM_PROXY_TOKEN: "${HEADROOM_PROXY_TOKEN:-}"
+      # Secure by default. For throwaway local development only, opt in explicitly with
+      # HEADROOM_ALLOW_UNAUTHENTICATED_BIND=1 in .env to run the sidecar without a token.
+      HEADROOM_ALLOW_UNAUTHENTICATED_BIND: "${HEADROOM_ALLOW_UNAUTHENTICATED_BIND:-0}"
+    healthcheck:
+      # The upstream image is python-based; the exact image variant is unverified. If the image
+      # ships curl, the equivalent is: curl --fail --silent http://127.0.0.1:8787/readyz
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/readyz', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s # server start-up takes about 20 seconds
+    restart: unless-stopped
+    # The Kompress ONNX model is loaded in memory (about 770 MiB resident), so 1g was too tight.
+    mem_limit: 2g
+    cpus: 1.0
 
   pyroscope:
     image: grafana/pyroscope:latest

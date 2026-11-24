@@ -43,6 +43,7 @@ from codemie.rest_api.models.guardrail import GuardrailAssignmentItem
 from codemie.rest_api.security.user import User
 from codemie.service.workflow_icon_service import WorkflowIconService
 from codemie_tools.base.file_object import FileObject
+from codemie.service.headroom.models import HeadroomOverride
 from codemie.core.workflow_models.constants import (
     RETRY_POLICY_DEFAULT_BACKOFF_FACTOR,
     RETRY_POLICY_DEFAULT_INITIAL_INTERVAL,
@@ -120,6 +121,7 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
     categories: list[str] = SQLField(default_factory=list, sa_column=Column(JSONB))
     unique_users_count: int = SQLField(default=0)
     pool_config: WorkflowPoolConfig | None = SQLField(default=None, sa_column=Column(PydanticType(WorkflowPoolConfig)))
+    headroom_config: HeadroomOverride | None = SQLField(default=None, sa_column=Column(PydanticType(HeadroomOverride)))
     max_nesting_level: int | None = SQLField(default=None)
 
     # Custom PostgreSQL indexes
@@ -271,6 +273,8 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
         self.max_iteration_key_output_limit = yaml_data.get("max_iteration_key_output_limit", 200)
         pool_cfg = yaml_data.get("pool_config")
         self.pool_config = WorkflowPoolConfig(**pool_cfg) if pool_cfg else None
+        headroom_cfg = yaml_data.get("headroom")
+        self.headroom_config = HeadroomOverride(**headroom_cfg) if headroom_cfg else None
         self.max_nesting_level = yaml_data.get("max_nesting_level")
 
     def get_max_concurrency(self):
@@ -490,6 +494,7 @@ class WorkflowConfigTemplate(WorkflowConfigBase):
             return None
 
 
+# headroom_config is intentionally not listed here: the editor reads it from the detail endpoint.
 class WorkflowConfigListResponse(BaseModel):
     """Minimal response model for workflow list (excludes heavy fields for performance)"""
 

@@ -742,3 +742,52 @@ class TestAnalyticsServiceDelegation:
             per_page=20,
         )
         assert result == expected_result
+
+
+class TestAnalyticsServiceHeadroomDelegation:
+    """AnalyticsService.get_headroom_* must hand every filter and paging argument to the matching handler method."""
+
+    START = datetime(2026, 1, 1)
+    END = datetime(2026, 2, 1)
+
+    @pytest.fixture
+    def service_and_handler(self, mock_user):
+        with patch("codemie.service.analytics.analytics_service.HeadroomHandler") as handler_cls:
+            handler = handler_cls.return_value
+            for name in ("get_headroom_summary", "get_savings_by_strategy"):
+                setattr(handler, name, AsyncMock(return_value={"handler": name}))
+            handler.get_savings_timeseries = AsyncMock(return_value={"handler": "get_savings_timeseries"})
+            service = AnalyticsService(mock_user)
+            service._repository_instance = MagicMock()
+            yield service, handler
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("service_method", "handler_method", "paged"),
+        [
+            ("get_headroom_summary", "get_headroom_summary", False),
+            ("get_headroom_by_strategy", "get_savings_by_strategy", True),
+            ("get_headroom_timeseries", "get_savings_timeseries", False),
+        ],
+    )
+    async def test_delegates_with_all_arguments(self, service_and_handler, service_method, handler_method, paged):
+        service, handler = service_and_handler
+        kwargs = {
+            "time_period": "last_30_days",
+            "start_date": self.START,
+            "end_date": self.END,
+            "users": ["u1"],
+            "projects": ["p1"],
+        }
+        expected = dict(kwargs)
+        if paged:
+            kwargs.update(page=2, per_page=5)
+            expected.update(page=2, per_page=5)
+
+        result = await getattr(service, service_method)(**kwargs)
+
+        getattr(handler, handler_method).assert_awaited_once_with(**expected)
+        assert result == {"handler": handler_method}
+
+    def test_by_mode_is_gone(self):
+        assert not hasattr(AnalyticsService, "get_headroom_by_mode")

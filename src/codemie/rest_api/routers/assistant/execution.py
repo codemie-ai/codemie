@@ -435,15 +435,18 @@ async def _calculate_workflow_metrics(conversation_id: str, conversation) -> Con
     total_output_tokens = 0
     money = SettledMoney()
     total_classifier_cost_usd = 0
+    total_headroom = None
 
     for execution_id in execution_ids:
         for execution in WorkflowExecution.get_by_execution_id(execution_id):
-            input_tokens, output_tokens, classifier_cost_usd = _execution_usage(
-                await WorkflowService.hydrate_execution_cost(execution), money
-            )
+            tokens_usage = await WorkflowService.hydrate_execution_cost(execution)
+            input_tokens, output_tokens, classifier_cost_usd = _execution_usage(tokens_usage, money)
             total_input_tokens += input_tokens
             total_output_tokens += output_tokens
             total_classifier_cost_usd += classifier_cost_usd
+            headroom = tokens_usage.headroom if tokens_usage else None
+            if headroom is not None:
+                total_headroom = headroom if total_headroom is None else total_headroom.merged(headroom)
 
     # No settled subtotal means there is no total - not a zero. A genuine 0.0 (a failed call that
     # cost nothing) is a measured figure and is kept; a flagged 0.0 is not a figure at all and the
@@ -468,6 +471,7 @@ async def _calculate_workflow_metrics(conversation_id: str, conversation) -> Con
         # of only the debug log.
         money_spent_pending=money_spent.pending,
         money_spent_unavailable=money_spent.unavailable,
+        **ConversationMetricsOut.headroom_fields(total_headroom),
     )
 
 
@@ -524,4 +528,5 @@ async def conversation_metrics(conversation_id: str, user: User = Depends(authen
         total_classifier_cost_usd=total_classifier_cost_usd,
         money_spent_pending=metrics.money_spent_pending,
         money_spent_unavailable=metrics.money_spent_unavailable,
+        **ConversationMetricsOut.headroom_fields(conversation.get_headroom_savings() if conversation else None),
     )

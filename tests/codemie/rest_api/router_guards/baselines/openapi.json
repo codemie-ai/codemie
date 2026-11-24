@@ -2127,6 +2127,16 @@
             "readOnly": true,
             "title": "Guardrail Assignments"
           },
+          "headroom_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "hedging_config": {
             "anyOf": [
               {
@@ -4136,6 +4146,16 @@
               }
             ],
             "title": "Guardrail Assignments"
+          },
+          "headroom_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "hedging_config": {
             "anyOf": [
@@ -7631,6 +7651,28 @@
           "conversation_id": {
             "title": "Conversation Id",
             "type": "string"
+          },
+          "headroom_tokens_original": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headroom Tokens Original"
+          },
+          "headroom_tokens_saved": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headroom Tokens Saved"
           },
           "money_spent_pending": {
             "anyOf": [
@@ -11565,6 +11607,16 @@
             ],
             "title": "Filenames"
           },
+          "headroom": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomSavings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "historyIndex": {
             "anyOf": [
               {
@@ -11884,6 +11936,16 @@
               }
             ],
             "title": "Filenames"
+          },
+          "headroom": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomSavings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "historyIndex": {
             "anyOf": [
@@ -12485,6 +12547,136 @@
         },
         "title": "HTTPValidationError",
         "type": "object"
+      },
+      "HeadroomConfig": {
+        "description": "Stored on assistants and workflows. All fields required, with defaults.",
+        "properties": {
+          "compress_tool_outputs": {
+            "default": true,
+            "title": "Compress Tool Outputs",
+            "type": "boolean"
+          },
+          "compress_user_messages": {
+            "default": true,
+            "title": "Compress User Messages",
+            "type": "boolean"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/HeadroomStrategy",
+            "default": "balanced"
+          }
+        },
+        "title": "HeadroomConfig",
+        "type": "object"
+      },
+      "HeadroomOverride": {
+        "description": "Workflow node override. Unset fields inherit.",
+        "properties": {
+          "compress_tool_outputs": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compress Tool Outputs"
+          },
+          "compress_user_messages": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compress User Messages"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomStrategy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "HeadroomOverride",
+        "type": "object"
+      },
+      "HeadroomSavings": {
+        "description": "Token savings from Headroom compression: one event, or the merge of several events of one request.",
+        "properties": {
+          "calls": {
+            "default": 1,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
+          },
+          "tokens_compacted": {
+            "title": "Tokens Compacted",
+            "type": "integer"
+          },
+          "tokens_original": {
+            "title": "Tokens Original",
+            "type": "integer"
+          },
+          "tokens_saved": {
+            "title": "Tokens Saved",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tokens_original",
+          "tokens_compacted",
+          "tokens_saved",
+          "mode"
+        ],
+        "title": "HeadroomSavings",
+        "type": "object"
+      },
+      "HeadroomStrategy": {
+        "enum": [
+          "lossless",
+          "balanced",
+          "aggressive"
+        ],
+        "title": "HeadroomStrategy",
+        "type": "string"
       },
       "HedgingConfig": {
         "properties": {
@@ -22812,6 +23004,16 @@
             "readOnly": true,
             "title": "Guardrail Assignments"
           },
+          "headroom_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "hedging_config": {
             "anyOf": [
               {
@@ -30974,6 +31176,16 @@
             "title": "Cached Tokens Money Spent",
             "type": "number"
           },
+          "headroom": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomSavings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "input_tokens": {
             "title": "Input Tokens",
             "type": "integer"
@@ -36342,6 +36554,16 @@
             "title": "Exclude Extra Context Tools",
             "type": "boolean"
           },
+          "headroom": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "anyOf": [
               {
@@ -36489,6 +36711,16 @@
             "default": false,
             "title": "Exclude Extra Context Tools",
             "type": "boolean"
+          },
+          "headroom": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "anyOf": [
@@ -36724,6 +36956,16 @@
             "description": "Transient guardrail_assignments field - not stored in database\n\n! Get object request scope only !",
             "readOnly": true,
             "title": "Guardrail Assignments"
+          },
+          "headroom_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "icon_url": {
             "anyOf": [
@@ -37124,6 +37366,16 @@
             "description": "Transient guardrail_assignments field - not stored in database\n\n! Get object request scope only !",
             "readOnly": true,
             "title": "Guardrail Assignments"
+          },
+          "headroom_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "icon_url": {
             "anyOf": [
@@ -37687,6 +37939,16 @@
             "description": "Transient guardrail_assignments field - not stored in database\n\n! Get object request scope only !",
             "readOnly": true,
             "title": "Guardrail Assignments"
+          },
+          "headroom_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadroomOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "icon_url": {
             "anyOf": [
@@ -54122,6 +54384,401 @@
           }
         ],
         "summary": "Get weekly spending histogram",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/headroom/by-strategy": {
+      "get": {
+        "description": "Retrieve Headroom token savings grouped by compression strategy.",
+        "operationId": "get_headroom_by_strategy_v1_analytics_headroom_by_strategy_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "users",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Users"
+            }
+          },
+          {
+            "in": "query",
+            "name": "projects",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Projects"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TabularResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Headroom savings by strategy",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/headroom/summary": {
+      "get": {
+        "description": "Retrieve Headroom summary: compacted requests, sessions, original, compacted and saved tokens, savings rate and the active mode (sdk, sidecar or mixed).",
+        "operationId": "get_headroom_summary_v1_analytics_headroom_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "users",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Users"
+            }
+          },
+          {
+            "in": "query",
+            "name": "projects",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Projects"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummariesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Headroom savings summary",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/headroom/timeseries": {
+      "get": {
+        "description": "Retrieve Headroom token savings over time.",
+        "operationId": "get_headroom_timeseries_v1_analytics_headroom_timeseries_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "users",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Users"
+            }
+          },
+          {
+            "in": "query",
+            "name": "projects",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Projects"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TabularResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Headroom savings over time",
         "tags": [
           "Dashboard Analytics"
         ]

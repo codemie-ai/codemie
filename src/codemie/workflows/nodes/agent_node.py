@@ -39,6 +39,7 @@ from codemie.workflows.utils import (
     initialize_assistant,
     AssistantExecutionOptions,
     should_summarize_memory,
+    workflow_headroom_override,
 )
 from codemie_tools.base.file_object import FileObject
 from langgraph.types import Command
@@ -282,6 +283,7 @@ class AgentNode(BaseNode[AgentMessages]):
                 disable_cache=self.disable_cache,
                 owner_user_id=owner_user_id,
                 is_global=self.workflow_config.is_global,
+                headroom_workflow=workflow_headroom_override(self.workflow_config),
             ),
         )
 

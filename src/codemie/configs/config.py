@@ -14,7 +14,7 @@
 
 import logging
 from pathlib import Path
-from typing import ClassVar, Literal, Self
+from typing import Any, ClassVar, Literal, Self
 
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
@@ -722,6 +722,20 @@ class Config(BaseSettings):
     SUBWORKFLOW_POOL_MAX_SIZE: int = 5
     SUBWORKFLOW_POOL_WARMUP_INTERVAL_SECONDS: int = 60
 
+    # Headroom context compression (sidecar). The compression call is blocking (sync) and its cost is
+    # paid on every model call; HEADROOM_TIMEOUT_SECONDS bounds it.
+    # HEADROOM_MODE selects the backend: "off", "sdk" (in-process, optional `headroom-sdk` extra) or "sidecar".
+    HEADROOM_MODE: Literal["off", "sdk", "sidecar"] = "off"
+    # SDK mode only: let the in-process SDK download the Kompress model (default HEADROOM_OFFLINE=0 instead of 1).
+    HEADROOM_SDK_ALLOW_MODEL_DOWNLOAD: bool = False
+    HEADROOM_SIDECAR_URL: str = "http://localhost:8787"
+    HEADROOM_PROXY_TOKEN: str = ""  # Secret: never log this value
+    HEADROOM_TIMEOUT_SECONDS: int = 10
+    HEADROOM_MIN_TOKENS: int = 1000
+    # Kompress keep fraction: lower = more aggressive compression.
+    # Has an effect only where the ML compressor runs.
+    HEADROOM_AGGRESSIVE_TARGET_RATIO: float = 0.2
+
     # AMNA-AIRN feature flags
     AMNA_AIRN_PRECREATE_WORKFLOWS: bool = False
     WORKERS: int = 1
@@ -1247,6 +1261,15 @@ class Config(BaseSettings):
     def _check_mcp_instructions_nonce_secret(cls, value: str | None) -> str | None:
         if value and len(value) < 32:
             raise ValueError("MCP_INSTRUCTIONS_NONCE_SECRET must be at least 32 characters")
+        return value
+
+    @field_validator("HEADROOM_MODE", mode="before")
+    @classmethod
+    def _normalize_headroom_mode(cls, value: Any) -> Any:
+        """Blank (`HEADROOM_MODE=` from a `${HEADROOM_MODE:-}` template) means "off"; case is not significant."""
+        if isinstance(value, str):
+            value = value.strip().lower()
+            return value or "off"
         return value
 
     @model_validator(mode="after")

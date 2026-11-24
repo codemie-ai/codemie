@@ -73,6 +73,7 @@ from codemie.service.chat_naming_service import ChatNamingService
 from codemie.service.conversation.history_materializer import materialize_workflow_conversation
 from codemie.service.llm_service.llm_service import LLMService, llm_service
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
+from codemie.service.monitoring.headroom_monitoring_service import HeadroomMonitoringService
 from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
 from codemie.service.spend.coverage import SpendDimension, SpendResult, TimeRange
 from codemie.service.spend.hydration import Hydrated, hydrate_request_cost
@@ -446,6 +447,26 @@ class ConversationService:
                 request_id=request_id,
             )
 
+    @classmethod
+    def _emit_headroom_metric(
+        cls,
+        *,
+        user: User,
+        assistant: Assistant,
+        conversation: Conversation,
+        tokens_usage: TokensUsage,
+        request_id: str | None,
+    ) -> None:
+        """Emit the request-level Headroom saving once per completed turn (no-op without savings)."""
+        HeadroomMonitoringService.send_compaction_metric(
+            user=user,
+            savings=tokens_usage.headroom,
+            conversation_id=conversation.conversation_id,
+            assistant_id=str(assistant.id),
+            project=str(assistant.project or ""),
+            request_id=request_id,
+        )
+
     @staticmethod
     def _resolve_upsert_params(
         params: UpsertChatHistoryParams | None,
@@ -504,6 +525,13 @@ class ConversationService:
             conversation=conversation,
             tokens_usage=params.tokens_usage,
             llm_runs=params.llm_runs,
+            request_id=params.request_id,
+        )
+        cls._emit_headroom_metric(
+            user=params.user,
+            assistant=params.assistant,
+            conversation=conversation,
+            tokens_usage=params.tokens_usage,
             request_id=params.request_id,
         )
         cls._upsert_conversation_metrics(
@@ -597,6 +625,7 @@ class ConversationService:
                 in_progress=in_progress,
                 status=status,
                 generated_file_names=cls._turn_generated_file_names(workspace_service, params),
+                headroom=params.tokens_usage.headroom,
             ),
             project=assistant.project,
             replace_latest_variant=replace_latest_variant,

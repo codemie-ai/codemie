@@ -1,0 +1,135 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15645_headroom-assistant-scope",
+  "head": "730868adf7e33217264c82ff22a2ce3b089ac436",
+  "runner": "poetry",
+  "started_at": "2026-10-12T10:51:21Z",
+  "completed_at": "2026-10-12T11:00:01Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1778,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7453,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1659,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets-gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 59815,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Full working-tree scan (163 MB) reported 'no leaks found'."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1285,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: output 'scanned ~0 bytes (0) in 152ms' and '0 commits scanned' - nothing was staged, so the staged-only scan examined no content. Committed content is covered by the secrets-gitleaks full-tree scan. Re-run after staging a change to exercise this hook."
+    },
+    {
+      "id": "codemie-ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 92,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '[pre-commit] No staged Python files - skipping Ruff format/fix check.' Nothing staged. The ruff check and license steps of the pre-commit hook are covered by the lint and license-check gates."
+    },
+    {
+      "id": "codemie-commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 976,
+      "command": "for c in $(git rev-list --reverse EPMCDME-15645_headroom-per-assistant-workflow..HEAD); do git log -1 --format=%B $c > docs/superpowers/tasks/2026-10-09-headroom-assistant-scope/gate-logs/commit-msg.tmp && bash scripts/git-hooks/commit_msg.sh docs/superpowers/tasks/2026-10-09-headroom-assistant-scope/gate-logs/commit-msg.tmp || exit 1; done",
+      "exit_code": 0,
+      "notes": "Ran against all 6 commits in merge_base..HEAD; all accepted with the EPMCDME-<n>: prefix."
+    },
+    {
+      "id": "codemie-pre-push",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 76,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '[pre-push] CODEMIE_PREPUSH_ENABLED=false -> skipping heavy checks.' Hook is opt-in and disabled by default, so pytest (tests/ minus tests/enterprise) and make sonar-local did not run from this hook. Enable with CODEMIE_PREPUSH_ENABLED=true. The make test gate covers tests/ including enterprise; sonar-local was itself skipped (see sonar)."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 123014,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "19599 passed, 184 skipped, 261 warnings. Skipped count is pytest skip markers, not a gate skip."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Guide skip-if: coverage not requested for this run."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 186,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable locally by exporting SONAR_TOKEN (and Sonar server config) and re-running make sonar-local. Only CI or a token-bearing run can settle static analysis."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 162245,
+      "command": "make verify",
+      "exit_code": 0,
+      "notes": "Composite of ruff, license, gitleaks and test; all four passed in this run (gitleaks reported 'no leaks found', 19599 passed, 184 skipped)."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 59761,
+      "command": "make test-harness",
+      "exit_code": 2,
+      "notes": "Unreachable host: 'requests.exceptions.ConnectionError: HTTPConnectionPool(host='localhost', port=8080) ... Connection refused' on /v1/local-auth/login; every scenario errored at setup. Enablement: start the docker stack (docker compose up -d), load superadmin fixtures and ~/.codemie/test-harness.json per the setup guide. The '## Test harness' MR section cannot be filled from this run."
+    },
+    {
+      "id": "gitlab-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "command": "(remote include) epm-cdme/codemie-gitlab-templates:/templates/pre-ci-guard.yml@0.1.2 via .gitlab-ci.yml",
+      "exit_code": null,
+      "notes": "Remote CI template from another project, not reachable from this checkout; wait-ci-init also waits on the ci-pipeline and compliance-report contexts, which only exist on a live MR pipeline. Guide 'After merge' says no pipeline runs these gates, but .gitlab-ci.yml does exist (guard only)."
+    }
+  ],
+  "failures": {}
+}

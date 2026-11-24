@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15645_headroom-workflow-scope",
+  "head": "7815e2db794a9d8ca20539aa88d9bbbe5a812f87",
+  "runner": "custom",
+  "started_at": "2026-10-12T11:40:26Z",
+  "completed_at": "2026-10-12T11:43:34Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "correction": "The qa-gates-runner's first record had invented timestamps (11:30:00Z-11:42:00Z) and rounded durations. Its pass/fail outcomes and test counts were re-checked by running make verify, make build and the commit-msg hook directly against the same head. started_at/completed_at above are from that make verify run. Durations are measured where known and null where the gate was not timed on its own.",
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": null,
+      "command": "make ruff (run inside make verify)",
+      "exit_code": 0,
+      "notes": "ruff format: 2784 files left unchanged; ruff check: All checks passed. Not timed separately."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9450,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": null,
+      "command": "make license (run inside make verify)",
+      "exit_code": 0,
+      "notes": "Part of make verify, which exited 0. Not timed separately."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 57600,
+      "command": "make gitleaks (run inside make verify)",
+      "exit_code": 0,
+      "notes": "no leaks found; scanned ~164 MB"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 122550,
+      "command": "poetry run pytest tests/ (run inside make verify)",
+      "exit_code": 0,
+      "notes": "20025 passed, 176 skipped, 263 warnings. make verify total 187.47s."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": null,
+      "command": "bash scripts/git-hooks/commit_msg.sh over each commit in 92d21e684..HEAD",
+      "exit_code": 0,
+      "notes": "6 commits checked, 0 rejected"
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Not run in this verification. It needs a SONAR_TOKEN that is not set locally; only CI settles it."
+    }
+  ],
+  "failures": {}
+}

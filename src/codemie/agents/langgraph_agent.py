@@ -121,6 +121,8 @@ from codemie.service.constants import (
     AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS_KEY,
 )
 from codemie.service.dynamic_config_service import DynamicConfigService
+from codemie.service.headroom.hook import build_headroom_pre_model_hook
+from codemie.service.headroom.models import ResolvedHeadroomConfig
 from codemie.service.file_service.image_service import ImageService
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.service.llm_service.utils import set_llm_context
@@ -206,6 +208,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         can_resume_pause: bool = False,
         received_request: AssistantChatRequest | None = None,
         billing_assistant: Optional[AssistantBase] = None,
+        headroom_config: ResolvedHeadroomConfig | None = None,
     ):
         ensure_langgraph_supervisor_compatibility()
 
@@ -261,6 +264,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             if self._is_conversation_replay_v2_enabled()
             else None
         )
+        # None unless a resolved Headroom config was passed; _compose_pre_model_hooks drops None.
+        self.headroom_pre_model_hook = build_headroom_pre_model_hook(headroom_config, llm_model, request_uuid)
         # Capture the active OTel context from the calling thread (Thread A / asyncio HTTP handler)
         # so that stream(), which runs in a bare threading.Thread with no inherited contextvars,
         # can attach it and become a child of the HTTP request span.
@@ -386,6 +391,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 _strip_handoff_back_messages_pre_model_hook,
                 _strip_subagent_task_messages_pre_model_hook,
                 _build_truncation_abort_pre_model_hook(self),
+                self.headroom_pre_model_hook,
             ),
             post_model_hook=self._guarded_post_model_hook(all_tools),
             # The gate's call identities must survive the graph's update reducer (see ConfirmationAgentState).
@@ -414,6 +420,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 # returns image artifacts (e.g. Jira with screenshots).
                 _image_artifact_pre_model_hook,
                 _build_truncation_abort_pre_model_hook(self),
+                # Last, so it compresses what the earlier hooks produced.
+                self.headroom_pre_model_hook,
             ),
             post_model_hook_factory=self._guarded_post_model_hook,
         )

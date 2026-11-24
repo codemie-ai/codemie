@@ -38,6 +38,7 @@ from codemie.service.analytics.handlers.project_handler import ProjectHandler
 from codemie.service.analytics.handlers.summary_handler import SummaryHandler
 from codemie.service.analytics.handlers.tools_handler import ToolsHandler
 from codemie.service.analytics.handlers.user_handler import UserHandler
+from codemie.service.analytics.handlers.headroom_handler import HeadroomHandler
 from codemie.service.analytics.handlers.routing_handler import RoutingHandler
 from codemie.service.analytics.handlers.webhook_handler import WebhookHandler
 from codemie.service.analytics.handlers.workflow_handler import WorkflowHandler
@@ -76,6 +77,7 @@ class AnalyticsService:
         self._engagement_handler_instance: EngagementHandler | None = None
         self._leaderboard_handler_instance: LeaderboardHandler | None = None
         self._routing_handler_instance: RoutingHandler | None = None
+        self._headroom_handler_instance: HeadroomHandler | None = None
 
     @property
     def _repository(self) -> MetricsElasticRepository:
@@ -195,6 +197,13 @@ class AnalyticsService:
         if self._leaderboard_handler_instance is None:
             self._leaderboard_handler_instance = LeaderboardHandler(self._user)
         return self._leaderboard_handler_instance
+
+    @property
+    def _headroom_handler(self) -> HeadroomHandler:
+        """Lazy-load headroom handler."""
+        if self._headroom_handler_instance is None:
+            self._headroom_handler_instance = HeadroomHandler(self._user, self._repository)
+        return self._headroom_handler_instance
 
     @property
     def _routing_handler(self) -> RoutingHandler:
@@ -1530,6 +1539,63 @@ class AnalyticsService:
     ) -> dict[str, Any]:
         """Get routing classifier overhead: cost and token totals."""
         return await self._routing_handler.get_classifier_overhead(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+        )
+
+    # Headroom endpoints
+
+    async def get_headroom_summary(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Get Headroom savings summary: requests, sessions, tokens, savings rate and active mode."""
+        return await self._headroom_handler.get_headroom_summary(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+        )
+
+    async def get_headroom_by_strategy(  # noqa: PLR0913 - same filter and paging arguments as the sibling analytics methods
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict[str, Any]:
+        """Get Headroom savings grouped by strategy."""
+        return await self._headroom_handler.get_savings_by_strategy(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_headroom_timeseries(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Get Headroom savings over time."""
+        return await self._headroom_handler.get_savings_timeseries(
             time_period=time_period,
             start_date=start_date,
             end_date=end_date,

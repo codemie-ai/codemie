@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-10-15T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 5, "label": "XL" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 29,
+  "size": "XL",
+  "band_range": "27-31",
+  "files_changed": 62,
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New in-process SDK compressor (sdk_compressor.py) alongside the sidecar compressor, plus factory/resolver/scope/hook changes, a new HeadroomSavings DTO on token usage, analytics handler and metric names, monitoring service, conversation persistence, workflow execution and langgraph agent wiring. Multiple subsystems and a new mode/strategy abstraction." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing sidecar compressor; it does not cover in-process SDK risks: process-wide forced privacy env (HEADROOM_BEACON/DO_NOT_TRACK/CCR memory), lazy import with permanent disable on failure, non-interruptible synchronous SDK call in a bounded thread pool for timeouts, mixed-mode/mixed-strategy savings merging. Privacy-sensitive, plus 19 test files for terminal-path and parity edge cases." },
+    { "dimension": "file_change_estimate", "reason": "43 files in 6 implementation commits plus a 19-file fix-up (about 62 file touches, lockfile excluded), 2274+435 insertions across src, tests, Dockerfile, docker-compose, customer config and docs." },
+    { "dimension": "dependencies", "reason": "New heavyweight headroom-ai package in pyproject/poetry.lock with Dockerfile changes and an optional-presence path (SDK may be absent), plus config/env additions (HEADROOM_SDK_ALLOW_MODEL_DOWNLOAD, offline model handling)." },
+    { "dimension": "affected_layers", "reason": "API (assistant and analytics routers), Service (headroom, analytics, conversation, workflow), persistence (savings stored on assistant turn/conversation models), Infrastructure (Dockerfile, docker-compose, customer-config), External (Headroom sidecar and SDK model download)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk held at XL: security/privacy-sensitive forced environment for in-process SDK",
+    "Component Scope: affects multiple workflows/agents (assistant turns and workflow terminal paths)"
+  ],
+  "split_recommendation": "Post-hoc note: delivered as one branch; would have split by dependency into (1) SDK/sidecar compressor, flags, resolver and packaging, then (2) savings DTO, persistence, analytics and metrics."
+}

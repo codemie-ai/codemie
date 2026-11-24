@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case lens ran (compact profile) with no spec, so acceptance was skipped and confidence is low. The one candidate (legacy-mode warning repeating under lru_cache(maxsize=1)) was dismissed: is_litellm_enabled() depends on static config, so the inferred mode cannot alternate at runtime. 1 dismissed, 0 deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of this profile." }
+  ],
+  "findings": []
+}

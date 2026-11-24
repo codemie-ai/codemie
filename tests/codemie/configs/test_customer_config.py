@@ -1225,6 +1225,7 @@ class TestShippedWorkspaceScriptToolCalls(unittest.TestCase):
             [
                 "features:workspaceScriptBridge",
                 "features:usageAttribution",
+                "features:headroom",
                 "features:mcpServerInstructions",
                 "features:hostedApplications",
             ],

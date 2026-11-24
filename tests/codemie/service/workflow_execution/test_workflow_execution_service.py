@@ -1012,3 +1012,117 @@ class TestRunAttributesOnMetrics:
         call = mock_monitoring.send_workflow_execution_metric.call_args.kwargs
         assert call["workflow_execution_config"] is None
         assert call["run_attributes"] == {"team": "core"}
+
+
+class TestHeadroomMetric:
+    HEADROOM = "codemie.service.workflow_execution.workflow_execution_service.HeadroomMonitoringService"
+    SUMMARY_MANAGER = "codemie.service.workflow_execution.workflow_execution_service.request_summary_manager"
+
+    @staticmethod
+    def _summary(events):
+        from codemie.core.headroom_savings import HeadroomSavings
+        from codemie.service.request_summary_manager import RequestSummary
+
+        summary = RequestSummary(
+            request_id=EXECUTION_ID,
+            headroom_events=[
+                HeadroomSavings(
+                    tokens_original=o, tokens_compacted=c, tokens_saved=o - c, mode="sdk", strategy="balanced"
+                )
+                for o, c in events
+            ],
+        )
+        summary.calculate()
+        return summary
+
+    def test_emits_one_event_with_summed_savings_and_consumes_it(self, service):
+        service.workflow_execution.conversation_id = "conv-1"
+        summary = self._summary([(1000, 400), (500, 300)])
+        with patch(self.HEADROOM) as headroom, patch(self.SUMMARY_MANAGER) as manager:
+            # the real manager recalculates on every get_summary
+            manager.get_summary.side_effect = lambda _id: (summary.calculate(), summary)[1]
+            service._finish_summary()
+            service._finish_summary()
+
+        headroom.send_compaction_metric.assert_called_once()
+        kwargs = headroom.send_compaction_metric.call_args.kwargs
+        assert kwargs["savings"].tokens_saved == 800
+        assert kwargs["conversation_id"] == "conv-1"
+        assert kwargs["request_id"] == EXECUTION_ID
+        assert kwargs["assistant_id"] is None
+        assert manager.clear_summary.call_count == 2
+
+    def test_no_event_without_savings(self, service):
+        with patch(self.HEADROOM) as headroom, patch(self.SUMMARY_MANAGER) as manager:
+            manager.get_summary.return_value = self._summary([])
+            service._finish_summary()
+
+        headroom.send_compaction_metric.assert_not_called()
+        manager.clear_summary.assert_called_once_with(EXECUTION_ID)
+
+    def test_emission_failure_never_blocks_cleanup(self, service):
+        with patch(self.HEADROOM) as headroom, patch(self.SUMMARY_MANAGER) as manager:
+            manager.get_summary.return_value = self._summary([(100, 50)])
+            headroom.send_compaction_metric.side_effect = RuntimeError("es down")
+            service._finish_summary()
+
+        manager.clear_summary.assert_called_once_with(EXECUTION_ID)
+
+
+class TestHeadroomMetricOnTerminalPaths:
+    """Every way an execution ends must go through _finish_summary so the Headroom saving is emitted once."""
+
+    MODULE = "codemie.service.workflow_execution.workflow_execution_service"
+
+    @staticmethod
+    def _summary():
+        from codemie.core.headroom_savings import HeadroomSavings
+        from codemie.service.request_summary_manager import RequestSummary
+
+        summary = RequestSummary(
+            request_id=EXECUTION_ID,
+            headroom_events=[
+                HeadroomSavings(tokens_original=1000, tokens_compacted=400, tokens_saved=600, mode="sdk", strategy="x")
+            ],
+        )
+        summary.calculate()
+        return summary
+
+    def _run(self, service, action, *, record_present: bool):
+        from contextlib import ExitStack
+
+        summary = self._summary()
+        if not record_present:
+            service.workflow_execution = None
+        with ExitStack() as stack:
+            headroom = stack.enter_context(patch(f"{self.MODULE}.HeadroomMonitoringService"))
+            manager = stack.enter_context(patch(f"{self.MODULE}.request_summary_manager"))
+            stack.enter_context(patch(f"{self.MODULE}.WorkflowMonitoringService"))
+            stack.enter_context(patch(f"{self.MODULE}.WorkflowExecutionState.get_all_by_fields", return_value=[]))
+            stack.enter_context(patch.object(service, "_refresh_workflow_execution"))
+            stack.enter_context(patch.object(service, "_calculate_tokens_usage", return_value={}))
+            stack.enter_context(patch.object(service, "_update_assistant_response_in_history"))
+            stack.enter_context(patch.object(service, "_abort_active_sub_execution"))
+            manager.get_summary.side_effect = lambda _id: (summary.calculate(), summary)[1]
+            action(service)
+        return headroom
+
+    @pytest.mark.parametrize("record_present", [True, False])
+    @pytest.mark.parametrize(
+        "action",
+        [
+            lambda svc: svc.fail(error_class="RuntimeError", error_message="boom"),
+            lambda svc: svc.abort(),
+            lambda svc: svc.finish(),
+        ],
+        ids=["fail", "abort", "finish"],
+    )
+    def test_each_ending_emits_the_headroom_metric_once(self, service, action, record_present):
+        service.workflow_execution_id = EXECUTION_ID
+        if record_present:
+            service.workflow_execution.overall_status = WorkflowExecutionStatusEnum.IN_PROGRESS
+
+        headroom = self._run(service, action, record_present=record_present)
+
+        headroom.send_compaction_metric.assert_called_once()
+        assert headroom.send_compaction_metric.call_args.kwargs["savings"].tokens_saved == 600

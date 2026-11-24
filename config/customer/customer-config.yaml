@@ -366,6 +366,11 @@ components:
         maxCustomComputationsPerHour: 10
         # Every analysis a user starts (a period or settings not cached yet) counts, default settings too.
         maxComputationsPerHour: 30
+  - id: "features:headroom"
+    settings:
+      enabled: false
+      name: "Headroom"
+      description: "Compress large tool outputs and context with Headroom (sdk or sidecar mode) to reduce token usage"
 
   - id: "features:mcpServerInstructions"
     settings:

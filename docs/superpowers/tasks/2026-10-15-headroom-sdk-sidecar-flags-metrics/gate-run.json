@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15645_headroom-workflow-scope",
+  "head": "1562a38a6df0ce4f61feb5ecf82093f61cc09a43",
+  "runner": "poetry",
+  "started_at": "2026-10-15T12:59:20Z",
+  "completed_at": "2026-10-15T13:03:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "working tree unchanged by auto-fix"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 10000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "2499 files, 0 missing headers"
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 62000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "no leaks found; scanned full working tree incl. uncommitted edits"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 29000,
+      "command": "poetry run pytest tests/codemie/agents/test_langgraph_headroom_hook.py tests/codemie/configs/test_headroom_config.py tests/codemie/core/test_headroom_savings.py tests/codemie/rest_api/models/test_conversation_headroom.py tests/codemie/rest_api/routers/test_analytics_headroom.py tests/codemie/rest_api/routers/test_assistant_metrics_headroom.py tests/codemie/service/analytics/handlers/test_headroom_handler.py tests/codemie/service/analytics/test_analytics_service.py tests/codemie/service/headroom/test_factory.py tests/codemie/service/headroom/test_hook.py tests/codemie/service/headroom/test_resolver.py tests/codemie/service/headroom/test_sdk_compressor.py tests/codemie/service/monitoring/test_headroom_monitoring_service.py tests/codemie/service/test_assistant_service_headroom.py tests/codemie/service/test_assistant_service_workflow_headroom.py tests/codemie/service/test_conversation_service.py tests/codemie/service/test_request_summary_manager.py tests/codemie/service/workflow_execution/test_workflow_execution_service.py tests/codemie/workflows/utils/test_utils.py tests/codemie/rest_api/models/test_prebuilt_assistants.py -p no:cacheprovider",
+      "exit_code": 1,
+      "notes": "Narrow run (46-file diff's 19 changed test files + test_prebuilt_assistants.py), not full `make test`: 358 passed, 1 skipped (opt-in headroom-sdk-ml model test), 1 failed. The only failure is test_headroom_feature_flag_ships_disabled, a known local-only failure caused by the uncommitted customer-config.yaml enabled: true edit. test_prebuilt_assistants.py: 3 tests (valid_attributes, returns_list_for_regular_user, returns_list_for_admin) FAIL with 'True is not false' when that file runs alone under the default xdist (-n 3), PASS in the combined run and PASS with -n 0 (6 passed); unrelated to the branch diff (file untouched) - appears order/xdist-state dependent, cause unconfirmed."
+    },
+    {
+      "id": "pre-push-full-pytest-sonar",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "notes": "Opt-in (CODEMIE_PREPUSH_ENABLED unset -> skips). Full pytest not run (narrow scope requested); sonar-local needs Sonar credentials/network, not run. Only full pytest + Sonar remain owed."
+    },
+    {
+      "id": "pre-commit-hooks",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "scripts/git-hooks/pre_commit.sh / validate_secrets.sh / commit_msg.sh",
+      "notes": "ruff check + license check + gitleaks covered by guide gates above; commit-msg hook only applies at commit time."
+    },
+    {
+      "id": "ci",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "",
+      "notes": ".gitlab-ci.yml only runs pre-ci-guard (wait-ci-init); no executable gates. make test-harness (MR compliance) not run: needs docker stack and fixtures."
+    }
+  ],
+  "failures": {
+    "unit": "tests/codemie/configs/test_headroom_config.py:54: AssertionError: assert component.settings.enabled is False -> True (customer-config.yaml uncommitted edit enabled: true)\nFAILED tests/codemie/configs/test_headroom_config.py::test_headroom_feature_flag_ships_disabled\n1 failed, 358 passed, 1 skipped, 9 warnings in 24.52s"
+  }
+}

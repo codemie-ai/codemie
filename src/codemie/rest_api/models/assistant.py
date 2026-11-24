@@ -61,6 +61,7 @@ from codemie.service.mcp.models import MCPServerConfig, _ALLOWED_MCP_COMMANDS, _
 from codemie.configs.llm_effort import EffortLevel
 from codemie.configs.logger import logger
 from codemie.service.guardrail.guardrail_service import GuardrailService
+from codemie.service.headroom.models import HeadroomConfig
 
 from codemie.service.subagents.builtin_subagents import BuiltinSubagent
 
@@ -355,6 +356,7 @@ class AssistantRequest(BaseModel):
     smart_tool_selection_enabled: Optional[bool] = False
     file_attachment_enabled: Optional[bool] = None
     hedging_config: Optional[HedgingConfig] = None
+    headroom_config: HeadroomConfig | None = None
     interactive_enabled: bool = False
     hide_tool_outputs: bool = False
     mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
@@ -755,6 +757,7 @@ class AssistantBase(CommonBaseModel, Owned):
     smart_tool_selection_enabled: Optional[bool] = False
     file_attachment_enabled: Optional[bool] = SQLField(default=None)
     hedging_config: Optional[HedgingConfig] = SQLField(default=None, sa_column=Column(PydanticType(HedgingConfig)))
+    headroom_config: HeadroomConfig | None = SQLField(default=None, sa_column=Column(PydanticType(HeadroomConfig)))
     interactive_enabled: bool = SQLField(default=False, sa_column_kwargs={"server_default": "false"})
     hide_tool_outputs: bool = SQLField(default=False, sa_column_kwargs={"server_default": "false"})
     context: list[Context] = SQLField(default_factory=list, sa_column=Column(PydanticListType(Context)))

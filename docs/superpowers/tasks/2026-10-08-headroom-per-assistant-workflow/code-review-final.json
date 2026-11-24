@@ -1,0 +1,91 @@
+{
+  "decision": "request-changes",
+  "rationale": "All lenses and standards ran; 5 blocking findings (sidecar unauthenticated by default, span mode values outside spec, bare dict typing, SDK non-ImportError import retried per call, no real-package test of the private _pipeline override). 0 deferred; ~20 candidates dismissed as handled (hook chaining is covered by _compose_pre_model_hooks, flag id maps to features:headroom), by design, or non-goals. Wiring absent by slice scope; lock churn and /sanity are Stage 7/MR items.",
+  "confidence": "high",
+  "risk_flags": ["security", "dependency change"],
+  "business_review": [
+    {"kind": "spec", "item": "AC1: headroom package modules with EPAM header, imports cleanly with headroom-ai absent (lazy SDK import)", "status": "pass", "notes": "All modules present; SDK imported lazily in _load_sdk."},
+    {"kind": "spec", "item": "AC2: resolver returns None on kill switch / flag / disabled; field-by-field merge node > workflow > assistant > default", "status": "pass", "notes": "resolver pick() per field; tests cover precedence."},
+    {"kind": "spec", "item": "AC3: strategies table is the only place strategy values live", "status": "pass", "notes": "strategies.py sidecar_config/sdk_compress_kwargs match findings table."},
+    {"kind": "spec", "item": "AC4: sidecar compressor URL, Bearer header, body, timeout; failures fail open at the hook", "status": "pass", "notes": "HeadroomCompressionError caught by hook."},
+    {"kind": "spec", "item": "AC5: SDK compressor sets offline/telemetry-off env before import and disables itself after ImportError", "status": "pass", "notes": "See CR-004 for non-ImportError failures."},
+    {"kind": "spec", "item": "AC6: factory picks sidecar iff is_litellm_enabled(), else SDK, and reuses the instance", "status": "pass", "notes": "lru_cache(maxsize=1) get_compressor."},
+    {"kind": "spec", "item": "AC7: hook behaviour (None cfg, min tokens, toggles, fail-open, input not mutated)", "status": "pass", "notes": "Covered by test_hook."},
+    {"kind": "spec", "item": "AC8: headroom.compress span with listed attributes and no message content", "status": "partial", "notes": "mode emits none/unknown outside sidecar|sdk (CR-002)."},
+    {"kind": "spec", "item": "AC9: six HEADROOM_* settings and features:headroom with stated defaults; no behaviour change", "status": "pass", "notes": "Flag off by default; nothing wired."},
+    {"kind": "spec", "item": "AC10: headroom-ai==0.40.0 pinned, poetry.lock regenerated, compose sidecar with healthcheck and limits", "status": "pass", "notes": "Lock also bumps click and adds ast-grep-cli; verify in /sanity."},
+    {"kind": "spec", "item": "AC11: spike items 1-4 recorded in research-findings.md and reflected in strategies/ratio default", "status": "pass", "notes": "Recorded with evidence."},
+    {"kind": "spec", "item": "AC12: unit tests cover items 2-8; make ruff and license-header check pass", "status": "pending-stage-7", "notes": "Tests present; execution is Stage 7 evidence."},
+    {"kind": "spec", "item": "Section 4: sidecar internal-network only and Bearer auth via HEADROOM_PROXY_TOKEN", "status": "partial", "notes": "No published port, but token empty and unauthenticated bind defaults to 1 (CR-001)."},
+    {"kind": "spec", "item": "Section 4: license check / lock churn handled", "status": "pending-stage-7", "notes": "litellm pin retained; license check result needs Stage 7."},
+    {"kind": "spec", "item": "Section 4: no litellm_config.yaml guardrail; Helm chart untouched", "status": "pass", "notes": "Neither file changed."},
+    {"kind": "spec", "item": "Section 4: MR description must ask reviewer to post /sanity", "status": "na", "notes": "MR description not part of the diff; required when MR is opened."},
+    {"kind": "spec", "item": "Non-goals: no DB, agent wiring, workflow YAML, REST fields, guide, ML extras", "status": "pass", "notes": "Changed files limited to headroom package, tests, config, compose, deps, docs."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 14 commit subjects in the review range match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "partial", "notes": "guide prefers parameterized generics over bare dict; bare dict at hook.py:161, compressor.py:27 and :39, sdk_compressor.py:109, sidecar_compressor.py:37. Headers, __future__ annotations, cohesion conform."},
+    {"kind": "security", "status": "partial", "notes": "no credential logging; strict JSON parsing. docker-compose headroom service defaults HEADROOM_ALLOW_UNAUTHENTICATED_BIND to 1 and empty HEADROOM_PROXY_TOKEN on 0.0.0.0; sidecar traffic is plain http."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "docker-compose.yml",
+      "line": 172,
+      "title": "Sidecar defaults to unauthenticated bind",
+      "problem": "The headroom service sets HEADROOM_HOST=0.0.0.0, HEADROOM_PROXY_TOKEN defaults to empty and HEADROOM_ALLOW_UNAUTHENTICATED_BIND defaults to 1, so the default stack accepts unauthenticated /v1/compress calls from any container on the compose network. The backend sends no Authorization header unless a token is configured. The spec (section 4) requires internal-network-only with Bearer auth.",
+      "impact": "Full prompt and tool-output content is handled by an unauthenticated service by default; spec security requirement only partially met. No published port limits exposure to the compose network, and the default is commented as dev-only.",
+      "recommendation": "Default HEADROOM_ALLOW_UNAUTHENTICATED_BIND to 0 and require HEADROOM_PROXY_TOKEN, or confine the open default to an explicit dev-only override; wire the same HEADROOM_PROXY_TOKEN into the backend service env."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/headroom/hook.py",
+      "line": 61,
+      "title": "Span mode attribute outside spec values",
+      "problem": "codemie.headroom.mode defaults to 'unknown' and is set to 'none' on the skipped_small path, but spec AC8 defines it as sidecar|sdk. Tests assert the out-of-spec values.",
+      "impact": "Dashboards filtering on sidecar|sdk see unexpected values; AC8 is only partially met.",
+      "recommendation": "Emit only sidecar|sdk (resolve the configured mode without calling the compressor), or amend spec.md AC8 and the span tests to document 'none' and 'unknown'."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/headroom/hook.py",
+      "line": 161,
+      "title": "Bare dict annotations violate code-quality guide",
+      "problem": "_merge takes `compressed: dict`; list[dict] / bare dict is also used in compressor.py:27 and :39, sdk_compressor.py:109 and sidecar_compressor.py:37, contrary to code-quality.md which prefers parameterized generics.",
+      "impact": "Documented typing standard is unmet in new code and blocks the workflow per the standards review.",
+      "recommendation": "Annotate as dict[str, Any] and list[dict[str, Any]] in the listed signatures and CompressOutcome.messages."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/headroom/sdk_compressor.py",
+      "line": 74,
+      "title": "Non-ImportError SDK import failure retried per call",
+      "problem": "_load_sdk only catches ImportError. Any other import-time exception (e.g. OSError loading a native extension) propagates without setting _unavailable, so the process-wide os.environ writes and the heavy import are repeated under the lock on every model call.",
+      "impact": "In SDK mode a broken install degrades every agent step with repeated import attempts and repeated warnings, instead of disabling once like the ImportError path. Fail-open limits the failure to latency and log noise.",
+      "recommendation": "Catch Exception around the import, set _unavailable, log once and raise HeadroomCompressionError; add a test with an import raising OSError asserting a single attempt."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/headroom/test_sdk_compressor.py",
+      "title": "Private _pipeline override untested against real SDK",
+      "problem": "All SDK-mode tests use hand-built fake headroom modules. _apply_marker_free_pipeline assigns sys.modules['headroom.compress']._pipeline, which never raises even if a future Headroom stops reading it, so its warning fallback cannot fire. research-findings.md section 7 item 3 states the override needs a test that fails when Headroom changes it; CompressConfig kwargs are likewise only checked against a fake accepting any kwargs. The real package is not installed in this environment, so reachability of the failure is unconfirmed.",
+      "impact": "After a Headroom upgrade, SDK mode could send the model unresolvable 'Retrieve more: hash=' markers or silently never compress while every test stays green.",
+      "recommendation": "Add a pytest.importorskip('headroom') test against the pinned 0.40.0 asserting a read _pipeline attribute, CompressConfig(**sdk_compress_kwargs(...)) construction for all strategies, and no 'Retrieve more: hash=' marker in balanced mode."
+    }
+  ]
+}

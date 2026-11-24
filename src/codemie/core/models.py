@@ -40,6 +40,7 @@ from codemie.configs import config
 from codemie.configs.llm_config import ModelStatus
 from codemie.core.ability import Owned
 from codemie.core.constants import CodeIndexType, ChatRole, BackgroundTaskStatus, DatasourceTypes
+from codemie.core.headroom_savings import HeadroomSavings
 from codemie.core.routing_info import RoutingInfo
 from codemie.core.run_attributes import RUN_ATTRIBUTES_REQUEST_DESC, RunAttributesError, validate_run_attributes
 
@@ -1025,6 +1026,7 @@ class TokensUsage(BaseModel):
     money_spent_pending: bool = False
     # AD-28 rule 3: the ledger CANNOT answer for this - do not retry; money_spent above is a partial.
     money_spent_unavailable: bool = False
+    headroom: HeadroomSavings | None = None
 
 
 class IdeToolArgument(ConfiguredModel):

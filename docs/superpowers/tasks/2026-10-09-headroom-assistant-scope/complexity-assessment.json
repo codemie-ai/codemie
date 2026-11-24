@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Per-assistant Headroom config: assistants.headroom_config JSONB column and migration, model fields, LangGraphAgent hook wiring (last in single-agent and supervisor chains), build_agent wiring for LangGraph only, regression tests, integration guide and AGENTS.md row.",
+  "generated": "2026-10-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Four components: AssistantRequest/AssistantBase models, Alembic migration, LangGraphAgent (init kwarg plus two hook chains), AssistantService.build_agent, plus docs. Each follows a direct precedent (hedging_config, history_compaction hook, is_subagent kwarg); create/update/get/clone paths are reflection-based and need no code."
+    },
+    { "dimension": "file_change_estimate", "reason": "About 4 modified (assistant.py, langgraph_agent.py, assistant_service.py, AGENTS.md) and about 6 new (migration, integration guide, 4-5 test files for model, agent chains, build_agent, migration). New-file count pushes this to L; modified count alone would be S."
+    },
+    { "dimension": "affected_layers", "reason": "API request model, Service (build_agent), agent runtime, and DB-Persistence with a new nullable JSONB column and migration. Schema change places it at L. Slice 1 already supplies the sidecar/External side, so no new external integration."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

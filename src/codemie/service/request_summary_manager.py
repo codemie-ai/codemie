@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from codemie.configs import logger
 from codemie.core.models import UserEntity, TokensUsage
+from codemie.core.headroom_savings import HeadroomSavings
 from codemie.core.routing_info import RoutingInfo
 
 
@@ -44,6 +45,7 @@ class LLMRun(BaseModel):
 class RequestSummary(BaseModel):
     request_id: str
     llm_runs: List[LLMRun] = []
+    headroom_events: list[HeadroomSavings] = []
     project_name: Optional[str] = None
     user: Optional[UserEntity] = None
     tokens_usage: Optional[TokensUsage] = None
@@ -69,6 +71,8 @@ class RequestSummary(BaseModel):
         # behaviour and the spec requirement.
         routing = functools.reduce(lambda a, b: b.merged_over(a), per_run_routings, RoutingInfo())
 
+        headroom = functools.reduce(lambda a, b: a.merged(b), self.headroom_events) if self.headroom_events else None
+
         self.tokens_usage = TokensUsage(
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
@@ -85,6 +89,7 @@ class RequestSummary(BaseModel):
             # today - a streamed chat call whose cost has not landed (AD-22) - pending open
             # question: wire `money_spent_unavailable` once a synchronous readiness read exists.
             money_spent_pending=any_run_unsettled,
+            headroom=headroom,
         )
 
         logger.debug(
@@ -131,6 +136,12 @@ class RequestSummaryManager:
                 break
         else:
             existing_runs.append(llm_run)
+
+    def add_headroom(self, request_id: str, savings: HeadroomSavings):
+        """Record one Headroom compression event for the request; events are summed in `calculate()`."""
+        if request_id not in self.request_summaries:
+            self.create_request_summary(request_id)
+        self.request_summaries[request_id].headroom_events.append(savings)
 
     def get_summary(self, request_id: str) -> RequestSummary | None:
         summary = self.request_summaries.get(request_id, None)

@@ -540,3 +540,66 @@ def test_parse_execution_config_ignores_mode_key_in_yaml(yaml_mode):
 
     assert workflow.mode == WorkflowMode.SEQUENTIAL
     assert [state.id for state in workflow.states] == ["ask"]
+
+
+class TestWorkflowConfigHeadroomFields:
+    def _parse(self, data):
+        import yaml
+
+        wf = WorkflowConfig(name="Test", description="Test", yaml_config=yaml.dump(data))
+        wf.parse_execution_config()
+        return wf
+
+    def test_parse_execution_config_headroom(self):
+        from codemie.service.headroom.models import HeadroomOverride, HeadroomStrategy
+
+        wf = self._parse({"headroom": {"strategy": "aggressive"}, "states": []})
+
+        assert wf.headroom_config == HeadroomOverride(strategy=HeadroomStrategy.AGGRESSIVE)
+        assert wf.headroom_config.enabled is None
+        assert wf.headroom_config.compress_user_messages is None
+        assert wf.headroom_config.compress_tool_outputs is None
+
+    def test_parse_execution_config_assistant_headroom(self):
+        from codemie.service.headroom.models import HeadroomOverride
+
+        wf = self._parse(
+            {
+                "assistants": [
+                    {"id": "a1", "system_prompt": "p", "headroom": {"enabled": True}},
+                    {"id": "a2", "system_prompt": "p"},
+                ],
+                "states": [],
+            }
+        )
+
+        assert wf.assistants[0].headroom == HeadroomOverride(enabled=True)
+        assert wf.assistants[1].headroom is None
+
+    def test_parse_execution_config_absent_headroom_is_none(self):
+        wf = self._parse({"headroom": {"enabled": True}, "states": []})
+        assert wf.headroom_config is not None
+
+        wf = self._parse({"states": []})
+        assert wf.headroom_config is None
+
+    def test_headroom_config_defaults_to_none(self):
+        assert WorkflowConfig(name="Test", description="Test").headroom_config is None
+
+    def test_template_inherits_headroom_config(self):
+        from codemie.core.workflow_models.workflow_config import WorkflowConfigTemplate
+
+        assert "headroom_config" in WorkflowConfigTemplate.model_fields
+
+
+def test_headroom_config_visibility_in_responses():
+    from codemie.core.workflow_models.workflow_config import (
+        WorkflowConfigBase,
+        WorkflowConfigListResponse,
+        WorkflowConfigTemplate,
+    )
+
+    assert "headroom_config" in WorkflowConfigBase.model_fields
+    assert "headroom_config" in WorkflowConfigTemplate.model_fields
+    # The minimal list model excludes heavy fields; the editor reads headroom_config from the detail endpoint.
+    assert "headroom_config" not in WorkflowConfigListResponse.model_fields

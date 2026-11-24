@@ -122,6 +122,12 @@ langchain-experimental = "0.4.1"
 langchain-google-community = "3.0.5"
 langchain-openai = "^1.2.1"
 litellm = "1.99.2"
+# Optional (extra `headroom-sdk`): only needed when HEADROOM_MODE=sdk; the sidecar runs in its own image.
+headroom-ai = {version = "0.40.0", optional = true}
+# Kompress (balanced/aggressive prose compression) in SDK mode: extra `headroom-sdk-ml`.
+transformers = {version = ">=5.5,<6", optional = true}
+onnxruntime = {version = ">=1.24", optional = true}
+huggingface-hub = {version = ">=1.5", optional = true}
 langchain-tavily = "^0.2.13"
 markdownify = "^1.2.0"
 markitdown = {extras = ["all"], version = "^0.1.2"}
@@ -194,6 +200,8 @@ nemo-switchyard = "^0.2.0"
 [tool.poetry.extras]
 enterprise = ["codemie-enterprise"]
 pdf-svg = ["cairosvg"]
+headroom-sdk = ["headroom-ai"]
+headroom-sdk-ml = ["headroom-ai", "transformers", "onnxruntime", "huggingface-hub"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.1"
@@ -301,6 +309,7 @@ allow-only = """
     Apache Software License; MIT License;\
     Apache-2.0;\
     Apache-2.0 AND BSD-2-Clause;\
+    Apache-2.0 AND CNRI-Python;\
     Apache-2.0 AND MIT;\
     Apache-2.0 OR BSD-3-Clause;\
     Apache-2.0 OR MIT;\

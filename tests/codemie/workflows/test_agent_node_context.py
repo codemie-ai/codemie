@@ -910,3 +910,56 @@ def test_resolve_user_override_model_does_not_swallow_unrelated_errors_even_when
     ):
         with pytest.raises(RuntimeError):
             node.resolve_user_override_model("gpt-4", fail_open=True)
+
+
+def _init_assistant_options(workflow_config, workflow_execution_service, thought_queue, callbacks, user):
+    workflow_assistant = Mock(spec=WorkflowAssistant)
+    workflow_assistant.model = None
+    with (
+        patch("codemie.workflows.nodes.agent_node.initialize_assistant") as initialize,
+        patch("codemie.workflows.nodes.agent_node.find_assistant_by_id", return_value=workflow_assistant),
+    ):
+        node = AgentNode(
+            callbacks=callbacks,
+            workflow_execution_service=workflow_execution_service,
+            thought_queue=thought_queue,
+            workflow_state=WorkflowState(
+                id="agent_node",
+                task="Test task",
+                next=WorkflowNextState(state_id="next"),
+                assistant_id="assistant_1",
+            ),
+            workflow_config=workflow_config,
+            user=user,
+            execution_id="exec_123",
+            assistant=None,
+        )
+        node.init_assistant()
+    return initialize.call_args.kwargs["options"]
+
+
+def test_init_assistant_passes_workflow_headroom_override(
+    mock_workflow_execution_service, mock_thought_queue, mock_callbacks, mock_workflow_config, mock_user
+):
+    from codemie.service.headroom.models import HeadroomOverride
+
+    override = HeadroomOverride(enabled=True)
+    mock_workflow_config.headroom_config = override
+
+    options = _init_assistant_options(
+        mock_workflow_config, mock_workflow_execution_service, mock_thought_queue, mock_callbacks, mock_user
+    )
+
+    assert options.headroom_workflow is override
+
+
+def test_init_assistant_ignores_non_override_workflow_headroom(
+    mock_workflow_execution_service, mock_thought_queue, mock_callbacks, mock_workflow_config, mock_user
+):
+    mock_workflow_config.headroom_config = Mock()
+
+    options = _init_assistant_options(
+        mock_workflow_config, mock_workflow_execution_service, mock_thought_queue, mock_callbacks, mock_user
+    )
+
+    assert options.headroom_workflow is None
