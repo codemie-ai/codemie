@@ -1,0 +1,95 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "CR-001 fixed (db90836c86); fix set empty; user approved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "CR-001 fix-now chosen by user"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "CR-001 fixed (db90836c86); fix set empty; user approved"
+    }
+  ],
+  "reviewed_head": "db90836c86ec8d730921dd26f6a51eb650afbaa3",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No spec/story artifact existed, so acceptance was skipped and confidence is low; all other lenses and standards ran cleanly. 1 advisory finding (untested move-to-project authorization after the refactor), 0 deferred, 9 dismissed as noise (see code-review-dismissed.local.md).",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [
+    "security"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/service/skill_service.py",
+      "line": 621,
+      "title": "Move-to-project authorization has no test",
+      "problem": "_validate_project_change was refactored to call the shared _require_project_access helper (User.has_access_to_application). The new tests cover only create_skill and import_skill; no test calls update_skill with a changed project, so inverting or dropping the check, or changing its help text, would pass the whole suite. Source read confirms behavior is equivalent today: maintainers already get is_admin=True in User.resolve_is_admin, and applications/applications_admin alias project_names/admin_project_names.",
+      "impact": "No behavior consequence today; the trigger is a future accidental regression of the move-path check on a security-relevant authorization, which nothing would catch.",
+      "recommendation": "Add tests for SkillService.update_skill (or _validate_project_change) with SkillUpdateRequest(project='project-b') for a non-member (403 PERMISSION_DENIED), a member and a project admin.",
+      "status": "fixed",
+      "fix": {
+        "change": "Added mock-based tests pinning update_skill move-to-project authorization (non-member 403 with update-specific text, member, project admin, global admin)",
+        "test": "tests/codemie/service/test_skill_service.py::TestUpdateSkill::test_update_skill_move_to_project_*"
+      },
+      "disposition": {
+        "rationale": "recommended action overridden by user: fix now",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "1 commit subject in range matches the documented EPMCDME-####: Description format in git-workflow.md"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "skill_service.py and test_skill_service.py changes: new helper _require_project_access is typed with explicit parameter and return types, duplicated check is consolidated into the helper, no new source files (no license header concern), change is within the file's core responsibility (skill create/update authorization)"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no security-practices.md exists at .ai-run/guides/security/; adjudicated against the repo's .ai-run/guides/development/security-patterns.md instead. Authorization now goes through the central User.has_access_to_application helper rather than inline checks, create_skill (and import_skill via create_skill) fail closed with 403, no secrets logged, no untrusted-input normalization introduced"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "No spec/story artifact existed, so acceptance was skipped and confidence is low; all other lenses and standards ran cleanly. 1 advisory finding (untested move-to-project authorization after the refactor), 0 deferred, 9 dismissed as noise (see code-review-dismissed.local.md).",
+    "confidence": "low",
+    "risk_flags": [
+      "security"
+    ]
+  },
+  "advisory_status": []
+}

@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17684_skill-create-membership",
+  "head": "db90836c86ec8d730921dd26f6a51eb650afbaa3",
+  "runner": "poetry",
+  "started_at": "2026-11-23T13:10:34Z",
+  "completed_at": "2026-11-23T13:19:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 25000,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 260000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "19 failed, 38168 passed; failures are in cli_analytics postgres live tests (TypeError LocalAnalyticsFilter missing 'scope') and test_conversation_pagination (cairocffi: no library called cairo-2); none in files changed on this branch (skill_service). Not verified against base."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "pre-push hook step; 'python' not on PATH, run with python3 as the hook does"
+    },
+    {
+      "id": "pre-push-pytest-sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "CODEMIE_PREPUSH_ENABLED=true pre-push (pytest + make sonar-local)",
+      "exit_code": null,
+      "notes": "opt-in hook; pytest covered by unit gate; sonar-local needs Sonar credentials/network, owed to CI/reviewer"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Skip if Sonar config/credentials unavailable; not run locally"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Not opening an MR in this run; needs docker stack and fixtures"
+    }
+  ],
+  "failures": {
+    "unit": "  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:241: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_empty_list_raises_422\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:249: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferNonTransferableInList::test_copy_blocked_alias_in_list_raises_422\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:282: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.COPY, _ALL_TYPES, [\"gitlab-hook\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferBothFlagsFalse::test_both_flags_false_raises_422\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:308: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.MOVE, set(), None)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateProjects::test_rejects_same_source_and_target\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:347: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_projects(\"same\", \"same\")\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/service/settings/settings_transfer_service.py:426: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_hook_only_session_detail_matches_the_session_list\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_listing_gate_drops_start_only_and_sub_agent_sessions\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_late_parent_start_flags_the_already_rolled_up_child_as_a_sub_agent\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_aggregates_keep_claude_session_results_and_add_the_session_without_usage\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_model_breakdown_merges_dotted_and_dashed_claude_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_claude_code_subagent_start_does_not_hide_the_session_it_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_subagent_with_cost_rows_of_its_own_stays_listed\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_hidden_subagent_is_dropped_from_every_session_aggregate_and_still_opens_by_id\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_cost_rollup.py::test_rollup_cost_gives_what_the_live_cost_statements_give\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_explicit_false_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_full_mode_keeps_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[&include_tool_outputs=true-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_passes_format_specific_pandoc_args[pdf-expected_args0-absent_args0]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_list_table_link_content_survives_concise_filtering_end_to_end[pdf]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_stop_alone_is_no_agent_call_so_its_span_shows_an_empty_row\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_overview_rollup.py::test_the_rollup_serves_the_overview_the_live_statements_give_with_the_model_ties\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_user_rollup.py::test_the_rollup_serves_what_the_live_statements_give_for_the_seeded_users\n= 19 failed, 38168 passed, 666 skipped, 6 xfailed, 653 warnings in 260.02s (0:04:20) =\nmake: *** [test] Error 1\n"
+  }
+}

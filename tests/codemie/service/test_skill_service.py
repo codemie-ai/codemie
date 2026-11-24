@@ -621,6 +621,85 @@ class TestCreateSkill:
         create_call_args = mock_repository.create.call_args[0][0]
         assert create_call_args["categories"] == ["development", "testing"]
 
+    def test_create_skill_non_member_forbidden(self, mock_repository, other_user):
+        # Arrange
+        request = SkillCreateRequest(
+            name="new-skill",
+            description="New skill description",
+            content="Content " * 20,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[],
+        )
+
+        # Act & Assert
+        with patch.object(SkillRepository, "get_by_name_author_project", mock_repository.get_by_name_author_project):
+            with patch.object(SkillRepository, "create", mock_repository.create):
+                with pytest.raises(ExtendedHTTPException) as exc_info:
+                    SkillService.create_skill(request, other_user)
+
+        assert exc_info.value.code == status.HTTP_403_FORBIDDEN
+        assert exc_info.value.message == SkillErrors.PERMISSION_DENIED
+        mock_repository.get_by_name_author_project.assert_not_called()
+        mock_repository.create.assert_not_called()
+
+    def test_create_skill_project_admin_of_target_allowed(self, mock_repository, sample_skill):
+        # Arrange
+        project_admin = User(
+            id="padmin-1",
+            username="padmin",
+            name="Project Admin",
+            project_names=[],
+            admin_project_names=["project-a"],
+        )
+        request = SkillCreateRequest(
+            name="new-skill",
+            description="New skill description",
+            content="Content " * 20,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[],
+        )
+        mock_repository.get_by_name_author_project.return_value = None
+        mock_repository.create.return_value = sample_skill
+
+        # Act
+        with patch.object(SkillRepository, "get_by_name_author_project", mock_repository.get_by_name_author_project):
+            with patch.object(SkillRepository, "create", mock_repository.create):
+                result = SkillService.create_skill(request, project_admin)
+
+        # Assert
+        mock_repository.create.assert_called_once()
+        assert result is not None
+
+    def test_create_skill_global_admin_allowed(self, mock_repository, sample_skill):
+        # Arrange
+        request = SkillCreateRequest(
+            name="new-skill",
+            description="New skill description",
+            content="Content " * 20,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[],
+        )
+        mock_repository.get_by_name_author_project.return_value = None
+        mock_repository.create.return_value = sample_skill
+
+        # Act
+        with patch("codemie.rest_api.security.user.config.ENABLE_USER_MANAGEMENT", True):
+            admin = User(
+                id="admin-123", username="admin", project_names=["project-x"], admin_project_names=[], is_admin=True
+            )
+            with patch.object(
+                SkillRepository, "get_by_name_author_project", mock_repository.get_by_name_author_project
+            ):
+                with patch.object(SkillRepository, "create", mock_repository.create):
+                    result = SkillService.create_skill(request, admin)
+
+        # Assert
+        mock_repository.create.assert_called_once()
+        assert result is not None
+
 
 # =============================================================================
 # Update Skill Tests
@@ -749,6 +828,75 @@ class TestUpdateSkill:
         assert update_call_args["name"] == "updated-name"
         assert update_call_args["description"] == "Updated description"
         assert update_call_args["visibility"] == SkillVisibility.PUBLIC
+
+    @staticmethod
+    def _move_skill_to_project(mock_repository, sample_skill, user, target_project):
+        moved_skill = Skill(**sample_skill.model_dump())
+        moved_skill.project = target_project
+        mock_repository.get_by_id.return_value = sample_skill
+        mock_repository.get_by_name_author_project.return_value = None
+        mock_repository.update.return_value = moved_skill
+        mock_repository.count_assistants_using_skill.return_value = 0
+        request = SkillUpdateRequest(project=target_project)
+
+        with patch.object(SkillRepository, "get_by_id", mock_repository.get_by_id):
+            with patch.object(
+                SkillRepository, "get_by_name_author_project", mock_repository.get_by_name_author_project
+            ):
+                with patch.object(SkillRepository, "update", mock_repository.update):
+                    with patch.object(
+                        SkillRepository, "count_assistants_using_skill", mock_repository.count_assistants_using_skill
+                    ):
+                        return SkillService.update_skill(sample_skill.id, request, user)
+
+    def test_update_skill_move_to_project_non_member_denied(self, mock_repository, owner_user, sample_skill):
+        # Act
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            self._move_skill_to_project(mock_repository, sample_skill, owner_user, "project-z")
+
+        # Assert
+        assert exc_info.value.code == status.HTTP_403_FORBIDDEN
+        assert exc_info.value.message == SkillErrors.PERMISSION_DENIED
+        assert exc_info.value.details == "You don't have access to project 'project-z'"
+        assert exc_info.value.help == "Only admins or project members can move skills to a project"
+        mock_repository.update.assert_not_called()
+
+    def test_update_skill_move_to_project_member_allowed(self, mock_repository, owner_user, sample_skill):
+        # Act
+        result = self._move_skill_to_project(mock_repository, sample_skill, owner_user, "project-b")
+
+        # Assert
+        mock_repository.update.assert_called_once_with(sample_skill.id, {"project": "project-b"})
+        assert result.project == "project-b"
+
+    def test_update_skill_move_to_project_project_admin_allowed(self, mock_repository, owner_user, sample_skill):
+        # Arrange
+        project_admin = User(
+            id=owner_user.id,
+            username=owner_user.username,
+            name=owner_user.name,
+            project_names=["project-a"],
+            admin_project_names=["project-z"],
+        )
+
+        # Act
+        result = self._move_skill_to_project(mock_repository, sample_skill, project_admin, "project-z")
+
+        # Assert
+        mock_repository.update.assert_called_once_with(sample_skill.id, {"project": "project-z"})
+        assert result.project == "project-z"
+
+    def test_update_skill_move_to_project_global_admin_allowed(self, mock_repository, sample_skill):
+        # Act
+        with patch("codemie.rest_api.security.user.config.ENABLE_USER_MANAGEMENT", True):
+            global_admin = User(
+                id="admin-123", username="admin", project_names=["project-x"], admin_project_names=[], is_admin=True
+            )
+            result = self._move_skill_to_project(mock_repository, sample_skill, global_admin, "project-z")
+
+        # Assert
+        mock_repository.update.assert_called_once_with(sample_skill.id, {"project": "project-z"})
+        assert result.project == "project-z"
 
 
 # =============================================================================
@@ -925,6 +1073,44 @@ This is the imported skill content with sufficient length to pass validation req
         create_call_args = mock_repository.create.call_args[0][0]
         assert create_call_args["name"] == "imported-skill"
         assert create_call_args["description"] == "Imported skill description"
+
+    def test_import_skill_non_member_forbidden(self, mock_repository, other_user):
+        # Arrange
+        markdown = """---
+name: imported-skill
+description: Imported skill description
+---
+
+# Imported Skill
+This is the imported skill content with sufficient length to pass validation requirements."""
+        encoded = base64.b64encode(markdown.encode("utf-8")).decode("utf-8")
+
+        # Act & Assert
+        with patch.object(SkillRepository, "get_by_name_author_project", mock_repository.get_by_name_author_project):
+            with patch.object(SkillRepository, "create", mock_repository.create):
+                with pytest.raises(ExtendedHTTPException) as exc_info:
+                    SkillService.import_skill(encoded, "skill.md", "project-a", other_user, SkillVisibility.PRIVATE)
+
+        assert exc_info.value.code == status.HTTP_403_FORBIDDEN
+        assert exc_info.value.message == SkillErrors.PERMISSION_DENIED
+        mock_repository.create.assert_not_called()
+
+    def test_import_skill_non_member_invalid_file_still_bad_request(self, mock_repository, other_user):
+        # Arrange
+        markdown = """---
+description: Missing name field
+---
+
+Content with sufficient length to pass validation requirements for the skill content field."""
+        encoded = base64.b64encode(markdown.encode("utf-8")).decode("utf-8")
+
+        # Act & Assert
+        with patch.object(SkillRepository, "create", mock_repository.create):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                SkillService.import_skill(encoded, "skill.md", "project-a", other_user, SkillVisibility.PRIVATE)
+
+        assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+        mock_repository.create.assert_not_called()
 
     def test_import_skill_invalid_base64(self, owner_user):
         # Arrange

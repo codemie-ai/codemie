@@ -534,6 +534,10 @@ class SkillService:
         - Sets author_id, author_name, author_username from user
         - Sets version to "1.0.0"
         """
+        SkillService._require_project_access(
+            request.project, user, "Only admins or project members can create skills in a project"
+        )
+
         # Check for duplicate name
         existing = SkillRepository.get_by_name_author_project(
             name=request.name,
@@ -614,17 +618,26 @@ class SkillService:
         if request.project is None or request.project == skill.project:
             return None
 
-        user_admin_projects = user.applications_admin if hasattr(user, 'applications_admin') else []
-        is_admin_of_target = user.is_admin or request.project in user_admin_projects
+        SkillService._require_project_access(
+            request.project, user, "Only admins or project members can move skills to a project"
+        )
+        return request.project
 
-        if not is_admin_of_target and request.project not in user.applications:
+    @staticmethod
+    def _require_project_access(project: str, user: User, help_text: str) -> None:
+        """
+        Ensure the user may place skills in the project.
+
+        Raises:
+            ExtendedHTTPException: If the user is neither an admin nor a member of the project.
+        """
+        if not user.has_access_to_application(project):
             raise ExtendedHTTPException(
                 code=status.HTTP_403_FORBIDDEN,
                 message=SkillErrors.PERMISSION_DENIED,
-                details=f"You don't have access to project '{request.project}'",
-                help="Only admins or project members can move skills to a project",
+                details=f"You don't have access to project '{project}'",
+                help=help_text,
             )
-        return request.project
 
     @staticmethod
     def _check_duplicate_name(skill_id: str, target_name: str, target_project: str, author_id: str) -> None:
