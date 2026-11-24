@@ -44,6 +44,7 @@ def configure_prometheus_http_metrics(app: FastAPI) -> None:
     ).instrument(app)
 
     _register_thread_metrics()
+    register_cli_analytics_metrics()
 
 
 async def start_metrics_server() -> tuple[asyncio.Task, Any]:
@@ -96,6 +97,52 @@ def register_prometheus_db_pool_metrics() -> None:
         pass
     except Exception as e:
         logger.warning(f"Failed to register DB pool metrics: {e}")
+
+
+def register_cli_analytics_metrics(registry: Any = None) -> None:
+    """Register the CLI analytics pool metrics and hand them to the adapter. Labels: endpoint and lane, caller or
+    reason; never a filter value."""
+    from prometheus_client import REGISTRY, Counter, Gauge, Histogram
+
+    from codemie.repository.cli_analytics.postgres.request_stats import CliAnalyticsMetrics, install_metrics
+
+    reg = registry if registry is not None else REGISTRY
+    request_labels = ["endpoint", "lane"]
+    seconds = (0.005, 0.025, 0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600)
+
+    def timer(name: str, doc: str) -> Any:
+        return Histogram(f"cli_analytics_request_{name}", doc, request_labels, buckets=seconds, registry=reg)
+
+    install_metrics(
+        CliAnalyticsMetrics(
+            gate_wait=timer("gate_wait_seconds", "Seconds a dashboard request waited for its gate slot"),
+            pool_wait=timer("pool_wait_seconds", "Seconds a dashboard request waited for pooled connections"),
+            sql_time=timer("sql_seconds", "Seconds a dashboard request spent in SQL statements"),
+            statements=Histogram(
+                "cli_analytics_request_statements",
+                "SQL statements a dashboard request ran",
+                request_labels,
+                buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500),
+                registry=reg,
+            ),
+            in_use=Gauge(
+                "cli_analytics_pool_in_use", "Analytics pool connections in use on this pod", ["caller"], registry=reg
+            ),
+            waiting=Gauge(
+                "cli_analytics_pool_waiting", "Callers waiting for an analytics pool connection", registry=reg
+            ),
+            ingest_acquire_wait=Histogram(
+                "cli_analytics_ingest_acquire_wait_seconds",
+                "Seconds an ingest transaction waited for a connection",
+                buckets=seconds,
+                registry=reg,
+            ),
+            ingest_503=Counter("cli_analytics_ingest_503", "Ingest requests answered 503", registry=reg),
+            rollup_refused=Counter(
+                "cli_analytics_rollup_refused", "Rollup reads that could not answer", ["reason"], registry=reg
+            ),
+        )
+    )
 
 
 def _register_thread_metrics() -> None:

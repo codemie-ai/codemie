@@ -63,6 +63,7 @@ from codemie.configs.customer_config import customer_config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.cli_analytics.factory import get_cli_analytics_storage
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
+from codemie.repository.cli_analytics.postgres import request_stats
 from codemie.repository.cli_analytics.scope import ViewerScope
 from codemie.service.analytics.dashboard_cache import cached_dashboard
 from codemie.repository.cli_analytics.hook_events import datetime_to_ns
@@ -73,6 +74,7 @@ from codemie.repository.cli_analytics.ports import (
     PublicationRejectedError,
     CliAnalyticsStorageConfigError,
     StalePolicyError,
+    DashboardAcquireTimeout,
     RequestBudgetExceeded,
     StatementTimeout,
     TelemetryIngestError,
@@ -209,7 +211,10 @@ def _publication_rejected_response(exc: PublicationRejectedError) -> Response:
 
 
 def _ingest_http_error(exc: TelemetryIngestError) -> HTTPException:
-    return HTTPException(status_code=_INGEST_ERROR_STATUS.get(type(exc), 503), detail=str(exc))
+    code = _INGEST_ERROR_STATUS.get(type(exc), 503)
+    if code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        request_stats.ingest_refused()
+    return HTTPException(status_code=code, detail=str(exc))
 
 
 async def _ingest_otlp(request: Request, signal: OtlpSignal) -> Response:
@@ -240,6 +245,7 @@ async def _ingest_otlp(request: Request, signal: OtlpSignal) -> Response:
     except TelemetryIngestError as exc:
         raise _ingest_http_error(exc) from exc
     except CliAnalyticsStorageConfigError as exc:  # retried by the client until the configuration is fixed
+        request_stats.ingest_refused()
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_ERR_STORAGE_MISCONFIGURED) from exc
     return _ingest_response(result, route)
 
@@ -295,6 +301,13 @@ def _unavailable(details: str, help_text: str) -> ExtendedHTTPException:
     )
 
 
+_ACQUIRE_TIMEOUT_DETAILS = (
+    "The request waited more than {limit_s:g} seconds for a free analytics slot "
+    "(CLI_ANALYTICS_DASHBOARD_ACQUIRE_TIMEOUT_S); the analytics service is busy."
+)
+_ACQUIRE_TIMEOUT_HELP = "Try again in a moment."
+
+
 def _timeout_error(endpoint_name: str, e: BaseException, timeout_504: str | None) -> ExtendedHTTPException:
     """A statement past its time limit is a 504 on a route that opted in; a pool or connect timeout (the store that
     cannot be reached) is a 503 on every route."""
@@ -302,6 +315,13 @@ def _timeout_error(endpoint_name: str, e: BaseException, timeout_504: str | None
     if timeout_504 is None or not slow:
         return _storage_unavailable(endpoint_name, e)
     logger.warning(f"Analytics query timed out for {endpoint_name}: {type(e).__name__}")
+    if isinstance(e, DashboardAcquireTimeout):
+        return ExtendedHTTPException(
+            code=status.HTTP_504_GATEWAY_TIMEOUT,
+            message=timeout_504,
+            details=_ACQUIRE_TIMEOUT_DETAILS.format(limit_s=config.CLI_ANALYTICS_DASHBOARD_ACQUIRE_TIMEOUT_S),
+            help=_ACQUIRE_TIMEOUT_HELP,
+        )
     return ExtendedHTTPException(
         code=status.HTTP_504_GATEWAY_TIMEOUT,
         message=timeout_504,
@@ -360,6 +380,7 @@ def handle_errors(endpoint_name: str, timeout_504: str | None = None) -> Callabl
         # (*args, **kwargs) and rejects every request with 422 "args field required".
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> JSONResponse:
+            request_stats.current_endpoint.set(endpoint_name)  # the label of this request's stats
             try:
                 return await func(*args, **kwargs)
             except ExtendedHTTPException:
@@ -491,9 +512,9 @@ def _metadata(
     }
 
 
-def _respond(payload: dict, model_class: Any) -> JSONResponse:
+def _respond(payload: dict, model_class: Any, exclude: Any = None) -> JSONResponse:
     validated = model_class(**payload)
-    body = validated.model_dump(by_alias=True)
+    body = validated.model_dump(by_alias=True, exclude=exclude)
     response = JSONResponse(content=body, status_code=status.HTTP_200_OK)
     if config.is_local:
         response.headers["Cache-Control"] = "no-store"
@@ -557,6 +578,7 @@ async def ingest_event_hooks(request: Request) -> Response:
     except TelemetryIngestError as exc:
         raise _ingest_http_error(exc) from exc
     except CliAnalyticsStorageConfigError as exc:
+        request_stats.ingest_refused()
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_ERR_STORAGE_MISCONFIGURED) from exc
     return _ingest_response(result, route)
 
@@ -572,6 +594,14 @@ def _statement_timeout_as_504(what: str):
     try:
         yield
     except (asyncpg.QueryCanceledError, StatementTimeout) as e:
+        if isinstance(e, DashboardAcquireTimeout):
+            logger.warning(f"Local analytics {what} waited too long for a slot")
+            raise ExtendedHTTPException(
+                code=status.HTTP_504_GATEWAY_TIMEOUT,
+                message=f"The {what} took too long to build",
+                details=_ACQUIRE_TIMEOUT_DETAILS.format(limit_s=config.CLI_ANALYTICS_DASHBOARD_ACQUIRE_TIMEOUT_S),
+                help=_ACQUIRE_TIMEOUT_HELP,
+            ) from e
         if isinstance(e, RequestBudgetExceeded):
             limit_s, details = config.CLI_ANALYTICS_DASHBOARD_REQUEST_BUDGET_S, "The request exceeded its budget of"
         else:
@@ -605,16 +635,25 @@ async def get_overview(
         description="Fill the funding-route and personal-billed estimates. A caller that does not read them passes "
         "false: they are then zero. With both false the answer can come from the start-day rollup.",
     ),
+    include_total_users: bool = Query(
+        False,
+        description="Add `kpis.total_users`, the distinct developers of the window (the `total_count` of `/users`), "
+        "so a caller that reads only that count need not request `/users`. Without it the field is not in the answer.",
+    ),
 ) -> JSONResponse:
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
     with _statement_timeout_as_504("overview"):
         data, pricer, data_as_of = await _handler().get_overview(
-            f, include_class_lists=include_class_lists, include_buckets=include_buckets
+            f,
+            include_class_lists=include_class_lists,
+            include_buckets=include_buckets,
+            include_total_users=include_total_users,
         )
     metadata = _metadata(start_ns, data_as_of, pricer.unpriced, pricer.catalog_source, f.end_dt)
-    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsOverviewResponse)
+    exclude = None if include_total_users else {"data": {"kpis": {"total_users"}}}
+    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsOverviewResponse, exclude)
 
 
 @router.get(
@@ -822,6 +861,11 @@ async def get_projects(  # noqa: PLR0913 - FastAPI route: one parameter per quer
     search: str | None = Query(
         None, description="Filter by project name (and, with include_repositories=true, by repository name)"
     ),
+    include_branches: bool = Query(
+        True,
+        description="Nest each repository's branches. False leaves `branches` null; "
+        "`GET /branches` returns the branches of one repository.",
+    ),
     include_repositories: bool = Query(
         True,
         description="Nest each project's repositories (with their branches) in its row. Send false for totals-only "
@@ -829,13 +873,14 @@ async def get_projects(  # noqa: PLR0913 - FastAPI route: one parameter per quer
         "last row of the last page, outside `per_page` and `total_count`; a search never returns it.",
     ),
 ) -> JSONResponse:
-    """One page of projects sorted by cost, each with its repositories and their branches nested; with
-    `include_repositories=false`, totals only (drill-down: repositories come from `/repositories`)."""
+    """One page of projects sorted by cost, each with its repositories and, unless `include_branches` is false, their
+    branches nested; with `include_repositories=false`, totals only (drill-down: repositories come from
+    `/repositories`)."""
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    with _statement_timeout_as_504("projects"):
-        data, pricer = await _handler().get_projects(f, page, per_page, search, include_repositories)
+    with _statement_timeout_as_504("projects report"):
+        data, pricer = await _handler().get_projects(f, page, per_page, search, include_branches, include_repositories)
     metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsProjectsResponse)
 
@@ -849,12 +894,17 @@ async def get_projects(  # noqa: PLR0913 - FastAPI route: one parameter per quer
 async def get_tools(
     user: User = Depends(authenticate),
     filters: FilterParams = Depends(FilterParams),
+    include_class_lists: bool = Query(
+        True,
+        description="Fill the subscription and origin lists of the tools, models and invocations. A caller that does "
+        "not read them passes false: they are then empty.",
+    ),
 ) -> JSONResponse:
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
     with _statement_timeout_as_504("tools report"):
-        data = await _handler().get_tools(f)
+        data = await _handler().get_tools(f, include_class_lists=include_class_lists)
     return _respond(
         {"data": data, "metadata": _metadata(start_ns, None, [], None, f.end_dt)}, LocalAnalyticsToolsResponse
     )
@@ -919,12 +969,24 @@ async def get_activity(
 async def get_efficiency(
     user: User = Depends(authenticate),
     filters: FilterParams = Depends(FilterParams),
+    include_class_lists: bool = Query(
+        True,
+        description="Fill the subscription and origin lists of the totals, dead sessions, depth buckets and code "
+        "changes. A caller that does not read them passes false: they are then empty.",
+    ),
+    include_buckets: bool = Query(
+        True,
+        description="Fill the funding-route and personal-billed estimates. A caller that does not read them passes "
+        "false: they are then zero. With both false the answer can come from the start-day rollup.",
+    ),
 ) -> JSONResponse:
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
     with _statement_timeout_as_504("efficiency"):
-        data, pricer = await _handler().get_efficiency(f)
+        data, pricer = await _handler().get_efficiency(
+            f, include_class_lists=include_class_lists, include_buckets=include_buckets
+        )
     metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsEfficiencyResponse)
 
@@ -1011,8 +1073,11 @@ async def get_session_detail(
         own_shared=True,
     )
     detail = None
-    if await get_cli_analytics_storage().reader.authorize_session(trace_id, scope):
-        detail, unpriced, catalog_source = await _handler().get_session_detail(trace_id, scope=scope)
+    with _statement_timeout_as_504("session detail"):
+        authorized = await _handler().authorize_session(trace_id, scope)
+    if authorized:
+        with _statement_timeout_as_504("session detail"):
+            detail, unpriced, catalog_source = await _handler().get_session_detail(trace_id, scope=scope)
     if detail is None:
         raise ExtendedHTTPException(
             code=status.HTTP_404_NOT_FOUND,

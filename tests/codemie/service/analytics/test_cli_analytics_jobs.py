@@ -227,7 +227,7 @@ class _WarmReader:
         self.windows.append((f.start_dt, f.scope))
         return self.served
 
-    async def rollup_overview(self, f, rate_of, max_age_s):
+    async def rollup_overview(self, f, rate_of, max_age_s, users=False):
         self.overview_windows.append(f.start_dt)
         if self.overview_fails_on == len(self.overview_windows):
             raise RuntimeError("the window's overview read failed")
@@ -321,3 +321,4 @@ async def test_an_overview_read_that_fails_does_not_skip_the_remaining_windows()
     assert cache.get(dc.rollup_key(first)) is served  # the Users answer of the failed window is kept
     assert cache.get(dc.rollup_key(first, "overview-rollup")) is None  # the failed read warmed nothing
     assert cache.get(dc.rollup_key(second, "overview-rollup")) is overview  # the next window was warmed
+    assert cache.get(dc.rollup_key(second, "overview-rollup", True)) is overview  # and for a request that counts users

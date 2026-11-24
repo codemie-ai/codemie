@@ -363,6 +363,10 @@ _NOT_WINDOWED = (
     "rollup_users",  # reads the rollup tables of the start days, not `sel`
     "rollup_cost",
     "rollup_overview",
+    "rollup_efficiency",
+    "rollup_tools",
+    "rollup_repository_ranking",
+    "rollup_project_page",
     "get_skill_names_by_session",
     "authorize_session",
     "get_session_page",
@@ -523,6 +527,14 @@ async def _sql_of(method: str, filters: dict | None = None, **kwargs) -> tuple[s
     statements = [sql for sql in recorder.statements if sql != SORT_KEYS_ENABLED_SQL]  # the kill switch read
     assert len(statements) == 1
     return " ".join(statements[0].split()), statements
+
+
+@pytest.mark.asyncio
+async def test_the_overview_user_count_is_the_distinct_developers_of_sel_like_the_users_total():
+    sql, _ = await _sql_of("get_overview_user_count")
+
+    assert "SELECT count(DISTINCT developer) AS n FROM sel" in sql
+    assert " developer" in sql.split("sel AS", 1)[1]  # `sel` carries the developer column
 
 
 _START_DAY_UTC = "($start_dt::timestamptz AT TIME ZONE 'UTC')::date"
@@ -1163,28 +1175,43 @@ def test_normalized_model_name_sql_expression_is_pinned():
 
 
 @pytest.mark.asyncio
-async def test_model_breakdown_groups_by_the_normalized_expression():
+async def test_model_breakdown_normalizes_each_distinct_name_once_and_groups_by_it():
     sql, _ = await _sql_of("get_model_breakdown")
 
-    assert f"{_NORMALIZED_MODEL_NAME_SQL} AS model_name" in sql
-    assert f"GROUP BY {_NORMALIZED_MODEL_NAME_SQL}" in sql
-    assert f"HAVING {_NORMALIZED_MODEL_NAME_SQL} <> ''" in sql
+    # The five regexes run on the distinct raw names (`names`, MATERIALIZED), not on every cost_daily row.
+    assert (
+        f"{PostgresCliAnalyticsReader._normalized_model_name('r')} AS name FROM (SELECT DISTINCT d.model_name AS r"
+        in sql
+    )
+    assert "names AS MATERIALIZED" in sql
+    assert _NORMALIZED_MODEL_NAME_SQL not in sql
+    assert "JOIN names n ON n.raw_name = d.model_name" in sql
+    assert "n.name AS model_name" in sql
+    assert "GROUP BY n.name" in sql
+    assert "HAVING n.name <> ''" in sql
     assert "GROUP BY d.model_name" not in sql
-    assert "HAVING d.model_name <> ''" not in sql
-    assert f"{_NORMALIZED_MODEL_NAME_SQL} {_C}" in sql
 
 
 @pytest.mark.asyncio
-async def test_model_breakdown_order_by_repeats_the_full_normalized_expression():
+async def test_model_breakdown_order_by_repeats_the_grouped_name_not_the_bare_alias():
     # Regression: ORDER BY ..., model_name COLLATE "C" looks like a reference to the
     # SELECT list's output alias, but attaching COLLATE makes it a general expression,
     # so Postgres resolves the bare identifier against the FROM-clause column
-    # (cost_daily.model_name) instead of the alias. That raw column is no longer in
-    # GROUP BY (the normalized expression is), so Postgres raises a GroupingError at
-    # runtime. ORDER BY must repeat the full normalized expression, not the bare alias.
+    # (cost_daily.model_name) instead of the alias. That raw column is not in GROUP BY
+    # (the normalized name `n.name` is), so Postgres raises a GroupingError at
+    # runtime. ORDER BY must repeat the grouped expression, not the bare alias.
     sql, _ = await _sql_of("get_model_breakdown")
 
-    assert f"ORDER BY session_count DESC, cost_usd DESC, {_NORMALIZED_MODEL_NAME_SQL} {_C}" in sql
+    assert f"ORDER BY session_count DESC, cost_usd DESC, n.name {_C}" in sql
+
+
+@pytest.mark.asyncio
+async def test_class_lists_by_model_normalizes_each_distinct_name_once():
+    sql, _ = await _sql_of("get_class_lists", by="model")
+
+    assert "names AS MATERIALIZED" in sql
+    assert _NORMALIZED_MODEL_NAME_SQL not in sql
+    assert "JOIN names n ON n.raw_name = d.model_name GROUP BY n.name HAVING n.name <> ''" in sql
 
 
 def _apply(raw: str) -> str:
@@ -3256,37 +3283,6 @@ def test_the_raw_check_is_skipped_for_a_window_that_starts_before_the_raw_retent
     assert "now() - interval '7 days'" in reader._real_work_from_window_start("d")
 
 
-def test_active_in_window_resumed_bypass_falls_back_to_the_day_row_once_raw_retention_has_passed(monkeypatch):
-    """`_active_in_window`'s `resumed_bypass` gates only the started-in-the-window-but-resumed cohort (arm 6 and
-    arm 2's live-resumed branch). Before this fix, its partial-day branch (`window_days AND raw`) required a raw
-    record unconditionally, so a session whose only record of a partial boundary day is a day-rollup row -- the
-    normal state once that day's raw rows have aged out of `CLI_ANALYTICS_RAW_RETENTION_DAYS` -- would wrongly fall
-    out of arm 6, which the pre-fix code never needed to ask for an old window (its old, simpler
-    `last_activity_day > start day` check had no raw dependency at all). `_raw_retention_expired` closes that gap
-    the same way `_no_raw_check_needed` already does for the `_STARTED_IN_WINDOW` gate.
-
-    A session whose `started_at` is outside the window (arms 3, 4 and 5) is not part of that cohort and keeps the
-    plain raw requirement regardless of the window's age: `resumed_bypass` defaults to off, and a purged raw record
-    on a partial boundary day still excludes it, as on main (EPMCDME-16496 MR review)."""
-    from codemie.repository.cli_analytics.postgres import reader
-
-    monkeypatch.setattr(reader, "_RAW_RETENTION_DAYS", 7)
-    expired = "$start_dt::timestamptz < now() - interval '7 days'"
-
-    assert expired in reader._raw_retention_expired()
-    assert expired in reader._no_raw_check_needed()
-
-    bypassed = reader._active_in_window("d", resumed_bypass=True)
-    assert f"({expired} OR {reader._raw_activity_in_window('d')})" in bypassed
-
-    # the outside-the-window arms (3, 4, 5) never get the bypass, with either argument ordering
-    outside_default = reader._active_in_window("d")
-    outside_raw_first = reader._active_in_window("d", raw_first=True)
-    for outside in (outside_default, outside_raw_first):
-        assert expired not in outside
-        assert reader._raw_activity_in_window("d") in outside
-
-
 @pytest.mark.asyncio
 async def test_branch_unattributed_filter_adds_a_no_branch_condition_anded_with_the_scope():
     recorder = _PageArgRecorder()
@@ -3478,3 +3474,82 @@ async def test_unattributed_last_changes_nothing_without_a_page_or_with_branches
         )
 
     assert _ranking_sql(plain) == _ranking_sql(flagged)
+
+
+def test_active_in_window_resumed_bypass_falls_back_to_the_day_row_once_raw_retention_has_passed(monkeypatch):
+    """`_active_in_window`'s `resumed_bypass` gates only the started-in-the-window-but-resumed cohort (arm 6 and
+    arm 2's live-resumed branch). Before this fix, its partial-day branch (`window_days AND raw`) required a raw
+    record unconditionally, so a session whose only record of a partial boundary day is a day-rollup row -- the
+    normal state once that day's raw rows have aged out of `CLI_ANALYTICS_RAW_RETENTION_DAYS` -- would wrongly fall
+    out of arm 6, which the pre-fix code never needed to ask for an old window (its old, simpler
+    `last_activity_day > start day` check had no raw dependency at all). `_raw_retention_expired` closes that gap
+    the same way `_no_raw_check_needed` already does for the `_STARTED_IN_WINDOW` gate.
+
+    A session whose `started_at` is outside the window (arms 3, 4 and 5) is not part of that cohort and keeps the
+    plain raw requirement regardless of the window's age: `resumed_bypass` defaults to off, and a purged raw record
+    on a partial boundary day still excludes it, as on main (EPMCDME-16496 MR review)."""
+    from codemie.repository.cli_analytics.postgres import reader
+
+    monkeypatch.setattr(reader, "_RAW_RETENTION_DAYS", 7)
+    expired = "$start_dt::timestamptz < now() - interval '7 days'"
+
+    assert expired in reader._raw_retention_expired()
+    assert expired in reader._no_raw_check_needed()
+
+    bypassed = reader._active_in_window("d", resumed_bypass=True)
+    assert f"({expired} OR {reader._raw_activity_in_window('d')})" in bypassed
+
+    # the outside-the-window arms (3, 4, 5) never get the bypass, with either argument ordering
+    outside_default = reader._active_in_window("d")
+    outside_raw_first = reader._active_in_window("d", raw_first=True)
+    for outside in (outside_default, outside_raw_first):
+        assert expired not in outside
+        assert reader._raw_activity_in_window("d") in outside
+
+
+@pytest.mark.asyncio
+async def test_the_tool_usage_statement_is_limited_to_twenty_by_default():
+    sql, _ = await _sql_and_args("get_tool_usage", _flt())
+
+    assert "ORDER BY call_count DESC, name" in sql
+    assert sql.endswith("LIMIT 20")
+
+
+@pytest.mark.asyncio
+async def test_an_exact_tool_usage_statement_has_no_limit_and_the_same_order():
+    sql, _ = await _sql_and_args("get_tool_usage", _flt(), exact=True)
+
+    assert "LIMIT" not in sql
+    assert "ORDER BY call_count DESC, name" in sql
+
+
+@pytest.mark.asyncio
+async def test_a_failing_tools_rollup_read_answers_none_so_the_live_statements_run(monkeypatch):
+    import asyncpg
+
+    from codemie.repository.cli_analytics.postgres import user_rollup
+
+    async def broken(*args, **kwargs):
+        raise asyncpg.UndefinedTableError("user_day_tools_rollup")
+
+    monkeypatch.setattr(user_rollup, "serve_tools", broken)
+
+    assert await PostgresCliAnalyticsReader(_SqlRecorder()).rollup_tools(_flt(), lambda m: m, 60.0) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_the_tools_rollup_read_passes_the_rates_version_and_the_age(monkeypatch):
+    from codemie.repository.cli_analytics.postgres import user_rollup
+
+    seen = {}
+
+    async def serve(reader, f, rate_of, version, *, max_age_s):
+        seen.update(version=version, max_age_s=max_age_s)
+        return "served"
+
+    monkeypatch.setattr(user_rollup, "serve_tools", serve)
+    reader = PostgresCliAnalyticsReader(_SqlRecorder())  # type: ignore[arg-type]
+    reader.set_rates(lambda: "v9")
+
+    assert await reader.rollup_tools(_flt(), lambda m: m, 60.0) == "served"
+    assert seen == {"version": "v9", "max_age_s": 60.0}

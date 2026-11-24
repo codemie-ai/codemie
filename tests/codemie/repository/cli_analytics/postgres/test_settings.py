@@ -370,7 +370,7 @@ def test_server_settings_pin_schema_memory_timeouts_and_turn_jit_off():
 def test_operational_settings_are_taken_from_config():
     s = AnalyticsPgSettings.from_config(
         _config(
-            CLI_ANALYTICS_PG_POOL_SIZE=3,
+            CLI_ANALYTICS_PG_POOL_SIZE=5,
             CLI_ANALYTICS_PG_INGEST_ACQUIRE_TIMEOUT_MS=250,
             CLI_ANALYTICS_RAW_RETENTION_DAYS=30,
             CLI_ANALYTICS_ROLLUP_RETENTION_DAYS=200,
@@ -382,7 +382,7 @@ def test_operational_settings_are_taken_from_config():
         )
     )
 
-    assert (s.pool_size, s.ingest_acquire_timeout_s) == (3, 0.25)
+    assert (s.pool_size, s.ingest_acquire_timeout_s) == (5, 0.25)
     assert (s.raw_retention_days, s.rollup_retention_days, s.dedup_retention_days) == (30, 200, 7)
     assert (s.rollup_refresh_seconds, s.rollup_batch_size) == (10, 100)
     assert (s.partition_premake_weeks, s.maintenance_interval_minutes) == (2, 15)

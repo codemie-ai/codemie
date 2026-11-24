@@ -41,7 +41,7 @@ import json
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -68,6 +68,10 @@ from codemie.repository.cli_analytics.ports import (
     ProjectPage,
     RollupCost,
     RollupOverview,
+    RollupEfficiency,
+    RollupTools,
+    RollupProjects,
+    RollupRanking,
     RollupUsers,
     Rows,
     StatementTimeout,
@@ -1442,6 +1446,19 @@ class PostgresCliAnalyticsReader:
         """The SQL spelling of the canonical model id; see `normalized_model_name`."""
         return normalized_model_name(column)
 
+    @staticmethod
+    def _model_names_cte(source: str) -> str:
+        """The CTE `names (raw_name, name)`: the canonical model id of each distinct raw model name of `source`
+        (`FROM cost_daily d ...`), for a statement that groups the window's rows by model. Grouping by the expression
+        itself runs its five regexes on every row (5.7 s at 7 days and 10 s at 90 days of 600K sessions, to name six
+        models); `MATERIALIZED` keeps the planner from folding the names back into the join, where they would be
+        computed per row again. A row with no model name, or one that normalises to '', matches no name or is dropped
+        by the caller's HAVING, as it is when grouped by the expression."""
+        return (
+            "names AS MATERIALIZED (SELECT r AS raw_name, "
+            f"{normalized_model_name('r')} AS name FROM (SELECT DISTINCT d.model_name AS r {source}) x)"
+        )
+
     # ── cost / token facts (cost_daily) ──────────────────────────────────────
 
     async def get_class_lists(self, f: LocalAnalyticsFilter, by: str = "all") -> Rows:
@@ -1453,12 +1470,12 @@ class PostgresCliAnalyticsReader:
         Rows are `key`, `kind`, `subscription_types`,
         `project_origins`; the lists are never NULL."""
         classes = _CLASS_LISTS
-        name = self._normalized_model_name("d.model_name")
+        model_rows = "FROM cost_daily d JOIN sel s ON s.session_id = d.session_id"
         sources = {
             "all": f"SELECT ''::text AS key, '' AS kind, {classes} FROM sel s",
             "session": f"SELECT s.session_id AS key, '' AS kind, {classes} FROM sel s GROUP BY s.session_id",
-            "model": f"SELECT {name} AS key, '' AS kind, {classes} FROM cost_daily d "
-            f"JOIN sel s ON s.session_id = d.session_id GROUP BY {name} HAVING {name} <> ''",
+            "model": f"SELECT n.name AS key, '' AS kind, {classes} {model_rows} "
+            "JOIN names n ON n.raw_name = d.model_name GROUP BY n.name HAVING n.name <> ''",
             "day": f"SELECT l.day::text AS key, '' AS kind, {classes} FROM lines_daily l "
             f"JOIN sel s ON s.session_id = l.session_id WHERE {_LINES_NONZERO} GROUP BY 1",
             "tool": f"SELECT i.name AS key, '' AS kind, {classes} FROM invocations_hourly i "
@@ -1483,13 +1500,15 @@ class PostgresCliAnalyticsReader:
         params = window_params(f)
         if by == "invocation":
             params["builtin_commands"] = list(BUILTIN_COMMAND_NAMES)
-        skill_rows = (
-            """, skill_rows AS MATERIALIZED (SELECT kind, name, session_id FROM invocations_hourly
-                WHERE kind IN (2, 3) AND session_id IN (SELECT session_id FROM sel))"""
-            if by == "invocation"
-            else ""
-        )
-        return await self._q(f"WITH {self._sel_cte(f)}{skill_rows} {sources[by]}", params)
+        ctes = self._sel_cte(f)
+        if by == "model":
+            ctes = f"{ctes}, {self._model_names_cte(model_rows)}"
+        if by == "invocation":
+            ctes = (
+                f"{ctes}, skill_rows AS MATERIALIZED (SELECT kind, name, session_id FROM invocations_hourly"
+                " WHERE kind IN (2, 3) AND session_id IN (SELECT session_id FROM sel))"
+            )
+        return await self._q(f"WITH {ctes} {sources[by]}", params)
 
     async def get_cost_kpis(self, f: LocalAnalyticsFilter) -> Rows:
         """Every session of `sel` counts toward `total_sessions`, priced or not: the same
@@ -1540,22 +1559,33 @@ class PostgresCliAnalyticsReader:
             window_params(f),
         )
 
+    async def get_overview_user_count(self, f: LocalAnalyticsFilter) -> int:
+        """The distinct developers of `sel`: the Users page's `total_count` (see `get_users_money_page`)."""
+        rows = await self._q(
+            f"""
+        WITH {self._sel_cte(f, with_developer=True)}
+        SELECT count(DISTINCT developer) AS n FROM sel""",
+            window_params(f),
+        )
+        return int(rows[0]["n"]) if rows else 0
+
     async def get_model_breakdown(self, f: LocalAnalyticsFilter) -> Rows:
-        model_name = self._normalized_model_name("d.model_name")
+        scope = self._scope(f, "d.session_id")
         return await self._q(
             f"""
-        WITH {self._sel_cte(f)}
-        SELECT {model_name}                                   AS model_name,
+        WITH {self._sel_cte(f)}, {self._model_names_cte(f"FROM cost_daily d WHERE true{scope}")}
+        SELECT n.name                                         AS model_name,
                count(DISTINCT d.session_id)                   AS session_count,
                sum(d.cost_usd)                                AS cost_usd,
                sum(d.cache_read_tokens)::bigint               AS cache_read_tokens,
                sum(d.input_tokens + d.output_tokens + d.cache_read_tokens + d.cache_creation_tokens)::bigint
                                                               AS total_tokens
         FROM cost_daily d
-        WHERE true{self._scope(f, "d.session_id")}
-        GROUP BY {model_name}
-        HAVING {model_name} <> ''
-        ORDER BY session_count DESC, cost_usd DESC, {model_name} {_C}""",
+        JOIN names n ON n.raw_name = d.model_name
+        WHERE true{scope}
+        GROUP BY n.name
+        HAVING n.name <> ''
+        ORDER BY session_count DESC, cost_usd DESC, n.name {_C}""",
             window_params(f),
         )
 
@@ -1706,14 +1736,44 @@ class PostgresCliAnalyticsReader:
             return None
 
     async def rollup_overview(
-        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float, users: bool = False
     ) -> RollupOverview | None:
         """See the port. Never raises for a missing table: a read that fails answers None, so the live path runs."""
         from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports this one
 
         version = self._rates_version() if self._rates_version is not None else None
         try:
-            return await user_rollup.serve_overview(self, f, rate_of, version, max_age_s=max_age_s)
+            return await user_rollup.serve_overview(self, f, rate_of, version, max_age_s=max_age_s, users=users)
+        except asyncpg.QueryCanceledError:
+            raise  # as a StatementTimeout or a pool timeout: the live statements would only be slower still
+        except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+            logger.warning(f"cli_analytics: user rollup not read, the live statements run instead: {exc!r}")
+            return None
+
+    async def rollup_efficiency(
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+    ) -> RollupEfficiency | None:
+        """See the port. Never raises for a missing table: a read that fails answers None, so the live path runs."""
+        from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports this one
+
+        version = self._rates_version() if self._rates_version is not None else None
+        try:
+            return await user_rollup.serve_efficiency(self, f, rate_of, version, max_age_s=max_age_s)
+        except asyncpg.QueryCanceledError:
+            raise  # as a StatementTimeout or a pool timeout: the live statements would only be slower still
+        except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+            logger.warning(f"cli_analytics: user rollup not read, the live statements run instead: {exc!r}")
+            return None
+
+    async def rollup_tools(
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+    ) -> RollupTools | None:
+        """See the port. Never raises for a missing table: a read that fails answers None, so the live path runs."""
+        from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports this one
+
+        version = self._rates_version() if self._rates_version is not None else None
+        try:
+            return await user_rollup.serve_tools(self, f, rate_of, version, max_age_s=max_age_s)
         except asyncpg.QueryCanceledError:
             raise  # as a StatementTimeout or a pool timeout: the live statements would only be slower still
         except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
@@ -1734,6 +1794,66 @@ class PostgresCliAnalyticsReader:
         except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
             logger.warning(f"cli_analytics: user rollup not read, the live statements run instead: {exc!r}")
             return None
+
+    async def _rollup_read(self, serve: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any) -> Any:
+        """A ranking-rollup read: a read that fails (a missing table) answers None, so the live path runs."""
+        try:
+            return await serve(self, *args, **kwargs)
+        except asyncpg.QueryCanceledError:
+            raise  # as a StatementTimeout or a pool timeout: the live statements would only be slower still
+        except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+            logger.warning(f"cli_analytics: ranking rollup not read, the live statements run instead: {exc!r}")
+            return None
+
+    async def rollup_repository_ranking(
+        self,
+        f: LocalAnalyticsFilter,
+        include_branches: bool,
+        rate_of: Callable[[str], ModelRates],
+        max_age_s: float,
+        page: int = 0,
+        per_page: int | None = None,
+        unattributed_last: bool = False,
+    ) -> RollupRanking | None:
+        """See the port."""
+        from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports this one
+
+        version = self._rates_version() if self._rates_version is not None else None
+        return await self._rollup_read(
+            user_rollup.serve_repository_ranking,
+            f,
+            include_branches,
+            rate_of,
+            version,
+            page=page,
+            per_page=per_page,
+            unattributed_last=unattributed_last,
+            max_age_s=max_age_s,
+        )
+
+    async def rollup_project_page(
+        self,
+        f: LocalAnalyticsFilter,
+        page: int,
+        per_page: int,
+        rate_of: Callable[[str], ModelRates],
+        max_age_s: float,
+        unattributed_last: bool = False,
+    ) -> RollupProjects | None:
+        """See the port."""
+        from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports this one
+
+        version = self._rates_version() if self._rates_version is not None else None
+        return await self._rollup_read(
+            user_rollup.serve_project_page,
+            f,
+            page,
+            per_page,
+            rate_of,
+            version,
+            unattributed_last=unattributed_last,
+            max_age_s=max_age_s,
+        )
 
     async def get_developer_session_facts(self, f: LocalAnalyticsFilter) -> Rows:
         """Turns, tool calls, tool successes and the mean session duration per developer, over every session of `sel`
@@ -1975,7 +2095,10 @@ class PostgresCliAnalyticsReader:
             window_params(f),
         )
 
-    async def get_tool_usage(self, f: LocalAnalyticsFilter) -> Rows:
+    async def get_tool_usage(self, f: LocalAnalyticsFilter, *, exact: bool = False) -> Rows:
+        """The tools of the selected sessions by calls. `exact` drops the limit of 20: the start-day rollup stores every
+        tool of a day and cuts the window's top 20 after summing its days."""
+        limit = "" if exact else "LIMIT 20"
         return await self._q(
             f"""
         WITH {self._sel_cte(f)}
@@ -1984,7 +2107,7 @@ class PostgresCliAnalyticsReader:
         WHERE kind = 1{self._scope(f)}
         GROUP BY name
         ORDER BY call_count DESC, name {_C}
-        LIMIT 20""",
+        {limit}""",
             window_params(f),
         )
 
@@ -2200,6 +2323,8 @@ class PostgresCliAnalyticsReader:
         page: int = 0,
         per_page: int | None = None,
         unattributed_last: bool = False,
+        *,
+        exact: bool = False,
     ) -> Rows:
         """The Repositories groups of the sessions that `search` keeps (ILIKE on the repository, applied to the
         selection before anything is priced or paged), priced, ranked and paged, as rows of `part`:
@@ -2215,7 +2340,9 @@ class PostgresCliAnalyticsReader:
         - `bucket`: `b_route` / `b_billed` rows, the funding and personal-billed estimates of the returned groups,
           by repository (with `include_branches`: by project and repository, the level the branches roll up to).
 
-        The counts of the groups (turns, files, lines, tool calls, classes) are `get_repository_facts`."""
+        The counts of the groups (turns, files, lines, tool calls, classes) are `get_repository_facts`. `exact` keeps
+        the money as `Decimal` (the ranking rollup stores and adds it over days). Without a search it reads the
+        request's temp `sel` when `materialize_sel` ran for this selection."""
         params = {**window_params(f), **rates_params(rates)}
         unattributed_apart = False
         if search:
@@ -2258,7 +2385,7 @@ class PostgresCliAnalyticsReader:
         return await self._priced_q(
             f,
             f"""
-        WITH {self._sessions_cte(f, with_developer=True, repository_search=bool(search))},
+        WITH {self._ranking_sel(f, search)},
         {priced_groups_cte()},
         project_counts AS (
             SELECT nullif(repository, '') AS repository, nullif(project_name, '') AS project, count(*) AS n
@@ -2289,7 +2416,15 @@ class PostgresCliAnalyticsReader:
         UNION ALL
         SELECT {_gc_part("bucket", groupings)} FROM money m WHERE m."grouping" IN ('b_route', 'b_billed')""",
             params,
+            exact=exact,
         )
+
+    def _ranking_sel(self, f: LocalAnalyticsFilter, search: str | None) -> str:
+        """The CTE `sel` of the Repositories statements: the request's temp table when `materialize_sel` ran for this
+        selection (only a search needs the live form: it filters the sessions by repository before anything else)."""
+        if search:
+            return self._sessions_cte(f, with_developer=True, repository_search=True)
+        return self._sel_cte(f, with_developer=True)
 
     async def get_branch_ranking(
         self,
@@ -2359,6 +2494,28 @@ class PostgresCliAnalyticsReader:
             params,
         )
 
+    async def get_project_buckets(
+        self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates] = (), by_project: bool = True
+    ) -> Rows:
+        """The funding-route and personal-billed estimates of the sessions of `f`, priced in SQL as rows of `part`
+        `bucket` (`b_route` / `b_billed`): per project (`project_name`, '' for the unattributed project) with
+        `by_project`, else over the whole selection (no project column). The Projects page prices the page's
+        projects with the first and its window (every session the search keeps) with the second."""
+        project = ["project"] if by_project else []
+        groupings = [
+            Grouping("b_route", [*project, "funding_route"]),
+            Grouping("b_billed", [*project, "personal_billed"]),
+        ]
+        params = {**window_params(f), **rates_params(rates)}
+        return await self._priced_q(
+            f,
+            f"""
+        WITH {self._sel_cte(f, with_developer=True)},
+        {priced_groups_cte()}
+        SELECT {_gc_part("bucket", groupings, "gc")} FROM {grouped_cost_sql(groupings)}""",
+            params,
+        )
+
     async def get_repository_facts(
         self,
         f: LocalAnalyticsFilter,
@@ -2387,7 +2544,7 @@ class PostgresCliAnalyticsReader:
         project, branch = ("project", "branch") if include_branches else ("NULL", "NULL")
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f, with_developer=True, repository_search=bool(search))}{narrow},
+        WITH {self._ranking_sel(f, search)}{narrow},
         {_turns_cte(name)},
         {_tools_cte(name)},
         {_files_ctes(name)},
@@ -2907,7 +3064,7 @@ class PostgresCliAnalyticsReader:
             [(entry[0], tuple(bool(v) for v in entry[1:])) for entry in flags],
         )
 
-    async def get_project_page(
+    async def get_project_page(  # noqa: PLR0913 - implements the port signature of the SQL page statement
         self,
         f: LocalAnalyticsFilter,
         page: int,
@@ -3041,7 +3198,7 @@ class PostgresCliAnalyticsReader:
         rows = await self._fetch(conn, framework_stored_page_sql(ctes), page_params)
         return total, [r["session_id"] for r in rows]
 
-    async def _framework_page(
+    async def _framework_page(  # noqa: PLR0913 - the arguments of get_framework_page, which implements the port signature
         self,
         f: LocalAnalyticsFilter,
         sort_by: str,
@@ -3315,7 +3472,7 @@ class PostgresCliAnalyticsReader:
                                          WHERE kind = 2 AND session_id = $sid::text))), 0),
              (SELECT {_SUMMARY_MAP_TOTAL.format(c="skills")} FROM session_dims d WHERE d.session_id = $sid::text)
             )::bigint AS skill_count
-        WHERE {gate}""",
+        WHERE {gate}""",  # noqa: S608 - only constants and SQL builders are interpolated; the values are bound
             {"sid": session_id, **gate_params},
         )
 
@@ -3330,7 +3487,7 @@ class PostgresCliAnalyticsReader:
         WHERE kind = 1 AND session_id = $sid::text AND {gate}
         GROUP BY name
         ORDER BY call_count DESC, name {_C}
-        LIMIT 20""",
+        LIMIT 20""",  # noqa: S608 - only constants and SQL builders are interpolated; the values are bound
             {"sid": session_id, **gate_params},
         )
 
@@ -3420,7 +3577,7 @@ class PostgresCliAnalyticsReader:
             FROM request_pairs p
             WHERE p.part = 'unpaired' AND {gate}
         ) events
-        ORDER BY timestamp, event_type {_C}, tool_name {_C}, model_name {_C}""",
+        ORDER BY timestamp, event_type {_C}, tool_name {_C}, model_name {_C}""",  # noqa: S608 - only constants and SQL builders are interpolated; the values are bound
             {"sid": session_id, **gate_params},
         )
 
@@ -3492,7 +3649,7 @@ class PostgresCliAnalyticsReader:
 
         # each predicate selects the API requests `a` that both the token/cost sums and the per-model sums read
         def agent_requests(a: str) -> str:
-            return f"{a}.span_id IN (SELECT ag.parent_span_id FROM agent_groups ag WHERE ag.agent_id = g.agent_id)"  # noqa: S608 - `a` is a table alias written in this method
+            return f"{a}.span_id IN (SELECT ag.parent_span_id FROM agent_groups ag WHERE ag.agent_id = g.agent_id)"  # noqa: S608, E501
 
         def window_requests(a: str) -> str:
             return (

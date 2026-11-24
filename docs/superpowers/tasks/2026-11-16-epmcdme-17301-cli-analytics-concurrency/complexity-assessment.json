@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "task": "Fix CLI Analytics dashboard latency and DB-pool contention under concurrent load by gating the ungated handlers onto one bounded connection (F1), serving repository/project rankings from a new pre-aggregated rollup (F2), and adding gate/pool instrumentation, light/heavy lane isolation and reserved ingest capacity (F3).",
+  "generated": "2026-11-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 27,
+  "size": "XL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Three distinct subsystems change: the dashboard handler and its gate/budget (F1), a new repository/branch/project rollup stack with migration, builder job and reader rollup_* method on the port (F2), and pool/gate/ingest instrumentation plus a second lane and ingest reserve in the engine/settings/ingestor (F3). New abstractions (ranking rollup, light lane, metrics) and the shared analytics pool used by ingest and 4 background jobs. Base L, bumped for touching core shared infrastructure." },
+    { "dimension": "requirements_clarity", "reason": "Ticket is detailed (findings, fix order, regression tests), but the F2 rollup design is open (new dimension, eligibility rules, branches-on-expand, rates-version staleness), F3 lane sizing and ingest reserve are unspecified, the 'agreed concurrent load' and Preview pool config are unknown, and the ticket wrongly assumes a 30 s cache on /repositories and /projects and omits get_sessions." },
+    { "dimension": "technical_risk", "reason": "Closest pattern: get_tools bounded()/materialize_sel conversion (EPMCDME-17051) covers F1 exactly, and the user start-day rollups cover the build/staleness mechanics of F2, but no rollup keyed by repository/branch/project exists and parity with live ranking (order, cost, search, scope) must hold. F3 overturns the documented single-FIFO-gate decision and the exact-list gate-membership test; a misstep can starve ingest (503). Base L, bumped for performance as the primary concern. Note: the L calibration example (10401, provider + config UI) carries TR L with an established pattern; this task's F2/F3 lack one, so it sits above." },
+    { "dimension": "file_change_estimate", "reason": "Modified: cli_analytics_handler.py, reader.py, project_page_sql.py, ports.py, engine.py, settings.py, ingestor.py, runtime.py, cli_analytics_jobs.py, config.py, prometheus_config.py, routers/cli_analytics.py, cli-analytics-storage guide, plus existing tests (dashboard gate, handler, bounded reader, reader, ports) — 16+. New: alembic_cli_analytics migration, ranking rollup builder, metrics module, live ranking-rollup parity test, ingest-under-load test, light-lane test — 6+. Spans service, repository/postgres, migrations, configs and tests." },
+    { "dimension": "affected_layers", "reason": "API (router timing), Service (handler gate/lanes), DB-Persistence with a schema migration (new rollup tables), and Infrastructure (pool sizing, scheduler job, Prometheus metrics); instrumentation is a cross-cutting concern added across engine, handler and ingest." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: performance/scalability is the primary concern",
+    "Component Scope bumped from L to XL: touches core shared infrastructure (the analytics asyncpg pool shared by dashboards, ingest and background jobs)"
+  ],
+  "split_recommendation": {
+    "strategy": "by-feature",
+    "secondary_strategy": "by-dependency",
+    "ordering_note": "All slices are in the codemie backend repo; land connection gating first because lane isolation and the rollup-served rankings both build on the gate membership and bounded-reader shape it establishes.",
+    "slices": [
+      {
+        "title": "Gate and bound the ungated CLI Analytics dashboard handlers",
+        "slice_slug": "gating",
+        "component": "codemie",
+        "feature": "cli-analytics-concurrency",
+        "scope": "Move get_projects/_repository_rows, get_session_detail, get_activity and get_sessions onto dashboard_request() with one bounded connection (sel built once), update the gate-membership test, and add acquire-count regression tests.",
+        "depends_on": null
+      },
+      {
+        "title": "Instrument the analytics pool and isolate light/heavy lanes with ingest reserve",
+        "slice_slug": "lanes-metrics",
+        "component": "codemie",
+        "feature": "cli-analytics-concurrency",
+        "scope": "Add gate-wait, pool-wait and ingest-acquire metrics, then a light lane for rollup-served requests, a reserved ingest capacity and a bounded dashboard acquire timeout, with tests that light requests complete while heavy slots are held and ingest sees no 503s.",
+        "depends_on": "Gate and bound the ungated CLI Analytics dashboard handlers"
+      },
+      {
+        "title": "Serve repository and project rankings from a pre-aggregated rollup",
+        "slice_slug": "ranking-rollup",
+        "component": "codemie",
+        "feature": "cli-analytics-concurrency",
+        "scope": "Add a repository/branch/project rollup (migration, builder job with kill switch and rates-version staleness, reader rollup method with live fallback) and price only the page, with a live parity suite against the existing ranking.",
+        "depends_on": "Gate and bound the ungated CLI Analytics dashboard handlers"
+      }
+    ]
+  }
+}

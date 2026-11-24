@@ -242,6 +242,14 @@ class Config(BaseSettings):
     CLI_ANALYTICS_PG_URL: str = ""
     CLI_ANALYTICS_PG_SCHEMA: str = Field(default="codemie_analytics", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
     CLI_ANALYTICS_PG_POOL_SIZE: int = Field(default=8, ge=1)  # dedicated pool, never the application pool
+    # Pool connections only ingest may take, and the connections each other lane may hold at once: heavy and light
+    # dashboard requests, and the background jobs. Unset lanes default to heavy 3, light 2 and jobs 1 (less in a
+    # small pool; a reserve that would leave no connection is cut to pool size minus 1); lanes set explicitly must add
+    # up to at most pool size minus reserve, or the storage settings are refused.
+    CLI_ANALYTICS_PG_INGEST_RESERVE: int = Field(default=2, ge=0)
+    CLI_ANALYTICS_PG_HEAVY_SLOTS: int | None = Field(default=None, ge=1)
+    CLI_ANALYTICS_PG_LIGHT_SLOTS: int | None = Field(default=None, ge=1)
+    CLI_ANALYTICS_PG_JOBS_SLOTS: int | None = Field(default=None, ge=1)
     CLI_ANALYTICS_PG_STATEMENT_TIMEOUT_MS: int = Field(default=30_000, ge=1)
     CLI_ANALYTICS_PG_WORK_MEM: str = Field(default="32MB", pattern=r"^[0-9]+(kB|MB|GB)$")
     # An ingest request that cannot get a connection this fast gets 503 (the plugin retries)
@@ -273,9 +281,12 @@ class Config(BaseSettings):
     # /cost), below the 600 s proxy-read-timeout.
     CLI_ANALYTICS_DASHBOARD_REQUEST_BUDGET_S: float = Field(default=540, gt=0)
     # Dashboard requests (the same seven routes) one pod runs at once; each holds a pooled connection for its whole
-    # run, so the rest queue (the wait counts against the budget). 0: pool size minus 4, at least 1. A value above
-    # the pool size is cut to it.
+    # run, so the rest queue (the wait counts against the budget). 0: the lanes at their sizes. A value
+    # above a lane's size is cut to it; it caps each lane, not their sum.
     CLI_ANALYTICS_DASHBOARD_MAX_CONCURRENT: int = Field(default=0, ge=0)
+    # Seconds a dashboard request waits for its lane's slot and for a share of the pool before it gives up with a 504
+    # (the pod is busy). A wait for a pooled connection of a store that cannot be reached stays a 503.
+    CLI_ANALYTICS_DASHBOARD_ACQUIRE_TIMEOUT_S: float = Field(default=30, gt=0)
     # Seconds a /users, /user-charts or /cost answer is reused by the pod that computed it (identical requests that
     # arrive meanwhile share one computation). The default is the rollup refresh interval. 0 turns the cache off.
     CLI_ANALYTICS_DASHBOARD_CACHE_TTL_S: float = Field(default=30, ge=0)

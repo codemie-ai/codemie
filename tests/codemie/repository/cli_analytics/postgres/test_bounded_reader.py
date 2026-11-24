@@ -26,7 +26,7 @@ import asyncpg
 import pytest
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, StatementTimeout
+from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, ProjectPage, StatementTimeout
 from codemie.repository.cli_analytics.postgres import reader as reader_module
 from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
 from codemie.service.analytics.handlers import cli_analytics_handler
@@ -350,6 +350,61 @@ async def test_a_dashboard_request_on_the_real_reader_holds_one_connection_and_o
     # always narrowed to its repository
     probe = 0 if method == "get_branches" else 1
     assert engine.fetch.await_count == statements + probe
+
+
+_PEAK_CALLS = {
+    "get_projects": ((_filter, 0, 10), 1),
+    "get_session_detail": (("s1",), 1),
+    "get_activity": ((_filter,), 1),
+    "get_sessions": ((_filter, 0, 20, "start_time", None), 2),
+}  # method: (arguments, the most connections it holds at once on the real reader)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", _PEAK_CALLS)
+async def test_projects_detail_activity_and_sessions_hold_their_peak_of_connections_on_the_real_reader(method) -> None:
+    """Projects, Session Detail and Activity read their statements one after another on one connection; Sessions takes
+    a second one only for the page's detail statements (EPMCDME-17301)."""
+    engine = CountingEngine(capacity=8, fetch_seconds=0.002)
+    args, peak = _PEAK_CALLS[method]
+    args = tuple(a() if callable(a) else a for a in args)
+    kwargs = {"scope": EXCLUDE_SCOPE} if method == "get_session_detail" else {}
+    handler = LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine))  # type: ignore[arg-type]
+
+    page = ProjectPage(1, ["p"], ["s1"], [], None, [])  # the one row the empty fake database cannot serve
+    with (
+        patch.object(LocalAnalyticsHandler, "_read_window", new=AsyncMock(return_value=(None, 1, ["s1"]))),
+        patch.object(PostgresCliAnalyticsReader, "get_project_page", new=AsyncMock(return_value=page)),
+    ):
+        await getattr(handler, method)(*args, **kwargs)
+
+    assert (engine.max_held, engine.max_running, engine.held) == (peak, 1 if peak == 1 else 2, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_session_detail_runs_its_eight_statements_one_after_another() -> None:
+    engine = CountingEngine(capacity=8, fetch_seconds=0.002)
+    handler = LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine))  # type: ignore[arg-type]
+
+    await handler.get_session_detail("s1", scope=EXCLUDE_SCOPE)
+
+    assert (engine.acquisitions, engine.max_held, engine.max_running) == (1, 1, 1)
+    assert engine.fetch.await_count >= 8
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["get_projects", "get_session_detail", "get_activity", "get_sessions"])
+async def test_a_statement_timeout_of_projects_detail_activity_and_sessions_releases_the_connection(method) -> None:
+    engine = CountingEngine(capacity=8)
+    engine.fetch = AsyncMock(side_effect=asyncpg.QueryCanceledError("statement timeout"))
+    args, _ = _PEAK_CALLS[method]
+    args = tuple(a() if callable(a) else a for a in args)
+    kwargs = {"scope": EXCLUDE_SCOPE} if method == "get_session_detail" else {}
+
+    with pytest.raises(asyncpg.QueryCanceledError):
+        await getattr(LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)), method)(*args, **kwargs)  # type: ignore[arg-type]
+
+    assert engine.held == 0
 
 
 @pytest.mark.asyncio

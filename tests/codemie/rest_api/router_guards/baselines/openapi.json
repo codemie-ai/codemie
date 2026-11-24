@@ -17568,6 +17568,18 @@
             "title": "Total Turns",
             "type": "integer"
           },
+          "total_users": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Distinct developers of the window; only with `include_total_users=true`.",
+            "title": "Total Users"
+          },
           "unpriced_models": {
             "description": "Models without a price behind this amount.",
             "items": {
@@ -47086,6 +47098,30 @@
         "operationId": "get_efficiency_v1_analytics_cli_analytics_efficiency_get",
         "parameters": [
           {
+            "description": "Fill the subscription and origin lists of the totals, dead sessions, depth buckets and code changes. A caller that does not read them passes false: they are then empty.",
+            "in": "query",
+            "name": "include_class_lists",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Fill the subscription and origin lists of the totals, dead sessions, depth buckets and code changes. A caller that does not read them passes false: they are then empty.",
+              "title": "Include Class Lists",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Fill the funding-route and personal-billed estimates. A caller that does not read them passes false: they are then zero. With both false the answer can come from the start-day rollup.",
+            "in": "query",
+            "name": "include_buckets",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Fill the funding-route and personal-billed estimates. A caller that does not read them passes false: they are then zero. With both false the answer can come from the start-day rollup.",
+              "title": "Include Buckets",
+              "type": "boolean"
+            }
+          },
+          {
             "description": "e.g. last_7_days, last_30_days",
             "in": "query",
             "name": "time_period",
@@ -47407,6 +47443,18 @@
             }
           },
           {
+            "description": "Add `kpis.total_users`, the distinct developers of the window (the `total_count` of `/users`), so a caller that reads only that count need not request `/users`. Without it the field is not in the answer.",
+            "in": "query",
+            "name": "include_total_users",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Add `kpis.total_users`, the distinct developers of the window (the `total_count` of `/users`), so a caller that reads only that count need not request `/users`. Without it the field is not in the answer.",
+              "title": "Include Total Users",
+              "type": "boolean"
+            }
+          },
+          {
             "description": "e.g. last_7_days, last_30_days",
             "in": "query",
             "name": "time_period",
@@ -47591,7 +47639,7 @@
     },
     "/v1/analytics/cli-analytics/projects": {
       "get": {
-        "description": "One page of projects sorted by cost, each with its repositories and their branches nested; with\n`include_repositories=false`, totals only (drill-down: repositories come from `/repositories`).",
+        "description": "One page of projects sorted by cost, each with its repositories and, unless `include_branches` is false, their\nbranches nested; with `include_repositories=false`, totals only (drill-down: repositories come from\n`/repositories`).",
         "operationId": "get_projects_v1_analytics_cli_analytics_projects_get",
         "parameters": [
           {
@@ -47633,6 +47681,18 @@
               ],
               "description": "Filter by project name (and, with include_repositories=true, by repository name)",
               "title": "Search"
+            }
+          },
+          {
+            "description": "Nest each repository's branches. False leaves `branches` null; `GET /branches` returns the branches of one repository.",
+            "in": "query",
+            "name": "include_branches",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Nest each repository's branches. False leaves `branches` null; `GET /branches` returns the branches of one repository.",
+              "title": "Include Branches",
+              "type": "boolean"
             }
           },
           {
@@ -48501,6 +48561,18 @@
       "get": {
         "operationId": "get_tools_v1_analytics_cli_analytics_tools_get",
         "parameters": [
+          {
+            "description": "Fill the subscription and origin lists of the tools, models and invocations. A caller that does not read them passes false: they are then empty.",
+            "in": "query",
+            "name": "include_class_lists",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Fill the subscription and origin lists of the tools, models and invocations. A caller that does not read them passes false: they are then empty.",
+              "title": "Include Class Lists",
+              "type": "boolean"
+            }
+          },
           {
             "description": "e.g. last_7_days, last_30_days",
             "in": "query",

@@ -545,7 +545,7 @@ class PostgresTelemetryIngestor:
         acquired = False
         try:
             async with (
-                self._engine.acquire(timeout=settings.ingest_acquire_timeout_s) as conn,
+                self._engine.acquire_ingest(timeout=settings.ingest_acquire_timeout_s) as conn,
                 conn.transaction(),
             ):
                 acquired = True

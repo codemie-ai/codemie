@@ -1,0 +1,243 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved check round: CR-001..CR-006 resolved; CR-006 via recorded descoping (Overview top-10 stays on its own rollup)"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User: fix all 6 findings (CR-001..CR-006)"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved check round: CR-001..CR-006 resolved; CR-006 via recorded descoping (Overview top-10 stays on its own rollup)"
+    }
+  ],
+  "reviewed_head": "fe8dbffcb016ffb742adcb336a4171b1f9cd0d54",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All six prior blocking findings were re-read at HEAD and are resolved; CR-006 is resolved by a recorded descoping (the guide says Overview top-10 keeps its own rollup, and the task report says the tab calls /repositories?per_page=10), not by new code. No new findings were sought; AC3/4/5/10/15 stay pending-stage-7.",
+  "confidence": "low",
+  "check_confidence": "high",
+  "risk_flags": [
+    "migration",
+    "public-api",
+    "data-contract"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 6,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/settings.py",
+      "line": 346,
+      "title": "lane_sizes accepts overflow for unset lanes",
+      "problem": "Overflow is rejected only when a lane is set explicitly. Unset lanes are fitted to a minimum of 1 each, so a small pool (for example pool 2, reserve 2, available 1) yields heavy+light+jobs = 3 above the cap with no error. The spec says any configuration above pool - reserve is rejected. Also the reserve >= pool case silently gives capacity max(1, ...), which voids the ingest-reserve guarantee with no warning.",
+      "impact": "Dashboards can take the whole pool and ingest may find no connection; AC6 overflow rejection is only partly met. Reachable only on tiny pool/reserve combinations; reachability not confirmed against deployed config.",
+      "recommendation": "Raise CliAnalyticsStorageConfigError whenever sizes.total > available (and when reserve >= pool), regardless of whether lanes were set explicitly; add a test for pool 2 / reserve 2.",
+      "status": "resolved",
+      "check_notes": "lane_sizes raises when reserve leaves none and whenever sizes.total > available, set or not",
+      "fix": {
+        "change": "lane_sizes raises when sizes.total > pool - reserve (set or not) and when reserve leaves no connection",
+        "test": "test_engine_cap.py::test_a_pool_too_small_for_one_connection_per_lane_is_refused_even_with_unset_lanes"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/cli_analytics.py",
+      "line": 871,
+      "title": "Branches route mis-parses project names",
+      "problem": "get_project_branches assigns the path value to filters.projects, which is parsed as a comma list, so a project name containing a comma becomes several projects. A real project named like the UNATTRIBUTED_PROJECT sentinel is treated as the unattributed project. The route also always takes the live heavy path because ranking_eligible refuses any projects filter or project_unattributed, which contradicts the docs claim that it uses the rollup when eligible.",
+      "impact": "Wrong or merged rows for such project names; docs overstate rollup use. Reachability of comma and sentinel names depends on real project data and was not confirmed.",
+      "recommendation": "Set the resolved filter's projects to [project_name] after resolve (bypass comma splitting), disambiguate the sentinel, and correct the docs about rollup eligibility.",
+      "status": "resolved",
+      "check_notes": "route sets f.projects=[project_name] after resolve, sentinel documented, docs say it always runs live",
+      "fix": {
+        "change": "branches route sets the resolved filter's projects to [project_name] (no comma split, scope intersected); docs state it always runs live and the sentinel is reserved",
+        "test": "test_cli_analytics_project_branches.py::test_a_project_name_with_a_comma_is_one_project"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/cli_analytics.py",
+      "line": 1038,
+      "title": "Session auth read bypasses dashboard lanes",
+      "problem": "get_session_detail calls reader.authorize_session outside dashboard_request and job_scope. The engine classifies an unnamed acquire with no request stats and no job scope as a job, so the auth read takes one of the 2 jobs slots and the 30 s plain acquire timeout (503) instead of the light lane and the dashboard 504. It is outside _statement_timeout_as_504 too.",
+      "impact": "Session detail auth queues behind refresh jobs and can 503, defeating the light lane and the jobs allowance isolation. Confirmed by reading the router call site.",
+      "recommendation": "Wrap the authorize_session call in dashboard_request('light') (and the 504 mapping), or move it inside the handler's light request; add the method to LANE_BY_METHOD style coverage.",
+      "status": "resolved",
+      "check_notes": "authorize_session now wrapped in dashboard_request('light') in the handler",
+      "fix": {
+        "change": "new handler.authorize_session runs in the light lane; session detail route uses it under the 504 mapping",
+        "test": "test_cli_analytics_dashboard_gate.py::test_session_authorization_is_read_in_the_light_lane"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/cli_analytics_handler.py",
+      "title": "Lane slot wait bounded by acquire timeout",
+      "problem": "dashboard_slot wraps the lane-slot wait in wait_for(ACQUIRE_TIMEOUT_S) and raises DashboardAcquireTimeout, while the spec bounds the slot wait only by the 540 s budget. engine.acquire then starts a second full timeout for cap and pool, so one request can wait about twice the setting, contradicting docs that say the timeout bounds slot and connection together. A pooled-connection wait past the timeout stays a plain 503.",
+      "impact": "Queued requests fail at 30 s rather than waiting for their budget, and the documented timeout semantics are wrong. Not re-read in source by this triage; lens-derived.",
+      "recommendation": "Align code and spec: leave the slot wait bounded by the request budget only, pass the remaining timeout into engine.acquire, and map the pool wait timeout to the same 504 subtype; fix the docs wording.",
+      "status": "resolved",
+      "check_notes": "dashboard_slot waits on the gate bounded by the request budget only; docs reworded",
+      "fix": {
+        "change": "dashboard_slot no longer wraps the slot wait in the acquire timeout (budget only); docs corrected",
+        "test": "test_cli_analytics_acquire_timeout.py::test_the_wait_for_a_slot_is_bounded_by_the_budget_only_not_the_acquire_timeout"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/cli_analytics_handler.py",
+      "title": "Live session merge runs in light lane",
+      "problem": "_rollup_ranking_read runs the read inside dashboard_request('light'). serve_cohort then calls _merge_live_sessions, which runs live gather_ranking/gather_cohort statements (up to 2000 sessions) in the light lane. Only a rollup refusal re-enters the heavy gate; the spec says a merge that runs live re-enters it too. Warm-up also holds a light slot and a jobs slot together.",
+      "impact": "Heavy live statements consume light-lane capacity and can starve light requests. Reachability of large merges not confirmed; lens-derived.",
+      "recommendation": "Re-enter the heavy gate for the live merge (or have the reader signal that it ran live), and add a test like the refusal one.",
+      "status": "resolved",
+      "check_notes": "_rollup_ranking_read re-enters HEAVY when live_merge is signalled",
+      "fix": {
+        "change": "light-lane ranking read raises LiveMergeNeeded instead of merging live; handler re-reads in the heavy lane",
+        "test": "test_cli_analytics_ranking_rollup.py::test_a_ranking_read_that_must_merge_live_re_enters_the_heavy_lane"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/cli_analytics_handler.py",
+      "title": "Overview top-10 not served by ranking rollup",
+      "problem": "Spec F2 lists Overview top-10 as a ranking-rollup consumer, but no change reads the ranking rows for Overview; only /repositories and /projects do.",
+      "impact": "A required spec item is only partly implemented; Overview top-10 still runs the live heavy statements. Whether this was descoped intentionally was not confirmed.",
+      "recommendation": "Serve Overview top-10 from the ranking rollup when ranking_eligible, or record the descoping against the spec.",
+      "status": "resolved",
+      "check_notes": "descoping recorded in the storage guide; no code serves Overview top-10 from ranking rows",
+      "fix": {
+        "change": "descoping recorded in cli-analytics-storage.md: Overview top-10 keeps its Overview rollup, only /repositories and /projects read the ranking rows",
+        "test": "n/a"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "F3 sizes: one settings function derives heavy/light/jobs, rejects overflow above pool-reserve",
+      "status": "partial",
+      "notes": "overflow rejected only when a lane is set explicitly"
+    },
+    {
+      "kind": "spec",
+      "item": "F3 light lane: merge of resumed sessions that runs live re-enters the heavy gate",
+      "status": "partial",
+      "notes": "refusal re-enters heavy; _merge_live_sessions runs in the light lane"
+    },
+    {
+      "kind": "spec",
+      "item": "F3 fail-fast acquire: slot wait bounded only by the 540 s budget",
+      "status": "partial",
+      "notes": "dashboard_slot also bounds the lane slot wait by the acquire timeout"
+    },
+    {
+      "kind": "spec",
+      "item": "F2 who it serves: Overview top-10, Repositories ranking and /projects from ranking rollup",
+      "status": "partial",
+      "notes": "Overview top-10 does not read the ranking rollup"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: live PG pool 8, 4 concurrent /projects + Session Detail, 0 ingest 503",
+      "status": "pending-stage-7",
+      "notes": "needs live PostgreSQL run"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: rollup-served rankings equal live rankings after each mutation type",
+      "status": "pending-stage-7",
+      "notes": "needs live PostgreSQL run"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: light requests complete while every heavy slot and jobs permit is held",
+      "status": "pending-stage-7",
+      "notes": "live run owns the remaining proof"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC10: live perf pin and bench for page 0 vs 2,000 ms",
+      "status": "pending-stage-7",
+      "notes": "needs live PostgreSQL run"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC15: QA Preview re-run p95 <= 2,000 ms, 0 ingest 503",
+      "status": "pending-stage-7",
+      "notes": "post-deploy QA evidence"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1, AC2, AC6-AC9, AC11-AC14",
+      "status": "pass",
+      "notes": "covered by tests in the diff; AC6 overflow rejection explicit sizes only"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "9 commit subjects in range all match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "No Optional[] or missing license headers on added files found by grep; Ruff was not run."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Grep of added lines found no credential logging and no f-string SQL; grep only, not a full read."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Six blocking findings; diff is oversized so only a sample of lens claims was reachability-checked against source (the rest keep lens grading). AC3/AC4/AC5/AC10/AC15 are pending-stage-7 (live PostgreSQL/QA). 0 deferred, about 10 lens claims dismissed as speculative or below the emission floor.",
+    "confidence": "low",
+    "risk_flags": [
+      "migration",
+      "public-api",
+      "data-contract"
+    ]
+  }
+}

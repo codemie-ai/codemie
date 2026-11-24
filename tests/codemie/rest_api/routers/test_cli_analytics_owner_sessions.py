@@ -44,6 +44,7 @@ class _Env:
             return_value=({"sessions": [], "page": 0, "per_page": 20, "total": 0}, pricer, None)
         )
         self.handler.get_overview = AsyncMock(return_value=({}, pricer, None))
+        self.handler.authorize_session = AsyncMock(return_value=True)
 
     def sessions_filter(self):
         return self.handler.get_sessions.await_args.args[0]
@@ -88,7 +89,7 @@ def make():
         return client, env
 
     yield factory
-    for p in created:
+    for p in reversed(created):
         p.stop()
 
 
@@ -293,7 +294,7 @@ def test_an_ordinary_auditor_detail_runs_the_executor_with_an_unrestricted_priva
     """The scope the route builds is what the authorize executor receives: an auditor is unrestricted and sees
     private Personal sessions; a denied read is still the same 404 as a missing session."""
     client, env = make(_role(is_auditor=True))
-    reader = router_module.get_cli_analytics_storage().reader
+    reader = env.handler
     reader.authorize_session = AsyncMock(return_value=False)
     env.handler.get_session_detail = AsyncMock()
 
@@ -358,6 +359,17 @@ def test_a_sessions_query_timeout_is_a_504_with_a_clear_message_on_the_sessions_
 
     assert resp.status_code == 504
     assert resp.json()["message"] == "The sessions list took too long to build"
+
+
+@pytest.mark.parametrize("error", [asyncpg.QueryCanceledError("canceling statement"), StatementTimeout()])
+def test_a_session_detail_statement_timeout_is_a_504_naming_the_limit(make, error):
+    client, env = make(ORDINARY())
+    env.handler.get_session_detail = AsyncMock(side_effect=error)
+
+    resp = client.get(f"{BASE}/sessions/s1")
+
+    assert resp.status_code == 504
+    assert resp.json()["message"] == "The session detail took too long to build"
 
 
 def test_a_client_side_sessions_timeout_is_a_504_too(make):

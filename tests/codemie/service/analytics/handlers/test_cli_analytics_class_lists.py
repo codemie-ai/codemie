@@ -334,3 +334,21 @@ async def test_detail_meta_projects_the_normalised_classes_from_the_left_joined_
     sql = _flat(r.sql[0])
     assert "LEFT JOIN session_dims d" in sql  # a legacy session without a dims row reads NULL -> unknown / none
     assert "AS subscription_type" in sql and "AS project_origin" in sql
+
+
+@pytest.mark.asyncio
+async def test_tools_without_the_class_lists_read_none_and_keep_every_figure():
+    reader = _fake_reader(True)
+    h = LocalAnalyticsHandler(bounded_to_itself(reader))
+    full = await h.get_tools(_flt())
+    reader.get_class_lists = AsyncMock(side_effect=reader.get_class_lists)  # records the calls from here on
+    lean = await h.get_tools(_flt(), include_class_lists=False)
+
+    reader.get_class_lists.assert_not_called()  # the three class-list statements do not run
+    sections = ("tool_usage", "tokens_by_model", "skills_invoked", "agent_subtypes", "slash_commands")
+    assert lean["tool_usage"] and lean["skills_invoked"]  # the fake has rows for these: the comparison is not empty
+    for section in sections:
+        assert len(lean[section]) == len(full[section])
+        assert all(row["subscription_types"] == [] and row["project_origins"] == [] for row in lean[section])
+        assert _strip({"x": lean[section]}) == _strip({"x": full[section]})  # nothing else changes
+    assert all(_has_lists(row) for row in full["tool_usage"])  # the default still fills them

@@ -112,7 +112,7 @@ class FakeEngine:
         return self.settings.lock_key(name)
 
     @asynccontextmanager
-    async def acquire(self, timeout=None):
+    async def acquire_ingest(self, timeout):
         self.acquire_timeouts.append(timeout)
         if self.acquire_error:
             raise self.acquire_error

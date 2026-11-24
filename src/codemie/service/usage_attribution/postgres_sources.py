@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -57,6 +58,17 @@ def reader_or_none() -> CliAnalyticsReader | None:
         return None
 
 
+@asynccontextmanager
+async def _as_light_dashboard_read() -> AsyncIterator[None]:
+    """Runs a short read of the analytics store as a light-lane dashboard request. Outside one, an engine acquire counts
+    as a job's and waits for the jobs' slot, which the rollup refresher, the user rollup and maintenance hold for
+    their whole run; these reads are not jobs and must not queue behind them."""
+    from codemie.service.analytics.handlers.cli_analytics_handler import LIGHT, dashboard_request
+
+    async with dashboard_request(LIGHT):
+        yield
+
+
 async def pg_framework_rows(start: datetime, end: datetime) -> list[list[str | int]] | None:
     """A5 framework sessions started in [start, end) counted in the CLI analytics Postgres, per person and
     repository (``framework_sessions.aggregate_pg_rows``). ``[]`` is a complete answer: the ``cliAnalytics`` feature is
@@ -74,7 +86,13 @@ async def pg_framework_rows(start: datetime, end: datetime) -> list[list[str | i
         if not labels:
             return []
         reader = _storage_reader()
-        rows = await asyncio.wait_for(reader.get_framework_sessions(start, end, labels), PG_FRAMEWORK_TIMEOUT_S)
+
+        async def _read() -> list[dict]:
+            async with _as_light_dashboard_read():
+                return await reader.get_framework_sessions(start, end, labels)
+
+        # The timeout covers the wait for a light-lane slot too, not only the read that follows it.
+        rows = await asyncio.wait_for(_read(), PG_FRAMEWORK_TIMEOUT_S)
         return await asyncio.to_thread(aggregate_pg_rows, rows)
     except Exception as exc:  # noqa: BLE001 - A5 falls back to the Elasticsearch counts; no personal data logged
         logger.warning("A5 framework sessions from Postgres unavailable: %s", type(exc).__name__)
@@ -98,9 +116,13 @@ async def skill_names_by_session(reader: CliAnalyticsReader | None, session_ids:
     try:
         # Internal cross-project attribution may read shared sessions, never another owner's private sessions.
         scope = ViewerScope(None, True, frozenset(), "detail")
-        rows = await asyncio.wait_for(
-            reader.get_skill_names_by_session(list(session_ids), scope=scope), PG_SKILL_NAMES_TIMEOUT_S
-        )
+
+        async def _read() -> list[dict]:
+            async with _as_light_dashboard_read():
+                return await reader.get_skill_names_by_session(list(session_ids), scope=scope)
+
+        # The timeout covers the wait for a light-lane slot too, not only the read that follows it.
+        rows = await asyncio.wait_for(_read(), PG_SKILL_NAMES_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 - the person view degrades to the Elasticsearch keys
         logger.warning("Postgres skill names unavailable for the person view: %s", type(exc).__name__)
         return {}

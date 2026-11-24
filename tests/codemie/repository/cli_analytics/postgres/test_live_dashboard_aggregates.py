@@ -188,7 +188,8 @@ class _Seed:
                         day, sid, self.email, _COST_MODEL, lines[0], lines[1],
                     )  # fmt: skip
             await conn.execute(  # the stored activity facts the selection's started arm reads
-                "UPDATE session_dims SET has_activity = true, last_activity_day = $2 WHERE session_id = ANY($1::text[])",
+                "UPDATE session_dims SET has_activity = true, resumed = false, last_activity_day = $2"
+                " WHERE session_id = ANY($1::text[])",
                 self.ids(),
                 day,
             )
@@ -223,6 +224,8 @@ def _assert_parts_equal(got: list[dict], want: list[dict], parts: tuple[str, ...
     for part in parts:
         actual = {tuple(r.get(k) for k in _IDENTITY): r for r in got if r["part"] == part}
         expected = {tuple(r.get(k) for k in _IDENTITY): r for r in want if r["part"] == part}
+        if part == "total" and not actual and all(not r.get("cost_usd") for r in expected.values()):
+            continue  # a selection without a session has no money row; the oracle reports an all-zero one
         assert actual.keys() == expected.keys(), (label, part, sorted(map(str, actual)), sorted(map(str, expected)))
         for k, row in expected.items():
             wrong = {c: (actual[k].get(c), v) for c, v in row.items() if not _same(actual[k].get(c), v)}

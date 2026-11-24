@@ -21,6 +21,7 @@ import ipaddress
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import NamedTuple
 from urllib.parse import quote, unquote, urlsplit
 
 from codemie.configs.config import Config
@@ -315,11 +316,71 @@ def _read_url(url: str) -> _Target:
     return _Target(**parts, libpq_params=tuple(params.libpq), asyncpg_params=tuple(params.asyncpg))  # type: ignore[arg-type]
 
 
-def dashboard_concurrency_limit(configured: int, pool_size: int) -> int:
-    """Dashboard requests one pod runs at once: `configured` when positive (never above the pool: a slot without a
-    connection only moves the queue to the pool), else the pool minus 4 (ingestion keeps those connections), never
-    below 1."""
-    return min(configured, max(1, pool_size)) if configured > 0 else max(1, pool_size - 4)
+# When a lane is not set: jobs take 1 connection, light up to 2 and heavy up to 3, less where the pod's share of a
+# smaller pool does not allow it (every lane keeps at least 1). Measured at 600K sessions with 1, 4 and 8 users in a
+# pool of 8 (reserve 2), with the requests the UI sends. Against 4/1/1, 3/2/1 keeps the light tabs fast (at 8 users
+# Overview 6.2 s against 10.4 s and Repositories 3.8 s against 7.5 s; the Overview tab for one user 1.99 s against
+# 2.63 s, over the 2 s target, because its four requests share one slot) and gives up part of the heavy ones
+# (Efficiency 84 s against 66 s). Against 2/2/2 it is as fast on the light tabs and faster on the heavy ones
+# (Efficiency 84 s against 108 s, Cost 31 s against 40 s). Ingest stays at 0 refusals in all of them: the engine's cap,
+# not the lanes, keeps its reserve free. Each lane can be set with CLI_ANALYTICS_PG_*_SLOTS.
+DEFAULT_HEAVY_SLOTS = 3
+DEFAULT_LIGHT_SLOTS = 2
+DEFAULT_JOBS_SLOTS = 1
+
+
+class LaneSizes(NamedTuple):
+    """Connections each lane of one pod may hold at once: dashboard heavy and light, and the background jobs."""
+
+    heavy: int
+    light: int
+    jobs: int
+
+    @property
+    def total(self) -> int:
+        return self.heavy + self.light + self.jobs
+
+
+def lane_sizes(
+    pool: int,
+    reserve: int,
+    heavy: int | None = None,
+    light: int | None = None,
+    jobs: int | None = None,
+) -> LaneSizes:
+    """The lanes' sizes inside a pool of `pool` connections, `reserve` of which only ingest may use.
+
+    A lane left unset takes its default: jobs 1, then light `DEFAULT_LIGHT_SLOTS` (at least 1, and leaving 1 for heavy),
+    then heavy `DEFAULT_HEAVY_SLOTS` or what the other two leave. A reserve that would leave no connection for
+    dashboards (a pool of 1 or 2 with the default 2, valid before the lanes existed) is cut to pool - 1: dashboards and
+    ingest then share what the engine's cap lets through, as the single slot did before. Lanes set by hand must fit:
+    heavy + light + jobs above what is left raises CliAnalyticsStorageConfigError, since lanes that cannot all run at
+    once would queue on the pool instead of their own gate, or take the connections ingest keeps."""
+    available = max(1, pool - max(0, reserve))
+    jobs_slots = DEFAULT_JOBS_SLOTS if jobs is None else jobs
+    light_slots = min(DEFAULT_LIGHT_SLOTS, max(1, available - jobs_slots - 1)) if light is None else light
+    # A pool too small for a connection per lane still works: the unset lanes keep one slot each and share what the
+    # engine's cap lets through, as only a lane set by hand is held to the pool.
+    sizes = LaneSizes(
+        max(1, min(DEFAULT_HEAVY_SLOTS, available - light_slots - jobs_slots)) if heavy is None else heavy,
+        light_slots,
+        jobs_slots,
+    )
+    if min(sizes) < 1:
+        raise CliAnalyticsStorageConfigError("the CLI analytics heavy, light and jobs slots must each be at least 1")
+    if sizes.total > available and not (heavy is None and light is None and jobs is None):
+        raise CliAnalyticsStorageConfigError(
+            f"CLI analytics lanes need {sizes.total} connections (heavy {sizes.heavy} + light {sizes.light} + "
+            f"jobs {sizes.jobs}) but the pool of {pool} keeps {reserve} for ingest, leaving {available}"
+        )
+    return sizes
+
+
+def dashboard_concurrency_limit(configured: int, sizes: LaneSizes) -> int:
+    """The cap on each dashboard lane: the lanes' total (no lane is held back) or `configured` when positive and
+    smaller. The handler applies it to each lane separately, not to their sum."""
+    lanes = sizes.heavy + sizes.light
+    return min(configured, lanes) if configured > 0 else lanes
 
 
 @dataclass(frozen=True)
@@ -349,6 +410,10 @@ class AnalyticsPgSettings:
     user_rollup_days: int = 90  # start days kept current, counted back from today; longer windows use the live path
     user_rollup_run_s: float = 25.0  # seconds one run may spend rebuilding days
     user_rollup_min_rebuild_s: int = 120  # a changed day is rebuilt at most this often (past days: ten times)
+    ingest_reserve: int = 2  # pool connections only ingest may take
+    heavy_slots: int | None = None  # None: the default of `lane_sizes`
+    light_slots: int | None = None
+    jobs_slots: int | None = None
     migration_dsn: str = field(default="", repr=False)  # libpq's, for the migrations; `dsn` when empty
 
     @classmethod
@@ -377,6 +442,13 @@ class AnalyticsPgSettings:
                 "CLI_ANALYTICS_SESSION_RETENTION_DAYS must be 0 or at least CLI_ANALYTICS_RAW_RETENTION_DAYS "
                 f"({cfg.CLI_ANALYTICS_RAW_RETENTION_DAYS}), got {session_days}"
             )
+        lane_sizes(
+            cfg.CLI_ANALYTICS_PG_POOL_SIZE,
+            cfg.CLI_ANALYTICS_PG_INGEST_RESERVE,
+            cfg.CLI_ANALYTICS_PG_HEAVY_SLOTS,
+            cfg.CLI_ANALYTICS_PG_LIGHT_SLOTS,
+            cfg.CLI_ANALYTICS_PG_JOBS_SLOTS,
+        )
         return cls(
             dsn=target.url(target.asyncpg_params),
             migration_dsn=target.url(target.libpq_params),
@@ -403,6 +475,10 @@ class AnalyticsPgSettings:
             user_rollup_days=min(cfg.CLI_ANALYTICS_USER_ROLLUP_DAYS, cfg.CLI_ANALYTICS_RAW_RETENTION_DAYS),
             user_rollup_run_s=cfg.CLI_ANALYTICS_USER_ROLLUP_RUN_S,
             user_rollup_min_rebuild_s=cfg.CLI_ANALYTICS_USER_ROLLUP_MIN_REBUILD_S,
+            ingest_reserve=cfg.CLI_ANALYTICS_PG_INGEST_RESERVE,
+            heavy_slots=cfg.CLI_ANALYTICS_PG_HEAVY_SLOTS,
+            light_slots=cfg.CLI_ANALYTICS_PG_LIGHT_SLOTS,
+            jobs_slots=cfg.CLI_ANALYTICS_PG_JOBS_SLOTS,
         )
 
     @staticmethod

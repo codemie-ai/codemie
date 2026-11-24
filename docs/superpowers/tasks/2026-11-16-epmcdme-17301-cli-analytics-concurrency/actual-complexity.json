@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-11-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 47,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Router, handler, dashboard cache, reader, engine/pool, ingestor, settings, request stats, user rollup and Prometheus metrics all changed, with new abstractions (lanes, ingest-reserve cap, acquire timeout, ranking rollup)." },
+    { "dimension": "technical_risk", "reason": "Connection-pool contention and concurrency changes on a performance-critical path, plus a new rollup migration. No exact precedent, and perf pins and live tests were needed." },
+    { "dimension": "file_change_estimate", "reason": "47 files changed (about 16 source/config/migration/guide files, the rest tests and baselines), 6676 insertions." },
+    { "dimension": "affected_layers", "reason": "API router, service/handler, Postgres repository and Alembic migration, and config/metrics infrastructure." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: performance/scalability is the primary concern",
+    "Requires data migration: ranking rollup Alembic revision"
+  ],
+  "split_recommendation": null
+}

@@ -40,6 +40,9 @@ from codemie.service.analytics.handlers.funding_buckets import (
 )
 from tests.codemie.service.analytics.handlers.test_cli_analytics_handler import (
     BASE_COST_FACT,
+    _drilldown_handler,
+    _drilldown_page,
+    _project_groups,
     _project_handler,
     _project_page,
 )
@@ -295,30 +298,29 @@ def test_python_priced_rows_distinguish_unknown_partial_and_a_free_priced_model(
     assert pricing_of_rows(rows_of(rows, index, [])) == PRICED
 
 
+def _priced_group(group: dict, *, names=(), priced=True) -> dict:
+    """A ranking group of the reader with its pricing columns (`unpriced_models`, `cost_incomplete`, `cost_priced`)."""
+    return {**group, "unpriced_models": list(names), "cost_incomplete": bool(names), "cost_priced": priced}
+
+
 @pytest.mark.asyncio
-async def test_projects_mark_the_project_each_repository_and_each_branch_from_their_own_sessions():
+async def test_projects_mark_the_project_each_repository_and_each_branch_from_their_own_groups():
+    """The groups of the page carry their own pricing from the statement that prices them (a1 priced, a2 and n1 not);
+    the repositories take their branches' marks and the project those of its repositories."""
     handler = _project_handler(_project_page())
-    repo = handler._repo
-    repo.get_session_model_costs = AsyncMock(
-        return_value=[_row("a1", MODEL), _row("a2", UNPRICED), _row("n1", UNPRICED)]
-    )
-    repo.get_session_funding_costs = AsyncMock(
-        return_value=[
-            {
-                **_row(sid, model),
-                "funding_route": "api_based",
-                "personal_billed": False,
-                "subscription_type": "corporate",
-            }
-            for sid, model in (("a1", MODEL), ("a2", UNPRICED), ("n1", UNPRICED))
-        ]
-    )
+    groups = [
+        {**_priced_group(g, names=names, priced=priced), "cost_usd": cost}
+        for g, (names, priced, cost) in zip(
+            _project_groups()[0], [((), True, 1.0), ((UNPRICED,), False, 0.0), ((UNPRICED,), False, 0.0)], strict=True
+        )
+    ]
+    handler._repo.get_repository_ranking = AsyncMock(return_value=groups)
     with catalog():
         data, _ = await handler.get_projects(make_filter(), page=0, per_page=10)
 
     alpha, none = data["rows"]
     assert alpha["project_name"] == "alpha"
-    assert _pricing(alpha) == _partial(UNPRICED)  # a1 was priced, a2 was not
+    assert _pricing(alpha) == _partial(UNPRICED)  # repo-a was priced, repo-b was not
     repos = {r["repository"]: r for r in alpha["repositories"]}
     assert _pricing(repos["repo-a"]) == PRICED
     assert _pricing(repos["repo-b"]) == _unknown(UNPRICED)
@@ -326,6 +328,7 @@ async def test_projects_mark_the_project_each_repository_and_each_branch_from_th
     assert _pricing(repos["repo-b"]["branches"][0]) == _unknown(UNPRICED)
     assert _pricing(none) == _unknown(UNPRICED)
     assert "_sids" not in repos["repo-b"]["branches"][0]
+    assert not any("_priced" in row for row in _walk(data["rows"]))  # the merge evidence never reaches the answer
 
 
 def _row(sid, model):
@@ -382,26 +385,39 @@ def test_rows_of_keeps_the_order_of_the_priced_rows_and_ignores_unknown_sessions
 
 
 @pytest.mark.asyncio
-async def test_projects_equal_the_linear_scan_on_a_paginated_fixture_with_filtered_out_rows(monkeypatch):
+async def test_drilldown_projects_equal_the_linear_scan_on_a_paginated_fixture_with_filtered_out_rows(monkeypatch):
     """Alpha and beta are the page; gamma is in the window (its rows are in `priced`) but not on the page. The index
-    reads give the response the whole-window scan gave, and gamma's models reach no entity of the page."""
+    reads give the response the whole-window scan gave, and gamma's models reach no project of the page."""
     import codemie.service.analytics.handlers.cli_analytics_handler as handler_module
 
-    sessions = [  # (session, project, repository, branch, window rows as (model, tokens))
-        ("a1", "alpha", "repo-a", "main", [(MODEL, 1_000_000)]),
-        ("a2", "alpha", "repo-a", "dev", [(UNPRICED, 1_000_000)]),
-        ("a3", "alpha", "repo-b", "main", [(MODEL, 700_000), (UNPRICED, 300_000)]),
-        ("b1", "beta", "repo-c", "main", [(MODEL, 0)]),  # a zero-token row beside nothing else: no evidence, complete
-        ("b2", "beta", "repo-c", "main", [("beta-unpriced", 5)]),
-        ("n1", None, "repo-d", "main", [(MODEL, 123_456)]),
-        ("g1", "gamma", "repo-g", "main", [("gamma-only-model", 9)]),
-        ("g2", "gamma", "repo-g", "dev", [(MODEL, 2_000_000)]),
+    sessions = [  # (session, project, window rows as (model, tokens))
+        ("a1", "alpha", [(MODEL, 1_000_000)]),
+        ("a2", "alpha", [(UNPRICED, 1_000_000)]),
+        ("a3", "alpha", [(MODEL, 700_000), (UNPRICED, 300_000)]),
+        ("b1", "beta", [(MODEL, 0)]),  # a zero-token row beside nothing else: no evidence, complete
+        ("b2", "beta", [("beta-unpriced", 5)]),
+        ("n1", None, [(MODEL, 123_456)]),
+        ("g1", "gamma", [("gamma-only-model", 9)]),
+        ("g2", "gamma", [(MODEL, 2_000_000)]),
     ]
-    on_page = ("a1", "a2", "a3", "b1", "b2", "n1")
-    facts = [
-        {**BASE_COST_FACT, "session_id": s, "repository": r, "branch": b, "project_name": p}
-        for s, p, r, b, _ in sessions
-        if s in on_page
+    on_page = {"alpha": ["a1", "a2", "a3"], "beta": ["b1", "b2"], None: ["n1"]}
+    totals = [
+        {
+            "project_name": project,
+            "session_count": len(ids),
+            "turns": 0,
+            "cost_usd": 0.0,
+            "files_changed": 0,
+            "lines_added": None,
+            "lines_removed": None,
+            "tool_calls": 0,
+            "tool_calls_success": 0,
+            "subscription_types": ["api"],
+            "project_origins": ["none"],
+            "repository_count": 1,
+            "session_ids": ids,
+        }
+        for project, ids in on_page.items()
     ]
     window = [
         {
@@ -411,34 +427,40 @@ async def test_projects_equal_the_linear_scan_on_a_paginated_fixture_with_filter
             "personal_billed": number % 4 == 0,
             "subscription_type": "corporate",
         }
-        for number, (s, _p, _r, _b, rows) in enumerate(sessions)
+        for number, (s, _project, rows) in enumerate(sessions)
         for model, tokens in rows
     ]
 
     async def respond(index_reads: bool):
-        handler = _project_handler(
-            _project_page(project_names=["alpha", "beta", None], session_ids=list(on_page), total=4), facts=facts
+        handler = _drilldown_handler(
+            _drilldown_page(
+                project_names=["alpha", "beta"],
+                session_ids=["a1", "a2", "a3", "b1", "b2"],
+                total=2,
+                unattributed_session_ids=["n1"],
+            )  # fmt: skip
         )
+        handler._repo.get_project_totals = AsyncMock(return_value=totals)
         handler._repo.get_session_funding_costs = AsyncMock(return_value=window)
-        if not index_reads:  # the reviewed implementation: every entity scans the whole window
-            monkeypatch.setattr(
-                handler_module,
-                "rows_of",
-                lambda priced, _index, sids: [r for r in priced if r["session_id"] in set(sids)],
-            )
-        with catalog():
-            data, _ = await handler.get_projects(make_filter(), page=0, per_page=3)
-        monkeypatch.undo()
+        with monkeypatch.context() as patched, catalog():
+            if not index_reads:  # the reviewed implementation: every project scans the whole window
+                patched.setattr(
+                    handler_module,
+                    "rows_of",
+                    lambda priced, _index, sids: [r for r in priced if r["session_id"] in set(sids)],
+                )
+            data, _ = await handler.get_projects(make_filter(), include_repositories=False, page=0, per_page=3)
         return data
 
     indexed, scanned = await respond(True), await respond(False)
 
-    assert indexed == scanned  # every value, float sums included, the nested branches too
-    names = {name for row in _walk(indexed["rows"]) for name in row["unpriced_models"]}
+    assert indexed == scanned  # every value, float sums included
+    names = {name for row in indexed["rows"] for name in row["unpriced_models"]}
     assert "gamma-only-model" not in names and {UNPRICED, "beta-unpriced"} <= names
     by_project = {p["project_name"]: p for p in indexed["rows"]}
     assert _pricing(by_project["beta"]) == _unknown("beta-unpriced")  # b1's zero-token row is no evidence
     assert _pricing(by_project["alpha"]) == _partial(UNPRICED)
+    assert all("_sids" not in row and "_priced" not in row for row in indexed["rows"])
     # the whole-window buckets still read the whole window: gamma's model is in the window's funding buckets
     assert "gamma-only-model" in {name for bucket in indexed["funding"].values() for name in bucket["unpriced_models"]}
 

@@ -122,6 +122,61 @@ class RollupOverview:
     model_rows: list[dict]
     kpi_rows: list[dict]
     line_rows: list[dict]
+    total_users: int | None = None  # the distinct developers of the window, when asked for
+
+
+@dataclass(frozen=True)
+class RollupEfficiency:
+    """/efficiency's data for a whole window from the start-day rollup, in the shapes the live statements return (each a
+    list of rows with a `part` column): `fact_rows` (`get_efficiency_facts`: `worst` with the prompt, title, repository
+    and branch of that session, `depth`, `all`, `code`; no class lists), `money_rows` (`get_efficiency_money`: the spend
+    and the dead sessions with their cost; no estimate buckets) and `kpi_rows` (`get_dashboard_kpis`)."""
+
+    fact_rows: list[dict]
+    money_rows: list[dict]
+    kpi_rows: list[dict]
+
+
+@dataclass(frozen=True)
+class RollupTools:
+    """The Tools & Models tab's data for a whole window from the start-day rollup, in the row shapes of the live
+    statements: `tool_rows` (`get_tool_usage`: `tool_name`, `call_count`, `success_count`; the window's top 20),
+    `model_rows` (`get_model_breakdown`: `model_name`, `session_count`, `total_tokens`; every model, the handler keeps
+    the ones with tokens) and `invocation_rows` (`get_invocations`: `kind`, `name`, `count`; every name, the handler
+    cuts each kind). No class lists."""
+
+    tool_rows: list[dict]
+    model_rows: list[dict]
+    invocation_rows: list[dict]
+
+
+@dataclass(frozen=True)
+class RollupRanking:
+    """The Repositories ranking of a whole window from the start-day rollup, in the row shapes of the live statements:
+    `rows` as `get_repository_ranking` returns them (`group` rows of the page, `count`, `total` and the funding
+    `bucket` rows of the page's groups; no `cache_read_cost_usd`) and `fact_rows` as `get_repository_facts` returns
+    them for those groups."""
+
+    rows: list[dict]
+    fact_rows: list[dict]
+
+
+@dataclass(frozen=True)
+class RollupProjects:
+    """One page of the project breakdown of a whole window from the start-day rollup: `total` projects, the page's
+    `project_names` in order (None = unattributed), the page's groups (`group_rows`, `fact_rows`, `repository_buckets`
+    in the shapes of `get_repository_ranking` with branches, `get_repository_facts` and its `bucket` rows), the
+    funding buckets per project (`project_buckets`) and of the whole window (`window_buckets`) as `get_project_buckets`
+    returns them, and the raw names of the window's unpriced spend models."""
+
+    total: int
+    project_names: list[str | None]
+    group_rows: list[dict]
+    fact_rows: list[dict]
+    repository_buckets: list[dict]
+    project_buckets: list[dict]
+    window_buckets: list[dict]
+    unpriced_models: list[str]
 
 
 @dataclass(frozen=True)
@@ -310,6 +365,16 @@ class RequestBudgetExceeded(StatementTimeout):
     """A dashboard request outran its whole budget (the wait for a slot and every statement), not one statement."""
 
 
+class DashboardAcquireTimeout(RequestBudgetExceeded):
+    """A dashboard request waited past `CLI_ANALYTICS_DASHBOARD_ACQUIRE_TIMEOUT_S` for its lane's slot or a share
+    of the pool: the pod is busy, not the store down. A `RequestBudgetExceeded`, so a route mapping that maps this."""
+
+
+class LiveMergeNeeded(Exception):
+    """A ranking rollup read would run live statements (the sessions resumed from before the window) while the caller
+    holds a lane that may not: the caller re-enters the heavy lane and reads again."""
+
+
 class CliAnalyticsStorageConfigError(Exception):
     """The configured storage refuses its configuration; only fixing the configuration helps.
 
@@ -419,6 +484,8 @@ class CliAnalyticsReader(Protocol):
 
     async def get_dashboard_kpis(self, f: LocalAnalyticsFilter) -> Rows: ...
 
+    async def get_overview_user_count(self, f: LocalAnalyticsFilter) -> int: ...
+
     async def get_model_breakdown(self, f: LocalAnalyticsFilter) -> Rows: ...
 
     async def get_session_model_costs(self, f: LocalAnalyticsFilter) -> Rows: ...
@@ -479,11 +546,28 @@ class CliAnalyticsReader(Protocol):
         ...
 
     async def rollup_overview(
-        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float, users: bool = False
     ) -> RollupOverview | None:
         """/overview's cards and charts for the window of `f` from the per-user start-day rollup, or None when it may
         not answer (see `rollup_users`): the caller then reads the live statements. Same values as they give; it holds
-        no class lists and no estimate buckets."""
+        no class lists and no estimate buckets. `users` also counts the window's developers (`total_users`, the Users
+        page's `total_count`)."""
+        ...
+
+    async def rollup_efficiency(
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+    ) -> RollupEfficiency | None:
+        """/efficiency's rows for the window of `f` from the per-user start-day rollup, or None when it may not answer
+        (see `rollup_users`): the caller then reads the live statements. Same values as they give; it holds no class
+        lists and no estimate buckets."""
+        ...
+
+    async def rollup_tools(
+        self, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates], max_age_s: float
+    ) -> RollupTools | None:
+        """/tools' rows (the tools, the models with their tokens and the skill, agent and slash-command invocations)
+        for the window of `f` from the per-user start-day rollup, or None when it may not answer (see `rollup_users`):
+        the caller then reads the live statements. Same values as they give; it holds no class lists."""
         ...
 
     async def rollup_cost(
@@ -492,6 +576,39 @@ class CliAnalyticsReader(Protocol):
         """/cost's totals, per-developer money and per-model money for the window of `f` from the per-user start-day
         rollup, or None when it may not answer (see `rollup_users`): the caller then reads the live statements. Same
         values as they give; it holds no class lists and no estimate buckets."""
+        ...
+
+    async def rollup_repository_ranking(
+        self,
+        f: LocalAnalyticsFilter,
+        include_branches: bool,
+        rate_of: Callable[[str], ModelRates],
+        max_age_s: float,
+        page: int = 0,
+        per_page: int | None = None,
+        unattributed_last: bool = False,
+    ) -> RollupRanking | None:
+        """The Repositories ranking of the window of `f` (the page `page` of `per_page`, or every group) from the
+        start-day rollup, or None when it may not answer (see `rollup_users`; a search is never asked: it is not in the
+        filter): the caller then reads the live statements. Same values and order as `get_repository_ranking` and
+        `get_repository_facts` give: sessions, then spend, then names in code-point order. `unattributed_last` (paged,
+        without branches): the group without a repository is not ranked or counted and rides along with every page."""
+        ...
+
+    async def rollup_project_page(
+        self,
+        f: LocalAnalyticsFilter,
+        page: int,
+        per_page: int,
+        rate_of: Callable[[str], ModelRates],
+        max_age_s: float,
+        unattributed_last: bool = False,
+    ) -> RollupProjects | None:
+        """One page of the project breakdown of the window of `f` from the start-day rollup (no search), or None when
+        it may not answer (see `rollup_users`): the caller then reads the live statements. Projects by spend, the
+        unattributed one last, then by name; the same values as `get_project_page` and the rows read after it. With
+        `unattributed_last` (the totals-only page) that project is not ranked or counted and is the last name of the
+        last page, outside `per_page`."""
         ...
 
     async def get_developer_session_facts(self, f: LocalAnalyticsFilter) -> Rows:
@@ -531,7 +648,7 @@ class CliAnalyticsReader(Protocol):
 
     async def get_tool_success_by_session(self, f: LocalAnalyticsFilter) -> Rows: ...
 
-    async def get_tool_usage(self, f: LocalAnalyticsFilter) -> Rows: ...
+    async def get_tool_usage(self, f: LocalAnalyticsFilter, *, exact: bool = False) -> Rows: ...
 
     async def get_invocations(self, f: LocalAnalyticsFilter) -> Rows: ...
 
@@ -558,6 +675,8 @@ class CliAnalyticsReader(Protocol):
         page: int = 0,
         per_page: int | None = None,
         unattributed_last: bool = False,
+        *,
+        exact: bool = False,
     ) -> Rows: ...
 
     async def get_branch_ranking(
@@ -582,6 +701,13 @@ class CliAnalyticsReader(Protocol):
         repositories: Sequence[str] = (),
         unattributed: bool = False,
     ) -> Rows: ...
+
+    async def get_project_buckets(
+        self, f: LocalAnalyticsFilter, rates: Sequence[ModelRates] = (), by_project: bool = True
+    ) -> Rows:
+        """The funding and personal-billed estimates of the selection, per project or (`by_project` False) over all of
+        it, as rows of `part` `bucket` (`b_route` / `b_billed`)."""
+        ...
 
     async def get_repository_facts(
         self,
@@ -634,7 +760,7 @@ class CliAnalyticsReader(Protocol):
         """One cost-ordered page `(total, session_ids, model_flags)`; the flags cover the whole filtered window."""
         ...
 
-    async def get_project_page(
+    async def get_project_page(  # noqa: PLR0913 - the port signature of the SQL page statement
         self,
         f: LocalAnalyticsFilter,
         page: int,
@@ -648,7 +774,7 @@ class CliAnalyticsReader(Protocol):
         its sessions are returned apart on the last page (never under a search)."""
         ...
 
-    async def get_framework_page(
+    async def get_framework_page(  # noqa: PLR0913 - the port signature of the SQL page statement
         self,
         f: LocalAnalyticsFilter,
         sort_by: str,

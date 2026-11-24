@@ -358,3 +358,153 @@ def test_include_repositories_changes_the_dashboard_key():
     f = make_filter()
 
     assert dashboard_key("projects", f, True, now=NOW) != dashboard_key("projects", f, False, now=NOW)
+
+
+# ── RankingCache.single_flight: N identical rollup reads at once are one ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_identical_concurrent_rollup_reads_run_one_read_and_share_its_answer():
+    from codemie.service.analytics.dashboard_cache import RankingCache
+
+    cache, calls, release = RankingCache(30), 0, asyncio.Event()
+
+    async def read():
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return {"answer": calls}
+
+    waiting = [asyncio.create_task(cache.single_flight(("overview",), read)) for _ in range(8)]
+    for _ in range(3):
+        await asyncio.sleep(0)  # every request is waiting on the one read
+    assert calls == 1
+    release.set()
+
+    answers = await asyncio.gather(*waiting)
+    assert calls == 1 and all(a is answers[0] for a in answers)  # the one answer, as it is (read-only)
+
+
+@pytest.mark.asyncio
+async def test_rollup_reads_of_different_keys_do_not_wait_for_each_other():
+    from codemie.service.analytics.dashboard_cache import RankingCache
+
+    cache, started = RankingCache(30), []
+
+    async def read(name):
+        started.append(name)
+        await asyncio.sleep(0)
+        return name
+
+    first, second = await asyncio.gather(
+        cache.single_flight(("a",), lambda: read("a")), cache.single_flight(("b",), lambda: read("b"))
+    )
+
+    assert (first, second) == ("a", "b") and sorted(started) == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_rollup_read_reaches_every_waiter_and_is_not_remembered():
+    from codemie.service.analytics.dashboard_cache import RankingCache
+
+    cache, calls, release = RankingCache(30), 0, asyncio.Event()
+
+    async def failing():
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        raise RuntimeError("the rollup read failed")
+
+    waiting = [asyncio.create_task(cache.single_flight(("k",), failing)) for _ in range(3)]
+    await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(*waiting, return_exceptions=True)
+
+    assert calls == 1 and all(isinstance(r, RuntimeError) for r in results)
+
+    async def ok():
+        return "fine"
+
+    assert await cache.single_flight(("k",), ok) == "fine"  # the failure was not kept: the next request reads again
+
+
+@pytest.mark.asyncio
+async def test_a_waiter_that_leaves_does_not_stop_the_read_the_others_wait_for():
+    from codemie.service.analytics.dashboard_cache import RankingCache
+
+    cache, release, cancelled = RankingCache(30), asyncio.Event(), []
+
+    async def read():
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return "done"
+
+    leaver = asyncio.create_task(cache.single_flight(("k",), read))
+    stayer = asyncio.create_task(cache.single_flight(("k",), read))
+    await asyncio.sleep(0)
+    leaver.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    assert await stayer == "done" and not cancelled
+    with pytest.raises(asyncio.CancelledError):
+        await leaver
+
+
+@pytest.mark.asyncio
+async def test_the_read_is_cancelled_when_the_last_waiter_leaves_and_a_new_request_starts_a_new_one():
+    from codemie.service.analytics.dashboard_cache import RankingCache
+
+    cache, cancelled, calls = RankingCache(30), [], 0
+
+    async def read():
+        nonlocal calls
+        calls += 1
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    only = asyncio.create_task(cache.single_flight(("k",), read))
+    await asyncio.sleep(0)
+    only.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await only
+    await asyncio.sleep(0)
+
+    async def fresh():
+        return "new"
+
+    assert cancelled == [True]
+    assert await cache.single_flight(("k",), fresh) == "new"  # not a join of the cancelled read
+
+
+@pytest.mark.asyncio
+async def test_a_follower_reads_again_when_the_leaders_budget_ran_out():
+    from codemie.repository.cli_analytics.ports import RequestBudgetExceeded
+    from codemie.service.analytics.dashboard_cache import RankingCache
+
+    cache, calls, release = RankingCache(30), 0, asyncio.Event()
+
+    async def read():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await release.wait()
+            raise RequestBudgetExceeded("the leader's budget")
+        return "fresh"
+
+    leader = asyncio.create_task(cache.single_flight(("k",), read))
+    await asyncio.sleep(0)
+    follower = asyncio.create_task(cache.single_flight(("k",), read))
+    await asyncio.sleep(0)
+    release.set()
+
+    assert await follower == "fresh"
+    with pytest.raises(RequestBudgetExceeded):
+        await leader
+    assert calls == 2

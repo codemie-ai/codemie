@@ -14,6 +14,7 @@
 
 """/overview: the optional parts, the answer from the start-day rollup and the memory of a refusal (EPMCDME-17051)."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -274,3 +275,69 @@ async def test_a_refused_rollup_read_and_the_live_statements_share_one_request_b
 
     assert len(deadlines) == 2 and deadlines[0] is not None and deadlines[0] == deadlines[1]
     assert module._request_deadline.get() is None  # the budget ends with the request
+
+
+@pytest.mark.asyncio
+async def test_total_users_comes_from_the_rollup_answer_and_is_cached_apart_from_the_plain_one():
+    answer = _rollup_overview_answer()
+    answer = RollupOverview(**{**answer.__dict__, "total_users": 7})
+    repo = _overview_repo(answer)
+    repo.get_overview_user_count = AsyncMock(return_value=0)
+    handler = LocalAnalyticsHandler(repo)
+
+    data, _, _ = await handler.get_overview(make_filter(), **_LEAN, include_total_users=True)
+    again, _, _ = await handler.get_overview(make_filter(), **_LEAN, include_total_users=True)
+    plain, _, _ = await handler.get_overview(make_filter(), **_LEAN)
+
+    assert data["kpis"]["total_users"] == again["kpis"]["total_users"] == 7
+    assert "total_users" not in plain["kpis"]  # not asked for: the answer is as before
+    repo.rollup_overview.assert_awaited_once()  # the counting answer also serves the plain request
+    assert repo.rollup_overview.await_args.args[3] is True
+    repo.get_overview_user_count.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_total_users_on_the_live_path_is_one_more_statement_over_sel():
+    repo = _overview_repo(None)  # the rollup cannot answer
+    repo.get_overview_user_count = AsyncMock(return_value=5)
+
+    data, _, _ = await LocalAnalyticsHandler(repo).get_overview(make_filter(), **_LEAN, include_total_users=True)
+
+    assert data["kpis"]["total_users"] == 5
+    repo.get_overview_user_count.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_live_path_does_not_count_users_unless_asked():
+    repo = _overview_repo(None)
+    repo.get_overview_user_count = AsyncMock(return_value=5)
+
+    data, _, _ = await LocalAnalyticsHandler(repo).get_overview(make_filter(), **_LEAN)
+
+    assert "total_users" not in data["kpis"]
+    repo.get_overview_user_count.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_eight_users_opening_the_overview_together_read_the_rollup_once():
+    repo = _overview_repo(_rollup_overview_answer())
+    release = asyncio.Event()
+    answer = repo.rollup_overview.return_value
+
+    async def slow_read(*args, **kwargs):
+        await release.wait()
+        return answer
+
+    repo.rollup_overview = AsyncMock(side_effect=slow_read)
+    handler = LocalAnalyticsHandler(repo)
+
+    users = [asyncio.create_task(handler.get_overview(make_filter(), **_LEAN)) for _ in range(8)]
+    for _ in range(5):
+        await asyncio.sleep(0)
+    release.set()
+    answers = await asyncio.gather(*users)
+
+    assert repo.rollup_overview.await_count == 1  # not eight reads queueing for the light lane's two slots
+    assert (
+        len({a[0]["kpis"]["total_cost_usd"] for a in answers}) == 1 and answers[0][0]["kpis"]["total_cost_usd"] == 8.0
+    )

@@ -44,7 +44,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -59,12 +59,18 @@ from codemie.repository.cli_analytics.ports import (
     G_USER_ROUTE,
     CostGroup,
     GroupedMoney,
+    LiveMergeNeeded,
     ModelRates,
     RollupCost,
+    RollupEfficiency,
     RollupOverview,
+    RollupProjects,
+    RollupRanking,
+    RollupTools,
     RollupUsers,
     UsersMoneyPage,
 )
+from codemie.repository.cli_analytics.postgres import request_stats
 from codemie.repository.cli_analytics.postgres.grouped_cost_sql import Grouping, grouped_cost_sql
 from codemie.repository.cli_analytics.postgres.reader import (
     _C,
@@ -85,7 +91,16 @@ ROLLUP_SCOPE = ViewerScope(viewer_email=None, unrestricted=True, admin_projects=
 # latest-event column is the lifetime maximum, which is the live answer when nothing is later than the window end.
 LIVE_END_SECONDS = 120
 # More sessions than this that started earlier and are active in the window: the live statements answer instead.
-MAX_RESUMED = 2000
+# Reading n such sessions live costs about 0.3 s + n * 0.1 ms (measured at 600K sessions: 3,000 in 0.4 s, 10,000 in
+# 1.1 s, 30,000 in 3.3 s), and a short window of a busy installation has thousands of them (a session lasts a few days,
+# a tenth of them resume: 3,300 for a window of 7 days, 3,200 for 8, 3,300 for 14, 1,300 for 30 and 190 for 90 at 600K
+# sessions), so 2,000 sent every window of a week or two to the live statements: Overview 5.0 s and 8.0 s, Cost 3.1 s
+# and 5.3 s, Users 3.2 s and 5.3 s at 7 and 14 days, against 1.4 to 1.9 s with the rollup. 8,000 keeps them inside the
+# 2 s target. A rollup read runs in the light lane, which assumes cheap reads, so every reader refuses the merge of such
+# sessions there (`LiveMergeNeeded`) and the handler repeats the read in the heavy lane.
+MAX_RESUMED = 8000
+# The Repositories and Projects rankings read the same sessions under the same limit.
+MAX_RESUMED_RANKING = MAX_RESUMED
 # How old today's row may be before the reader stops trusting the job: a few of its runs, and at least this long.
 MIN_FRESH_SECONDS = 180
 # The job checks the last RECENT_DAYS days for changed sessions on every run and all days this often.
@@ -93,14 +108,22 @@ RECENT_DAYS = 2
 FULL_SCAN_SECONDS = 600
 # What a built day holds: 1 = the developer rows, 2 = also the model rows (what /users and /cost read), 3 = also the
 # Overview rows, 4 = the money of the model and Overview rows covers every session, the Personal-paid ones too
-# (before, only the spend's; EPMCDME-17260). A shape only grows: a reader asks for the least shape that holds what it
-# reads (`min_shape`) and the job rebuilds a day of a shape below the one it builds (`ROLLUP_SHAPE`), so a day of a
-# higher shape (a newer pod's) is neither refused nor rebuilt down. Every reader asks for shape 4: the money a day of
-# a lower shape stores leaves the Personal-paid sessions out, so until the job has rebuilt a day the live statements
-# answer for it.
+# (before, only the spend's; EPMCDME-17260), 5 = also the ranking rows (the Repositories and Projects tabs read them).
+# A shape only grows: a reader asks for the least shape that holds what it reads (`min_shape`) and the job rebuilds a
+# day of a shape below the one it builds (`ROLLUP_SHAPE`), so a day of a higher shape (a newer pod's) is neither
+# refused nor rebuilt down. The users, cost and Overview readers ask for shape 4: the money a day of a lower shape
+# stores leaves the Personal-paid sessions out, so until the job has rebuilt a day the live statements answer for it.
+# The Efficiency reader asks for shape 6 (the Efficiency rows). 7 = the ranking rows also hold each group's pricing
+# (the raw names of its unpriced models and whether any of its usage was priced; EPMCDME-17152 reports it per row),
+# which the ranking readers ask for: a day built before has no pricing to answer with, so the live statements answer
+# for it until the job has rebuilt it. 8 = also the Tools & Models rows (`user_day_tools_rollup`,
+# `user_day_tools_models`), which the Tools & Models reader asks for.
 SHAPE_COST = 4
 SHAPE_OVERVIEW = 4
-ROLLUP_SHAPE = SHAPE_OVERVIEW  # the shape the job builds
+SHAPE_RANKING = 7
+SHAPE_EFFICIENCY = 6
+SHAPE_TOOLS = 8
+ROLLUP_SHAPE = max(SHAPE_RANKING, SHAPE_EFFICIENCY, SHAPE_TOOLS)  # the shape the job builds
 
 
 # The planner's cost of a random page while the sessions that started before the window are read live. They are at
@@ -222,11 +245,45 @@ OVERVIEW_SUMS = (
     "api_calls",
 )
 _OVERVIEW_NUMERIC = ("spend_cost", "cache_read_cost")
+_DEPTH_COLUMNS = ("depth_1", "depth_2_5", "depth_6_10", "depth_11_25", "depth_26_50", "depth_50_plus")
 
 
 def _nadd(a: Any, b: Any) -> Any:
     """SQL `sum` over two groups: unknown only while both are."""
     return None if a is None and b is None else (a or 0) + (b or 0)
+
+
+DEPTH_BUCKETS = ("1", "2-5", "6-10", "11-25", "26-50", "50+")
+
+
+@dataclass
+class EfficiencyAgg:
+    """What the Efficiency tab holds beyond the Overview rows, over a set of sessions: the cost of the dead sessions,
+    the sessions per depth bucket (`DEPTH_BUCKETS`), the files written and edited, the sessions that have a cost row
+    and the worst session by cache-read tokens per API call (`(ratio, session id)`, None while no session has a call).
+    See `gather_efficiency`."""
+
+    dead_cost: Decimal = Decimal(0)
+    depth: list[int] = field(default_factory=lambda: [0] * len(DEPTH_BUCKETS))
+    files_written: int = 0
+    files_edited: int = 0
+    spend_sessions: int = 0
+    worst: tuple[float, str] | None = None
+
+    def merge(self, other: EfficiencyAgg) -> None:
+        self.dead_cost += other.dead_cost
+        self.depth = [a + b for a, b in zip(self.depth, other.depth, strict=True)]
+        self.files_written += other.files_written
+        self.files_edited += other.files_edited
+        self.spend_sessions += other.spend_sessions
+        if other.worst is not None and (self.worst is None or _worse(other.worst, self.worst)):
+            self.worst = other.worst
+
+
+def _worse(a: tuple[float, str], b: tuple[float, str]) -> bool:
+    """Whether session `a` is the worse one: the larger ratio, ties to the lower id in code-point order (the live
+    `ORDER BY ratio DESC, session_id COLLATE "C"`)."""
+    return a[0] > b[0] or (a[0] == b[0] and a[1] < b[1])
 
 
 @dataclass
@@ -256,8 +313,12 @@ class OverviewAgg:
     # The cost of every session by subscription class: not stored in the Overview rows, read from the money rows
     # (`_OVERVIEW_CLASSES_SQL`) or the live statement.
     class_cost: dict[str, Decimal] = field(default_factory=dict)
+    users: set[str] = field(default_factory=set)  # the developers of the stored days, read only when asked
+    efficiency: EfficiencyAgg = field(default_factory=EfficiencyAgg)  # read and stored by the Efficiency rows only
 
     def merge(self, other: OverviewAgg) -> None:
+        self.users |= other.users
+        self.efficiency.merge(other.efficiency)
         for name in OVERVIEW_SUMS:
             setattr(self, name, getattr(self, name) + getattr(other, name))
         self.sessions += other.sessions
@@ -272,12 +333,103 @@ class OverviewAgg:
             self.class_cost[name] = self.class_cost.get(name, Decimal(0)) + cost
 
 
+# A group of the ranking: (project, repository, branch), an empty name for none.
+GroupKey = tuple[str, str, str]
+# A cell of the ranking's money: (kind, money key, project, repository). Kind `spend` is the whole selection's spend
+# (empty key, project and repository); `route` is a funding route, `billed` is "true" (the personal-billed estimate).
+MoneyKey = tuple[str, str, str, str]
+SPEND_KEY: MoneyKey = ("spend", "", "", "")
+
+
+@dataclass
+class GroupAgg:
+    """What the Repositories tab sums over the sessions of a (project, repository, branch) group."""
+
+    n: int = 0
+    turns: int = 0
+    files_changed: int = 0
+    lines_added: int | None = None  # None while no session of the group reports lines
+    lines_removed: int | None = None
+    tool_calls: int = 0
+    tool_successes: int = 0
+    spend: Decimal = Decimal(0)
+    subs: set[str] = field(default_factory=set)
+    origins: set[str] = field(default_factory=set)
+    unpriced: set[str] = field(default_factory=set)  # raw names of the models without a price behind `spend`
+    priced: bool = False  # some usage of the group had a used token kind with a rate (the evidence of `cost_unknown`)
+
+    def merge(self, other: GroupAgg) -> None:
+        self.n += other.n
+        self.turns += other.turns
+        self.files_changed += other.files_changed
+        self.lines_added, self.lines_removed = (
+            _nadd(self.lines_added, other.lines_added),
+            _nadd(self.lines_removed, other.lines_removed),
+        )
+        self.tool_calls += other.tool_calls
+        self.tool_successes += other.tool_successes
+        self.spend += other.spend
+        self.subs |= other.subs
+        self.origins |= other.origins
+        self.unpriced |= other.unpriced
+        self.priced = self.priced or other.priced
+
+
+@dataclass
+class MoneyCell:
+    cost: Decimal = Decimal(0)
+    sessions: int = 0
+    unpriced: set[str] = field(default_factory=set)
+
+    def merge(self, other: MoneyCell) -> None:
+        self.cost += other.cost
+        self.sessions += other.sessions
+        self.unpriced |= other.unpriced
+
+
+@dataclass
+class RankingAgg:
+    groups: dict[GroupKey, GroupAgg] = field(default_factory=dict)
+    money: dict[MoneyKey, MoneyCell] = field(default_factory=dict)
+
+    def merge(self, other: RankingAgg) -> None:
+        for key, group in other.groups.items():
+            self.groups.setdefault(key, GroupAgg()).merge(group)
+        for key, cell in other.money.items():
+            self.money.setdefault(key, MoneyCell()).merge(cell)
+
+
+@dataclass
+class ToolsAgg:
+    """The Tools & Models tab's counts of a set of sessions: `tools` (name to `[calls, successes]`), `invocations`
+    (`(kind, name)` with kind skill, agent or command to the count) and `models` (normalised model to
+    `[sessions, total tokens]`), every name, uncut: the tab's top lists are cut after a window's days are summed."""
+
+    tools: dict[str, list[int]] = field(default_factory=dict)
+    invocations: dict[tuple[str, str], int] = field(default_factory=dict)
+    models: dict[str, list[int]] = field(default_factory=dict)
+
+    def merge(self, other: ToolsAgg) -> None:
+        for name, (calls, successes) in other.tools.items():
+            cell = self.tools.setdefault(name, [0, 0])
+            cell[0] += calls
+            cell[1] += successes
+        for key, count in other.invocations.items():
+            self.invocations[key] = self.invocations.get(key, 0) + count
+        for model, (sessions, tokens) in other.models.items():
+            cell = self.models.setdefault(model, [0, 0])
+            cell[0] += sessions
+            cell[1] += tokens
+
+
 @dataclass
 class Cohort:
     users: dict[str, UserAgg] = field(default_factory=dict)
     money: dict[tuple[str, str, bool], MoneyAgg] = field(default_factory=dict)
     models: dict[str, ModelAgg] = field(default_factory=dict)
     overview: OverviewAgg = field(default_factory=OverviewAgg)
+    ranking: RankingAgg = field(default_factory=RankingAgg)
+    tools: ToolsAgg = field(default_factory=ToolsAgg)
 
     def merge(self, other: Cohort) -> None:
         for name, agg in other.users.items():
@@ -287,6 +439,8 @@ class Cohort:
         for model, agg in other.models.items():
             self.models.setdefault(model, ModelAgg()).merge(agg)
         self.overview.merge(other.overview)
+        self.ranking.merge(other.ranking)
+        self.tools.merge(other.tools)
 
 
 # ── the live statements over a cohort ────────────────────────────────────────────────────────────────────────────
@@ -408,6 +562,7 @@ def _overview_money(agg: OverviewAgg, rows: list[dict]) -> None:
             agg.class_cost[r["subscription_type"]] = _dec(r["cost_usd"])
         elif r["part"] == "dead":
             agg.dead_sessions = int(r["n"] or 0)
+            agg.efficiency.dead_cost = _dec(r["cost_usd"])
 
 
 def _overview_facts(agg: OverviewAgg, rows: list[dict]) -> None:
@@ -426,14 +581,30 @@ def _overview_kpis(agg: OverviewAgg, rows: list[dict]) -> None:
         agg.cache_read_tokens = int(r["total_cache_read_tokens"] or 0)
         agg.cache_creation_tokens = int(r["total_cache_creation_tokens"] or 0)
         agg.api_calls = int(r["total_api_calls"] or 0)
+        agg.efficiency.spend_sessions = int(r["spend_sessions"] or 0)
+
+
+def _efficiency_facts(agg: OverviewAgg, rows: list[dict]) -> None:
+    for r in rows:
+        if r["part"] == "worst":
+            agg.efficiency.worst = (float(r["ratio"]), str(r["session_id"]))
+        elif r["part"] == "depth":
+            agg.efficiency.depth[DEPTH_BUCKETS.index(str(r["key"]))] = int(r["n"] or 0)
+        elif r["part"] == "code":
+            agg.efficiency.files_written = int(r["files_written"] or 0)
+            agg.efficiency.files_edited = int(r["files_edited"] or 0)
 
 
 async def gather_overview(
-    repo: PostgresCliAnalyticsReader, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates]
+    repo: PostgresCliAnalyticsReader,
+    f: LocalAnalyticsFilter,
+    rate_of: Callable[[str], ModelRates],
+    efficiency: bool = False,
 ) -> OverviewAgg:
     """The Overview's values of the sessions of `repo`'s temp `sel`, from the live reader's own /overview statements
     (`get_overview_money`, `_facts`, `_models`, `get_dashboard_kpis`, `get_overview_lines`). `repo` is bounded and has
-    materialized `sel` for `f`."""
+    materialized `sel` for `f`. `efficiency` also reads the Efficiency facts (`get_efficiency_facts`); the dead-session
+    cost and the sessions with a cost row come with the rows above."""
     await repo.materialize_files(f)
     agg = OverviewAgg()
     rates = [rate_of(model) for model in await repo.get_cost_models(f)]
@@ -445,7 +616,78 @@ async def gather_overview(
     for r in await repo.get_overview_lines(f):
         if r["part"] == "day":
             agg.lines[date.fromisoformat(r["key"])] = [r["lines_added"], r["lines_removed"], bool(r["nonzero"])]
+    if efficiency:
+        _efficiency_facts(agg, await repo.get_efficiency_facts(f))
     return agg
+
+
+def _name(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _ranking_group_row(agg: RankingAgg, r: dict) -> None:
+    key = (_name(r["project_name"]), _name(r["repository"]), _name(r["branch"]))
+    group = agg.groups.setdefault(key, GroupAgg())
+    group.n, group.spend = int(r["n"]), _dec(r["cost_usd"])
+    group.unpriced, group.priced = set(r["unpriced_models"] or ()), bool(r["cost_priced"])
+
+
+def _ranking_bucket_row(agg: RankingAgg, r: dict) -> None:
+    where = (_name(r["project_name"]), _name(r["repository"]))
+    if r["key"] == "b_route":
+        agg.money[("route", _name(r["funding_route"]), *where)] = _money_cell(r)
+    elif r["personal_billed"]:
+        agg.money[("billed", "true", *where)] = _money_cell(r)
+
+
+def _ranking_row(agg: RankingAgg, r: dict) -> None:
+    if r["part"] == "group":
+        _ranking_group_row(agg, r)
+    elif r["part"] == "total" and r["key"] == "spend":
+        agg.money[SPEND_KEY] = _money_cell(r)
+    elif r["part"] == "bucket":
+        _ranking_bucket_row(agg, r)
+
+
+def _ranking_facts_row(agg: RankingAgg, r: dict) -> None:
+    group = agg.groups[(_name(r["project_name"]), _name(r["repository"]), _name(r["branch"]))]
+    group.turns, group.files_changed = int(r["turns"] or 0), int(r["files_changed"] or 0)
+    group.lines_added, group.lines_removed = r["lines_added"], r["lines_removed"]
+    group.tool_calls, group.tool_successes = int(r["tool_calls"] or 0), int(r["tool_calls_success"] or 0)
+    group.subs, group.origins = set(r["subscription_types"] or ()), set(r["project_origins"] or ())
+
+
+async def gather_ranking(
+    repo: PostgresCliAnalyticsReader, f: LocalAnalyticsFilter, rate_of: Callable[[str], ModelRates]
+) -> RankingAgg:
+    """The Repositories groups and their money of the sessions of `repo`'s temp `sel`, from the live reader's own
+    statements with branches (`get_repository_ranking`, `get_repository_facts`). `repo` is bounded and has materialized
+    `sel` for `f`."""
+    agg = RankingAgg()
+    rates = [rate_of(model) for model in await repo.get_cost_models(f)]
+    for r in await repo.get_repository_ranking(f, True, None, rates, exact=True):
+        _ranking_row(agg, r)
+    for r in await repo.get_repository_facts(f, True, None):
+        _ranking_facts_row(agg, r)
+    return agg
+
+
+async def gather_tools(repo: PostgresCliAnalyticsReader, f: LocalAnalyticsFilter) -> ToolsAgg:
+    """The Tools & Models rows of the sessions of `repo`'s temp `sel`, from the live reader's own statements
+    (`get_tool_usage` without its limit, `get_invocations`, `get_model_breakdown`). `repo` is bounded and has
+    materialized `sel` for `f`."""
+    agg = ToolsAgg()
+    for r in await repo.get_tool_usage(f, exact=True):
+        agg.tools[str(r["tool_name"])] = [int(r["call_count"] or 0), int(r["success_count"] or 0)]
+    for r in await repo.get_invocations(f):
+        agg.invocations[(str(r["kind"]), str(r["name"]))] = int(r["count"] or 0)
+    for r in await repo.get_model_breakdown(f):
+        agg.models[str(r["model_name"])] = [int(r["session_count"] or 0), int(r["total_tokens"] or 0)]
+    return agg
+
+
+def _money_cell(row: dict) -> MoneyCell:
+    return MoneyCell(_dec(row["cost_usd"]), int(row["session_count"] or 0), set(row["unpriced_models"] or ()))
 
 
 # ── building ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -503,6 +745,18 @@ _INSERT_OVERVIEW_LINES = """INSERT INTO user_day_overview_lines (start_day, sub_
     lines_added, lines_removed, nonzero) VALUES ($1, $2, $3, $4, $5, $6, $7)"""
 _INSERT_OVERVIEW_MODEL = """INSERT INTO user_day_overview_models (start_day, sub_class, origin_class, model, sessions,
     spend) VALUES ($1, $2, $3, $4, $5, $6)"""
+_INSERT_EFFICIENCY = """INSERT INTO user_day_efficiency_rollup (start_day, sub_class, origin_class, dead_cost, depth_1,
+    depth_2_5, depth_6_10, depth_11_25, depth_26_50, depth_50_plus, files_written, files_edited, spend_sessions,
+    worst_session_id, worst_ratio) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"""
+_INSERT_RANKING = """INSERT INTO user_day_ranking_rollup (start_day, sub_class, origin_class, project, repository,
+    branch, session_count, turns, files_changed, lines_added, lines_removed, tool_calls, tool_successes, spend,
+    unpriced, priced) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)"""
+_INSERT_RANKING_MONEY = """INSERT INTO user_day_ranking_money_rollup (start_day, sub_class, origin_class, kind,
+    money_key, project, repository, cost, sessions, unpriced) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"""
+_INSERT_TOOLS = """INSERT INTO user_day_tools_rollup (start_day, sub_class, origin_class, kind, name, calls,
+    successes) VALUES ($1, $2, $3, $4, $5, $6, $7)"""
+_INSERT_TOOLS_MODEL = """INSERT INTO user_day_tools_models (start_day, sub_class, origin_class, model, sessions,
+    total_tokens) VALUES ($1, $2, $3, $4, $5, $6)"""
 _DAY_TABLES = (
     "user_day_rollup",
     "user_day_money_rollup",
@@ -510,6 +764,11 @@ _DAY_TABLES = (
     "user_day_overview_rollup",
     "user_day_overview_lines",
     "user_day_overview_models",
+    "user_day_ranking_rollup",
+    "user_day_ranking_money_rollup",
+    "user_day_efficiency_rollup",
+    "user_day_tools_rollup",
+    "user_day_tools_models",
 )
 # `built_touched` is the day's `touched` as the build read it before its data: `touched` itself is the refresher's and
 # is never written here, so a recompute that lands during the build leaves the two apart and the day is built again.
@@ -544,9 +803,32 @@ async def write_day(
 ) -> None:
     """Replace a day's rows and its state in one transaction, so a reader sees the old day or the new one."""
     users, money, models, overview, overview_lines, overview_models = [], [], [], [], [], []
+    ranking, ranking_money, efficiency, tools, tools_models = [], [], [], [], []
     for (sub, origin), cohort in sorted(cohorts.items()):
+        tools += [
+            (day, sub, origin, "tool", name, calls, ok) for name, (calls, ok) in sorted(cohort.tools.tools.items())
+        ]
+        tools += [(day, sub, origin, kind, name, n, 0) for (kind, name), n in sorted(cohort.tools.invocations.items())]
+        tools_models += [
+            (day, sub, origin, model, n, tokens) for model, (n, tokens) in sorted(cohort.tools.models.items())
+        ]
+        ranking += [
+            (day, sub, origin, *key, g.n, g.turns, g.files_changed, g.lines_added, g.lines_removed)
+            + (g.tool_calls, g.tool_successes, g.spend, sorted(g.unpriced), g.priced)
+            for key, g in sorted(cohort.ranking.groups.items())
+        ]
+        ranking_money += [
+            (day, sub, origin, *key, c.cost, c.sessions, sorted(c.unpriced))
+            for key, c in sorted(cohort.ranking.money.items())
+        ]
         o = cohort.overview
         overview.append((day, sub, origin, *(getattr(o, name) for name in OVERVIEW_SUMS), sorted(o.unpriced)))
+        e = o.efficiency
+        worst = e.worst or (None, None)
+        efficiency.append(
+            (day, sub, origin, e.dead_cost, *e.depth, e.files_written, e.files_edited, e.spend_sessions)
+            + (worst[1], worst[0])
+        )
         overview_lines += [(day, sub, origin, d, *values) for d, values in sorted(o.lines.items())]
         overview_models += [(day, sub, origin, m, *values) for m, values in sorted(o.models.items())]
         models += [
@@ -575,6 +857,11 @@ async def write_day(
         await conn.executemany(_INSERT_OVERVIEW, overview)
         await conn.executemany(_INSERT_OVERVIEW_LINES, overview_lines)
         await conn.executemany(_INSERT_OVERVIEW_MODEL, overview_models)
+        await conn.executemany(_INSERT_RANKING, ranking)
+        await conn.executemany(_INSERT_RANKING_MONEY, ranking_money)
+        await conn.executemany(_INSERT_EFFICIENCY, efficiency)
+        await conn.executemany(_INSERT_TOOLS, tools)
+        await conn.executemany(_INSERT_TOOLS_MODEL, tools_models)
         await conn.execute(
             _UPSERT_STATE,
             day,
@@ -629,7 +916,9 @@ async def build_day(
             await scoped.materialize_sel(f, cohort="started")
             cohort = await gather_cohort(scoped, f, rate_of)
             if cohort.users:
-                cohort.overview = await gather_overview(scoped, f, rate_of)
+                cohort.overview = await gather_overview(scoped, f, rate_of, efficiency=True)
+                cohort.ranking = await gather_ranking(scoped, f, rate_of)
+                cohort.tools = await gather_tools(scoped, f)
         finally:
             await scoped._drop_sel(conn)
         if cohort.users:  # a pair the scope leaves out (personal sessions) has no row
@@ -769,6 +1058,23 @@ def eligible(f: LocalAnalyticsFilter, now: datetime) -> bool:
     return start == _day_start(start.date()) and abs((now - end).total_seconds()) <= LIVE_END_SECONDS
 
 
+def ranking_eligible(f: LocalAnalyticsFilter, now: datetime) -> bool:
+    """Whether the ranking rows can answer `f`. A copy of `eligible` that evolves on its own: the Repositories and
+    Projects tabs filter by more than the Users page does, and a search is never asked of the rollup (it narrows the
+    sessions by name; the caller does not call it with one). Every shared session, whoever asks, by subscription
+    class and project-origin class; a window of whole start days up to now."""
+    scope = f.scope
+    if not (isinstance(scope, ViewerScope) and scope.unrestricted and scope.mode == "exclude"):
+        return False
+    if f.deny_all or f.project_unattributed or f.session_ids is not None:
+        return False
+    if any((f.users, f.projects, f.repositories, f.branch, f.developers)):
+        return False
+    start = f.start_dt if f.start_dt.tzinfo else f.start_dt.replace(tzinfo=timezone.utc)
+    end = f.end_dt if f.end_dt.tzinfo else f.end_dt.replace(tzinfo=timezone.utc)
+    return start == _day_start(start.date()) and abs((now - end).total_seconds()) <= LIVE_END_SECONDS
+
+
 def _window_days(f: LocalAnalyticsFilter) -> tuple[date, date]:
     start = f.start_dt if f.start_dt.tzinfo else f.start_dt.replace(tzinfo=timezone.utc)
     end = f.end_dt if f.end_dt.tzinfo else f.end_dt.replace(tzinfo=timezone.utc)
@@ -826,6 +1132,23 @@ FROM user_day_overview_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES}"""  #
 _OVERVIEW_CLASSES_SQL = f"""
 SELECT sub_class, sum(cost_all) AS cost
 FROM user_day_money_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES} GROUP BY sub_class"""
+# The developers of the window's stored days: the Users page's `total_count` (`_USERS_SQL` groups by the same column).
+_OVERVIEW_USERS_SQL = f"""
+SELECT DISTINCT usr FROM user_day_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES}"""
+# The window's Efficiency rows: the sums, and the day's worst sessions' best (the largest ratio, ties to the lowest id).
+_EFFICIENCY_SQL = f"""
+SELECT coalesce(sum(dead_cost), 0) AS dead_cost,
+       coalesce(sum(depth_1), 0)::bigint AS depth_1, coalesce(sum(depth_2_5), 0)::bigint AS depth_2_5,
+       coalesce(sum(depth_6_10), 0)::bigint AS depth_6_10, coalesce(sum(depth_11_25), 0)::bigint AS depth_11_25,
+       coalesce(sum(depth_26_50), 0)::bigint AS depth_26_50, coalesce(sum(depth_50_plus), 0)::bigint AS depth_50_plus,
+       coalesce(sum(files_written), 0)::bigint AS files_written,
+       coalesce(sum(files_edited), 0)::bigint AS files_edited,
+       coalesce(sum(spend_sessions), 0)::bigint AS spend_sessions
+FROM user_day_efficiency_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES}"""  # noqa: S608 - fixed names
+_EFFICIENCY_WORST_SQL = f"""
+SELECT worst_session_id, worst_ratio FROM user_day_efficiency_rollup
+WHERE start_day BETWEEN $1 AND $2 {_CLASSES} AND worst_session_id IS NOT NULL
+ORDER BY worst_ratio DESC, worst_session_id COLLATE "C" LIMIT 1"""
 _OVERVIEW_UNPRICED_SQL = f"""
 SELECT DISTINCT unnest(unpriced) AS name
 FROM user_day_overview_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES} AND cardinality(unpriced) > 0"""
@@ -835,6 +1158,36 @@ FROM user_day_overview_lines WHERE start_day BETWEEN $1 AND $2 {_CLASSES} GROUP 
 _OVERVIEW_MODELS_SQL = f"""
 SELECT model, sum(sessions)::bigint AS sessions, sum(spend) AS spend
 FROM user_day_overview_models WHERE start_day BETWEEN $1 AND $2 {_CLASSES} GROUP BY model"""
+# The window's Tools & Models rows: every name summed over the days, the top lists are cut by `assemble_tools`.
+_TOOLS_SQL = f"""
+SELECT kind, name, sum(calls)::bigint AS calls, sum(successes)::bigint AS successes
+FROM user_day_tools_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES} GROUP BY kind, name"""
+_TOOLS_MODELS_SQL = f"""
+SELECT model, sum(sessions)::bigint AS sessions, sum(total_tokens)::bigint AS total_tokens
+FROM user_day_tools_models WHERE start_day BETWEEN $1 AND $2 {_CLASSES} GROUP BY model"""
+# The window's ranking rows: the groups' sums and the classes they were seen in, the money cells and the few unpriced
+# raw names.
+_RANKING_SQL = f"""
+SELECT project, repository, branch, sum(session_count)::bigint AS n, sum(turns)::bigint AS turns,
+       sum(files_changed)::bigint AS files_changed, sum(lines_added)::bigint AS lines_added,
+       sum(lines_removed)::bigint AS lines_removed, sum(tool_calls)::bigint AS tool_calls,
+       sum(tool_successes)::bigint AS tool_successes, sum(spend) AS spend, bool_or(priced) AS priced,
+       array_agg(DISTINCT sub_class) AS subs, array_agg(DISTINCT origin_class) AS origins
+FROM user_day_ranking_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES} GROUP BY project, repository, branch"""
+_RANKING_GROUP_UNPRICED_SQL = f"""
+SELECT project, repository, branch, array_agg(DISTINCT n) AS names FROM (
+    SELECT project, repository, branch, unnest(unpriced) AS n
+    FROM user_day_ranking_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES} AND cardinality(unpriced) > 0) x
+GROUP BY project, repository, branch"""  # noqa: S608 - _CLASSES is a constant of this module; the values are bound
+_RANKING_MONEY_SQL = f"""
+SELECT kind, money_key, project, repository, sum(cost) AS cost, sum(sessions)::bigint AS sessions
+FROM user_day_ranking_money_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES}
+GROUP BY kind, money_key, project, repository"""
+_RANKING_UNPRICED_SQL = f"""
+SELECT kind, money_key, project, repository, array_agg(DISTINCT n) AS names FROM (
+    SELECT kind, money_key, project, repository, unnest(unpriced) AS n
+    FROM user_day_ranking_money_rollup WHERE start_day BETWEEN $1 AND $2 {_CLASSES} AND cardinality(unpriced) > 0) x
+GROUP BY kind, money_key, project, repository"""  # noqa: S608 - _CLASSES is a constant of this module; the values are bound
 # Two selects, one per partial index (`session_dims_resumed_last`, `session_dims_activity_pending`): one OR over the
 # table is a scan of all of it. The first is written the way its index needs: `resumed` as the index states it
 # (`resumed IS TRUE` is not matched to it and scans the table), and the start as an expression, so the planner filters
@@ -861,11 +1214,14 @@ def _naive_utc(value: datetime | None) -> datetime | None:
     return value if value is None or value.tzinfo is None else value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-async def _overview_window(conn: Any, args: tuple) -> Cohort:
+async def _overview_window(conn: Any, args: tuple, users: bool = False, efficiency: bool = False) -> Cohort:
     """The Overview reads its own rows and only the number of sessions from the developers' rows: not their totals,
-    top models, money groups or unpriced names."""
+    top models, money groups or unpriced names. `users` also reads the names of the developers (the count of them),
+    `efficiency` the Efficiency rows."""
     cohort = Cohort()
     o = cohort.overview
+    if users:
+        o.users = {r["usr"] for r in await conn.fetch(_OVERVIEW_USERS_SQL, *args)}
     o.sessions = int(await conn.fetchval(_SESSIONS_SQL, *args))
     row = await conn.fetchrow(_OVERVIEW_SQL, *args)
     for name in OVERVIEW_SUMS:
@@ -878,10 +1234,58 @@ async def _overview_window(conn: Any, args: tuple) -> Cohort:
     }
     o.models = {r["model"]: [r["sessions"], r["spend"]] for r in await conn.fetch(_OVERVIEW_MODELS_SQL, *args)}
     o.class_cost = {r["sub_class"]: r["cost"] for r in await conn.fetch(_OVERVIEW_CLASSES_SQL, *args)}
+    if efficiency:
+        e, row = o.efficiency, await conn.fetchrow(_EFFICIENCY_SQL, *args)
+        e.dead_cost, e.files_written, e.files_edited = _dec(row["dead_cost"]), row["files_written"], row["files_edited"]
+        e.depth = [row[name] for name in _DEPTH_COLUMNS]
+        e.spend_sessions = row["spend_sessions"]
+        worst = await conn.fetchrow(_EFFICIENCY_WORST_SQL, *args)
+        e.worst = None if worst is None else (worst["worst_ratio"], worst["worst_session_id"])
     return cohort
 
 
-async def _window_cohort(
+async def _ranking_window(conn: Any, args: tuple) -> Cohort:
+    """The ranking rows of the window's days, combined; nothing else of the cohort is read."""
+    cohort = Cohort()
+    ranking = cohort.ranking
+    for r in await conn.fetch(_RANKING_SQL, *args):
+        ranking.groups[(r["project"], r["repository"], r["branch"])] = GroupAgg(
+            n=r["n"],
+            turns=r["turns"],
+            files_changed=r["files_changed"],
+            lines_added=r["lines_added"],
+            lines_removed=r["lines_removed"],
+            tool_calls=r["tool_calls"],
+            tool_successes=r["tool_successes"],
+            spend=r["spend"],
+            subs=set(r["subs"]),
+            origins=set(r["origins"]),
+            priced=bool(r["priced"]),
+        )
+    for r in await conn.fetch(_RANKING_GROUP_UNPRICED_SQL, *args):
+        ranking.groups[(r["project"], r["repository"], r["branch"])].unpriced.update(r["names"])
+    for r in await conn.fetch(_RANKING_MONEY_SQL, *args):
+        ranking.money[(r["kind"], r["money_key"], r["project"], r["repository"])] = MoneyCell(r["cost"], r["sessions"])
+    for r in await conn.fetch(_RANKING_UNPRICED_SQL, *args):
+        ranking.money[(r["kind"], r["money_key"], r["project"], r["repository"])].unpriced.update(r["names"])
+    return cohort
+
+
+async def _tools_window(conn: Any, args: tuple) -> Cohort:
+    """The Tools & Models rows of the window's days, combined; nothing else of the cohort is read."""
+    cohort = Cohort()
+    tools = cohort.tools
+    for r in await conn.fetch(_TOOLS_SQL, *args):
+        if r["kind"] == "tool":
+            tools.tools[r["name"]] = [int(r["calls"]), int(r["successes"])]
+        else:
+            tools.invocations[(r["kind"], r["name"])] = int(r["calls"])
+    for r in await conn.fetch(_TOOLS_MODELS_SQL, *args):
+        tools.models[r["model"]] = [int(r["sessions"]), int(r["total_tokens"])]
+    return cohort
+
+
+async def _window_cohort(  # noqa: PLR0913 - the arguments of one rollup read, passed on as they come from the callers
     conn: Any,
     d0: date,
     d1: date,
@@ -890,12 +1294,21 @@ async def _window_cohort(
     *,
     models: bool = False,
     overview: bool = False,
+    ranking: bool = False,
+    users: bool = False,
+    efficiency: bool = False,
+    tools: bool = False,
 ) -> Cohort:
     """The window's start days combined, for the classes asked for (None: every class), in the caller's
-    transaction. `models` also reads the per-model rows (/cost), `overview` the Overview rows."""
+    transaction. `models` also reads the per-model rows (/cost), `overview` the Overview rows (`users`: and the
+    developers' names, for their count; `efficiency`: and the Efficiency rows)."""
     args = (d0, d1, subs, origins)
+    if tools:
+        return await _tools_window(conn, args)
+    if ranking:
+        return await _ranking_window(conn, args)
     if overview:
-        return await _overview_window(conn, args)
+        return await _overview_window(conn, args, users, efficiency)
     cohort = Cohort()
     for r in await conn.fetch(_USERS_SQL, *args):
         cohort.users[r["usr"]] = UserAgg(
@@ -1034,7 +1447,7 @@ def assemble_cost(cohort: Cohort) -> RollupCost:
     )
 
 
-def assemble_overview(cohort: Cohort) -> RollupOverview:
+def assemble_overview(cohort: Cohort, with_users: bool = False) -> RollupOverview:
     """The reader port's answer for /overview from a window's combined cohort, in the row shapes of the live statements
     the handler reads, so both paths build the response with the same code: the session count is the sessions of
     the window (every one), the rest the Overview rows."""
@@ -1088,7 +1501,9 @@ def assemble_overview(cohort: Cohort) -> RollupOverview:
         net = None if day_added is None or day_removed is None else day_added - day_removed
         line_rows.append({"part": "day", "key": day.isoformat(), "net_lines": net, "nonzero": nonzero})
     line_rows.append({"part": "total", "lines_added": added, "lines_removed": removed})
-    return RollupOverview(money_rows, fact_rows, model_rows, kpi_rows, line_rows)
+    # The developers of the stored days and those of the sessions read live: the Users page's `total_count`.
+    total_users = len(o.users | set(cohort.users)) if with_users else None
+    return RollupOverview(money_rows, fact_rows, model_rows, kpi_rows, line_rows, total_users)
 
 
 def assemble(cohort: Cohort) -> RollupUsers:
@@ -1131,7 +1546,7 @@ def _split_first_day(f: LocalAnalyticsFilter) -> tuple[datetime, datetime, datet
     """If the start is not a midnight boundary, the rollup serves from the next UTC midnight and the sessions that
     started in the partial first day [start, rollup_start) are added live, so no data is excluded from the response.
     Returns the start, the midnight before it, the midnight the rollup serves from, and the filter for the rollup."""
-    start = f.start_dt if f.start_dt.tzinfo else f.start_dt.replace(tzinfo=timezone.utc)
+    start = f.start_dt if f.start_dt.tzinfo else f.start_dt.replace(tzinfo=UTC)
     day0 = _day_start(start.date())
     rollup_start = day0 if start == day0 else _day_start(start.date() + timedelta(days=1))
     rollup_f = f if rollup_start == start else copy.copy(f)
@@ -1140,55 +1555,66 @@ def _split_first_day(f: LocalAnalyticsFilter) -> tuple[datetime, datetime, datet
     return start, day0, rollup_start, rollup_f
 
 
-async def _days_serve(
+async def _days_refusal(
     conn: Any, d0: date, d1: date, version: str, min_shape: int, now: datetime, max_age_s: float
-) -> bool:
-    """Whether every day of the window exists under the current rates, holds what is read, and the job confirmed the
-    newest day lately."""
+) -> str | None:
+    """None when every day of the window exists under the current rates, holds what is read, and the job confirmed the
+    newest day lately; else why not: `rates` (a day built under other rates), `missing_day` (a day missing or too thin)
+    or `stale` (the job has not confirmed the newest day lately)."""
     states = await conn.fetch(
         "SELECT start_day, rates_version, shape, checked_at FROM user_rollup_day_state "
         "WHERE start_day BETWEEN $1 AND $2",
         d0,
         d1,
     )
-    if len(states) != (d1 - d0).days + 1 or any(
-        s["rates_version"] != version or s["shape"] < min_shape for s in states
-    ):
-        return False
+    if any(s["rates_version"] != version for s in states):
+        return "rates"
+    if len(states) != (d1 - d0).days + 1 or any(s["shape"] < min_shape for s in states):
+        return "missing_day"
     newest = max(s["checked_at"] for s in states if s["start_day"] == d1)
-    return (now - newest).total_seconds() <= max_age_s
+    return None if (now - newest).total_seconds() <= max_age_s else "stale"
 
 
 async def _sessions_read_live(
-    conn: Any, d0: date, day0: date, rollup_start: datetime, start: datetime, partial: bool
+    conn: Any,
+    d0: date,
+    day0: date,
+    rollup_start: datetime,
+    start: datetime,
+    partial: bool,
+    limit: int | None = None,
 ) -> list[str] | None:
     """The sessions the start-day rows cannot hold for the window: those that started before the rollup's first day
-    and are active in it, and (a partial first day) the ones that started in the gap. None when there are too many to
-    read live, so the window is answered by the live statements."""
+    and are active in it, and (a partial first day) the ones that started in the gap. None when there are more than
+    `limit` (`MAX_RESUMED` unless given) to read live, so the window is answered by the live statements."""
+    limit = MAX_RESUMED if limit is None else limit
     # Counted before the rollup tables are read: a window with too many is answered live anyway.
     # For a partial first day, $2 = start.date() (not d0): catches sessions active in [start, rollup_start).
     rstart = _day_start(d0)  # = rollup_start
-    pre_rollup = [r["session_id"] for r in await conn.fetch(_RESUMED_SQL, rstart, start.date(), MAX_RESUMED + 1)]
-    if len(pre_rollup) > MAX_RESUMED:
+    pre_rollup = [r["session_id"] for r in await conn.fetch(_RESUMED_SQL, rstart, start.date(), limit + 1)]
+    if len(pre_rollup) > limit:
         return None
     # Non-resumed, known-activity sessions started in [day0, rollup_start): _RESUMED_SQL misses them because
     # they neither resumed nor have unknown activity. Disjoint from pre_rollup by construction.
     gap_nonresumed: list[str] = []
     if partial:
-        gap_limit = MAX_RESUMED - len(pre_rollup) + 1
+        gap_limit = limit - len(pre_rollup) + 1
         gap_nonresumed = [r["session_id"] for r in await conn.fetch(_GAP_NONRESUMED_SQL, day0, rollup_start, gap_limit)]
-        if len(gap_nonresumed) > MAX_RESUMED - len(pre_rollup):
+        if len(gap_nonresumed) > limit - len(pre_rollup):
             return None
     return [*pre_rollup, *gap_nonresumed]
 
 
-async def _merge_live_sessions(
+async def _merge_live_sessions(  # noqa: PLR0913 - the rows one rollup read asks for, one flag each, as `serve_cohort`
     reader: PostgresCliAnalyticsReader,
     f: LocalAnalyticsFilter,
     rate_of: Callable[[str], ModelRates],
     window: Cohort,
     live_sessions: list[str],
     overview: bool,
+    ranking: bool = False,
+    efficiency: bool = False,
+    tools: bool = False,
 ) -> None:
     # Use the original f (start_dt = exact_clamp) so activity from the original window start is counted;
     # cohort=None: all live_sessions started before rollup_start, so the rollup cannot double-count them.
@@ -1197,9 +1623,15 @@ async def _merge_live_sessions(
         await _on_held(scoped, f"SET random_page_cost = {SMALL_COHORT_RANDOM_PAGE_COST}")
         try:
             await scoped.materialize_sel(narrowed)
+            if tools:
+                window.merge(Cohort(tools=await gather_tools(scoped, narrowed)))
+                return
+            if ranking:
+                window.merge(Cohort(ranking=await gather_ranking(scoped, narrowed, rate_of)))
+                return
             live = await gather_cohort(scoped, narrowed, rate_of)
             if overview:
-                live.overview = await gather_overview(scoped, narrowed, rate_of)
+                live.overview = await gather_overview(scoped, narrowed, rate_of, efficiency=efficiency)
                 live.overview.sessions = sum(u.session_count for u in live.users.values())
             window.merge(live)
         finally:
@@ -1207,7 +1639,30 @@ async def _merge_live_sessions(
             await _on_held(scoped, "RESET random_page_cost")
 
 
-async def serve_cohort(
+def _min_shape(*, overview: bool, ranking: bool, efficiency: bool, tools: bool = False) -> int:
+    """The lowest day shape a read of these rows accepts (a day of a lower shape is refused and rebuilt by the job)."""
+    if tools:
+        return SHAPE_TOOLS
+    if efficiency:
+        return SHAPE_EFFICIENCY
+    if ranking:
+        return SHAPE_RANKING
+    if overview:
+        return SHAPE_OVERVIEW
+    return SHAPE_COST
+
+
+def _window_eligible(rollup_f: LocalAnalyticsFilter, now: datetime, ranking: bool) -> bool:
+    """Whether the scope, filters and window are what the rollup holds (the ranking rows have their own rules)."""
+    return ranking_eligible(rollup_f, now) if ranking else eligible(rollup_f, now)
+
+
+def _live_limit(ranking: bool) -> int | None:
+    """How many resumed sessions a read may add live: None for the default, the ranking's own limit for its rows."""
+    return MAX_RESUMED_RANKING if ranking else None
+
+
+async def serve_cohort(  # noqa: PLR0913 - the rollup read's inputs and its keyword options, one call site per endpoint
     reader: PostgresCliAnalyticsReader,
     f: LocalAnalyticsFilter,
     rate_of: Callable[[str], ModelRates],
@@ -1217,32 +1672,59 @@ async def serve_cohort(
     now: datetime | None = None,
     models: bool = False,
     overview: bool = False,
+    ranking: bool = False,
+    users: bool = False,
+    efficiency: bool = False,
+    tools: bool = False,
 ) -> Cohort | None:
     """The window's combined cohort from the rollup plus the few sessions that started earlier and are active in the
     window (read live), or None when the rollup may not answer: another scope or filters, a window it is not made for,
     a day it lacks, built under other rates or of a shape below what is read, or a job that has not run lately. `models`
     also reads the per-model rows (/cost); `overview` the Overview rows, held by a day of shape `SHAPE_OVERVIEW`.
     /users and /cost ask for `SHAPE_COST`, which equals it since EPMCDME-17260, so every reader waits for the rebuild of
-    a lower-shape day and the live statements answer meanwhile."""
-    now = now or datetime.now(timezone.utc)
+    a lower-shape day and the live statements answer meanwhile; `ranking` the ranking rows (shape `SHAPE_RANKING`),
+    under `ranking_eligible`; `tools` the Tools & Models rows (shape `SHAPE_TOOLS`)."""
+    now = now or datetime.now(UTC)
     start, day0, rollup_start, rollup_f = _split_first_day(f)
-    if not version or not eligible(rollup_f, now):
+    if not version:
+        request_stats.rollup_refused("rates")
+        return None
+    if not _window_eligible(rollup_f, now, ranking):
+        request_stats.rollup_refused("eligibility")
         return None
     d0, d1 = _window_days(rollup_f)
     if d0 > d1:  # a window inside one UTC day (last_hour): no whole day to serve from the rollup
+        request_stats.rollup_refused("eligibility")
         return None
-    min_shape = SHAPE_OVERVIEW if overview else SHAPE_COST
+    min_shape = _min_shape(overview=overview, ranking=ranking, efficiency=efficiency, tools=tools)
     async with reader._engine.acquire() as conn, conn.transaction(isolation="repeatable_read", readonly=True):
-        if not await _days_serve(conn, d0, d1, version, min_shape, now, max_age_s):
+        if (refusal := await _days_refusal(conn, d0, d1, version, min_shape, now, max_age_s)) is not None:
+            request_stats.rollup_refused(refusal)
             return None
-        live_sessions = await _sessions_read_live(conn, d0, day0, rollup_start, start, rollup_f is not f)
-        if live_sessions is None:
+        live_sessions = await _sessions_read_live(
+            conn, d0, day0, rollup_start, start, rollup_f is not f, _live_limit(ranking)
+        )
+        if live_sessions is None:  # too many sessions to add live: the window is not answered from whole days
+            request_stats.rollup_refused("too_many_live")
             return None
+        if live_sessions and not request_stats.live_merge_allowed.get():
+            # Refused before the day tables are read: the read repeats in the heavy lane and would pay for them twice.
+            raise LiveMergeNeeded("the rollup merges resumed sessions live")
         window = await _window_cohort(
-            conn, d0, d1, f.subscription_types or None, f.project_origins or None, models=models, overview=overview
+            conn,
+            d0,
+            d1,
+            f.subscription_types or None,
+            f.project_origins or None,
+            models=models,
+            overview=overview,
+            ranking=ranking,
+            users=users,
+            efficiency=efficiency,
+            tools=tools,
         )
     if live_sessions:
-        await _merge_live_sessions(reader, f, rate_of, window, live_sessions, overview)
+        await _merge_live_sessions(reader, f, rate_of, window, live_sessions, overview, ranking, efficiency, tools)
     return window
 
 
@@ -1280,7 +1762,61 @@ async def serve_cost(
     return await asyncio.to_thread(assemble_cost, window)
 
 
-async def serve_overview(
+def assemble_efficiency(cohort: Cohort) -> RollupEfficiency:
+    """The reader port's answer for /efficiency from a window's combined cohort, in the row shapes of the live
+    statements the handler reads (`get_efficiency_facts`, the money of `get_efficiency_money` and
+    `get_dashboard_kpis`), so both paths build the response with the same code. The worst session has no prompt,
+    title, repository or branch yet: `serve_efficiency` reads them for that one session."""
+    o, e = cohort.overview, cohort.overview.efficiency
+    added = removed = None
+    for day_added, day_removed, _ in o.lines.values():
+        added, removed = _nadd(added, day_added), _nadd(removed, day_removed)
+    fact_rows: list[dict] = []
+    if e.worst is not None:
+        fact_rows.append({"part": "worst", "ratio": e.worst[0], "session_id": e.worst[1]})
+    fact_rows += [
+        {"part": "depth", "key": bucket, "n": n} for bucket, n in zip(DEPTH_BUCKETS, e.depth, strict=True) if n > 0
+    ]
+    fact_rows.append({"part": "all", "n": o.sessions})
+    fact_rows.append(
+        {
+            "part": "code",
+            "files_changed": o.files_changed,
+            "files_written": e.files_written,
+            "files_edited": e.files_edited,
+            "lines_added": added,
+            "lines_removed": removed,
+        }
+    )
+    money_rows: list[dict] = [{"part": "dead", "n": o.dead_sessions, "cost_usd": float(e.dead_cost)}]
+    if o.spend_cost or o.unpriced or o.cache_read_cost:
+        money_rows.append(
+            {
+                "part": "money",
+                "key": "spend",
+                "cost_usd": float(o.spend_cost),
+                "cache_read_cost_usd": float(o.cache_read_cost),
+                "unpriced_models": sorted(o.unpriced),
+            }
+        )
+    kpi_rows = [
+        {
+            "total_sessions": o.sessions,
+            "spend_sessions": e.spend_sessions,
+            "total_cache_read_tokens": o.cache_read_tokens,
+            "total_api_calls": o.api_calls,
+        }
+    ]
+    return RollupEfficiency(fact_rows, money_rows, kpi_rows)
+
+
+_WORST_SESSION_SQL = """
+SELECT coalesce(session_title, '') AS session_title, coalesce(entrypoint, '') AS entrypoint,
+       coalesce(first_prompt, '') AS prompt, repository, branch
+FROM session_dims WHERE session_id = $1"""
+
+
+async def serve_efficiency(
     reader: PostgresCliAnalyticsReader,
     f: LocalAnalyticsFilter,
     rate_of: Callable[[str], ModelRates],
@@ -1288,9 +1824,314 @@ async def serve_overview(
     *,
     max_age_s: float,
     now: datetime | None = None,
-) -> RollupOverview | None:
-    """/overview's cards and charts for `f` (see `serve_cohort`), or None when the rollup may not answer."""
-    window = await serve_cohort(reader, f, rate_of, version, max_age_s=max_age_s, now=now, overview=True)
+) -> RollupEfficiency | None:
+    """/efficiency's rows for `f` (see `serve_cohort`), or None when the rollup may not answer."""
+    window = await serve_cohort(
+        reader, f, rate_of, version, max_age_s=max_age_s, now=now, overview=True, efficiency=True
+    )
     if window is None:
         return None
-    return await asyncio.to_thread(assemble_overview, window)
+    served = await asyncio.to_thread(assemble_efficiency, window)
+    worst = next((r for r in served.fact_rows if r["part"] == "worst"), None)
+    if worst is not None:
+        async with reader._engine.acquire() as conn:
+            row = await conn.fetchrow(_WORST_SESSION_SQL, worst["session_id"])
+        worst.update(
+            session_title=row["session_title"] if row else "",
+            entrypoint=row["entrypoint"] if row else "",  # `_served_prompt` hides a Desktop session's auto-title by it
+            prompt=row["prompt"] if row else "",
+            repository=row["repository"] if row else None,
+            branch=row["branch"] if row else None,
+        )
+    return served
+
+
+async def serve_overview(  # noqa: PLR0913 - the rollup read's inputs and its keyword options, one call site per endpoint
+    reader: PostgresCliAnalyticsReader,
+    f: LocalAnalyticsFilter,
+    rate_of: Callable[[str], ModelRates],
+    version: str | None,
+    *,
+    max_age_s: float,
+    now: datetime | None = None,
+    users: bool = False,
+) -> RollupOverview | None:
+    """/overview's cards and charts for `f` (see `serve_cohort`), or None when the rollup may not answer. `users` also
+    counts the developers (`total_users`)."""
+    window = await serve_cohort(reader, f, rate_of, version, max_age_s=max_age_s, now=now, overview=True, users=users)
+    if window is None:
+        return None
+    return await asyncio.to_thread(assemble_overview, window, users)
+
+
+# ── the Repositories and Projects tabs from the ranking rows ─────────────────────────────────────────────────────
+
+
+def _opt(name: str) -> str | None:
+    return name or None
+
+
+def _most_frequent(counts: Mapping[str, int] | None) -> str:
+    """The name with the most sessions, ties to the alphabetically first (code-point order); '' when there is none."""
+    if not counts:
+        return ""
+    return min(counts, key=lambda name: (-counts[name], name))
+
+
+def _fold_repositories(groups: Mapping[GroupKey, GroupAgg]) -> dict[GroupKey, GroupAgg]:
+    """The groups of the Repositories tab without branches: one per repository, whose project is the repository's most
+    frequent one (ties to the alphabetically first, code-point order), as `get_repository_ranking` names it."""
+    folded: dict[str, GroupAgg] = {}
+    counts: dict[str, dict[str, int]] = {}
+    for (project, repository, _), group in groups.items():
+        folded.setdefault(repository, GroupAgg()).merge(group)
+        if project:
+            by_project = counts.setdefault(repository, {})
+            by_project[project] = by_project.get(project, 0) + group.n
+    out: dict[GroupKey, GroupAgg] = {}
+    for repository, group in folded.items():
+        out[(_most_frequent(counts.get(repository)), repository, "")] = group
+    return out
+
+
+def _rank(groups: Mapping[GroupKey, GroupAgg]) -> list[tuple[GroupKey, GroupAgg]]:
+    """The live order: sessions, then spend (both descending), then the repository and the project in code-point
+    order (the branch last, which the live statement leaves to the planner)."""
+    return sorted(groups.items(), key=lambda kv: (-kv[1].n, -kv[1].spend, kv[0][1], kv[0][0], kv[0][2]))
+
+
+def _group_row(rank: int, key: GroupKey, group: GroupAgg, include_branches: bool) -> dict:
+    return {
+        "part": "group",
+        "key": str(rank),
+        "n": group.n,
+        "project_name": _opt(key[0]),
+        "repository": _opt(key[1]),
+        "branch": _opt(key[2]) if include_branches else None,
+        "cost_usd": float(group.spend),
+        "unpriced_models": sorted(group.unpriced),
+        "cost_incomplete": bool(group.unpriced),
+        "cost_priced": group.priced,
+    }
+
+
+def _fact_row(key: GroupKey, group: GroupAgg, include_branches: bool) -> dict:
+    return {
+        "part": "group",
+        "n": group.n,
+        "turns": group.turns,
+        "files_changed": group.files_changed,
+        "lines_added": group.lines_added,
+        "lines_removed": group.lines_removed,
+        "tool_calls": group.tool_calls,
+        "tool_calls_success": group.tool_successes,
+        "subscription_types": sorted(group.subs),
+        "project_origins": sorted(group.origins),
+        "project_name": _opt(key[0]) if include_branches else None,
+        "repository": _opt(key[1]),
+        "branch": _opt(key[2]) if include_branches else None,
+    }
+
+
+def _money_rows(
+    money: Mapping[MoneyKey, MoneyCell],
+    part: str,
+    names: tuple[str, ...],
+    level: Callable[[str, str], tuple],
+    keep: Callable[[str, str], bool] = lambda _project, _repository: True,
+) -> list[dict]:
+    """The funding-route and personal-billed money cells of the (project, repository) pairs `keep` admits, folded to
+    `level` (the columns `names`), as the live statements' rows of `part` (`total` or `bucket`)."""
+    cells: dict[tuple, MoneyCell] = {}
+    for (kind, money_key, project, repository), cell in money.items():
+        if kind != "spend" and keep(project, repository):
+            cells.setdefault((kind, money_key, *level(project, repository)), MoneyCell()).merge(cell)
+    rows = []
+    for (kind, money_key, *rest), cell in sorted(cells.items()):
+        row: dict[str, Any] = {
+            "part": part,
+            "key": ("b_" if part == "bucket" else "") + ("route" if kind == "route" else "billed"),
+            **{name: _opt(value) for name, value in zip(names, rest, strict=True)},
+            "cost_usd": float(cell.cost),
+            "cache_read_cost_usd": 0.0,
+            "session_count": cell.sessions,
+            "unpriced_models": sorted(cell.unpriced),
+            "cost_incomplete": bool(cell.unpriced),
+        }
+        row["funding_route" if kind == "route" else "personal_billed"] = money_key if kind == "route" else True
+        rows.append(row)
+    return rows
+
+
+def _spend_row(money: Mapping[MoneyKey, MoneyCell]) -> list[dict]:
+    cell = money.get(SPEND_KEY)
+    if cell is None:
+        return []
+    return [
+        {
+            "part": "total",
+            "key": "spend",
+            "cost_usd": float(cell.cost),
+            "cache_read_cost_usd": 0.0,
+            "session_count": cell.sessions,
+            "unpriced_models": sorted(cell.unpriced),
+            "cost_incomplete": bool(cell.unpriced),
+        }
+    ]
+
+
+_TOOL_ROWS = 20  # the tools the tab lists, as the live statement's LIMIT
+
+
+def assemble_tools(cohort: Cohort) -> RollupTools:
+    """The reader port's answer for /tools from a window's combined cohort, in the row shapes of the live statements
+    (`get_tool_usage`, `get_model_breakdown`, `get_invocations`) so both paths build the response with the same code.
+    The tools are ordered by calls, then by name in byte order (`COLLATE "C"`), and cut to the tab's 20 after the days
+    are summed; the models (by name) and invocations are all given, the handler keeps and cuts them as for the live
+    rows."""
+    t = cohort.tools
+    top = sorted(t.tools.items(), key=lambda item: (-item[1][0], item[0]))[:_TOOL_ROWS]
+    return RollupTools(
+        tool_rows=[{"tool_name": name, "call_count": calls, "success_count": ok} for name, (calls, ok) in top],
+        model_rows=[
+            {"model_name": model, "session_count": n, "total_tokens": tokens}
+            for model, (n, tokens) in sorted(t.models.items())
+        ],
+        invocation_rows=[{"kind": kind, "name": name, "count": n} for (kind, name), n in t.invocations.items()],
+    )
+
+
+async def serve_tools(
+    reader: PostgresCliAnalyticsReader,
+    f: LocalAnalyticsFilter,
+    rate_of: Callable[[str], ModelRates],
+    version: str | None,
+    *,
+    max_age_s: float,
+    now: datetime | None = None,
+) -> RollupTools | None:
+    """/tools' rows for `f` (see `serve_cohort`), or None when the rollup may not answer."""
+    window = await serve_cohort(reader, f, rate_of, version, max_age_s=max_age_s, now=now, tools=True)
+    if window is None:
+        return None
+    return await asyncio.to_thread(assemble_tools, window)
+
+
+def assemble_ranking(
+    agg: RankingAgg, include_branches: bool, page: int, per_page: int | None, unattributed_last: bool = False
+) -> RollupRanking:
+    """The reader port's answer for the Repositories tab from a window's combined ranking rows, in the row shapes of
+    `get_repository_ranking` and `get_repository_facts`: the groups (a (project, repository, branch) group with
+    branches, else a repository), their page, their count, the window's money and the estimates of the page's groups."""
+    groups = agg.groups if include_branches else _fold_repositories(agg.groups)
+    ranked = _rank(groups)
+    first = 0
+    if not include_branches and per_page is not None:
+        first = page * per_page
+    shown = ranked[first : first + per_page] if not include_branches and per_page is not None else ranked
+    counted = len(ranked)
+    ranks = None
+    if unattributed_last and not include_branches and per_page is not None:
+        # The group without a repository ranks after the named ones, is never paged or counted and rides along with
+        # every page, for the handler to place (`get_repository_ranking(unattributed_last=True)`).
+        named = [kv for kv in ranked if kv[0][1] != ""]
+        unattributed = [kv for kv in ranked if kv[0][1] == ""]
+        shown = named[first : first + per_page] + unattributed
+        counted = len(named)
+        ranks = [first + i + 1 for i in range(len(shown) - len(unattributed))] + [counted + 1] * len(unattributed)
+    rows = [
+        _group_row(ranks[i] if ranks else first + i + 1, key, group, include_branches)
+        for i, (key, group) in enumerate(shown)
+    ]
+    rows.append({"part": "count", "n": counted})
+    rows += _spend_row(agg.money)
+    rows += _money_rows(agg.money, "total", (), lambda _project, _repository: ())
+    if include_branches:
+        rows += _money_rows(agg.money, "bucket", ("project_name", "repository"), lambda p, r: (p, r))
+    else:
+        page_repositories = {key[1] for key, _ in shown}
+        rows += _money_rows(
+            agg.money, "bucket", ("repository",), lambda _p, r: (r,), keep=lambda _p, r: r in page_repositories
+        )
+    return RollupRanking(rows, [_fact_row(key, group, include_branches) for key, group in shown])
+
+
+def assemble_projects(agg: RankingAgg, page: int, per_page: int, unattributed_last: bool = False) -> RollupProjects:
+    """The reader port's answer for the Projects tab from a window's combined ranking rows: the projects by spend (the
+    unattributed one last, then by name), the page's, and the rows `get_projects` reads for the page's groups.
+    `unattributed_last` (the totals-only page): the unattributed project is not ranked or counted, and it is the last
+    name of the last page, outside `per_page`."""
+    spend: dict[str, Decimal] = {}
+    for (project, _, _), group in agg.groups.items():
+        spend[project] = spend.get(project, Decimal(0)) + group.spend
+    ordered = sorted(spend, key=lambda project: (project == "", -spend[project], project))
+    if unattributed_last:
+        named = [project for project in ordered if project != ""]
+        names = named[page * per_page : (page + 1) * per_page]
+        last_page = (page + 1) * per_page >= len(named) and (page == 0 or page * per_page < len(named))
+        if "" in spend and last_page:
+            names.append("")
+        ordered = named
+    else:
+        names = ordered[page * per_page : (page + 1) * per_page]
+    on_page = set(names)
+    shown = _rank({key: group for key, group in agg.groups.items() if key[0] in on_page})
+    unpriced = agg.money.get(SPEND_KEY)
+    return RollupProjects(
+        total=len(ordered),
+        project_names=[_opt(name) for name in names],
+        group_rows=[_group_row(i + 1, key, group, True) for i, (key, group) in enumerate(shown)],
+        fact_rows=[_fact_row(key, group, True) for key, group in shown],
+        repository_buckets=_money_rows(
+            agg.money, "bucket", ("project_name", "repository"), lambda p, r: (p, r), keep=lambda p, _r: p in on_page
+        ),
+        project_buckets=[
+            {**row, "project_name": row["project_name"] or ""}
+            for row in _money_rows(
+                agg.money, "bucket", ("project_name",), lambda p, _r: (p,), keep=lambda p, _r: p in on_page
+            )
+        ],
+        window_buckets=_money_rows(agg.money, "bucket", (), lambda _p, _r: ()),
+        unpriced_models=sorted(unpriced.unpriced) if unpriced else [],
+    )
+
+
+async def serve_repository_ranking(  # noqa: PLR0913 - the rollup read's inputs and its keyword options
+    reader: PostgresCliAnalyticsReader,
+    f: LocalAnalyticsFilter,
+    include_branches: bool,
+    rate_of: Callable[[str], ModelRates],
+    version: str | None,
+    *,
+    page: int = 0,
+    per_page: int | None = None,
+    unattributed_last: bool = False,
+    max_age_s: float,
+    now: datetime | None = None,
+) -> RollupRanking | None:
+    """The Repositories tab's ranking for `f` (see `serve_cohort`), or None when the rollup may not answer."""
+    window = await serve_cohort(reader, f, rate_of, version, max_age_s=max_age_s, now=now, ranking=True)
+    if window is None:
+        return None
+    return await asyncio.to_thread(
+        assemble_ranking, window.ranking, include_branches, page, per_page, unattributed_last
+    )
+
+
+async def serve_project_page(  # noqa: PLR0913 - the rollup read's inputs, the page and its keyword options
+    reader: PostgresCliAnalyticsReader,
+    f: LocalAnalyticsFilter,
+    page: int,
+    per_page: int,
+    rate_of: Callable[[str], ModelRates],
+    version: str | None,
+    *,
+    unattributed_last: bool = False,
+    max_age_s: float,
+    now: datetime | None = None,
+) -> RollupProjects | None:
+    """The Projects tab's page for `f` (see `serve_cohort`), or None when the rollup may not answer."""
+    window = await serve_cohort(reader, f, rate_of, version, max_age_s=max_age_s, now=now, ranking=True)
+    if window is None:
+        return None
+    return await asyncio.to_thread(assemble_projects, window.ranking, page, per_page, unattributed_last)

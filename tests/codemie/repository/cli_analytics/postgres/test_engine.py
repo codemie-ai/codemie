@@ -258,7 +258,8 @@ async def test_acquire_passes_the_timeout_to_the_pool():
     async with engine.acquire(timeout=0.5):
         pass
 
-    assert factory.pools[0].acquire_timeouts == [0.5]
+    (passed,) = factory.pools[0].acquire_timeouts  # what is left of it after the cap
+    assert passed == pytest.approx(0.5, abs=0.05)
 
 
 @pytest.mark.asyncio

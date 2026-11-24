@@ -814,6 +814,40 @@ async def test_repositories_zero_call_branch_does_not_drag_rate_down():
     assert branches["no-calls"]["tool_success_rate"] == 0.0  # denominator-guarded display, not a vote
 
 
+def _project_groups():
+    """The ranking groups of the page's sessions (project, repository, branch) and their counts."""
+    groups = [
+        {"part": "group", "key": "1", "n": 1, "project_name": "alpha", "repository": "repo-a", "branch": "main", "cost_usd": 1.0},
+        {"part": "group", "key": "2", "n": 1, "project_name": "alpha", "repository": "repo-b", "branch": "dev", "cost_usd": 2.0},
+        {"part": "group", "key": "3", "n": 1, "project_name": None, "repository": "repo-d", "branch": "main", "cost_usd": 0.5},
+    ]  # fmt: skip
+    facts = [
+        {"part": "group", "n": 1, "project_name": "alpha", "repository": "repo-a", "branch": "main",
+         "tool_calls": 1, "tool_calls_success": 0},
+        {"part": "group", "n": 1, "project_name": "alpha", "repository": "repo-b", "branch": "dev",
+         "tool_calls": 3, "tool_calls_success": 3},
+        {"part": "group", "n": 1, "project_name": None, "repository": "repo-d", "branch": "main"},
+    ]  # fmt: skip
+    return groups, facts
+
+
+def _bucket_row(key: str, cost: float, **names) -> dict:
+    route = {"funding_route": "api_based"} if key == "b_route" else {"personal_billed": True}
+    return {"part": "bucket", "key": key, "cost_usd": cost, "session_count": 1, "unpriced_models": [], **route, **names}
+
+
+def _project_page(**overrides) -> ProjectPage:
+    fields = {
+        "total": 4,
+        "project_names": ["alpha", None],
+        "session_ids": ["a1", "a2", "n1"],
+        "unattributed_session_ids": [],
+        "matched_session_ids": None,
+        "model_flags": [],
+    }
+    return ProjectPage(**{**fields, **overrides})
+
+
 def _project_facts():
     """The facts of the page's sessions, as the restricted detail reads return them."""
     return [
@@ -849,6 +883,31 @@ def _project_handler(page: ProjectPage | None = None, facts: list[dict] | None =
     return handler
 
 
+def _project_handler(page: ProjectPage | None = None):
+    groups, facts = _project_groups()
+    repo = MagicMock()
+    repo.get_cost_models = AsyncMock(return_value=["m"])
+    repo.get_project_page = AsyncMock(return_value=page or _project_page())
+    repo.get_repository_ranking = AsyncMock(
+        return_value=[*groups, _bucket_row("b_route", 3.0, project_name="alpha", repository="repo-a")]
+    )
+    repo.get_repository_facts = AsyncMock(return_value=facts)
+
+    async def project_buckets(f, rates=(), by_project=True):
+        if by_project:
+            return [_bucket_row("b_route", 3.0, project_name="alpha"), _bucket_row("b_billed", 0.5, project_name="")]
+        return [_bucket_row("b_route", 3.5)]
+
+    repo.get_project_buckets = AsyncMock(side_effect=project_buckets)
+
+    @asynccontextmanager
+    async def bounded():  # the statements are the reader's own here, not derived from per-session ones
+        yield repo
+
+    repo.bounded, repo.materialize_sel = bounded, AsyncMock()
+    return LocalAnalyticsHandler(repo)
+
+
 @pytest.mark.asyncio
 async def test_projects_sum_repositories_and_compute_success_from_counts():
     handler = _project_handler()
@@ -861,6 +920,19 @@ async def test_projects_sum_repositories_and_compute_success_from_counts():
     assert all(r["branches"] for r in alpha["repositories"])
     assert "_sids" not in alpha and all("_sids" not in r for r in alpha["repositories"])
     assert alpha["net_lines"] is None  # no lines reported anywhere
+
+
+@pytest.mark.asyncio
+async def test_projects_buckets_come_from_the_grouping_of_their_level():
+    data, _ = await _project_handler().get_projects(make_filter(), page=0, per_page=10)
+    alpha, unattributed = data["rows"]
+    assert alpha["funding"]["api_based"]["cost_usd"] == 3.0
+    assert unattributed["personal_billed"]["cost_usd"] == 0.5  # the unattributed project reads '' in SQL
+    repo_a = next(r for r in alpha["repositories"] if r["repository"] == "repo-a")
+    assert repo_a["funding"]["api_based"]["cost_usd"] == 3.0
+    repo_b = next(r for r in alpha["repositories"] if r["repository"] == "repo-b")
+    assert repo_b["funding"]["api_based"]["session_count"] == 0  # no bucket row: an empty bucket, not a missing key
+    assert data["funding"]["api_based"]["cost_usd"] == 3.5  # the window's totals
 
 
 @pytest.mark.asyncio
@@ -885,26 +957,30 @@ async def test_projects_page_is_decided_by_the_database_with_the_window_rates():
 
 
 @pytest.mark.asyncio
-async def test_projects_detail_reads_are_restricted_to_the_page_sessions():
+async def test_projects_group_reads_are_restricted_to_the_page_sessions():
     handler = _project_handler()
     await handler.get_projects(make_filter(), page=0, per_page=10)
-    detail_filter = handler._repo.get_session_cost_facts.await_args.args[0]
-    assert detail_filter.session_ids == ["a1", "a2", "n1"]
+    repo = handler._repo
+    assert repo.get_repository_ranking.await_args.args[0].session_ids == ["a1", "a2", "n1"]
+    assert repo.get_repository_facts.await_args.args[0].session_ids == ["a1", "a2", "n1"]
+    assert repo.get_repository_ranking.await_args.args[1] is True  # with branches
+    page_buckets, window_buckets = repo.get_project_buckets.await_args_list
+    assert page_buckets.args[0].session_ids == ["a1", "a2", "n1"] and page_buckets.kwargs == {}
+    assert window_buckets.kwargs == {"by_project": False}
 
 
 @pytest.mark.asyncio
 async def test_projects_window_buckets_read_the_whole_window_without_a_search():
     handler = _project_handler()
-    f = make_filter()
-    await handler.get_projects(f, page=0, per_page=10)
-    assert handler._repo.get_session_funding_costs.await_args.args[0].session_ids is None
+    await handler.get_projects(make_filter(), page=0, per_page=10)
+    assert handler._repo.get_project_buckets.await_args.args[0].session_ids is None
 
 
 @pytest.mark.asyncio
 async def test_projects_window_buckets_read_only_the_matching_sessions_with_a_search():
     handler = _project_handler(_project_page(matched_session_ids=["a1", "a2", "x9"]))
     await handler.get_projects(make_filter(), page=0, per_page=10, search="alpha")
-    assert handler._repo.get_session_funding_costs.await_args.args[0].session_ids == ["a1", "a2", "x9"]
+    assert handler._repo.get_project_buckets.await_args.args[0].session_ids == ["a1", "a2", "x9"]
 
 
 @pytest.mark.asyncio
@@ -915,13 +991,14 @@ async def test_projects_blank_search_is_no_search():
 
 
 @pytest.mark.asyncio
-async def test_projects_empty_page_reads_no_details_but_reports_the_window_unpriced_models():
+async def test_projects_empty_page_reads_no_groups_but_reports_the_window_unpriced_models():
     page = _project_page(total=2, project_names=[], session_ids=[], model_flags=[("uncatalogued-model", (True,) * 5)])
-    handler = _project_handler(page, facts=[])
+    handler = _project_handler(page)
     data, pricer = await handler.get_projects(make_filter(), page=5, per_page=10)
     assert data["rows"] == []
     assert data["pagination"] == {"page": 5, "per_page": 10, "total_count": 2, "has_more": False}
-    handler._repo.get_session_cost_facts.assert_not_awaited()
+    handler._repo.get_repository_ranking.assert_not_awaited()
+    handler._repo.get_repository_facts.assert_not_awaited()
     assert "uncatalogued-model" in pricer.unpriced
     assert "funding" in data and "personal_billed" in data
 
@@ -960,7 +1037,29 @@ async def test_projects_by_default_keep_the_nested_repositories_and_the_legacy_s
     assert all(r["branches"] for r in alpha["repositories"])
     # the database matches the repository name too: the legacy statement, not the drill-down one
     (_, _, _, _, search), kwargs = handler._repo.get_project_page.await_args
-    assert search == "repo-b" and kwargs == {"drilldown": False}
+    assert search == "repo-b" and kwargs == {}  # the default statement, not the drill-down one
+
+
+@pytest.mark.asyncio
+async def test_projects_without_branches_null_the_branches_and_keep_every_other_figure_on_the_live_path():
+    """`include_branches=False` makes the response smaller and changes nothing else (the companion UI relies on it)."""
+    with_branches, _ = await _project_handler().get_projects(make_filter(), page=0, per_page=10, include_branches=True)
+    without, _ = await _project_handler().get_projects(make_filter(), page=0, per_page=10, include_branches=False)
+
+    repositories = [r for p in without["rows"] for r in p["repositories"]]
+    assert repositories and all(r["branches"] is None for r in repositories)
+    assert all(r["branches"] for p in with_branches["rows"] for r in p["repositories"])  # the default keeps them
+
+    def stripped(data):
+        return {
+            **data,
+            "rows": [
+                {**p, "repositories": [{k: v for k, v in r.items() if k != "branches"} for r in p["repositories"]]}
+                for p in data["rows"]
+            ],
+        }
+
+    assert stripped(without) == stripped(with_branches)
 
 
 @pytest.mark.asyncio
@@ -1073,123 +1172,6 @@ _PER_SESSION_READS = (
 )
 
 
-def _parity_handler():
-    """Six sessions over two named projects and the unattributed one, with repository-less sessions in a named project
-    and in the unattributed one, lines for some sessions only, tool calls, files, turns, two models and funding rows."""
-    facts = [
-        {**BASE_COST_FACT, "session_id": "a1", "repository": "repo-a", "branch": "main", "project_name": "alpha"},
-        {**BASE_COST_FACT, "session_id": "a2", "repository": "repo-a", "branch": "dev", "project_name": "alpha"},
-        {**BASE_COST_FACT, "session_id": "a3", "repository": None, "branch": None, "project_name": "alpha"},
-        {**BASE_COST_FACT, "session_id": "b1", "repository": "repo-c", "branch": "main", "project_name": "beta"},
-        {**BASE_COST_FACT, "session_id": "n1", "repository": "repo-d", "branch": "main", "project_name": None},
-        {**BASE_COST_FACT, "session_id": "n2", "repository": None, "branch": None, "project_name": None},
-    ]
-    handler = make_repo_handler(facts)
-    repo = handler._repo
-    repo.get_cost_models = AsyncMock(return_value=["claude-haiku", "claude-opus-5"])
-    repo.get_turns_by_session = AsyncMock(
-        return_value=[
-            {"session_id": "a1", "turns": 4},
-            {"session_id": "a3", "turns": 1},
-            {"session_id": "n1", "turns": 2},
-        ]
-    )
-    repo.get_file_facts_by_session = AsyncMock(
-        return_value=[{"session_id": "a2", "files_changed": 3}, {"session_id": "b1", "files_changed": 1}]
-    )
-    repo.get_tool_success_by_session = AsyncMock(
-        return_value=[
-            {"session_id": "a1", "tool_calls": 5, "tool_calls_success": 4},
-            {"session_id": "a2", "tool_calls": 0, "tool_calls_success": 0},
-            {"session_id": "n2", "tool_calls": 2, "tool_calls_success": 1},
-        ]
-    )
-    repo.get_lines_by_session = AsyncMock(
-        return_value=[
-            {"session_id": "a1", "lines_added": 10, "lines_removed": 2},
-            {"session_id": "a3", "lines_added": 0, "lines_removed": 0},
-            {"session_id": "n1", "lines_added": 7, "lines_removed": 7},
-        ]
-    )
-    model_rows = [
-        {"session_id": "a1", "model_name": "claude-haiku", "input_tokens": 10_000, "output_tokens": 500},
-        {"session_id": "a1", "model_name": "claude-opus-5", "input_tokens": 2_000},
-        {"session_id": "a2", "model_name": "claude-haiku", "input_tokens": 3_000},
-        {"session_id": "b1", "model_name": "claude-opus-5", "input_tokens": 9_000, "output_tokens": 100},
-        {"session_id": "n1", "model_name": "claude-haiku", "input_tokens": 1_000},
-    ]
-    repo.get_session_model_costs = AsyncMock(return_value=model_rows)
-    routes = {"a1": "api", "a2": "subscription", "b1": "api"}
-    repo.get_session_funding_costs = AsyncMock(
-        return_value=[
-            {**r, "funding_route": routes.get(r["session_id"], "unknown"), "personal_billed": r["session_id"] == "a2"}
-            for r in model_rows
-        ]
-    )
-    return handler
-
-
-async def _legacy_drilldown_rows(handler, f, page: ProjectPage) -> list[dict]:
-    """The rows the drill-down built before `get_project_totals`: the nested repository rows rolled up to projects
-    without their repositories, the estimate buckets priced from each project's session ids, the null project last."""
-    from codemie.service.analytics.handlers.cli_analytics_handler import with_unattributed
-    from codemie.service.analytics.handlers.funding_buckets import (
-        buckets,
-        drop_evidence,
-        price_bucket_rows,
-        pricing_of_rows,
-        rows_of,
-        session_index,
-    )
-
-    ids = [*page.session_ids, *page.unattributed_session_ids]
-    rows, _, _ = await handler._repository_rows(f.restricted_to(ids), include_branches=True, search=None)
-    priced = price_bucket_rows(await handler._repo.get_session_funding_costs(f))
-    projects = _group_repositories_into_projects(rows, page.project_names, include_repositories=False)
-    drop_evidence(projects)
-    index = session_index(priced)
-    for project in projects:
-        scoped = rows_of(priced, index, project.pop("_sids"))
-        project.update(buckets(scoped), **pricing_of_rows(scoped))
-    named = [p for p in projects if p["project_name"] is not None]
-    null_row = next((p for p in projects if p["project_name"] is None), None)
-    pagination = {"page": 0, "per_page": 10, "total_count": page.total, "has_more": False}
-    return with_unattributed(named, null_row, pagination)
-
-
-@pytest.mark.asyncio
-async def test_drilldown_projects_rows_equal_the_rows_the_nested_rollup_gave():
-    """Parity: the rows of `get_project_totals` are the rows the repository-and-branch tree produced for the same
-    sessions (the oracle is the legacy `_repository_rows` + `_group_repositories_into_projects`)."""
-    page = _drilldown_page(
-        total=2,
-        project_names=["alpha", "beta"],
-        session_ids=["a1", "a2", "a3", "b1"],
-        unattributed_session_ids=["n1", "n2"],
-    )
-    handler = _parity_handler()
-    handler._repo.get_project_page = AsyncMock(return_value=page)
-    f = make_filter()
-    with _two_model_catalog():
-        expected = await _legacy_drilldown_rows(handler, f, page)
-        data, _ = await handler.get_projects(f, include_repositories=False, page=0, per_page=10)
-
-    assert [p["project_name"] for p in data["rows"]] == ["alpha", "beta", None]
-    assert data["rows"] == expected
-    alpha = data["rows"][0]
-    assert (alpha["repository_count"], alpha["session_count"], alpha["lines_added"], alpha["net_lines"]) == (
-        2,
-        3,
-        10,
-        8,
-    )
-    assert alpha["cost_usd"] > 0
-    beta, unattributed = data["rows"][1], data["rows"][2]
-    assert (beta["lines_added"], beta["net_lines"]) == (None, None)  # no session reports lines
-    assert (unattributed["repository_count"], unattributed["lines_added"]) == (2, 7)
-    assert all("repositories" not in p and "_sids" not in p for p in data["rows"])
-
-
 @pytest.mark.asyncio
 async def test_drilldown_projects_read_no_per_session_fact_and_build_no_repository_rows():
     handler = _drilldown_handler()
@@ -1213,10 +1195,8 @@ async def test_drilldown_projects_read_no_per_session_fact_and_build_no_reposito
             }
         ]
     )
-    with patch.object(handler, "_repository_rows", AsyncMock(side_effect=AssertionError("tree built"))) as tree:
-        data, _ = await handler.get_projects(make_filter(), include_repositories=False, page=0, per_page=10)
+    data, _ = await handler.get_projects(make_filter(), include_repositories=False, page=0, per_page=10)
 
-    tree.assert_not_called()
     for name in _PER_SESSION_READS:
         getattr(repo, name).assert_not_called()
     repo.get_project_totals.assert_awaited_once()
@@ -1238,13 +1218,12 @@ async def test_drilldown_projects_with_an_empty_page_read_no_totals():
 
 
 @pytest.mark.asyncio
-async def test_default_projects_still_read_the_per_session_facts_and_never_the_totals():
+async def test_default_projects_never_read_the_drilldown_totals():
     handler = _project_handler()
     handler._repo.get_project_totals = AsyncMock(return_value=[])
     await handler.get_projects(make_filter(), page=0, per_page=10)
 
     handler._repo.get_project_totals.assert_not_called()
-    handler._repo.get_session_cost_facts.assert_awaited_once()
 
 
 @pytest.mark.asyncio

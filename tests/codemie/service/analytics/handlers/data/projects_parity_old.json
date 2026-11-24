@@ -1,0 +1,2591 @@
+[
+ {
+  "data": {
+   "funding": {
+    "api_based": {
+     "cost_incomplete": true,
+     "cost_usd": 0.00225,
+     "session_count": 4,
+     "unpriced_models": [
+      "not-a-real-model-xyz"
+     ]
+    },
+    "subscription": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0035745,
+     "session_count": 4,
+     "unpriced_models": []
+    },
+    "unknown": {
+     "cost_incomplete": false,
+     "cost_usd": 0.000792,
+     "session_count": 2,
+     "unpriced_models": []
+    }
+   },
+   "pagination": {
+    "has_more": true,
+    "page": 0,
+    "per_page": 2,
+    "total_count": 5
+   },
+   "personal_billed": {
+    "cost_incomplete": false,
+    "cost_usd": 0.00192,
+    "session_count": 1,
+    "unpriced_models": []
+   },
+   "rows": [
+    {
+     "cost_usd": 0.004005,
+     "files_changed": 2,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.00156,
+       "session_count": 2,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.002028,
+       "session_count": 2,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.000417,
+       "session_count": 1,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": 5,
+     "lines_removed": 2,
+     "net_lines": 3,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.00192,
+      "session_count": 1,
+      "unpriced_models": []
+     },
+     "project_name": "P1",
+     "project_origins": [
+      "linked_folder",
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "dev",
+         "cost_usd": 0.002028,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 2,
+         "subscription_types": [
+          "codemie",
+          "personal"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 4
+        }
+       ],
+       "cost_usd": 0.002028,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.002028,
+         "session_count": 2,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.00192,
+        "session_count": 1,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-c",
+       "session_count": 2,
+       "subscription_types": [
+        "codemie",
+        "personal"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 4
+      },
+      {
+       "branches": [
+        {
+         "branch": "dev",
+         "cost_usd": 0.000417,
+         "files_changed": 0,
+         "lines_added": 0,
+         "lines_removed": 0,
+         "net_lines": 0,
+         "project_origins": [
+          "linked_folder"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "corporate"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 12
+        },
+        {
+         "branch": "main",
+         "cost_usd": 0.00156,
+         "files_changed": 2,
+         "lines_added": 5,
+         "lines_removed": 2,
+         "net_lines": 3,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 2,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 5
+        }
+       ],
+       "cost_usd": 0.001977,
+       "files_changed": 2,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.00156,
+         "session_count": 2,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.000417,
+         "session_count": 1,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": 5,
+       "lines_removed": 2,
+       "net_lines": 3,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "linked_folder",
+        "profile"
+       ],
+       "repository": "repo-a",
+       "session_count": 3,
+       "subscription_types": [
+        "codemie",
+        "corporate"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 17
+      },
+      {
+       "branches": [
+        {
+         "branch": "main",
+         "cost_usd": 0.0,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 1
+        }
+       ],
+       "cost_usd": 0.0,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-b",
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 1
+      }
+     ],
+     "repository_count": 3,
+     "session_count": 6,
+     "subscription_types": [
+      "codemie",
+      "corporate",
+      "personal"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 22
+    },
+    {
+     "cost_usd": 0.0015465,
+     "files_changed": 1,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0015465,
+       "session_count": 2,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": 7,
+     "lines_removed": 7,
+     "net_lines": 0,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.0,
+      "session_count": 0,
+      "unpriced_models": []
+     },
+     "project_name": "P2",
+     "project_origins": [
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "main",
+         "cost_usd": 0.001455,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 7
+        }
+       ],
+       "cost_usd": 0.001455,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.001455,
+         "session_count": 1,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P2",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-a",
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 7
+      },
+      {
+       "branches": [
+        {
+         "branch": "feature",
+         "cost_usd": 9.15e-05,
+         "files_changed": 1,
+         "lines_added": 7,
+         "lines_removed": 7,
+         "net_lines": 0,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "corporate"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 51
+        }
+       ],
+       "cost_usd": 9.15e-05,
+       "files_changed": 1,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 9.15e-05,
+         "session_count": 1,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": 7,
+       "lines_removed": 7,
+       "net_lines": 0,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P2",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-b",
+       "session_count": 1,
+       "subscription_types": [
+        "corporate"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 51
+      }
+     ],
+     "repository_count": 2,
+     "session_count": 2,
+     "subscription_types": [
+      "codemie",
+      "corporate"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 58
+    }
+   ]
+  },
+  "page": 0,
+  "per_page": 2,
+  "search": null,
+  "unpriced": [
+   "not-a-real-model-xyz"
+  ]
+ },
+ {
+  "data": {
+   "funding": {
+    "api_based": {
+     "cost_incomplete": true,
+     "cost_usd": 0.00225,
+     "session_count": 4,
+     "unpriced_models": [
+      "not-a-real-model-xyz"
+     ]
+    },
+    "subscription": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0035745,
+     "session_count": 4,
+     "unpriced_models": []
+    },
+    "unknown": {
+     "cost_incomplete": false,
+     "cost_usd": 0.000792,
+     "session_count": 2,
+     "unpriced_models": []
+    }
+   },
+   "pagination": {
+    "has_more": true,
+    "page": 1,
+    "per_page": 2,
+    "total_count": 5
+   },
+   "personal_billed": {
+    "cost_incomplete": false,
+    "cost_usd": 0.00192,
+    "session_count": 1,
+    "unpriced_models": []
+   },
+   "rows": [
+    {
+     "cost_usd": 0.00069,
+     "files_changed": 0,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.00069,
+       "session_count": 1,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": null,
+     "lines_removed": null,
+     "net_lines": null,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.0,
+      "session_count": 0,
+      "unpriced_models": []
+     },
+     "project_name": "P4",
+     "project_origins": [
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "main",
+         "cost_usd": 0.00069,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 2
+        }
+       ],
+       "cost_usd": 0.00069,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.00069,
+         "session_count": 1,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P4",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-d",
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 2
+      }
+     ],
+     "repository_count": 1,
+     "session_count": 1,
+     "subscription_types": [
+      "codemie"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 2
+    },
+    {
+     "cost_usd": 0.0,
+     "files_changed": 1,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": true,
+       "cost_usd": 0.0,
+       "session_count": 1,
+       "unpriced_models": [
+        "not-a-real-model-xyz"
+       ]
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": 0,
+     "lines_removed": 4,
+     "net_lines": -4,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.0,
+      "session_count": 0,
+      "unpriced_models": []
+     },
+     "project_name": "P3",
+     "project_origins": [
+      "linked_folder"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": null,
+         "cost_usd": 0.0,
+         "files_changed": 1,
+         "lines_added": 0,
+         "lines_removed": 4,
+         "net_lines": -4,
+         "project_origins": [
+          "linked_folder"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 60
+        }
+       ],
+       "cost_usd": 0.0,
+       "files_changed": 1,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": true,
+         "cost_usd": 0.0,
+         "session_count": 1,
+         "unpriced_models": [
+          "not-a-real-model-xyz"
+         ]
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": 0,
+       "lines_removed": 4,
+       "net_lines": -4,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P3",
+       "project_origins": [
+        "linked_folder"
+       ],
+       "repository": null,
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 60
+      }
+     ],
+     "repository_count": 1,
+     "session_count": 1,
+     "subscription_types": [
+      "codemie"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 60
+    }
+   ]
+  },
+  "page": 1,
+  "per_page": 2,
+  "search": null,
+  "unpriced": [
+   "not-a-real-model-xyz"
+  ]
+ },
+ {
+  "data": {
+   "funding": {
+    "api_based": {
+     "cost_incomplete": true,
+     "cost_usd": 0.00225,
+     "session_count": 4,
+     "unpriced_models": [
+      "not-a-real-model-xyz"
+     ]
+    },
+    "subscription": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0035745,
+     "session_count": 4,
+     "unpriced_models": []
+    },
+    "unknown": {
+     "cost_incomplete": false,
+     "cost_usd": 0.000792,
+     "session_count": 2,
+     "unpriced_models": []
+    }
+   },
+   "pagination": {
+    "has_more": false,
+    "page": 0,
+    "per_page": 10,
+    "total_count": 5
+   },
+   "personal_billed": {
+    "cost_incomplete": false,
+    "cost_usd": 0.00192,
+    "session_count": 1,
+    "unpriced_models": []
+   },
+   "rows": [
+    {
+     "cost_usd": 0.004005,
+     "files_changed": 2,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.00156,
+       "session_count": 2,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.002028,
+       "session_count": 2,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.000417,
+       "session_count": 1,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": 5,
+     "lines_removed": 2,
+     "net_lines": 3,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.00192,
+      "session_count": 1,
+      "unpriced_models": []
+     },
+     "project_name": "P1",
+     "project_origins": [
+      "linked_folder",
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "dev",
+         "cost_usd": 0.002028,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 2,
+         "subscription_types": [
+          "codemie",
+          "personal"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 4
+        }
+       ],
+       "cost_usd": 0.002028,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.002028,
+         "session_count": 2,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.00192,
+        "session_count": 1,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-c",
+       "session_count": 2,
+       "subscription_types": [
+        "codemie",
+        "personal"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 4
+      },
+      {
+       "branches": [
+        {
+         "branch": "dev",
+         "cost_usd": 0.000417,
+         "files_changed": 0,
+         "lines_added": 0,
+         "lines_removed": 0,
+         "net_lines": 0,
+         "project_origins": [
+          "linked_folder"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "corporate"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 12
+        },
+        {
+         "branch": "main",
+         "cost_usd": 0.00156,
+         "files_changed": 2,
+         "lines_added": 5,
+         "lines_removed": 2,
+         "net_lines": 3,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 2,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 5
+        }
+       ],
+       "cost_usd": 0.001977,
+       "files_changed": 2,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.00156,
+         "session_count": 2,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.000417,
+         "session_count": 1,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": 5,
+       "lines_removed": 2,
+       "net_lines": 3,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "linked_folder",
+        "profile"
+       ],
+       "repository": "repo-a",
+       "session_count": 3,
+       "subscription_types": [
+        "codemie",
+        "corporate"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 17
+      },
+      {
+       "branches": [
+        {
+         "branch": "main",
+         "cost_usd": 0.0,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 1
+        }
+       ],
+       "cost_usd": 0.0,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-b",
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 1
+      }
+     ],
+     "repository_count": 3,
+     "session_count": 6,
+     "subscription_types": [
+      "codemie",
+      "corporate",
+      "personal"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 22
+    },
+    {
+     "cost_usd": 0.0015465,
+     "files_changed": 1,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0015465,
+       "session_count": 2,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": 7,
+     "lines_removed": 7,
+     "net_lines": 0,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.0,
+      "session_count": 0,
+      "unpriced_models": []
+     },
+     "project_name": "P2",
+     "project_origins": [
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "main",
+         "cost_usd": 0.001455,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 7
+        }
+       ],
+       "cost_usd": 0.001455,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.001455,
+         "session_count": 1,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P2",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-a",
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 7
+      },
+      {
+       "branches": [
+        {
+         "branch": "feature",
+         "cost_usd": 9.15e-05,
+         "files_changed": 1,
+         "lines_added": 7,
+         "lines_removed": 7,
+         "net_lines": 0,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "corporate"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 51
+        }
+       ],
+       "cost_usd": 9.15e-05,
+       "files_changed": 1,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 9.15e-05,
+         "session_count": 1,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": 7,
+       "lines_removed": 7,
+       "net_lines": 0,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P2",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-b",
+       "session_count": 1,
+       "subscription_types": [
+        "corporate"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 51
+      }
+     ],
+     "repository_count": 2,
+     "session_count": 2,
+     "subscription_types": [
+      "codemie",
+      "corporate"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 58
+    },
+    {
+     "cost_usd": 0.00069,
+     "files_changed": 0,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.00069,
+       "session_count": 1,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": null,
+     "lines_removed": null,
+     "net_lines": null,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.0,
+      "session_count": 0,
+      "unpriced_models": []
+     },
+     "project_name": "P4",
+     "project_origins": [
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "main",
+         "cost_usd": 0.00069,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 2
+        }
+       ],
+       "cost_usd": 0.00069,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.00069,
+         "session_count": 1,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P4",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-d",
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 2
+      }
+     ],
+     "repository_count": 1,
+     "session_count": 1,
+     "subscription_types": [
+      "codemie"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 2
+    },
+    {
+     "cost_usd": 0.0,
+     "files_changed": 1,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": true,
+       "cost_usd": 0.0,
+       "session_count": 1,
+       "unpriced_models": [
+        "not-a-real-model-xyz"
+       ]
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": 0,
+     "lines_removed": 4,
+     "net_lines": -4,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.0,
+      "session_count": 0,
+      "unpriced_models": []
+     },
+     "project_name": "P3",
+     "project_origins": [
+      "linked_folder"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": null,
+         "cost_usd": 0.0,
+         "files_changed": 1,
+         "lines_added": 0,
+         "lines_removed": 4,
+         "net_lines": -4,
+         "project_origins": [
+          "linked_folder"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 60
+        }
+       ],
+       "cost_usd": 0.0,
+       "files_changed": 1,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": true,
+         "cost_usd": 0.0,
+         "session_count": 1,
+         "unpriced_models": [
+          "not-a-real-model-xyz"
+         ]
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": 0,
+       "lines_removed": 4,
+       "net_lines": -4,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P3",
+       "project_origins": [
+        "linked_folder"
+       ],
+       "repository": null,
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 60
+      }
+     ],
+     "repository_count": 1,
+     "session_count": 1,
+     "subscription_types": [
+      "codemie"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 60
+    },
+    {
+     "cost_usd": 0.000375,
+     "files_changed": 1,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.000375,
+       "session_count": 1,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": 3,
+     "lines_removed": 0,
+     "net_lines": 3,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.0,
+      "session_count": 0,
+      "unpriced_models": []
+     },
+     "project_name": null,
+     "project_origins": [
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "main",
+         "cost_usd": 0.000375,
+         "files_changed": 1,
+         "lines_added": 3,
+         "lines_removed": 0,
+         "net_lines": 3,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 30
+        }
+       ],
+       "cost_usd": 0.000375,
+       "files_changed": 1,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.000375,
+         "session_count": 1,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": 3,
+       "lines_removed": 0,
+       "net_lines": 3,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": null,
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-b",
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 30
+      }
+     ],
+     "repository_count": 1,
+     "session_count": 1,
+     "subscription_types": [
+      "codemie"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 30
+    }
+   ]
+  },
+  "page": 0,
+  "per_page": 10,
+  "search": null,
+  "unpriced": [
+   "not-a-real-model-xyz"
+  ]
+ },
+ {
+  "data": {
+   "funding": {
+    "api_based": {
+     "cost_incomplete": true,
+     "cost_usd": 0.00225,
+     "session_count": 4,
+     "unpriced_models": [
+      "not-a-real-model-xyz"
+     ]
+    },
+    "subscription": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0035745,
+     "session_count": 4,
+     "unpriced_models": []
+    },
+    "unknown": {
+     "cost_incomplete": false,
+     "cost_usd": 0.000792,
+     "session_count": 2,
+     "unpriced_models": []
+    }
+   },
+   "pagination": {
+    "has_more": false,
+    "page": 9,
+    "per_page": 2,
+    "total_count": 5
+   },
+   "personal_billed": {
+    "cost_incomplete": false,
+    "cost_usd": 0.00192,
+    "session_count": 1,
+    "unpriced_models": []
+   },
+   "rows": []
+  },
+  "page": 9,
+  "per_page": 2,
+  "search": null,
+  "unpriced": [
+   "not-a-real-model-xyz"
+  ]
+ },
+ {
+  "data": {
+   "funding": {
+    "api_based": {
+     "cost_incomplete": false,
+     "cost_usd": 0.00156,
+     "session_count": 2,
+     "unpriced_models": []
+    },
+    "subscription": {
+     "cost_incomplete": false,
+     "cost_usd": 0.001455,
+     "session_count": 1,
+     "unpriced_models": []
+    },
+    "unknown": {
+     "cost_incomplete": false,
+     "cost_usd": 0.000417,
+     "session_count": 1,
+     "unpriced_models": []
+    }
+   },
+   "pagination": {
+    "has_more": false,
+    "page": 0,
+    "per_page": 10,
+    "total_count": 2
+   },
+   "personal_billed": {
+    "cost_incomplete": false,
+    "cost_usd": 0.0,
+    "session_count": 0,
+    "unpriced_models": []
+   },
+   "rows": [
+    {
+     "cost_usd": 0.001977,
+     "files_changed": 2,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.00156,
+       "session_count": 2,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.000417,
+       "session_count": 1,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": 5,
+     "lines_removed": 2,
+     "net_lines": 3,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.0,
+      "session_count": 0,
+      "unpriced_models": []
+     },
+     "project_name": "P1",
+     "project_origins": [
+      "linked_folder",
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "dev",
+         "cost_usd": 0.000417,
+         "files_changed": 0,
+         "lines_added": 0,
+         "lines_removed": 0,
+         "net_lines": 0,
+         "project_origins": [
+          "linked_folder"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "corporate"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 12
+        },
+        {
+         "branch": "main",
+         "cost_usd": 0.00156,
+         "files_changed": 2,
+         "lines_added": 5,
+         "lines_removed": 2,
+         "net_lines": 3,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 2,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 5
+        }
+       ],
+       "cost_usd": 0.001977,
+       "files_changed": 2,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.00156,
+         "session_count": 2,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.000417,
+         "session_count": 1,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": 5,
+       "lines_removed": 2,
+       "net_lines": 3,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "linked_folder",
+        "profile"
+       ],
+       "repository": "repo-a",
+       "session_count": 3,
+       "subscription_types": [
+        "codemie",
+        "corporate"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 17
+      }
+     ],
+     "repository_count": 1,
+     "session_count": 3,
+     "subscription_types": [
+      "codemie",
+      "corporate"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 17
+    },
+    {
+     "cost_usd": 0.001455,
+     "files_changed": 0,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.001455,
+       "session_count": 1,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": null,
+     "lines_removed": null,
+     "net_lines": null,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.0,
+      "session_count": 0,
+      "unpriced_models": []
+     },
+     "project_name": "P2",
+     "project_origins": [
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "main",
+         "cost_usd": 0.001455,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 7
+        }
+       ],
+       "cost_usd": 0.001455,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.001455,
+         "session_count": 1,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P2",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-a",
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 7
+      }
+     ],
+     "repository_count": 1,
+     "session_count": 1,
+     "subscription_types": [
+      "codemie"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 7
+    }
+   ]
+  },
+  "page": 0,
+  "per_page": 10,
+  "search": "repo-a",
+  "unpriced": [
+   "not-a-real-model-xyz"
+  ]
+ },
+ {
+  "data": {
+   "funding": {
+    "api_based": {
+     "cost_incomplete": false,
+     "cost_usd": 0.00156,
+     "session_count": 2,
+     "unpriced_models": []
+    },
+    "subscription": {
+     "cost_incomplete": false,
+     "cost_usd": 0.002028,
+     "session_count": 2,
+     "unpriced_models": []
+    },
+    "unknown": {
+     "cost_incomplete": false,
+     "cost_usd": 0.000417,
+     "session_count": 1,
+     "unpriced_models": []
+    }
+   },
+   "pagination": {
+    "has_more": false,
+    "page": 0,
+    "per_page": 10,
+    "total_count": 1
+   },
+   "personal_billed": {
+    "cost_incomplete": false,
+    "cost_usd": 0.00192,
+    "session_count": 1,
+    "unpriced_models": []
+   },
+   "rows": [
+    {
+     "cost_usd": 0.004005,
+     "files_changed": 2,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.00156,
+       "session_count": 2,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.002028,
+       "session_count": 2,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.000417,
+       "session_count": 1,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": 5,
+     "lines_removed": 2,
+     "net_lines": 3,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.00192,
+      "session_count": 1,
+      "unpriced_models": []
+     },
+     "project_name": "P1",
+     "project_origins": [
+      "linked_folder",
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "dev",
+         "cost_usd": 0.002028,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 2,
+         "subscription_types": [
+          "codemie",
+          "personal"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 4
+        }
+       ],
+       "cost_usd": 0.002028,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.002028,
+         "session_count": 2,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.00192,
+        "session_count": 1,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-c",
+       "session_count": 2,
+       "subscription_types": [
+        "codemie",
+        "personal"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 4
+      },
+      {
+       "branches": [
+        {
+         "branch": "dev",
+         "cost_usd": 0.000417,
+         "files_changed": 0,
+         "lines_added": 0,
+         "lines_removed": 0,
+         "net_lines": 0,
+         "project_origins": [
+          "linked_folder"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "corporate"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 12
+        },
+        {
+         "branch": "main",
+         "cost_usd": 0.00156,
+         "files_changed": 2,
+         "lines_added": 5,
+         "lines_removed": 2,
+         "net_lines": 3,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 2,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 5
+        }
+       ],
+       "cost_usd": 0.001977,
+       "files_changed": 2,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.00156,
+         "session_count": 2,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.000417,
+         "session_count": 1,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": 5,
+       "lines_removed": 2,
+       "net_lines": 3,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "linked_folder",
+        "profile"
+       ],
+       "repository": "repo-a",
+       "session_count": 3,
+       "subscription_types": [
+        "codemie",
+        "corporate"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 17
+      },
+      {
+       "branches": [
+        {
+         "branch": "main",
+         "cost_usd": 0.0,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 1,
+         "subscription_types": [
+          "codemie"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 1
+        }
+       ],
+       "cost_usd": 0.0,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.0,
+        "session_count": 0,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-b",
+       "session_count": 1,
+       "subscription_types": [
+        "codemie"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 1
+      }
+     ],
+     "repository_count": 3,
+     "session_count": 6,
+     "subscription_types": [
+      "codemie",
+      "corporate",
+      "personal"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 22
+    }
+   ]
+  },
+  "page": 0,
+  "per_page": 10,
+  "search": "P1",
+  "unpriced": [
+   "not-a-real-model-xyz"
+  ]
+ },
+ {
+  "data": {
+   "funding": {
+    "api_based": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0,
+     "session_count": 0,
+     "unpriced_models": []
+    },
+    "subscription": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0015465,
+     "session_count": 2,
+     "unpriced_models": []
+    },
+    "unknown": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0,
+     "session_count": 0,
+     "unpriced_models": []
+    }
+   },
+   "pagination": {
+    "has_more": false,
+    "page": 1,
+    "per_page": 1,
+    "total_count": 1
+   },
+   "personal_billed": {
+    "cost_incomplete": false,
+    "cost_usd": 0.0,
+    "session_count": 0,
+    "unpriced_models": []
+   },
+   "rows": []
+  },
+  "page": 1,
+  "per_page": 1,
+  "search": "p2",
+  "unpriced": [
+   "not-a-real-model-xyz"
+  ]
+ },
+ {
+  "data": {
+   "funding": {
+    "api_based": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0,
+     "session_count": 0,
+     "unpriced_models": []
+    },
+    "subscription": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0,
+     "session_count": 0,
+     "unpriced_models": []
+    },
+    "unknown": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0,
+     "session_count": 0,
+     "unpriced_models": []
+    }
+   },
+   "pagination": {
+    "has_more": false,
+    "page": 0,
+    "per_page": 10,
+    "total_count": 0
+   },
+   "personal_billed": {
+    "cost_incomplete": false,
+    "cost_usd": 0.0,
+    "session_count": 0,
+    "unpriced_models": []
+   },
+   "rows": []
+  },
+  "page": 0,
+  "per_page": 10,
+  "search": "REPO_",
+  "unpriced": [
+   "not-a-real-model-xyz"
+  ]
+ },
+ {
+  "data": {
+   "funding": {
+    "api_based": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0,
+     "session_count": 0,
+     "unpriced_models": []
+    },
+    "subscription": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0,
+     "session_count": 0,
+     "unpriced_models": []
+    },
+    "unknown": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0,
+     "session_count": 0,
+     "unpriced_models": []
+    }
+   },
+   "pagination": {
+    "has_more": false,
+    "page": 0,
+    "per_page": 10,
+    "total_count": 0
+   },
+   "personal_billed": {
+    "cost_incomplete": false,
+    "cost_usd": 0.0,
+    "session_count": 0,
+    "unpriced_models": []
+   },
+   "rows": []
+  },
+  "page": 0,
+  "per_page": 10,
+  "search": "zzz",
+  "unpriced": [
+   "not-a-real-model-xyz"
+  ]
+ },
+ {
+  "data": {
+   "funding": {
+    "api_based": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0,
+     "session_count": 0,
+     "unpriced_models": []
+    },
+    "subscription": {
+     "cost_incomplete": false,
+     "cost_usd": 0.002028,
+     "session_count": 2,
+     "unpriced_models": []
+    },
+    "unknown": {
+     "cost_incomplete": false,
+     "cost_usd": 0.0,
+     "session_count": 0,
+     "unpriced_models": []
+    }
+   },
+   "pagination": {
+    "has_more": false,
+    "page": 0,
+    "per_page": 1,
+    "total_count": 1
+   },
+   "personal_billed": {
+    "cost_incomplete": false,
+    "cost_usd": 0.00192,
+    "session_count": 1,
+    "unpriced_models": []
+   },
+   "rows": [
+    {
+     "cost_usd": 0.002028,
+     "files_changed": 0,
+     "funding": {
+      "api_based": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      },
+      "subscription": {
+       "cost_incomplete": false,
+       "cost_usd": 0.002028,
+       "session_count": 2,
+       "unpriced_models": []
+      },
+      "unknown": {
+       "cost_incomplete": false,
+       "cost_usd": 0.0,
+       "session_count": 0,
+       "unpriced_models": []
+      }
+     },
+     "lines_added": null,
+     "lines_removed": null,
+     "net_lines": null,
+     "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0.00192,
+      "session_count": 1,
+      "unpriced_models": []
+     },
+     "project_name": "P1",
+     "project_origins": [
+      "profile"
+     ],
+     "repositories": [
+      {
+       "branches": [
+        {
+         "branch": "dev",
+         "cost_usd": 0.002028,
+         "files_changed": 0,
+         "lines_added": null,
+         "lines_removed": null,
+         "net_lines": null,
+         "project_origins": [
+          "profile"
+         ],
+         "session_count": 2,
+         "subscription_types": [
+          "codemie",
+          "personal"
+         ],
+         "tool_calls": 0,
+         "tool_calls_success": 0,
+         "tool_success_rate": 0.0,
+         "turns": 4
+        }
+       ],
+       "cost_usd": 0.002028,
+       "files_changed": 0,
+       "funding": {
+        "api_based": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        },
+        "subscription": {
+         "cost_incomplete": false,
+         "cost_usd": 0.002028,
+         "session_count": 2,
+         "unpriced_models": []
+        },
+        "unknown": {
+         "cost_incomplete": false,
+         "cost_usd": 0.0,
+         "session_count": 0,
+         "unpriced_models": []
+        }
+       },
+       "lines_added": null,
+       "lines_removed": null,
+       "net_lines": null,
+       "personal_billed": {
+        "cost_incomplete": false,
+        "cost_usd": 0.00192,
+        "session_count": 1,
+        "unpriced_models": []
+       },
+       "project_name": "P1",
+       "project_origins": [
+        "profile"
+       ],
+       "repository": "repo-c",
+       "session_count": 2,
+       "subscription_types": [
+        "codemie",
+        "personal"
+       ],
+       "tool_calls": 0,
+       "tool_calls_success": 0,
+       "tool_success_rate": 0.0,
+       "turns": 4
+      }
+     ],
+     "repository_count": 1,
+     "session_count": 2,
+     "subscription_types": [
+      "codemie",
+      "personal"
+     ],
+     "tool_calls": 0,
+     "tool_calls_success": 0,
+     "tool_success_rate": 0.0,
+     "turns": 4
+    }
+   ]
+  },
+  "page": 0,
+  "per_page": 1,
+  "search": "repo-c",
+  "unpriced": [
+   "not-a-real-model-xyz"
+  ]
+ }
+]

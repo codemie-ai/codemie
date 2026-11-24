@@ -110,7 +110,7 @@ def client(backend):
         # The metadata carries a timestamp and a run time that change on every call: freeze them so that an ETag
         # can only differ when the data does.
         patch.object(router_module, "_metadata", lambda *a, **k: {"timestamp": "t0", "execution_time_ms": 1.0}),
-        patch.object(router_module, "_respond", lambda payload, _model: real_respond(payload, _Anything)),
+        patch.object(router_module, "_respond", lambda payload, _model, exclude=None: real_respond(payload, _Anything)),
         patch.object(router_module, "config", SimpleNamespace(is_local=False)),
     ):
         yield TestClient(app)

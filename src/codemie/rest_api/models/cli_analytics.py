@@ -148,6 +148,9 @@ class LocalAnalyticsOverviewKPIs(_ClassLists, _RowPricing):
     cache_read_cost_usd: float
     bloat_pct: float
     avg_context_per_call: float
+    total_users: int | None = Field(
+        None, description="Distinct developers of the window; only with `include_total_users=true`."
+    )
 
 
 class LocalAnalyticsOverviewDailyBucket(_ClassLists):

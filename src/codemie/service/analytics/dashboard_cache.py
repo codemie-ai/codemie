@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from codemie.configs.config import config
+from codemie.repository.cli_analytics.ports import RequestBudgetExceeded
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.scope import ViewerScope
 
@@ -200,6 +201,7 @@ class RankingCache:
         self._max_entries = max_entries
         self._clock = clock
         self._entries: OrderedDict[tuple, tuple[float, Any]] = OrderedDict()
+        self._flights: dict[tuple, _Flight] = {}
 
     @property
     def enabled(self) -> bool:
@@ -212,6 +214,57 @@ class RankingCache:
             return None
         self._entries.move_to_end(key)
         return entry[1]
+
+    async def single_flight(self, key: tuple, compute: Callable[[], Awaitable[Any]]) -> Any:
+        """`compute()`, once for every request that asks for `key` while it runs: the others wait for that read instead
+        of starting their own (N users opening a tab at the same moment send N identical reads, and the rollup's lane
+        has a few slots). The answer is returned as it is (callers store it themselves, and it is read-only). A failed
+        read gives every waiting request the error and is not remembered. A request that is cancelled or times out
+        while waiting leaves the others waiting; the read is cancelled, and unregistered at once, only when the last
+        one waiting leaves, so a request that arrives after that starts a new one."""
+        led = False
+        while True:
+            flight, started = self._join(key, compute)
+            led = led or started
+            try:
+                return await asyncio.shield(flight.task)
+            except asyncio.CancelledError:
+                self._abandon_if_last(key, flight)
+                raise
+            except RequestBudgetExceeded:
+                # The read ran under the budget of the request that started it (the task copied its context). A
+                # follower with budget left starts its own read; its own budget is enforced around this call.
+                if led:
+                    raise
+                led = True
+            finally:
+                flight.waiters -= 1
+
+    def _join(self, key: tuple, compute: Callable[[], Awaitable[Any]]) -> tuple[_Flight, bool]:
+        """The flight of `key` with this request counted among its waiters, and whether this request started it."""
+        flight = self._flights.get(key)
+        started = flight is None
+        if flight is None:
+            flight = _Flight(asyncio.ensure_future(self._fly(key, compute)))
+            self._flights[key] = flight
+        flight.waiters += 1
+        return flight, started
+
+    def _abandon_if_last(self, key: tuple, flight: _Flight) -> None:
+        """A cancelled waiter leaves the others waiting; the last one cancels the read and unregisters it at once, so a
+        request that arrives after that starts a new one."""
+        if flight.waiters == 1 and not flight.task.done():
+            flight.task.cancel()
+            if self._flights.get(key) is flight:
+                del self._flights[key]
+
+    async def _fly(self, key: tuple, compute: Callable[[], Awaitable[Any]]) -> Any:
+        try:
+            return await compute()
+        finally:
+            flight = self._flights.get(key)
+            if flight is not None and flight.task is asyncio.current_task():  # not a newer flight of the same key
+                del self._flights[key]
 
     def put(self, key: tuple, value: Any, ttl_s: float | None = None) -> None:
         self._entries[key] = (self._clock() + (self._ttl_s if ttl_s is None else ttl_s), value)
@@ -254,7 +307,7 @@ def rollup_recently_used(window_s: float = RECENTLY_USED_S) -> bool:
     return time.monotonic() - _rollup_used_at <= window_s
 
 
-def rollup_key(f: LocalAnalyticsFilter, endpoint: str = "users-rollup") -> tuple | None:
+def rollup_key(f: LocalAnalyticsFilter, endpoint: str = "users-rollup", *extra: Any) -> tuple | None:
     """The cache key of the user rollup's answer. The viewer's e-mail never enters the SQL of an unrestricted
     "exclude" scope (every shared session, whoever asks), so every such viewer shares one key; any other scope keeps
     its own."""
@@ -264,7 +317,7 @@ def rollup_key(f: LocalAnalyticsFilter, endpoint: str = "users-rollup") -> tuple
     if isinstance(scope, ViewerScope) and scope.unrestricted and scope.mode == "exclude":
         f = copy.copy(f)
         f.scope = ROLLUP_SCOPE
-    return dashboard_key(endpoint, f)
+    return dashboard_key(endpoint, f, *extra)
 
 
 def rollup_max_age_s() -> float:

@@ -100,6 +100,7 @@ def _handler() -> MagicMock:
     handler.get_branches = AsyncMock(return_value=({}, pricer))
     handler.get_tools = AsyncMock(return_value={})
     handler.get_activity = AsyncMock(return_value={})
+    handler.authorize_session = AsyncMock(return_value=True)
     handler.get_efficiency = AsyncMock(return_value=({}, pricer))
     handler.get_sessions = AsyncMock(return_value=({}, pricer, None))
     handler.get_session_detail = AsyncMock(return_value=({"start_time": "2026-09-22"}, [], None))
@@ -173,7 +174,7 @@ async def _call_route(route: str, is_local: bool, kwargs: dict):
         patch.object(router_module, "get_cli_analytics_storage", return_value=storage),
         patch.object(router_module.FilterParams, "resolve", fake_resolve),
         patch.object(router_module.FilterParams, "resolve_sessions", fake_resolve),
-        patch.object(router_module, "_respond", lambda payload, _model: real_respond(payload, _Anything)),
+        patch.object(router_module, "_respond", lambda payload, _model, exclude=None: real_respond(payload, _Anything)),
         patch.object(router_module, "config", SimpleNamespace(is_local=is_local)),
     ):
         return await getattr(router_module, route)(user=User(id="u1", email="a@example.com"), **route_kwargs)

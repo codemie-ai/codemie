@@ -40,6 +40,7 @@ from codemie.repository.cli_analytics.ports import (
     ModelRates,
     ScheduledJob,
 )
+from codemie.repository.cli_analytics.postgres.engine import job_scope
 from codemie.repository.cli_analytics.postgres.rates_version import RatesVersionProvider, rates_version
 from codemie.repository.cli_analytics.postgres.user_rollup import ROLLUP_SCOPE
 from codemie.service.analytics.dashboard_cache import (
@@ -74,6 +75,11 @@ async def warm_user_rollup(reader: Any) -> None:
     cache = get_ranking_cache()
     if not (cache.enabled and config.CLI_ANALYTICS_USER_ROLLUP_ENABLED and rollup_recently_used()):
         return
+    with job_scope():  # its reads take the jobs' connections, not a dashboard request's
+        await _warm_periods(reader, cache)
+
+
+async def _warm_periods(reader: Any, cache: Any) -> None:
     ttl_s = 3.0 * config.CLI_ANALYTICS_USER_ROLLUP_WARM_S
     for period in WARM_PERIODS:
         start, end = TimeParser.parse(period, None, None)
@@ -84,12 +90,14 @@ async def warm_user_rollup(reader: Any) -> None:
         # The Overview is the tab the CLI analytics page opens on: its rollup answer is kept warm as well. A failure
         # here (a timeout, a broken connection) is logged and does not skip the remaining windows.
         try:
-            overview = await reader.rollup_overview(f, model_rates_for, rollup_max_age_s())
+            overview = await reader.rollup_overview(f, model_rates_for, rollup_max_age_s(), True)
         except Exception as exc:  # noqa: BLE001 - the warm-up is best effort
             logger.warning(f"cli_analytics: overview rollup not warmed for {period}: {exc!r}")
             continue
         if overview is not None:
+            # The answer counts the developers, so it serves a request that asks for them and one that does not.
             cache.put(rollup_key(f, "overview-rollup"), overview, ttl_s=ttl_s)
+            cache.put(rollup_key(f, "overview-rollup", True), overview, ttl_s=ttl_s)
 
 
 class CliAnalyticsJobsScheduler:

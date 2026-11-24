@@ -18,6 +18,7 @@ who may read it, and which days the job rebuilds (EPMCDME-17051). No database.""
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -96,7 +97,7 @@ def UserAgg_(subs=(), **kwargs):  # noqa: N802 - a short constructor for the tes
 def cohort():
     c = ur.Cohort()
     for name in ("B@x", "a@x", "zero@x", "pers@x"):
-        c.users[name] = ur.UserAgg(session_count=1)
+        c.users[name] = UserAgg_(session_count=1)
     # B and a tie on cost; zero has sessions but nothing priced; pers is billed to a personal plan
     c.money[("B@x", "api_based", False)] = ur.MoneyAgg(Decimal("2"), 1, set(), Decimal("2"), 1, set())
     c.money[("a@x", "subscription", False)] = ur.MoneyAgg(Decimal("2"), 1, {"m"}, Decimal("0"), 0, set())
@@ -664,6 +665,23 @@ def test_the_cost_of_each_subscription_class_adds_across_days_and_is_served_as_c
     ]
 
 
+def test_the_overview_counts_the_developers_of_the_stored_days_and_of_the_live_sessions_once():
+    c = overview_cohort()
+    c.overview.users = {"ann", "bob"}
+    c.users["bob"] = UserAgg_(session_count=1)  # a developer of a session read live, also in the stored days
+    c.users["cy"] = UserAgg_(session_count=1)
+
+    assert ur.assemble_overview(c, True).total_users == 3
+    assert ur.assemble_overview(c).total_users is None  # not asked for
+
+
+def test_the_developers_of_two_days_merge_as_a_set():
+    a, b = ur.OverviewAgg(users={"ann"}), ur.OverviewAgg(users={"ann", "bob"})
+    a.merge(b)
+
+    assert a.users == {"ann", "bob"}
+
+
 def test_a_window_with_no_spend_has_no_spend_row_as_the_live_grouping():
     served = ur.assemble_overview(overview_cohort())
 
@@ -791,7 +809,7 @@ async def test_write_day_replaces_every_table_of_the_day_and_records_its_shape()
     deleted = [sql for sql, _ in conn.executed if sql.startswith("DELETE")]
     assert {sql.split()[2] for sql in deleted} == set(ur._DAY_TABLES)
     upsert = next(args for sql, args in conn.executed if sql == ur._UPSERT_STATE)
-    assert ur.SHAPE_OVERVIEW in upsert
+    assert ur.ROLLUP_SHAPE == ur.SHAPE_TOOLS >= ur.SHAPE_RANKING >= ur.SHAPE_EFFICIENCY and ur.ROLLUP_SHAPE in upsert
 
 
 def _migration_tables():
@@ -965,7 +983,7 @@ class FakeStatements:
             {"part": "money", "key": "route", "cost_usd": Decimal("9")},  # an estimate bucket: not stored
             {"part": "money", "key": "class", "subscription_type": "codemie", "cost_usd": Decimal("1.25")},
             {"part": "money", "key": "class", "subscription_type": "personal", "cost_usd": Decimal("2")},
-            {"part": "dead", "n": 2},
+            {"part": "dead", "n": 2, "cost_usd": Decimal("0.75")},
         ]
 
     async def get_overview_facts(self, f):
@@ -990,12 +1008,22 @@ class FakeStatements:
         return [
             {
                 "total_sessions": 4,
+                "spend_sessions": 3,
                 "total_input_tokens": 10,
                 "total_output_tokens": 20,
                 "total_cache_read_tokens": 30,
                 "total_cache_creation_tokens": 40,
                 "total_api_calls": 6,
             }
+        ]
+
+    async def get_efficiency_facts(self, f):
+        return [
+            {"part": "worst", "ratio": 41.5, "session_id": "s-worst", "session_title": "", "prompt": ""},
+            {"part": "depth", "key": "2-5", "n": 3},
+            {"part": "depth", "key": "50+", "n": 1},
+            {"part": "all", "n": 4},
+            {"part": "code", "files_changed": 3, "files_written": 2, "files_edited": 1, "lines_added": 9},
         ]
 
     async def get_overview_lines(self, f):
@@ -1036,6 +1064,18 @@ async def test_gather_overview_maps_each_live_statement_to_the_aggregate_field_i
     )
     assert o.models == {"m": [3, Decimal("1.5")], "n": [1, None]}
     assert o.lines == {date(2026, 11, 1): [9, 3, True], date(2026, 11, 2): [None, None, False]}
+    # the dead sessions' cost and the sessions with a cost row come with the Overview statements; no Efficiency facts
+    assert (o.efficiency.dead_cost, o.efficiency.spend_sessions) == (Decimal("0.75"), 3)
+    assert (o.efficiency.worst, o.efficiency.depth) == (None, [0] * 6)
+
+
+@pytest.mark.asyncio
+async def test_gather_overview_reads_the_efficiency_facts_only_when_asked():
+    o = await ur.gather_overview(FakeStatements(), window(), lambda m: m, efficiency=True)
+
+    assert o.efficiency.worst == (41.5, "s-worst")
+    assert o.efficiency.depth == [0, 3, 0, 0, 0, 1]  # the buckets in use, in the order of `DEPTH_BUCKETS`
+    assert (o.efficiency.files_written, o.efficiency.files_edited) == (2, 1)
 
 
 # ── which shape a reader needs, which shape the job keeps, and the live gap sessions of the Overview ──
@@ -1149,7 +1189,7 @@ async def test_the_overview_of_the_live_gap_sessions_is_added_to_the_rollup_rows
         seen["session_ids"] = f.session_ids
         return ur.Cohort(users={"live@x": ur.UserAgg(session_count=2)})
 
-    async def fake_overview(repo, f, rate_of):
+    async def fake_overview(repo, f, rate_of, efficiency=False):
         return ur.OverviewAgg(turns=5, spend_cost=Decimal("1.5"), unpriced={"raw"})
 
     monkeypatch.setattr(ur, "gather_cohort", fake_cohort)
@@ -1166,9 +1206,9 @@ async def test_the_overview_of_the_live_gap_sessions_is_added_to_the_rollup_rows
 @pytest.mark.asyncio
 async def test_the_overview_statements_do_not_run_for_the_live_gap_sessions_of_users_and_cost(monkeypatch):
     async def fake_cohort(repo, f, rate_of):
-        return ur.Cohort(users={"live@x": ur.UserAgg(session_count=1)})
+        return ur.Cohort(users={"live@x": UserAgg_(session_count=1)})
 
-    async def fake_overview(repo, f, rate_of):
+    async def fake_overview(repo, f, rate_of, efficiency=False):
         raise AssertionError("the Overview statements ran for a request that does not read them")
 
     monkeypatch.setattr(ur, "gather_cohort", fake_cohort)
@@ -1188,3 +1228,475 @@ async def test_a_day_of_a_newer_shape_is_neither_rebuilt_nor_left_unconfirmed(mo
     _, built = await run_refresh(monkeypatch, conn)
 
     assert built == []  # a newer pod's days are not built down to this pod's shape
+
+
+def _ranking_agg() -> "ur.RankingAgg":
+    agg = ur.RankingAgg()
+    agg.groups[("p1", "repo-a", "main")] = ur.GroupAgg(n=3, spend=Decimal("2"))
+    agg.groups[("p2", "repo-b", "main")] = ur.GroupAgg(n=2, spend=Decimal("1"))
+    agg.groups[("", "", "")] = ur.GroupAgg(n=5, spend=Decimal("9"))  # the sessions of no project and no repository
+    return agg
+
+
+def test_the_ranking_with_the_unattributed_group_last_pages_only_the_named_repositories_and_carries_the_rest():
+    for page, expected in ((0, ["repo-a"]), (1, ["repo-b"]), (9, [])):
+        served = ur.assemble_ranking(_ranking_agg(), False, page, 1, unattributed_last=True)
+
+        groups = [r for r in served.rows if r["part"] == "group"]
+        assert [g["repository"] for g in groups] == [*expected, None]  # the group without a repository on every page
+        assert [r for r in served.rows if r["part"] == "count"] == [{"part": "count", "n": 2}]  # named ones only
+        assert int(groups[-1]["key"]) == 3  # it ranks after every named repository, whatever the page
+
+
+def test_the_ranking_ranks_the_group_without_a_repository_like_any_row_by_default():
+    served = ur.assemble_ranking(_ranking_agg(), False, 0, 10)
+
+    assert [g["repository"] for g in served.rows if g["part"] == "group"] == [None, "repo-a", "repo-b"]
+    assert [r for r in served.rows if r["part"] == "count"] == [{"part": "count", "n": 3}]
+
+
+def test_the_totals_only_project_page_puts_the_unattributed_project_last_outside_the_page_and_the_count():
+    cases = ((0, ["p1"]), (1, ["p2", None]), (2, []))
+    for page, names in cases:
+        served = ur.assemble_projects(_ranking_agg(), page, 1, unattributed_last=True)
+
+        assert (served.total, served.project_names) == (2, names)
+
+
+def test_the_nested_project_page_ranks_and_counts_the_unattributed_project_by_spend_order_last():
+    served = ur.assemble_projects(_ranking_agg(), 0, 10)
+
+    assert (served.total, served.project_names) == (3, ["p1", "p2", None])
+
+
+def test_assemble_efficiency_rows_follow_the_live_statements():
+    cohort = ur.Cohort()
+    o = cohort.overview
+    o.sessions, o.dead_sessions, o.files_changed, o.api_calls, o.cache_read_tokens = 7, 2, 5, 40, 900
+    o.spend_cost, o.cache_read_cost = Decimal("3.5"), Decimal("0.25")
+    o.unpriced = {"zeta", "alpha"}
+    o.lines = {date(2026, 9, 1): [4, 1, True], date(2026, 9, 2): [None, None, False]}
+    e = o.efficiency
+    e.dead_cost, e.files_written, e.files_edited, e.spend_sessions = Decimal("0.5"), 3, 2, 5
+    e.depth = [1, 0, 3, 0, 2, 1]
+    e.worst = (12.5, "s-worst")
+
+    served = ur.assemble_efficiency(cohort)
+
+    assert served.fact_rows[0] == {"part": "worst", "ratio": 12.5, "session_id": "s-worst"}
+    depth = [(r["key"], r["n"]) for r in served.fact_rows if r["part"] == "depth"]
+    assert depth == [("1", 1), ("6-10", 3), ("26-50", 2), ("50+", 1)]  # bucket order, empty buckets dropped
+    assert {"part": "all", "n": 7} in served.fact_rows
+    code = next(r for r in served.fact_rows if r["part"] == "code")
+    assert (code["files_written"], code["files_edited"], code["lines_added"], code["lines_removed"]) == (3, 2, 4, 1)
+    assert served.money_rows[0] == {"part": "dead", "n": 2, "cost_usd": 0.5}
+    assert served.money_rows[1]["unpriced_models"] == ["alpha", "zeta"]
+    assert served.kpi_rows == [
+        {"total_sessions": 7, "spend_sessions": 5, "total_cache_read_tokens": 900, "total_api_calls": 40}
+    ]
+
+
+def test_assemble_efficiency_has_no_worst_row_when_no_session_has_a_call():
+    served = ur.assemble_efficiency(ur.Cohort())
+
+    assert all(r["part"] != "worst" for r in served.fact_rows)
+    assert served.money_rows == [{"part": "dead", "n": 0, "cost_usd": 0.0}]
+
+
+@pytest.mark.asyncio
+async def test_serve_efficiency_gives_the_worst_session_its_entrypoint_as_the_live_statement_does(monkeypatch):
+    """`_served_prompt` shows a Desktop session's first prompt, not its auto-generated title, by `entrypoint`: a worst
+    row without it would show the title (as the live `get_efficiency_facts` row, which carries it, never does)."""
+    row = {
+        "session_title": "Auto title",
+        "entrypoint": "claude-desktop",
+        "prompt": "the first prompt",
+        "repository": "repo-a",
+        "branch": "main",
+    }
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=row)
+
+    @asynccontextmanager
+    async def acquire():
+        yield conn
+
+    reader = MagicMock()
+    reader._engine.acquire = acquire
+    served = ur.assemble_efficiency(_cohort_with_worst(12.5, "s-worst"))
+    monkeypatch.setattr(ur, "serve_cohort", AsyncMock(return_value=object()))
+    monkeypatch.setattr(ur, "assemble_efficiency", lambda _window: served)
+
+    result = await ur.serve_efficiency(reader, MagicMock(), lambda _model: None, "v1", max_age_s=60)
+
+    worst = next(r for r in result.fact_rows if r["part"] == "worst")
+    assert worst["entrypoint"] == "claude-desktop"
+    assert (worst["session_title"], worst["prompt"]) == ("Auto title", "the first prompt")
+    assert "entrypoint" in conn.fetchrow.call_args.args[0]
+    assert conn.fetchrow.call_args.args[1] == "s-worst"
+
+
+def _cohort_with_worst(ratio: float, session_id: str) -> "ur.Cohort":
+    cohort = ur.Cohort()
+    cohort.overview.efficiency.worst = (ratio, session_id)
+    return cohort
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{}, {"models": True}, {"overview": True}], ids=["users", "cost", "overview"])
+async def test_every_rollup_reader_refuses_the_live_merge_where_it_is_not_allowed(monkeypatch, kwargs):
+    """Not only the ranking: Users, Cost, Overview and Efficiency also merge up to `MAX_RESUMED` sessions, and a light
+    lane read does not run live statements (the handler repeats the read in the heavy lane)."""
+    from codemie.repository.cli_analytics.ports import LiveMergeNeeded
+    from codemie.repository.cli_analytics.postgres import request_stats
+
+    async def fake_cohort(repo, f, rate_of):
+        return ur.Cohort(users={"live@x": UserAgg_(session_count=1)})
+
+    async def fake_overview(repo, f, rate_of, efficiency=False):
+        return ur.OverviewAgg()
+
+    monkeypatch.setattr(ur, "gather_cohort", fake_cohort)
+    monkeypatch.setattr(ur, "gather_overview", fake_overview)
+    monkeypatch.setattr(ur, "_on_held", _noop)
+    shape = ur.SHAPE_OVERVIEW if kwargs.get("overview") else ur.SHAPE_COST
+
+    token = request_stats.live_merge_allowed.set(False)
+    try:
+        with pytest.raises(LiveMergeNeeded):
+            await serve(ServeConn(day_states(shape), resumed=["s1"]), **kwargs)
+    finally:
+        request_stats.live_merge_allowed.reset(token)
+
+    # where the merge is allowed (the default, and the heavy lane) the same read merges the live sessions
+    cohort = await serve(ServeConn(day_states(shape), resumed=["s1"]), **kwargs)
+    assert cohort.users["live@x"].session_count == 1
+
+
+@pytest.mark.asyncio
+async def test_the_limit_of_resumed_sessions_is_the_one_the_ranking_reads_with():
+    assert ur.MAX_RESUMED == ur.MAX_RESUMED_RANKING == 8000
+
+
+def test_a_ranking_group_carries_its_pricing_into_the_rows_the_handler_reads():
+    """The unpriced raw names and the priced evidence of a group (EPMCDME-17152) reach the `group` row, as the live
+    `get_repository_ranking` row has them; a group priced throughout carries no names."""
+    groups = {
+        ("p", "repo-a", "main"): ur.GroupAgg(n=1, spend=Decimal("1"), priced=True),
+        ("p", "repo-b", "main"): ur.GroupAgg(n=1, spend=Decimal("0"), unpriced={"mystery-model"}),
+    }
+
+    rows = {k[1]: ur._group_row(1, k, g, True) for k, g in groups.items()}
+
+    assert rows["repo-a"]["unpriced_models"] == [] and rows["repo-a"]["cost_incomplete"] is False
+    assert rows["repo-a"]["cost_priced"] is True
+    assert rows["repo-b"]["unpriced_models"] == ["mystery-model"] and rows["repo-b"]["cost_incomplete"] is True
+    assert rows["repo-b"]["cost_priced"] is False
+
+
+def test_merging_ranking_groups_unites_the_unpriced_names_and_keeps_any_priced_evidence():
+    """Days, and live-merged resumed sessions, add up: a repository folded from its branches is incomplete when any
+    branch is and priced when any branch is."""
+    folded = ur._fold_repositories(
+        {
+            ("p", "repo", "main"): ur.GroupAgg(n=2, spend=Decimal("1"), priced=True),
+            ("p", "repo", "dev"): ur.GroupAgg(n=1, spend=Decimal("0"), unpriced={"b-model"}),
+            ("p", "repo", "old"): ur.GroupAgg(n=1, spend=Decimal("0"), unpriced={"a-model"}),
+        }
+    )
+
+    ((_, group),) = folded.items()
+    assert group.unpriced == {"a-model", "b-model"} and group.priced is True
+
+
+def test_the_ranking_rows_are_built_and_read_with_their_pricing_columns():
+    assert "unpriced, priced" in ur._INSERT_RANKING and "$16" in ur._INSERT_RANKING
+    assert "bool_or(priced) AS priced" in ur._RANKING_SQL
+    assert "FROM user_day_ranking_rollup" in ur._RANKING_GROUP_UNPRICED_SQL
+    assert ur.SHAPE_RANKING == 7 and ur.ROLLUP_SHAPE >= ur.SHAPE_RANKING  # a day built without them is rebuilt
+
+
+# ── the Tools & Models rows ──────────────────────────────────────────────────────────────────────────────────────
+
+
+def tools_agg():
+    return ur.ToolsAgg(
+        tools={"Read": [3, 2], "Edit": [1, 1]},
+        invocations={("skill", "brainstorming"): 4, ("command", "/review"): 2},
+        models={"model-a": [2, 900], "model-b": [1, 50]},
+    )
+
+
+def test_the_tools_agg_merge_sums_every_cell_and_adds_the_new_ones():
+    total = tools_agg()
+    other = ur.ToolsAgg(
+        tools={"Read": [1, 1], "Bash": [5, 4]},
+        invocations={("skill", "brainstorming"): 1, ("agent", "Explore"): 7},
+        models={"model-a": [1, 100], "model-c": [4, 4]},
+    )
+
+    total.merge(other)
+
+    assert total.tools == {"Read": [4, 3], "Edit": [1, 1], "Bash": [5, 4]}
+    assert total.invocations == {("skill", "brainstorming"): 5, ("command", "/review"): 2, ("agent", "Explore"): 7}
+    assert total.models == {"model-a": [3, 1000], "model-b": [1, 50], "model-c": [4, 4]}
+
+
+def test_a_cohort_merge_merges_its_tools():
+    a, b = ur.Cohort(), ur.Cohort()
+    a.tools, b.tools = tools_agg(), tools_agg()
+
+    a.merge(b)
+
+    assert a.tools.tools["Read"] == [6, 4] and a.tools.models["model-a"] == [4, 1800]
+
+
+@pytest.mark.asyncio
+async def test_write_day_stores_the_tools_invocations_and_models_of_every_class_pair():
+    conn = WriteConn()
+    cohort = one_class_cohort()
+    cohort.tools = tools_agg()
+    day = date(2026, 11, 1)
+
+    await ur.write_day(conn, day, {("codemie", "profile"): cohort}, SIGNATURE, "v1", 5)
+
+    assert sorted(conn.many[ur._INSERT_TOOLS]) == [
+        (day, "codemie", "profile", "command", "/review", 2, 0),
+        (day, "codemie", "profile", "skill", "brainstorming", 4, 0),
+        (day, "codemie", "profile", "tool", "Edit", 1, 1),
+        (day, "codemie", "profile", "tool", "Read", 3, 2),
+    ]
+    assert conn.many[ur._INSERT_TOOLS_MODEL] == [
+        (day, "codemie", "profile", "model-a", 2, 900),
+        (day, "codemie", "profile", "model-b", 1, 50),
+    ]
+
+
+def test_a_day_build_replaces_the_tools_tables_too_and_the_job_builds_shape_eight():
+    assert {"user_day_tools_rollup", "user_day_tools_models"} <= set(ur._DAY_TABLES)
+    assert ur.SHAPE_TOOLS == 8 and ur.ROLLUP_SHAPE == 8
+
+
+def test_the_tools_inserts_follow_the_columns_of_the_migration():
+    import importlib.util
+    import re
+    from pathlib import Path
+
+    from codemie.repository.cli_analytics.postgres import migrations
+
+    path = next((Path(migrations.ALEMBIC_DIR) / "versions").glob("a1c1a0000022_*.py"))
+    spec = importlib.util.spec_from_file_location("a1c1a0000022", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    tables = {}
+    for statement in module.CREATE_STATEMENTS:
+        match = re.match(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*)\)$", statement.strip(), re.S)
+        if match:
+            body = [line.strip() for line in match.group(2).splitlines() if line.strip()]
+            tables[match.group(1)] = [line.split()[0] for line in body if line.split()[0] != "PRIMARY"]
+
+    for sql in (ur._INSERT_TOOLS, ur._INSERT_TOOLS_MODEL):
+        table, columns = _insert_columns(sql)
+        assert len(columns) == len(set(columns)) and set(columns) == set(tables[table]), table
+
+
+class _ToolsReader:
+    """The three live statements `gather_tools` reads, with what each is asked."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def get_tool_usage(self, f, *, exact=False):
+        self.calls.append(("get_tool_usage", exact))
+        return [{"tool_name": "Read", "call_count": 3, "success_count": 2}]
+
+    async def get_invocations(self, f):
+        self.calls.append(("get_invocations", None))
+        return [
+            {"kind": "skill", "name": "brainstorming", "count": 4},
+            {"kind": "agent", "name": "Explore", "count": 1},
+            {"kind": "command", "name": "/review", "count": 2},
+        ]
+
+    async def get_model_breakdown(self, f):
+        self.calls.append(("get_model_breakdown", None))
+        return [{"model_name": "model-a", "session_count": 2, "total_tokens": 900}]
+
+
+@pytest.mark.asyncio
+async def test_gather_tools_reads_the_live_statements_without_the_tool_limit():
+    reader = _ToolsReader()
+
+    agg = await ur.gather_tools(reader, None)
+
+    assert ("get_tool_usage", True) in reader.calls
+    assert agg.tools == {"Read": [3, 2]}
+    assert agg.invocations == {("skill", "brainstorming"): 4, ("agent", "Explore"): 1, ("command", "/review"): 2}
+    assert agg.models == {"model-a": [2, 900]}
+
+
+# ── serving the Tools & Models tab ───────────────────────────────────────────────────────────────────────────────
+
+
+class ToolsServeConn(ServeConn):
+    """`ServeConn` that also answers the two window statements of the Tools & Models rows."""
+
+    def __init__(self, states, resumed=(), tools=(), models=()):
+        super().__init__(states, resumed)
+        self.tools, self.models = list(tools), list(models)
+        self.read = []
+
+    async def fetch(self, sql, *args):
+        if sql == ur._TOOLS_SQL:
+            self.read.append(("tools", args))
+            return self.tools
+        if sql == ur._TOOLS_MODELS_SQL:
+            self.read.append(("models", args))
+            return self.models
+        return await super().fetch(sql, *args)
+
+
+async def serve_tools_cohort(conn):
+    return await ur.serve_cohort(ServeReader(conn), window(), lambda m: m, "v1", max_age_s=300, now=NOW, tools=True)
+
+
+def test_the_window_statements_sum_the_days_by_name_for_the_classes_asked_for():
+    assert "FROM user_day_tools_rollup" in ur._TOOLS_SQL and "GROUP BY kind, name" in ur._TOOLS_SQL
+    assert "FROM user_day_tools_models" in ur._TOOLS_MODELS_SQL and "GROUP BY model" in ur._TOOLS_MODELS_SQL
+    for sql in (ur._TOOLS_SQL, ur._TOOLS_MODELS_SQL):
+        assert "start_day BETWEEN $1 AND $2" in sql and ur._CLASSES in sql
+
+
+@pytest.mark.asyncio
+async def test_the_tools_read_sums_the_rows_of_the_window_into_the_cohort():
+    conn = ToolsServeConn(
+        day_states(ur.SHAPE_TOOLS),
+        tools=[
+            {"kind": "tool", "name": "Read", "calls": 5, "successes": 4},
+            {"kind": "skill", "name": "brainstorming", "calls": 3, "successes": 0},
+        ],
+        models=[{"model": "model-a", "sessions": 2, "total_tokens": 900}],
+    )
+
+    cohort = await serve_tools_cohort(conn)
+
+    assert cohort.tools.tools == {"Read": [5, 4]}
+    assert cohort.tools.invocations == {("skill", "brainstorming"): 3}
+    assert cohort.tools.models == {"model-a": [2, 900]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("shape", "served"), [(6, False), (7, False), (8, True), (9, True)])
+async def test_a_day_below_shape_eight_refuses_a_tools_read(shape, served):
+    result = await serve_tools_cohort(ToolsServeConn(day_states(shape)))
+
+    assert (result is not None) is served
+
+
+@pytest.mark.asyncio
+async def test_the_tools_of_the_resumed_sessions_are_merged_live_into_the_rollup_rows(monkeypatch):
+    seen = {}
+
+    async def fake_tools(repo, f):
+        seen["session_ids"] = f.session_ids
+        return ur.ToolsAgg(tools={"Read": [2, 1]}, invocations={("agent", "Explore"): 1}, models={"model-a": [1, 10]})
+
+    monkeypatch.setattr(ur, "gather_tools", fake_tools)
+    monkeypatch.setattr(ur, "_on_held", _noop)
+    conn = ToolsServeConn(
+        day_states(ur.SHAPE_TOOLS),
+        resumed=["s1", "s2"],
+        tools=[{"kind": "tool", "name": "Read", "calls": 5, "successes": 4}],
+        models=[{"model": "model-a", "sessions": 2, "total_tokens": 900}],
+    )
+
+    cohort = await serve_tools_cohort(conn)
+
+    assert seen["session_ids"] == ["s1", "s2"]
+    assert cohort.tools.tools == {"Read": [7, 5]}
+    assert cohort.tools.invocations == {("agent", "Explore"): 1}
+    assert cohort.tools.models == {"model-a": [3, 910]}
+
+
+@pytest.mark.asyncio
+async def test_a_tools_read_where_the_live_merge_is_not_allowed_leaves_the_light_lane(monkeypatch):
+    from codemie.repository.cli_analytics.ports import LiveMergeNeeded
+    from codemie.repository.cli_analytics.postgres import request_stats
+
+    async def fake_tools(repo, f):
+        raise AssertionError("the live statements ran in the light lane")
+
+    monkeypatch.setattr(ur, "gather_tools", fake_tools)
+    conn = ToolsServeConn(day_states(ur.SHAPE_TOOLS), resumed=["s1"])
+    token = request_stats.live_merge_allowed.set(False)
+    try:
+        with pytest.raises(LiveMergeNeeded):
+            await serve_tools_cohort(conn)
+    finally:
+        request_stats.live_merge_allowed.reset(token)
+    assert conn.read == []  # refused before the day tables were read
+
+
+def test_assemble_tools_cuts_the_tools_to_twenty_after_summing_and_orders_ties_by_name():
+    cohort = ur.Cohort()
+    cohort.tools.tools = {f"tool-{n:02d}": [10, 9] for n in range(25)} | {"Zed": [99, 1], "Alpha": [10, 10]}
+
+    rows = ur.assemble_tools(cohort).tool_rows
+
+    assert len(rows) == 20
+    assert rows[0] == {"tool_name": "Zed", "call_count": 99, "success_count": 1}
+    # ties on 10 calls: byte order of the name, as ORDER BY name COLLATE "C" ('A' sorts before 't')
+    assert [r["tool_name"] for r in rows[1:4]] == ["Alpha", "tool-00", "tool-01"]
+
+
+def test_assemble_tools_keeps_every_invocation_and_model_in_the_live_row_shapes():
+    cohort = ur.Cohort()
+    cohort.tools = ur.ToolsAgg(
+        invocations={("skill", "brainstorming"): 4, ("command", "/review"): 2, ("agent", "Explore"): 1},
+        models={"model-a": [2, 900], "model-b": [1, 0]},
+    )
+
+    result = ur.assemble_tools(cohort)
+
+    assert sorted((r["kind"], r["name"], r["count"]) for r in result.invocation_rows) == [
+        ("agent", "Explore", 1),
+        ("command", "/review", 2),
+        ("skill", "brainstorming", 4),
+    ]
+    assert sorted((r["model_name"], r["session_count"], r["total_tokens"]) for r in result.model_rows) == [
+        ("model-a", 2, 900),
+        ("model-b", 1, 0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_serve_tools_answers_with_the_assembled_rows_or_none_on_a_refusal(monkeypatch):
+    cohort = ur.Cohort()
+    cohort.tools.tools = {"Read": [3, 2]}
+    monkeypatch.setattr(ur, "serve_cohort", AsyncMock(return_value=cohort))
+
+    served = await ur.serve_tools(MagicMock(), MagicMock(), lambda _m: None, "v1", max_age_s=60)
+
+    assert served.tool_rows == [{"tool_name": "Read", "call_count": 3, "success_count": 2}]
+    assert ur.serve_cohort.call_args.kwargs["tools"] is True
+
+    monkeypatch.setattr(ur, "serve_cohort", AsyncMock(return_value=None))
+    assert await ur.serve_tools(MagicMock(), MagicMock(), lambda _m: None, "v1", max_age_s=60) is None
+
+
+def test_assemble_tools_gives_the_models_in_a_fixed_order():
+    cohort = ur.Cohort()
+    cohort.tools.models = {"model-b": [1, 5], "model-a": [1, 5], "model-c": [2, 9]}
+
+    names = [r["model_name"] for r in ur.assemble_tools(cohort).model_rows]
+
+    assert names == sorted(names)
+
+
+@pytest.mark.asyncio
+async def test_a_tools_read_with_more_resumed_sessions_than_the_limit_is_refused(monkeypatch):
+    monkeypatch.setattr(ur, "MAX_RESUMED", 1)
+    conn = ToolsServeConn(day_states(ur.SHAPE_TOOLS), resumed=["s1", "s2"])
+
+    assert await serve_tools_cohort(conn) is None  # too many to add live: the live statements answer
+    assert conn.read == []  # refused before the day tables were read

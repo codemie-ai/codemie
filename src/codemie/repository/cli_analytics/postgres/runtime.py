@@ -30,7 +30,7 @@ import time
 from collections.abc import Callable
 
 from codemie.repository.cli_analytics.ports import RatesFor, ScheduledJob
-from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
+from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine, job_scope
 from codemie.repository.cli_analytics.postgres.maintenance import PartitionMaintainer, RetentionPolicy
 from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
 from codemie.repository.cli_analytics.postgres.migrations import run_migrations
@@ -158,7 +158,7 @@ class PostgresAnalyticsRuntime:
             return
         from codemie.repository.cli_analytics.postgres import user_rollup  # the module imports the reader
 
-        async with self._engine.acquire() as conn:
+        async with self._engine.acquire(caller="job") as conn:
             await user_rollup.confirm_recent(conn, version=version)
 
     async def refresh_user_rollup(self) -> None:
@@ -182,16 +182,17 @@ class PostgresAnalyticsRuntime:
         async with self._engine.advisory_lock("user-rollup") as conn:
             if conn is None:
                 return
-            await user_rollup.refresh(
-                reader,
-                conn,
-                days=self._settings.user_rollup_days,
-                run_seconds=self._settings.user_rollup_run_s,
-                min_rebuild_s=self._settings.user_rollup_min_rebuild_s,
-                rate_of=rate_of,
-                version=version,
-                full_scan=full_scan,
-            )
+            with job_scope():  # the builder's own acquires count as the job's
+                await user_rollup.refresh(
+                    reader,
+                    conn,
+                    days=self._settings.user_rollup_days,
+                    run_seconds=self._settings.user_rollup_run_s,
+                    min_rebuild_s=self._settings.user_rollup_min_rebuild_s,
+                    rate_of=rate_of,
+                    version=version,
+                    full_scan=full_scan,
+                )
             if full_scan:
                 self._last_user_rollup_scan = now
 

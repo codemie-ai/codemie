@@ -378,8 +378,8 @@ async def test_project_unattributed_for_project_admin_selects_nothing():
 
 @pytest.mark.asyncio
 async def test_session_detail_denied_is_404_before_any_payload_read(storage):
-    storage.reader.authorize_session = AsyncMock(return_value=False)
     handler = MagicMock()
+    handler.authorize_session = AsyncMock(return_value=False)
     handler.get_session_detail = AsyncMock(return_value=({"trace_id": "s1", "start_time": ""}, [], "yaml"))
     with (
         patch.object(router_module, "_ensure_enabled", return_value=None),
@@ -389,7 +389,7 @@ async def test_session_detail_denied_is_404_before_any_payload_read(storage):
         await router_module.get_session_detail(user=_viewer(is_admin=False, admin_projects=["mine"]), trace_id="s1")
 
     assert denied.value.code == 404
-    scope = storage.reader.authorize_session.await_args.args[1]
+    scope = handler.authorize_session.await_args.args[1]
     assert (scope.mode, scope.viewer_email, scope.unrestricted, scope.admin_projects) == (
         "detail",
         "a@x.com",
@@ -589,7 +589,7 @@ async def test_filtered_money_routes_metadata_carry_the_handler_pricing(route, h
     with (
         patch.object(router_module, "_ensure_enabled", return_value=None),
         patch.object(router_module, "_handler", return_value=handler),
-        patch.object(router_module, "_respond", side_effect=lambda payload, _: JSONResponse(payload)),
+        patch.object(router_module, "_respond", side_effect=lambda payload, _, exclude=None: JSONResponse(payload)),
         patch.object(router_module.FilterParams, "resolve", fake_resolve),
     ):
         response = await getattr(router_module, route)(user=_VIEWER, filters=_filter_params(), **kwargs)
@@ -602,6 +602,7 @@ async def test_filtered_money_routes_metadata_carry_the_handler_pricing(route, h
 @pytest.mark.asyncio
 async def test_session_detail_metadata_carries_the_handler_pricing(storage):
     handler = MagicMock()
+    handler.authorize_session = AsyncMock(return_value=True)
     handler.get_session_detail = AsyncMock(
         return_value=({"start_time": "2026-09-23T00:00:00Z"}, ["", "mystery-model"], "litellm")
     )
@@ -609,7 +610,7 @@ async def test_session_detail_metadata_carries_the_handler_pricing(storage):
     with (
         patch.object(router_module, "_ensure_enabled", return_value=None),
         patch.object(router_module, "_handler", return_value=handler),
-        patch.object(router_module, "_respond", side_effect=lambda payload, _: JSONResponse(payload)),
+        patch.object(router_module, "_respond", side_effect=lambda payload, _, exclude=None: JSONResponse(payload)),
     ):
         response = await router_module.get_session_detail(user=_viewer(is_admin=True, admin_projects=[]), trace_id="t1")
 
@@ -727,10 +728,11 @@ async def test_get_projects_forwards_include_repositories_to_the_handler(flag):
             page=0,
             per_page=10,
             search="x",
+            include_branches=True,
             include_repositories=flag,
         )
 
-    assert handler.get_projects.await_args.args[1:] == (0, 10, "x", flag)
+    assert handler.get_projects.await_args.args[1:] == (0, 10, "x", True, flag)
 
 
 def test_include_repositories_defaults_to_true_on_the_projects_route():

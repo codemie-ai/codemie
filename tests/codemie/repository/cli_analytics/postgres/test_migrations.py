@@ -96,7 +96,7 @@ def test_alembic_upgrades_one_revision_at_a_time_ending_at_the_head_on_that_conn
 
     targets = [call.args[1] for call in upgrade.call_args_list]
     assert len(targets) > 3 and len(set(targets)) == len(targets)
-    assert targets[0] == "a1c1a0000001" and targets[-1] == "a1c1a0000019"  # the first and the head
+    assert targets[0] == "a1c1a0000001" and targets[-1] == "a1c1a0000022"  # the first and the head
     assert targets.index("a1c1a0000010") < targets.index("a1c1a0000011")  # main's publication contract first
     cfg = upgrade.call_args.args[0]
     assert cfg.attributes == {"connection": connection, "schema": "codemie_analytics"}
@@ -626,7 +626,7 @@ def test_the_activity_facts_are_one_revision_after_the_publication_contract_with
         module = _load_revision(path.name)
         revisions[module.revision] = module.down_revision
     heads = set(revisions) - {down for down in revisions.values() if down}
-    assert heads == {"a1c1a0000019"}  # the zero-lines reset revision follows the sub-agent listing
+    assert heads == {"a1c1a0000022"}  # the ranking and Efficiency rollups follow the zero-lines reset
 
 
 def test_the_activity_columns_are_nullable_without_default_under_a_bounded_lock_wait() -> None:
@@ -751,7 +751,7 @@ def test_the_sort_keys_are_one_revision_after_the_activity_facts_with_one_head()
         module = _load_revision(path.name)
         revisions[module.revision] = module.down_revision
     heads = set(revisions) - {down for down in revisions.values() if down}
-    assert heads == {"a1c1a0000019"}
+    assert heads == {"a1c1a0000022"}
 
 
 def test_the_column_step_adds_nullable_columns_without_default_and_a_disabled_control_row() -> None:
@@ -845,3 +845,28 @@ def test_the_framework_window_and_the_stamp_indexes_are_built_the_unused_key_ind
     # the unstamped sessions (set S) are read from the stamp alone: IS NULL, and a version other than the current one
     assert create["session_dims_rates_version"].endswith("ON session_dims (rates_version)")
     assert not hasattr(SORT_KEYS, "CREATE_CTX_KEY") and not hasattr(SORT_KEYS, "CREATE_COST_KEY")
+
+
+RANKING_AND_EFFICIENCY = _load_revision("a1c1a0000022_cli_analytics_ranking_and_efficiency_rollup.py")
+
+
+def _normalised(statements) -> list[str]:
+    return [" ".join(s.split()) for s in statements]
+
+
+def test_the_rollup_revision_creates_the_tools_and_models_tables_with_their_keys() -> None:
+    created = " ".join(_normalised(RANKING_AND_EFFICIENCY.CREATE_STATEMENTS))
+
+    assert "CREATE TABLE IF NOT EXISTS user_day_tools_rollup" in created
+    assert "PRIMARY KEY (start_day, sub_class, origin_class, kind, name)" in created
+    assert "calls bigint NOT NULL" in created and "successes bigint NOT NULL" in created
+    assert "CREATE TABLE IF NOT EXISTS user_day_tools_models" in created
+    assert "PRIMARY KEY (start_day, sub_class, origin_class, model)" in created
+    assert "total_tokens bigint NOT NULL" in created
+
+
+def test_the_rollup_revision_downgrade_drops_the_tools_and_models_tables() -> None:
+    dropped = _normalised(RANKING_AND_EFFICIENCY.DOWNGRADE_STATEMENTS)
+
+    assert "DROP TABLE IF EXISTS user_day_tools_rollup" in dropped
+    assert "DROP TABLE IF EXISTS user_day_tools_models" in dropped

@@ -40,7 +40,7 @@ from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettin
 _LOCAL_PG_URL = os.environ.get("TEST_LOCAL_PG_URL", "")
 pytestmark = pytest.mark.skipif(not _LOCAL_PG_URL, reason="TEST_LOCAL_PG_URL is not set: no database to run against")
 
-_HEAD = "a1c1a0000019"  # the head the upgrade reaches; the objects under test are those of a1c1a0000013
+_HEAD = "a1c1a0000022"  # the head the upgrade reaches; the objects under test are those of a1c1a0000013
 _BEFORE = "a1c1a0000012"
 _INDEX = "session_dims_model_groups_pending"
 _CONTROL = ("model_groups_enabled", "model_groups_operator_disabled")

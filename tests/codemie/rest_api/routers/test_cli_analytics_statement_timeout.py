@@ -34,9 +34,9 @@ _PATHS = {
     "get_repositories": "/v1/analytics/cli-analytics/repositories",
     "get_efficiency": "/v1/analytics/cli-analytics/efficiency",
     "get_tools": "/v1/analytics/cli-analytics/tools",
+    "get_projects": "/v1/analytics/cli-analytics/projects",
     "get_activity": "/v1/analytics/cli-analytics/activity",
     "get_branches": "/v1/analytics/cli-analytics/branches?repository=r",
-    "get_projects": "/v1/analytics/cli-analytics/projects",
 }
 
 

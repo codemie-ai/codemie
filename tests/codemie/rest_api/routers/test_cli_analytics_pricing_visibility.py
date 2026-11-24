@@ -199,6 +199,7 @@ class _Env:
         self.handler.get_repositories = AsyncMock(side_effect=lambda *a, **k: (self.data["repositories"], self.pricer))
         self.handler.get_projects = AsyncMock(side_effect=lambda *a, **k: (self.data["projects"], self.pricer))
         self.handler.get_sessions = AsyncMock(side_effect=lambda *a, **k: (self.data["sessions"], self.pricer, None))
+        self.handler.authorize_session = AsyncMock(return_value=True)
         self.handler.get_session_detail = AsyncMock(
             side_effect=lambda *a, **k: (copy.deepcopy(self.data["detail"]), [NAME], "yaml")
         )

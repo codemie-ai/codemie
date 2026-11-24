@@ -66,6 +66,7 @@ def env():
         ]
 
     repo.bounded = bounded
+    repo.rollup_repository_ranking = AsyncMock(return_value=None)  # the rollup does not answer: the live statements
     repo.get_cost_models = AsyncMock(return_value=[])
     repo.get_repository_ranking = AsyncMock(side_effect=ranking)
     repo.get_repository_facts = AsyncMock(return_value=[])

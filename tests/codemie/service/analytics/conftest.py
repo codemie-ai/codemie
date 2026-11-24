@@ -36,6 +36,21 @@ def _empty_dashboard_caches():
     reset_dashboard_cache()
 
 
+@pytest.fixture(autouse=True)
+def _live_rankings(monkeypatch):
+    """The tests of the Repositories, Projects and Tools & Models tabs pin the live statements (a mock reader has no
+    rollup to await): the ranking and Tools rollups answer None. `test_cli_analytics_ranking_rollup.py` and
+    `test_cli_analytics_tools_rollup.py` override this fixture; the live `test_live_ranking_rollup.py` and
+    `test_live_tools_rollup.py` run outside this directory."""
+    from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
+
+    async def refused(self, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr(LocalAnalyticsHandler, "_rollup_ranking_read", refused)
+    monkeypatch.setattr(LocalAnalyticsHandler, "_rollup_tools", refused)
+
+
 @asynccontextmanager
 async def _fake_session():
     yield AsyncMock()
