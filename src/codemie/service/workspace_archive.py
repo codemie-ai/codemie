@@ -112,7 +112,6 @@ def _zip_workspace_files(
     left out and listed in ``_SKIPPED_FILES.txt``.
     """
     workspace = service.get_workspace(workspace_id, user)
-    _ensure_conversation_readable(workspace, user)
     files = service._workspace_source_files(workspace)
     if not files:
         progress.outcome = "empty"
@@ -154,7 +153,7 @@ def _zip_workspace_files(
     return WorkspaceArchive(buffer.getvalue(), _archive_filename(workspace), len(names), skipped, total)
 
 
-def _ensure_conversation_readable(workspace: AgentWorkspace, user: User) -> None:
+def ensure_conversation_readable(workspace: AgentWorkspace, user: User) -> None:
     """Conversation uploads are archived too, so the caller must be able to read that conversation.
 
     ``create_workspace`` accepts any conversation id; without this a caller could archive another user's uploads.
@@ -162,7 +161,7 @@ def _ensure_conversation_readable(workspace: AgentWorkspace, user: User) -> None
     """
     from codemie.rest_api.models.conversation import Conversation  # deferred: models import the service layer
 
-    conversation = Conversation.find_by_id(workspace.conversation_id)
+    conversation = Conversation.find_owner_ref(workspace.conversation_id)
     if conversation is not None and not Ability(user).can(Action.READ, conversation):
         raise ValidationException(f"Workspace '{workspace.id}' not found")
 

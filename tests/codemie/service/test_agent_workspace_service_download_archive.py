@@ -63,7 +63,7 @@ def service() -> AgentWorkspaceService:
 @pytest.fixture(autouse=True)
 def readable_conversation():
     with (
-        patch("codemie.rest_api.models.conversation.Conversation.find_by_id", return_value=MagicMock()),
+        patch("codemie.rest_api.models.conversation.Conversation.find_owner_ref", return_value=MagicMock()),
         patch("codemie.service.workspace_archive.Ability") as ability,
     ):
         ability.return_value.can.return_value = True

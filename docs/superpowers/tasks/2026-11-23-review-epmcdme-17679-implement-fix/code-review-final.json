@@ -1,0 +1,86 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved the CR-001 fix-up (347366ff27)"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "CR-001 fix-now per user"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved the CR-001 fix-up (347366ff27)"
+    }
+  ],
+  "reviewed_head": "347366ff27f23f42fd638b888d60f392f138ecf5",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No spec artifact existed, so the ticket AC were not audited by the acceptance lens (confidence low); edge-case, blind, verification-gap and standards ran clean of blocking issues, and the gate in get_workspace/get_workspace_by_conversation was verified against ownership-based Conversation READ and the mocked-service test callers. 1 advisory (per-call conversation load), 0 deferred, 9 dismissed as noise (see code-review-dismissed.local.md).",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/service/agent_workspace_service.py",
+      "line": 305,
+      "title": "Conversation gate loads full history per call",
+      "problem": "get_workspace now calls ensure_conversation_readable, which runs Conversation.find_by_id (loads and materializes workflow history) and an Ability check on every call. Per-file operations and tool-call loops invoke get_workspace repeatedly, so each repeats the full conversation load although the ownership check needs only the conversation's user_id.",
+      "impact": "Added latency only, no behavior consequence; trigger is long or workflow-materialized conversations combined with many workspace operations or script tool-call loops. Read from the code: no caching or per-request reuse exists.",
+      "recommendation": "Fetch only the conversation owner (or cache the readability result per workspace within a request) instead of materializing the full history on each get_workspace call.",
+      "status": "not-rechecked",
+      "disposition": {
+        "rationale": "User chose fix-now: add Conversation.find_owner_ref and use it in ensure_conversation_readable",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "2 subjects in the range both match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "no Rules or Constraints in code-quality.md broken: new test module has the Apache header, from __future__ annotations and typed signatures; the gate helper is promoted to a public name inside its owning module"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "adjudicated against security-patterns.md: READ-access gate on workspace-by-id and by-conversation lookups fails as workspace-not-found without revealing the conversation; no concrete security issue found"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "No spec artifact existed, so the ticket AC were not audited by the acceptance lens (confidence low); edge-case, blind, verification-gap and standards ran clean of blocking issues, and the gate in get_workspace/get_workspace_by_conversation was verified against ownership-based Conversation READ and the mocked-service test callers. 1 advisory (per-call conversation load), 0 deferred, 9 dismissed as noise (see code-review-dismissed.local.md).",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

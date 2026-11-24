@@ -75,6 +75,15 @@ class _FakeRepository:
         return MagicMock()
 
 
+@pytest.fixture(autouse=True)
+def no_conversation() -> Iterator[None]:
+    with (
+        patch("codemie.rest_api.models.conversation.Conversation.find_owner_ref", return_value=None),
+        patch("codemie.rest_api.models.conversation.Conversation.find_by_id", return_value=None),
+    ):
+        yield
+
+
 @pytest.fixture
 def repository() -> _FakeRepository:
     return _FakeRepository()

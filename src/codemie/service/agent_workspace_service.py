@@ -57,7 +57,7 @@ from codemie.service.script_tool_calls.handler import build_tool_call_handlers
 from codemie.service.script_tool_calls.observer import ScriptRunObserver
 from codemie.service.script_tool_calls.outcome_metrics import ScriptCallMetricsListener
 from codemie.service.workspace_script_bridge import resolve_tool_calling_settings
-from codemie.service.workspace_archive import WorkspaceArchive, build_workspace_archive
+from codemie.service.workspace_archive import WorkspaceArchive, build_workspace_archive, ensure_conversation_readable
 from codemie_tools.base.artifact_publishing import PublishContext
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.base.execution_timing import SandboxRunReport, report_sandbox_run
@@ -306,12 +306,14 @@ class AgentWorkspaceService:
         workspace = self.repository.get_by_id_for_user(workspace_id, user.id)
         if not workspace:
             raise ValidationException(f"Workspace '{workspace_id}' not found")
+        ensure_conversation_readable(workspace, user)
         return workspace
 
     def get_workspace_by_conversation(self, conversation_id: str, user: User) -> AgentWorkspaceResponse:
         workspace = self.repository.get_by_conversation_for_user(conversation_id, user.id)
         if not workspace:
             raise ValidationException(f"Workspace for conversation '{conversation_id}' not found")
+        ensure_conversation_readable(workspace, user)
         return AgentWorkspaceResponse.from_model(workspace)
 
     def register_generated_files(

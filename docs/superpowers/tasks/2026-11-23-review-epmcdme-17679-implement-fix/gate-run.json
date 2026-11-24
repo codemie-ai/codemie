@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-17679-fix",
+  "head": "347366ff27f23f42fd638b888d60f392f138ecf5",
+  "runner": "poetry",
+  "started_at": "2026-11-23T11:08:34Z",
+  "completed_at": "2026-11-23T11:13:59Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": null,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "duration not captured (timer unsupported in shell); no working-tree changes after auto-fix"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6928,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1394,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 23704,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "no leaks found"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 258694,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "20 failed, 38167 passed; 7 pdf export tests fail for missing libcairo (environment); 13 cli_analytics postgres tests fail with LocalAnalyticsFilter missing 'scope' kwarg; none in changed files' tests"
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1004,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "pre-push hook (always-on); hook invokes python3 fallback since 'python' is absent"
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "pre-push hook, opt-in via CODEMIE_PREPUSH_ENABLED=true; needs Sonar config/credentials; not run"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": null,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "MR-only compliance gate needing docker stack and fixtures; not opening an MR here"
+    },
+    {
+      "id": "pre-push-pytest",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/ --cov",
+      "exit_code": null,
+      "notes": "opt-in pre-push; covered by unit gate"
+    }
+  ],
+  "failures": {
+    "unit": "    warnings.warn(message, stacklevel=1)\n\ntests/codemie/rest_api/routers/test_marketplace_management_router.py::TestApproveCriticalGate::test_approve_blocked_when_critical_finding_present\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/marketplace_management.py:1470: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise critical_gate_blocked_error(\n\ntests/codemie/rest_api/routers/test_permission.py::test_create_permission_unprocessable_entity\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/permission.py:63: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise_unprocessable_entity(action=\"create\", resource=\"permission\", exc=e)\n\ntests/codemie/rest_api/routers/test_permission.py::test_delete_permission_unprocessable_entity\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/permission.py:79: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise_unprocessable_entity(action=\"delete\", resource=\"permission\", exc=e)\n\ntests/codemie/rest_api/routers/test_project_settings.py::test_create_git_integrity_error_maps_to_generic_422\n  /Users/bohdan_maliar/Projects/codemie-dev/codemie/src/codemie/rest_api/routers/project_settings.py:130: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise _map_integrity_error(request, e) from e\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_hook_only_session_detail_matches_the_session_list\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_listing_gate_drops_start_only_and_sub_agent_sessions\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_late_parent_start_flags_the_already_rolled_up_child_as_a_sub_agent\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_aggregates_keep_claude_session_results_and_add_the_session_without_usage\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_model_breakdown_merges_dotted_and_dashed_claude_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_claude_code_subagent_start_does_not_hide_the_session_it_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_subagent_with_cost_rows_of_its_own_stays_listed\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_hidden_subagent_is_dropped_from_every_session_aggregate_and_still_opens_by_id\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_cost_rollup.py::test_rollup_cost_gives_what_the_live_cost_statements_give\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_cost_rollup.py::test_a_window_that_starts_inside_a_day_reads_that_day_from_the_sessions_live\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_stop_alone_is_no_agent_call_so_its_span_shows_an_empty_row\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_overview_rollup.py::test_the_rollup_serves_the_overview_the_live_statements_give_with_the_model_ties\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_user_rollup.py::test_the_rollup_serves_what_the_live_statements_give_for_the_seeded_users\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_concise_mode_explicit_false_omits_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_full_mode_keeps_thought_content_end_to_end[pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_keeps_empty_pair_whose_thoughts_were_never_exportable[&include_tool_outputs=true-pdf]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_passes_format_specific_pandoc_args[pdf-expected_args0-absent_args0]\nFAILED tests/codemie/rest_api/routers/test_conversation_pagination.py::test_export_list_table_link_content_survives_concise_filtering_end_to_end[pdf]\n= 20 failed, 38167 passed, 666 skipped, 6 xfailed, 652 warnings in 255.28s (0:04:15) =\n/Users/bohdan_maliar/Projects/codemie-dev/codemie/.venv/lib/python3.12/site-packages/pytest_benchmark/logger.py:44: PytestBenchmarkWarning: Benchmarks are automatically disabled because xdist plugin is active.Benchmarks cannot be performed reliably in a parallelized environment.\n  warner(PytestBenchmarkWarning(text))\n/Users/bohdan_maliar/Projects/codemie-dev/codemie/.venv/lib/python3.12/site-packages/pytest_benchmark/logger.py:44: PytestBenchmarkWarning: Benchmarks are automatically disabled because xdist plugin is active.Benchmarks cannot be performed reliably in a parallelized environment.\n  warner(PytestBenchmarkWarning(text))\n/Users/bohdan_maliar/Projects/codemie-dev/codemie/.venv/lib/python3.12/site-packages/pytest_benchmark/logger.py:44: PytestBenchmarkWarning: Benchmarks are automatically disabled because xdist plugin is active.Benchmarks cannot be performed reliably in a parallelized environment.\n  warner(PytestBenchmarkWarning(text))\n/Users/bohdan_maliar/Projects/codemie-dev/codemie/.venv/lib/python3.12/site-packages/pytest_benchmark/logger.py:44: PytestBenchmarkWarning: Benchmarks are automatically disabled because xdist plugin is active.Benchmarks cannot be performed reliably in a parallelized environment.\n  warner(PytestBenchmarkWarning(text))\nmake: *** [test] Error 1"
+  }
+}

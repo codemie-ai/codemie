@@ -389,6 +389,49 @@ def test_conversation_exists_returns_false_when_not_found():
     assert result is False
 
 
+def _session_returning(first_row):
+    mock_session = MagicMock()
+    mock_session.__enter__ = MagicMock(return_value=mock_session)
+    mock_session.__exit__ = MagicMock(return_value=False)
+    mock_session.exec.return_value.first.return_value = first_row
+    return mock_session
+
+
+def test_find_owner_ref_returns_bare_conversation_when_found():
+    with patch("codemie.rest_api.models.conversation.Session", return_value=_session_returning(("conv-1", "owner-1"))):
+        result = Conversation.find_owner_ref("conv-1")
+
+    assert result.id == "conv-1"
+    assert result.user_id == "owner-1"
+    assert result.history == []
+
+
+def test_find_owner_ref_returns_none_when_missing():
+    with patch("codemie.rest_api.models.conversation.Session", return_value=_session_returning(None)):
+        assert Conversation.find_owner_ref("missing") is None
+
+
+def test_find_owner_ref_does_not_materialize_history():
+    with (
+        patch("codemie.rest_api.models.conversation.Session", return_value=_session_returning(("conv-1", "owner-1"))),
+        patch("codemie.service.conversation.history_materializer.materialize_workflow_conversation") as materialize,
+    ):
+        Conversation.find_owner_ref("conv-1")
+
+    materialize.assert_not_called()
+
+
+def test_find_owner_ref_result_is_readable_only_by_owner():
+    from codemie.core.ability import Action, Ability
+    from codemie.rest_api.security.user import User
+
+    with patch("codemie.rest_api.models.conversation.Session", return_value=_session_returning(("conv-1", "owner-1"))):
+        ref = Conversation.find_owner_ref("conv-1")
+
+    assert Ability(User(id="owner-1", username="o", name="O")).can(Action.READ, ref) is True
+    assert Ability(User(id="other", username="x", name="X")).can(Action.READ, ref) is False
+
+
 def test_get_existing_ids_returns_matching_set():
     mock_session = MagicMock()
     mock_session.__enter__ = MagicMock(return_value=mock_session)

@@ -683,6 +683,14 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
         return conversation
 
     @classmethod
+    def find_owner_ref(cls, id_: str) -> Conversation | None:
+        with Session(cls.get_engine()) as session:
+            row = session.exec(select(cls.id, cls.user_id).where(cls.id == id_)).first()
+        if row is None:
+            return None
+        return cls(id=row[0], conversation_id=row[0], user_id=row[1])
+
+    @classmethod
     def exists(cls, id_: str) -> bool:
         with Session(cls.get_engine()) as session:
             statement = select(cls.id).where(cls.id == id_)
