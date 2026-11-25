@@ -29,7 +29,7 @@ import logging
 import uuid
 from collections import Counter
 from datetime import datetime
-from typing import Annotated, Any, Callable, Coroutine, Optional
+from typing import Annotated, Any, Callable, Coroutine
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -282,7 +282,7 @@ def _validate_reason(reason: str, field: str = "reason") -> str:
 
 
 IdempotencyKey = Annotated[
-    Optional[str],
+    str | None,
     Header(
         alias="Idempotency-Key",
         description=(
@@ -363,7 +363,7 @@ def _require_actor(user: User) -> str:
         raise HTTPException(status_code=401, detail=str(exc))
 
 
-def _last_run_meta(kind: EntityKind) -> tuple[Optional[str], bool]:
+def _last_run_meta(kind: EntityKind) -> tuple[str | None, bool]:
     """Read the newest MarketplaceAuditRun timestamp for *kind* — if any."""
     try:
         with get_session() as session:
@@ -439,7 +439,7 @@ def _blank_means_no_filter(value: Any) -> Any:
 # builds the field from the bare annotation and the BeforeValidator never
 # runs, so `?bucket=` 422s — verified, not assumed.
 BucketFilter = Annotated[
-    Optional[Bucket],
+    Bucket | None,
     BeforeValidator(_blank_means_no_filter),
     Query(
         description=("Surface bucket to list. Send ALL to clear the filter and list every bucket, VERIFIED included."),
@@ -458,7 +458,7 @@ BucketFilter = Annotated[
 
 
 ExpectedVersion = Annotated[
-    Optional[int],
+    int | None,
     Field(
         ge=0,
         description=(
@@ -505,7 +505,7 @@ AllowedLlmModel = Annotated[
 
 
 class AssessIn(BaseModel):
-    llm_model: Optional[AllowedLlmModel] = None
+    llm_model: AllowedLlmModel | None = None
 
 
 class ConfigUpdate(BaseModel):
@@ -516,9 +516,9 @@ class ConfigUpdate(BaseModel):
     and integer thresholds cannot be zeroed out via the API (CR-002).
     """
 
-    gates: Optional[GatesConfig] = None
-    similarity: Optional[SimilarityConfig] = None
-    usage_tiers: Optional[UsageTiersConfig] = None
+    gates: GatesConfig | None = None
+    similarity: SimilarityConfig | None = None
+    usage_tiers: UsageTiersConfig | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -572,7 +572,7 @@ def _gate_hits(per_rule_hits: dict) -> dict:
     }
 
 
-def _bucket_counts(result, run_id: Optional[str]) -> dict[str, int]:
+def _bucket_counts(result, run_id: str | None) -> dict[str, int]:
     """Bucket rollup for the Overview tiles and tab badges.
 
     `result.bucket_distribution` is a stale audit-run snapshot (unpublished
@@ -826,14 +826,14 @@ def _facets_payload(kind: EntityKind) -> dict[str, Any]:
 async def get_cleanup(
     kind: EntityKind = Depends(resolve_kind),
     bucket: BucketFilter = Bucket.DELETE,
-    reason: Optional[CleanupReason] = Query(default=None),
-    tier: Optional[UsageTier] = Query(default=None),
-    verdict: Optional[VerdictKind] = Query(default=None),
-    mcp: Optional[str] = Query(default=None, max_length=100),
-    category: Optional[str] = Query(default=None, max_length=100),
-    cluster_id: Optional[int] = Query(default=None),
-    q: Optional[str] = Query(default=None, max_length=200),
-    rule: Optional[GateRule] = Query(
+    reason: CleanupReason | None = Query(default=None),
+    tier: UsageTier | None = Query(default=None),
+    verdict: VerdictKind | None = Query(default=None),
+    mcp: str | None = Query(default=None, max_length=100),
+    category: str | None = Query(default=None, max_length=100),
+    cluster_id: int | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=200),
+    rule: GateRule | None = Query(
         default=None,
         description=(
             "Quality-check id from GET /overview's gate_hits.per_rule — returns "
@@ -881,16 +881,16 @@ async def get_cleanup(
 
 def _cleanup_payload(
     kind: EntityKind,
-    bucket: Optional[Bucket],
-    reason: Optional[CleanupReason],
-    tier: Optional[UsageTier],
-    verdict: Optional[VerdictKind],
-    mcp: Optional[str],
-    category: Optional[str],
-    cluster_id: Optional[int],
-    q: Optional[str],
-    rule: Optional[GateRule],
-    order_by: Optional[CleanupOrderBy],
+    bucket: Bucket | None,
+    reason: CleanupReason | None,
+    tier: UsageTier | None,
+    verdict: VerdictKind | None,
+    mcp: str | None,
+    category: str | None,
+    cluster_id: int | None,
+    q: str | None,
+    rule: GateRule | None,
+    order_by: CleanupOrderBy | None,
     page: int,
     page_size: int,
 ) -> dict[str, Any]:
@@ -929,23 +929,32 @@ def _cleanup_payload(
         rows = audit_reads.cleanup_page(session, run_id, page=page, page_size=page_size, order_by=order_by, **filters)
         top_similar = audit_reads.top_similarity_for(session, run_id, [row["id"] for row in rows])
 
-    items = [_cleanup_row(row, top_similar.get(row["id"])) for row in rows]
+    # Same attribution as the Review queue (`_pending_payload`): the latest
+    # submission's submitter wins, the author (`created_by.name`) is the fallback.
+    submissions = _queue_service.latest_submissions([row["id"] for row in rows])
+    items = [
+        _cleanup_row(row, top_similar.get(row["id"]), submissions.get(row["id"], {}).get("submitted_by"))
+        for row in rows
+    ]
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
-def _cleanup_row(row: dict, top_similar: Optional[dict]) -> dict[str, Any]:
+def _cleanup_row(row: dict, top_similar: dict | None, submitted_by: str | None = None) -> dict[str, Any]:
     """One `mm_audit_verdict` row as the Cleanup table reads it.
 
     Every field the table renders is flat on the row, and each is emitted
     unconditionally -- as an explicit null when there is no value -- so a missing
     key never masquerades as a missing value.
+
+    `creator` follows the Review queue's attribution: the latest submission's
+    submitter, else the author's display name (`created_by.name`), else null.
     """
     verdict_kind = row["verdict_kind"]
     cleanup_reason = row["cleanup_reason"]
     return {
         "id": row["id"],
         "name": row["name"],
-        "creator": row["creator"],
+        "creator": submitted_by or row["creator"],
         "categories": row["categories"] or [],
         "unique_users_count": row["unique_users_count"],
         "unique_likes_count": row["unique_likes_count"],
@@ -1090,7 +1099,7 @@ async def list_pending(
     return await run_in_threadpool(_pending_payload, kind, page, page_size, category, gate_result, order_by)
 
 
-def _submitted_by(assistant: Any) -> Optional[str]:
+def _submitted_by(assistant: Any) -> str | None:
     """Display name of whoever owns a pending row.
 
     `Assistant.created_by` is a `CreatedByUser`, not a string; handing the
@@ -1101,7 +1110,7 @@ def _submitted_by(assistant: Any) -> Optional[str]:
     return creator.name if creator else None
 
 
-def _submitted_at(assistant: Any) -> Optional[float]:
+def _submitted_at(assistant: Any) -> float | None:
     """POSIX timestamp for "when did this land in the queue".
 
     `marketplace_submitted_at` (migration `s1u2b3m4t5d6`) is the real answer and
@@ -1268,12 +1277,12 @@ def _pending_payload(
 async def list_marketplace_assistants(
     kind: EntityKind = Depends(resolve_kind),
     status: Annotated[
-        Optional[MarketplaceStatusFilter],
+        MarketplaceStatusFilter | None,
         BeforeValidator(_blank_means_no_filter),
         Query(),
     ] = None,
     page: int = Query(default=1, ge=1),
-    page_size: Optional[int] = Query(default=None, ge=1, le=100),
+    page_size: int | None = Query(default=None, ge=1, le=100),
 ) -> dict[str, Any]:
     """List of marketplace assistants, filterable by review status.
 
@@ -1334,7 +1343,7 @@ def _marketplace_assistants_payload(
     kind: EntityKind,
     db_statuses: list[str],
     page: int,
-    page_size: Optional[int],
+    page_size: int | None,
 ) -> dict[str, Any]:
     """Blocking body of GET /marketplace-assistants. `page_size=None` returns all rows."""
     if kind != EntityKind.ASSISTANT:
@@ -1784,7 +1793,7 @@ class ReviewPromptVariable(BaseModel):
     """
 
     key: str
-    description: Optional[str] = None
+    description: str | None = None
     default_value: str = ""
     is_sensitive: bool = False
 
@@ -1835,35 +1844,35 @@ class EntityReviewDetail(BaseModel):
     logs who read which prompt — a separately auditable call, per 8.1.
     """
 
-    id: Optional[str] = None
+    id: str | None = None
     name: str
     description: str
     categories: list[str] = []
-    icon_url: Optional[str] = None
+    icon_url: str | None = None
     conversation_starters: list[str] = []
 
     # --- submitter and timestamps -------------------------------------------
-    submitted_by: Optional[str] = None
-    creator: Optional[str] = None
-    project: Optional[str] = None
-    created_date: Optional[datetime] = None
-    updated_date: Optional[datetime] = None
-    marketplace_submitted_at: Optional[datetime] = None
+    submitted_by: str | None = None
+    creator: str | None = None
+    project: str | None = None
+    created_date: datetime | None = None
+    updated_date: datetime | None = None
+    marketplace_submitted_at: datetime | None = None
 
     # --- review state --------------------------------------------------------
-    marketplace_status: Optional[str] = None
+    marketplace_status: str | None = None
     marketplace_version: int = 0
-    is_global: Optional[bool] = None
+    is_global: bool | None = None
     is_verified: bool = False
-    marketplace_decided_at: Optional[datetime] = None
-    marketplace_decided_by: Optional[str] = None
-    marketplace_decision_reason: Optional[str] = None
+    marketplace_decided_at: datetime | None = None
+    marketplace_decided_by: str | None = None
+    marketplace_decision_reason: str | None = None
 
     # --- adoption ------------------------------------------------------------
-    unique_users_count: Optional[int] = None
-    unique_likes_count: Optional[int] = None
-    unique_dislikes_count: Optional[int] = None
-    clone_count: Optional[int] = None
+    unique_users_count: int | None = None
+    unique_likes_count: int | None = None
+    unique_dislikes_count: int | None = None
+    clone_count: int | None = None
 
     # --- capability, by name and count only ----------------------------------
     toolkit_names: list[str] = []
@@ -1881,31 +1890,31 @@ class EntityReviewDetail(BaseModel):
     gate_findings: list[ReviewGateFinding] = []
     critical_count: int = 0
     optional_count: int = 0
-    top_similar: Optional[SimilarPair] = None
+    top_similar: SimilarPair | None = None
 
     # --- override attribution (set only while the current state came from a force-publish) ---
-    override_notice: Optional[str] = None
-    overridden_by: Optional[str] = None
-    bypassed_gate_findings: Optional[list[ReviewGateFinding]] = None
+    override_notice: str | None = None
+    overridden_by: str | None = None
+    bypassed_gate_findings: list[ReviewGateFinding] | None = None
     bypassed_gate_findings_unavailable: bool = False
 
     # --- audit verdict (EPMCDME-15056) ----------------------------------------
-    verdict_kind: Optional[str] = None
-    cleanup_reason: Optional[str] = None
-    bucket: Optional[str] = None
-    decision_detail: Optional[str] = None
+    verdict_kind: str | None = None
+    cleanup_reason: str | None = None
+    bucket: str | None = None
+    decision_detail: str | None = None
 
     # --- audit verdict extended fields (EPMCDME-15352) -----------------------
-    bucket_reason: Optional[str] = None
-    usage_tier: Optional[str] = None
-    polish_check_results: Optional[list[PolishCheckResult]] = None
+    bucket_reason: str | None = None
+    usage_tier: str | None = None
+    polish_check_results: list[PolishCheckResult] | None = None
     similarity_failed: bool = False
 
 
 class EntityPromptResponse(BaseModel):
     """The current system prompt, on its own separately audited endpoint."""
 
-    id: Optional[str] = None
+    id: str | None = None
     name: str
     system_prompt: str
     system_prompt_revisions: int = 0
@@ -1992,7 +2001,7 @@ def _review_override(assistant: Any) -> dict[str, Any]:
     return found
 
 
-def _review_similarity(aid: str) -> Optional[dict[str, Any]]:
+def _review_similarity(aid: str) -> dict[str, Any] | None:
     """The rank-1 similarity row for this entity from the last good run.
 
     Same read the Cleanup table uses, for a single id. Returns None when no run
@@ -2010,7 +2019,7 @@ def _review_similarity(aid: str) -> Optional[dict[str, Any]]:
         return None
 
 
-def _similarity_failed(similar: Optional[dict[str, Any]], verdict_kind: Optional[str]) -> bool:
+def _similarity_failed(similar: dict[str, Any] | None, verdict_kind: str | None) -> bool:
     """Whether the Similarity check of the review detail fails.
 
     Only a structural match at or above the critical threshold can fail it. A vector (ES) match has no

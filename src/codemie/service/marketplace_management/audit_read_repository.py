@@ -259,7 +259,7 @@ def cleanup_page(
             f"""
             SELECT v.assistant_id                AS id,
                    a.name                        AS name,
-                   a.creator                     AS creator,
+                   NULLIF(BTRIM(a.created_by->>'name'), '') AS creator,
                    COALESCE(a.categories, '[]'::jsonb) AS categories,
                    a.unique_users_count          AS unique_users_count,
                    a.unique_likes_count          AS unique_likes_count,

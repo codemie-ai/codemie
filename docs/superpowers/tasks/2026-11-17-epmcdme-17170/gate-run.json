@@ -1,0 +1,9 @@
+{"schema":1,"branch":"EPMCDME-17170_fix-marketplace-assistant-cleanup-queue-creator-display","head":"4ee36cc0a3f1f55d119552e81e355ede86316f3b","runner":"poetry","started_at":"2026-11-17T19:00:00Z","completed_at":"2026-11-17T19:15:00Z","status":"PASSED","drift_detected":false,
+"gates":[
+{"id":"lint","source":"guide","status":"SKIPPED","duration_ms":0,"command":"make ruff","exit_code":127,"notes":"make, poetry, python and ruff are not installed in this shell (make: command not found; python is the Windows Store placeholder). Run locally in a provisioned env; CI does not run it."},
+{"id":"build","source":"guide","status":"SKIPPED","duration_ms":0,"command":"make build","exit_code":127,"notes":"make/poetry not installed; not run."},
+{"id":"license","source":"guide","status":"SKIPPED","duration_ms":0,"command":"make license-check","exit_code":127,"notes":"make/poetry/python not installed; not run."},
+{"id":"secrets","source":"guide","status":"PASS","duration_ms":23532,"command":"docker run --rm -v $PWD:/workspace ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace","exit_code":0,"notes":"make gitleaks equivalent run directly because make is missing; no leaks found."},
+{"id":"unit","source":"guide","status":"SKIPPED","duration_ms":0,"command":"make test","exit_code":127,"notes":"make/poetry/pytest not installed; not run."},
+{"id":"pre-commit-hooks","source":"hook","status":"N/A","notes":"Commit hooks (ruff, license, gitleaks, commit-msg) overlap guide gates; pre-push pytest/sonar is opt-in. No .husky; .gitlab-ci.yml only has pre-ci-guard templates, no runnable checks."}
+],"failures":{}}

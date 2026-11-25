@@ -60,3 +60,34 @@ def test_cleanup_filters_scope_to_assistants_that_are_public_now() -> None:
     assert "a.is_global IS TRUE" in where
     for status in ("WITHDRAWN", "REJECTED", "PENDING_REVIEW", "DRAFT"):
         assert status not in where, f"the cleanup scope must not enumerate {status}"
+
+
+def test_cleanup_page_selects_creator_display_name_not_raw_creator_id() -> None:
+    """EPMCDME-17170: the `creator` column carries `created_by.name`, null when blank, never `a.creator`."""
+    from unittest.mock import MagicMock
+
+    from codemie.service.marketplace_management.audit_read_repository import cleanup_page
+
+    session = MagicMock()
+    session.execute.return_value.mappings.return_value.all.return_value = [{"id": "a1", "creator": "Jane Doe"}]
+
+    rows = cleanup_page(
+        session,
+        "run-1",
+        page=1,
+        page_size=10,
+        bucket=None,
+        reason=None,
+        tier=None,
+        verdict=None,
+        mcp=None,
+        category=None,
+        cluster_id=None,
+        q=None,
+        rule=None,
+    )
+
+    sql = " ".join(str(session.execute.call_args.args[0]).split())
+    assert "NULLIF(BTRIM(a.created_by->>'name'), '') AS creator" in sql
+    assert "a.creator " not in sql
+    assert rows[0]["creator"] == "Jane Doe"

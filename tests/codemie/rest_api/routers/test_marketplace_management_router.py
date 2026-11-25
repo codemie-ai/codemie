@@ -367,6 +367,8 @@ def fake_reads(monkeypatch: pytest.MonkeyPatch):
     def _install(reads: "_FakeReads") -> "_FakeReads":
         monkeypatch.setattr(mm, "audit_reads", reads)
         monkeypatch.setattr(mm, "get_session", _null_session)
+        # Cleanup reads the decision ledger for the submitter (EPMCDME-17170); no DB here.
+        monkeypatch.setattr(mm._queue_service, "latest_submissions", lambda ids: {})  # noqa: ARG005
         return reads
 
     return _install
@@ -462,6 +464,55 @@ class TestGetCleanup:
         item_ids = [item["id"] for item in response.json()["items"]]
         assert "rec-del" in item_ids
         assert "rec-com" not in item_ids
+
+    def test_cleanup_creator_is_the_display_name_or_null_verbatim(self, fake_reads, client: TestClient):
+        """EPMCDME-17170: `creator` is passed through as the name, or an explicit null, with the key set unchanged."""
+        fake_reads(
+            _FakeReads(
+                [
+                    _verdict_row("named", bucket="DELETE", creator="Jane Doe"),
+                    _verdict_row("unknown", bucket="DELETE", creator=None),
+                ]
+            )
+        )
+
+        response = client.get(f"{_BASE}/cleanup")
+
+        assert response.status_code == 200
+        items = {item["id"]: item for item in response.json()["items"]}
+        assert items["named"]["creator"] == "Jane Doe"
+        assert "creator" in items["unknown"] and items["unknown"]["creator"] is None
+        assert set(items["named"]) == set(items["unknown"])
+
+    def test_cleanup_creator_prefers_latest_submitter_like_review_queue(
+        self, fake_reads, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        """EPMCDME-17170: the latest submission's submitter wins; the author is the fallback, incl. a null author."""
+        fake_reads(
+            _FakeReads(
+                [
+                    _verdict_row("handed-over", bucket="DELETE", creator="Original Author"),
+                    _verdict_row("no-author", bucket="DELETE", creator=None),
+                    _verdict_row("no-submission", bucket="DELETE", creator="Jane Doe"),
+                ]
+            )
+        )
+        monkeypatch.setattr(
+            mm._queue_service,
+            "latest_submissions",
+            lambda ids: {  # noqa: ARG005
+                "handed-over": {"submitted_by": "submitter@example.com"},
+                "no-author": {"submitted_by": "other@example.com"},
+            },
+        )
+
+        response = client.get(f"{_BASE}/cleanup")
+
+        assert response.status_code == 200
+        items = {item["id"]: item for item in response.json()["items"]}
+        assert items["handed-over"]["creator"] == "submitter@example.com"
+        assert items["no-author"]["creator"] == "other@example.com"
+        assert items["no-submission"]["creator"] == "Jane Doe"
 
     def test_cleanup_empty_bucket_returns_all(self, fake_reads, client: TestClient):
         """`?bucket=` disables bucket filtering so all records are returned."""

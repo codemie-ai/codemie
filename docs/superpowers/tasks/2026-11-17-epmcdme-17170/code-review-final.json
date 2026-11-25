@@ -1,0 +1,61 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved; 0 findings, tests not run by implementer"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved; 0 findings, tests not run by implementer"
+    }
+  ],
+  "reviewed_head": "4ee36cc0a3f1f55d119552e81e355ede86316f3b",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "Compact profile ran edge-case only; acceptance skipped (no spec) so confidence is low. The one edge-case finding (fall back to legacy a.creator) was dismissed: a.creator is a service-account UUID, so showing it would violate the 'not a wrong user' fallback. 1 dismissed, 0 deferred. Tests were not run by the implementer.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards audit not expected for this profile."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards audit not expected for this profile."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards audit not expected for this profile."
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "Compact profile ran edge-case only; acceptance skipped (no spec) so confidence is low. The one edge-case finding (fall back to legacy a.creator) was dismissed: a.creator is a service-account UUID, so showing it would violate the 'not a wrong user' fallback. 1 dismissed, 0 deferred. Tests were not run by the implementer.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

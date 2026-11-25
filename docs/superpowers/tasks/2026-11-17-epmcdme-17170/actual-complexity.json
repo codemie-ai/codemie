@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-11-17T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 11,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "4 files (2 source, 2 test) per diffstat, 53 insertions, 1 deletion; maps to M by file count but changes are small and localized." },
+    { "dimension": "technical_risk", "reason": "Audit read repository query adds a creator display-name expression (NULLIF(BTRIM(created_by->>'name'),'')) following the existing query pattern; router and tests pin the contract." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
