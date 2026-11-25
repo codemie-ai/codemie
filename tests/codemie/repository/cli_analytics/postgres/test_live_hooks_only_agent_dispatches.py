@@ -419,3 +419,272 @@ async def test_live_unresolved_agent_call_does_not_hide_an_unrelated_hooks_only_
         await engine.close()
 
     assert any(r["subagent_type"] == "explore" for r in rows), rows  # never hidden by an unrelated type
+
+
+# ── EPMCDME-16573 reopened QA: transcript-only requests that carry their own agent_id ─────────────────────────────
+# (Copilot CLI with per-agent identity, Cowork's Agent calls): `agent.usage.request` events with no OTel api_request
+# record. They reach session_usage under the agent's id, but no Timeline source read them.
+
+
+async def _agent_request(engine, sid, ts, rid, agent_id, platform, usage, model=_SONNET):
+    """A transcript-only request of one agent: only the plugin's agent.usage.request, with `agent_id` (an empty one is
+    the main thread's)."""
+    _, inp, out, read, write = usage
+    await _ingest(
+        engine,
+        [{
+            "type": "agent.usage.request", "timestamp": ts.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "session_id": sid, "request_id": rid, "message_id": "", "agent_id": agent_id, "model_raw": model,
+            "model": model, "input_tokens": inp, "output_tokens": out, "cache_read_tokens": read,
+            "cache_creation_5m_tokens": write, "cache_creation_1h_tokens": 0, "stop_reason": "end_turn",
+            "platform": platform,
+        }],
+    )  # fmt: skip
+
+
+def _price(usage):
+    _, inp, out, read, write = usage
+    r = _SONNET_RATES
+    return inp * r[0] + out * r[1] + read * r[2] + write * r[3]
+
+
+_A1 = (0.0, 1000, 100, 5000, 300)
+_A2 = (0.0, 2000, 40, 700, 0)
+_MAIN = (0.0, 50, 5, 0, 0)
+
+
+def _by_agent(rows):
+    return {r["subagent_type"]: r for r in rows if r["subagent_type"] != ""}
+
+
+@pytest.mark.asyncio
+async def test_live_copilot_agent_requests_with_agent_id_price_each_parallel_agent_separately() -> None:
+    """Copilot CLI shape: hooks only, two overlapping agents whose requests carry their own agent_id, a third agent
+    with no request, and a main-thread request: each agent's bar holds its own input/output/cache and cost, the agent
+    without usage stays unknown, the main thread's request is nobody's, and the session total is unchanged."""
+    sid = f"test-16573-copilot-agent-id-{uuid.uuid4().hex[:8]}"
+    engine = await _engine()
+    at = lambda m, s=0: _TODAY + timedelta(minutes=m, seconds=s)  # noqa: E731
+    try:
+        await _plain_subagent(engine, sid, at(1), at(3), "ag-one", "reviewer", "copilot-cli")
+        await _plain_subagent(engine, sid, at(1, 10), at(3, 20), "ag-two", "explorer", "copilot-cli")
+        await _plain_subagent(engine, sid, at(4), at(5), "ag-idle", "idle-agent", "copilot-cli")
+        await _agent_request(engine, sid, at(1, 30), "r1", "ag-one", "copilot-cli", _A1)
+        await _agent_request(engine, sid, at(1, 40), "r2", "ag-two", "copilot-cli", _A2)
+        await _agent_request(engine, sid, at(0, 30), "r0", "", "copilot-cli", _MAIN)
+        await _refresh(engine, _TODAY.date())
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(sid, scope=DETAIL_SCOPE)
+        detail = await _detail(engine, sid, [_entry(_SONNET, _SONNET_RATES)], {})
+    finally:
+        await _cleanup(engine, [sid])
+        await engine.close()
+
+    agents = _by_agent(rows)
+    assert len(agents) == 3, rows
+    for name, usage in (("reviewer", _A1), ("explorer", _A2)):
+        row = agents[name]
+        assert (row["input_tokens"], row["output_tokens"], row["cache_read_tokens"], row["cache_creation_tokens"]) == (
+            usage[1], usage[2], usage[3], usage[4],
+        ), row  # fmt: skip
+    assert agents["idle-agent"]["input_tokens"] is None and agents["idle-agent"]["cost_usd"] is None  # unknown, not 0
+    # timing and overlap are untouched
+    assert agents["reviewer"]["subagent_duration_ms"] == 120_000
+    assert agents["explorer"]["subagent_duration_ms"] == 130_000
+
+    bars = {d["label"]: d for d in detail["dispatches"] if d["kind"] == "agent"}
+    assert len(bars) == 3  # one bar per agent
+    assert bars["agent · reviewer"]["cost_usd"] == pytest.approx(_price(_A1))
+    assert (
+        bars["agent · reviewer"]["input_tokens"] == _A1[1] and bars["agent · reviewer"]["cache_read_tokens"] == _A1[3]
+    )
+    assert bars["agent · explorer"]["cost_usd"] == pytest.approx(_price(_A2))
+    assert (
+        bars["agent · explorer"]["output_tokens"] == _A2[2]
+        and bars["agent · explorer"]["cache_creation_tokens"] is None
+    )
+    assert bars["agent · idle-agent"]["cost_usd"] is None and bars["agent · idle-agent"]["input_tokens"] is None
+    assert detail["cost_usd"] == pytest.approx(_price(_A1) + _price(_A2) + _price(_MAIN))  # session total unchanged
+
+
+@pytest.mark.asyncio
+async def test_live_agent_requests_on_an_unpriced_model_keep_their_tokens() -> None:
+    """A model the catalog has no price for: the agent's bar keeps its tokens, its cost stays unknown (not a made-up 0)."""
+    sid = f"test-16573-unpriced-agent-{uuid.uuid4().hex[:8]}"
+    engine = await _engine()
+    at = lambda m, s=0: _TODAY + timedelta(minutes=m, seconds=s)  # noqa: E731
+    try:
+        await _plain_subagent(engine, sid, at(1), at(3), "ag-one", "reviewer", "copilot-cli")
+        await _agent_request(engine, sid, at(1, 30), "r1", "ag-one", "copilot-cli", _A1, model="no-such-model-9")
+        await _refresh(engine, _TODAY.date())
+        detail = await _detail(engine, sid, [_entry(_SONNET, _SONNET_RATES)], {})
+    finally:
+        await _cleanup(engine, [sid])
+        await engine.close()
+
+    (bar,) = [d for d in detail["dispatches"] if d["kind"] == "agent"]
+    assert (bar["input_tokens"], bar["output_tokens"], bar["cache_read_tokens"]) == (1000, 100, 5000)
+    assert bar["cost_usd"] is None
+
+
+async def _cowork_agent_call(engine, sid, ts, tool_use_id, agent_id, agent_type, *, with_span):
+    """A Claude Code (Cowork) Agent call as hooks report it: PreToolUse, SubagentStart/Stop (the stop names the call)
+    and PostToolUse with `fork_agent_id`; or, with its OTel tool span, the helper the OTel tests use."""
+    if with_span:
+        await _tool_call(engine, sid, ts, "p-cw", tool_use_id, "Agent", agent_type=agent_type, agent_id=agent_id)
+        return
+    base = {"prompt_id": "p-cw"}
+    call = {**base, "tool_name": "Agent", "tool_use_id": tool_use_id}
+    sub = {**base, "agent_id": agent_id, "agent_type": agent_type}
+    await _ingest(
+        engine,
+        [
+            _hook("agent.tool.start", "PreToolUse", sid, ts, **call),
+            _hook("agent.subagent.start", "SubagentStart", sid, ts + timedelta(seconds=1), **sub),
+            _hook("agent.subagent.stop", "SubagentStop", sid, ts + timedelta(seconds=14), tool_use_id=tool_use_id, **sub),
+            _hook("agent.tool.end", "PostToolUse", sid, ts + timedelta(seconds=15), fork_agent_id=agent_id,
+                  tool_response="{}", **call),
+        ],
+    )  # fmt: skip
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_span", [False, True], ids=["hooks-only", "agent-tool-span"])
+async def test_live_cowork_agent_call_takes_its_own_agent_tagged_requests(with_span) -> None:
+    """Cowork shape: an Agent tool call (hook rows, with or without its OTel tool span) whose subagent's requests
+    arrive as agent.usage.request with its agent_id and no OTel api_request: the Agent bar prices them, once."""
+    sid = f"test-16573-cowork-{with_span}-{uuid.uuid4().hex[:8]}"
+    engine = await _engine()
+    at = lambda m, s=0: _TODAY + timedelta(minutes=m, seconds=s)  # noqa: E731
+    try:
+        if with_span:
+            await _interaction(engine, sid)
+        await _cowork_agent_call(engine, sid, at(1), "tu-cw", "ag-cw", "Explore", with_span=with_span)
+        await _agent_request(engine, sid, at(1, 5), "rc1", "ag-cw", "claude-code", _A1)
+        await _agent_request(engine, sid, at(0, 30), "rc0", "", "claude-code", _MAIN)
+        await _refresh(engine, _TODAY.date())
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(sid, scope=DETAIL_SCOPE)
+        detail = await _detail(engine, sid, [_entry(_SONNET, _SONNET_RATES)], {})
+    finally:
+        await _cleanup(engine, [sid])
+        await engine.close()
+
+    (row,) = [r for r in rows if r["subagent_type"] == "Explore"]  # one row, never two
+    assert (row["input_tokens"], row["output_tokens"], row["cache_read_tokens"], row["cache_creation_tokens"]) == (
+        1000, 100, 5000, 300,
+    )  # fmt: skip
+    (d,) = [d for d in detail["dispatches"] if d["kind"] == "agent"]
+    assert d["cost_usd"] == pytest.approx(_price(_A1))
+    assert detail["cost_usd"] == pytest.approx(_price(_A1) + _price(_MAIN))
+
+
+@pytest.mark.asyncio
+async def test_live_otel_and_agent_tagged_transcript_requests_count_the_agent_once() -> None:
+    """OTel + hooks: the subagent's api_request (span group) and its agent.usage.request carry the same request id and
+    agent_id; the bar holds that one request, not both, and still exactly one row."""
+    sid = f"test-16573-otel-plus-hooks-{uuid.uuid4().hex[:8]}"
+    engine = await _engine()
+    try:
+        await _interaction(engine, sid)
+        await _agent(engine, sid, _TODAY + timedelta(minutes=1), "p-a", "tu-a1", "general-purpose", "ag-both",
+                     None, (0.3, 4, 4, 4, 4))  # fmt: skip
+        await _refresh(engine, _TODAY.date())
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(sid, scope=DETAIL_SCOPE)
+    finally:
+        await _cleanup(engine, [sid])
+        await engine.close()
+
+    (row,) = [r for r in rows if r["subagent_type"] == "general-purpose"]
+    assert (row["input_tokens"], row["output_tokens"], row["cost_usd"]) == (4, 4, pytest.approx(0.3))
+
+
+# ── EPMCDME-16573: a skill another client's tool hooks report (Copilot CLI: tool "skill" with skill_name) ──────────
+
+
+def _skill_call(sid, ts, tool_use_id, skill, *, seconds=10, agent_id="", ended=True, platform="copilot-cli"):
+    """The tool hooks of one lowercase `skill` call, as EPMCDME-16571 verified them; `agent_id` set when a subagent
+    made the call."""
+    tool_name = "Skill" if platform == "claude-code" else "skill"
+    call = {"tool_name": tool_name, "tool_use_id": tool_use_id, "platform": platform, "skill_name": skill}
+    if agent_id:
+        call["agent_id"] = agent_id
+    events = [_hook("agent.tool.start", "PreToolUse", sid, ts, **{**call, "prompt_id": "p-sk"})]
+    if ended:
+        events.append(_hook("agent.tool.end", "PostToolUse", sid, ts + timedelta(seconds=seconds), **call))
+    return [{**e, "platform": platform} for e in events]
+
+
+@pytest.mark.asyncio
+async def test_live_copilot_skill_tool_hooks_get_one_bar_per_invocation() -> None:
+    """Copilot's skill calls reach the Timeline through the Session Detail projection: a main-thread call, the same
+    skill called again, a call made inside a subagent (that subagent keeps its own bar and usage), and a call that
+    never ended: one bar each, timed from the call, no usage of their own, the session total untouched."""
+    sid = f"test-16573-copilot-skill-{uuid.uuid4().hex[:8]}"
+    engine = await _engine()
+    at = lambda m, s=0: _TODAY + timedelta(minutes=m, seconds=s)  # noqa: E731
+    try:
+        await _interaction(engine, sid)
+        await _ingest(
+            engine,
+            [
+                *_skill_call(sid, at(1), "tc-1", "brainstorm", seconds=20),
+                *_skill_call(sid, at(2), "tc-2", "brainstorm", seconds=5),
+                *_skill_call(sid, at(4, 20), "tc-3", "review", seconds=8, agent_id="ag-one"),
+                *_skill_call(sid, at(6), "tc-4", "unfinished", ended=False),
+            ],
+        )
+        await _plain_subagent(engine, sid, at(4), at(5), "ag-one", "reviewer", "copilot-cli")
+        await _agent_request(engine, sid, at(4, 30), "r1", "ag-one", "copilot-cli", _A1)
+        await _agent_request(engine, sid, at(0, 30), "r0", "", "copilot-cli", _MAIN)
+        await _refresh(engine, _TODAY.date())
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(sid, scope=DETAIL_SCOPE)
+        detail = await _detail(engine, sid, [_entry(_SONNET, _SONNET_RATES)], {})
+    finally:
+        await _cleanup(engine, [sid])
+        await engine.close()
+
+    skills = sorted((r for r in rows if r["skill_name"]), key=lambda r: r["dispatch_start"])
+    assert [r["skill_name"] for r in skills] == ["brainstorm", "brainstorm", "review", "unfinished"], rows
+    assert [r["real_duration_ms"] for r in skills] == [20_000, 5_000, 8_000, None]  # to each call's own end
+    assert all(r["is_slash_command"] == 0 and r["cost_usd"] is None and r["input_tokens"] is None for r in skills)
+
+    bars = detail["dispatches"]
+    assert [d["kind"] for d in bars].count("skill") == 4 and [d["kind"] for d in bars].count("agent") == 1
+    agent = next(d for d in bars if d["kind"] == "agent")
+    assert agent["cost_usd"] == pytest.approx(_price(_A1)) and agent["input_tokens"] == _A1[1]  # not the skill's
+    assert detail["cost_usd"] == pytest.approx(_price(_A1) + _price(_MAIN))
+    assert detail["skill_count"] == 4  # the counting rule is the same set, untouched
+
+
+@pytest.mark.asyncio
+async def test_live_skill_tool_hooks_leave_claude_code_and_slash_rows_alone() -> None:
+    """Preserve span and slash rows and render reported hook-only skills with execution and fork deduplication."""
+    sid = f"test-16573-skill-no-dup-{uuid.uuid4().hex[:8]}"
+    engine = await _engine()
+    at = lambda m, s=0: _TODAY + timedelta(minutes=m, seconds=s)  # noqa: E731
+    try:
+        await _interaction(engine, sid)
+        await _tool_call(engine, sid, at(1), "p-cc", "tu-cc", "Skill", skill="ccskill")
+        await _ingest(engine, [_dispatch(sid, at(3), "p-sl", "slashskill")])
+        await _ingest(engine, _skill_call(sid, at(5), "tc-cp", "cpskill", platform="copilot-cli"))
+        await _ingest(engine, _skill_call(sid, at(6), "tc-cc", "hookskill", platform="claude-code"))
+        await _ingest(engine, _skill_call(sid, at(7), "tc-denied", "denied", ended=False, platform="claude-code"))
+        fork_call = _skill_call(sid, at(8), "tc-fork", "forkskill", platform="claude-code")
+        fork_call[-1]["fork_agent_id"] = "cc-fork"
+        await _ingest(
+            engine,
+            [
+                *fork_call,
+                _hook("agent.subagent.start", "SubagentStart", sid, at(8, 1),
+                      platform="claude-code", agent_id="cc-fork", agent_type="general-purpose", skill_name="forkskill"),
+                _hook("agent.subagent.start", "SubagentStart", sid, at(9),
+                      platform="copilot-cli", agent_id="cp-fork", agent_type="task", skill_name="taggedskill"),
+            ],
+        )  # fmt: skip
+        await _refresh(engine, _TODAY.date())
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(sid, scope=DETAIL_SCOPE)
+    finally:
+        await _cleanup(engine, [sid])
+        await engine.close()
+
+    names = sorted(r["skill_name"] for r in rows if r["skill_name"])
+    assert names == ["ccskill", "cpskill", "forkskill", "hookskill", "slashskill", "taggedskill"], rows

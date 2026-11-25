@@ -18455,9 +18455,16 @@
       "LocalAnalyticsSessionDetail": {
         "properties": {
           "active_ms": {
-            "default": 0,
-            "title": "Active Ms",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Measured active time in milliseconds; null when not reported.",
+            "title": "Active Ms"
           },
           "agent_count": {
             "anyOf": [

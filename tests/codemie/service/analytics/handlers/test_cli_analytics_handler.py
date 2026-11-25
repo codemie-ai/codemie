@@ -2302,6 +2302,17 @@ def make_detail_handler(meta_row):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("active_ms", [None, 0, 13_221])
+async def test_session_detail_distinguishes_unreported_active_time_from_measurements(active_ms):
+    handler = make_detail_handler({"session_id": "s1"})
+    handler._repo.get_session_detail_scalars = AsyncMock(return_value=[{"active_ms": active_ms}])
+
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
+
+    assert detail["active_ms"] == active_ms
+
+
+@pytest.mark.asyncio
 async def test_session_detail_harness_name_is_humanized():
     handler = make_detail_handler({"session_id": "s1", "harness_service_name": "claude-code"})
     detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)

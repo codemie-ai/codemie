@@ -1,0 +1,27 @@
+{
+  "decision": "approve",
+  "rationale": "Only the edge-case lens and standards ran (balanced profile); no spec, so confidence is low. 1 advisory (partial-cost sum on mixed priced/unpriced rows); 1 dismissed (empty tool_use_id skill drop matches skill_count by design); no defer.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "pass", "notes": "2 subjects in dcdee9876..HEAD match the documented EPMCDME-####: Description format" },
+    { "kind": "code-quality", "status": "pass", "notes": "2 changed files; no Optional/untyped additions seen; ruff and license-check not run by this reviewer" },
+    { "kind": "security", "status": "na", "notes": "no security-practices guide in repo (absent standard, not a gap); new SQL binds $sid as a parameter" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 3849,
+      "title": "Partial cost sum for mixed priced/unpriced agent rows",
+      "problem": "hook_usage computes sum(u.source_cost_usd); sum() ignores NULLs, so an agent whose session_usage rows are partly priced (e.g. one model priced, another NULL) gets a partial total rather than unknown.",
+      "impact": "Bar cost understated and shown as complete. Trigger is narrow: one agent with both priced and unpriced session_usage rows; all-NULL still yields unknown. Reachability of mixed rows was not confirmed.",
+      "recommendation": "CASE WHEN bool_or(u.source_cost_usd IS NULL) THEN NULL ELSE sum(u.source_cost_usd) END AS cost_usd"
+    }
+  ],
+  "deferred": []
+}

@@ -451,7 +451,7 @@ class LocalAnalyticsDispatchRow(BaseModel):
 
 class LocalAnalyticsSessionDetail(LocalAnalyticsSessionRow):
     events: list[LocalAnalyticsSessionEvent] = Field(default_factory=list)
-    active_ms: int = 0
+    active_ms: int | None = Field(None, description="Measured active time in milliseconds; null when not reported.")
     agent_count: int | None = Field(None, description="Subagent dispatches; None unknown, 0 reported zero (see turns).")
     skill_count: int | None = Field(None, description="Skill invocations; None unknown, 0 reported zero (see turns).")
     cache_read_cost_usd: float = 0.0

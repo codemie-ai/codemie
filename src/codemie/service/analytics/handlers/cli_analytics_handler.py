@@ -2138,7 +2138,7 @@ class LocalAnalyticsHandler:
             "net_lines": _nnet(lines_added, lines_removed),
             "bloat_pct": _pct(crc, cost_usd),
             "events": events,
-            "active_ms": _i(scalars.get("active_ms")),
+            "active_ms": _opt_int(scalars.get("active_ms")),
             "agent_count": _opt_int(scalars.get("agent_count")),
             "skill_count": _opt_int(scalars.get("skill_count")),
             "cache_read_cost_usd": crc,

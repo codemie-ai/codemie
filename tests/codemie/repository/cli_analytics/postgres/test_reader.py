@@ -2401,7 +2401,7 @@ async def test_dispatch_union_branch_treats_subagent_hook_skill_name_as_skill_di
         "FROM hook_events h LEFT JOIN stopped st ON st.agent_id = h.agent_id AND h.agent_id <> '' "
         "LEFT JOIN agent_usage au ON au.agent_id = h.agent_id AND h.agent_id <> '' "
         "WHERE h.session_id = $1::text AND h.event_type = 'agent.subagent.start' AND h.skill_name <> '' "
-        "AND coalesce(h.attrs->>'platform', 'claude-code') = 'claude-code' "
+        f"AND octet_length(h.skill_name) <= {MAX_KEY_BYTES} "
         "-- one row per fork: a re-sent or resumed start of the same agent_id is not another invocation "
         "AND NOT EXISTS (SELECT 1 FROM hook_events h_p WHERE h_p.session_id = h.session_id "
         "AND h_p.event_type = 'agent.subagent.start' AND h.agent_id <> '' AND h_p.agent_id = h.agent_id "

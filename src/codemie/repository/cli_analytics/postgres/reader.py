@@ -106,6 +106,7 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
     dispatch_fork_candidate,
     executed_agent_call_span,
     executed_tool_span,
+    executed_tool_start,
     first_subagent_start,
     fork_of_counted_call,
     fork_of_dispatch,
@@ -3639,10 +3640,11 @@ class PostgresCliAnalyticsReader:
         tied sibling's slice (`takes_parent` of fork_attribution): their row is empty.
         Rows outside that scope (Task, no tool_use_id, another client, Skill) keep the open slice.
         An agent or fork whose agentId is known but has no API requests gets NULL: its parent span is the main
-        thread, whose cost is not the subagent's. A plain hooks-only fork with no span at all falls back to the
-        session_usage row the cost rollup keeps for exactly that case (attrs.token_source = 'subagent_usage',
-        keyed by the fork's own agentId), summed per agent as the span-sourced usage is; never read when the
-        fork has span-priced usage of its own.
+        thread, whose cost is not the subagent's. With no span group and no paired OTel request of its own, an
+        agent (a plain hooks-only fork, or an Agent call whose requests came only as agent.usage.request) takes the
+        session_usage rows the cost rollup keeps under its agentId (its own transcript requests, or its
+        attrs.token_source = 'subagent_usage' totals), summed per agent (`hook_usage`): never an agent that a span
+        or a paired request already prices, and never a request without an agent_id (the main thread's).
         Each row carries `models`, the per-model token sums of the API requests it is priced from (empty
         when it has none), already split by `request_share` among every sibling window a request falls in.
         """
@@ -3836,19 +3838,13 @@ class PostgresCliAnalyticsReader:
             FROM paired_requests g
             WHERE g.agent_id <> '' AND NOT EXISTS (SELECT 1 FROM agent_groups ag WHERE ag.agent_id = g.agent_id)
             GROUP BY g.agent_id
-        ), agent_usage AS (
-            SELECT agent_id, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, models
-            FROM span_agent_usage
-            UNION ALL
-            SELECT agent_id, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, models
-            FROM paired_agent_usage
         ), hook_usage AS (
-            -- a hooks-only agent's totals when it has no span at all (the common Copilot CLI case): the
-            -- session_usage row(s) the cost rollup writes from its own agent.subagent.usage totals
-            -- (attrs.token_source = 'subagent_usage'), summed by agent_id as agent_usage sums spans, so a
-            -- session with more than one such row per agent (one per model) still gives one row here. Read
-            -- only as agent_usage's fallback below, by the plain-fork branch: never overrides a span-priced
-            -- agent, and never read by a row that already has a span.
+            -- an agent's usage when no OTel request names it (Copilot CLI; Cowork's Agent calls): the session_usage
+            -- rows the cost rollup writes under its agent_id, from its own agent.usage.request events (transcript
+            -- requests) or its agent.subagent.usage totals (attrs.token_source = 'subagent_usage'), summed by
+            -- agent_id as agent_usage sums spans, so one row per agent however many models or days it ran on. A
+            -- request with no agent_id is the main thread's and never lands here. source_cost_usd is NULL for such
+            -- requests (the handler prices the row's models), so an agent with no row stays unknown, not zero.
             SELECT u.agent_id,
                    sum(u.source_cost_usd) AS cost_usd,
                    sum(coalesce(u.input_tokens, 0)) AS input_tokens,
@@ -3865,11 +3861,24 @@ class PostgresCliAnalyticsReader:
                                sum(u2.cache_creation_1h_tokens) AS cache_creation_1h_tokens
                         FROM session_usage u2
                         WHERE u2.session_id = $sid::text AND u2.agent_id = u.agent_id
-                          AND u2.attrs->>'token_source' = 'subagent_usage'
                         GROUP BY 1) m) AS models
             FROM session_usage u
-            WHERE u.session_id = $sid::text AND u.agent_id <> '' AND u.attrs->>'token_source' = 'subagent_usage'
+            WHERE u.session_id = $sid::text AND u.agent_id <> ''
             GROUP BY u.agent_id
+        ), agent_usage AS (
+            SELECT agent_id, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, models
+            FROM span_agent_usage
+            UNION ALL
+            SELECT agent_id, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, models
+            FROM paired_agent_usage
+            UNION ALL
+            -- the fallback: never an agent that a span group or a paired OTel request already prices (each request
+            -- counted once, one row per agent)
+            SELECT hu.agent_id, hu.cost_usd, hu.input_tokens, hu.output_tokens, hu.cache_read_tokens,
+                   hu.cache_creation_tokens, hu.models
+            FROM hook_usage hu
+            WHERE NOT EXISTS (SELECT 1 FROM span_agent_usage s WHERE s.agent_id = hu.agent_id)
+              AND NOT EXISTS (SELECT 1 FROM paired_agent_usage p WHERE p.agent_id = hu.agent_id)
         ), fallback_start AS (
             -- every dispatch's own start under its parent, agent or skill alike (the final SELECT displays the same
             -- formula as dispatch_start; inside the Claude Code Agent scope a call with no start hook and no
@@ -4009,7 +4018,7 @@ class PostgresCliAnalyticsReader:
         LEFT JOIN stopped st ON st.agent_id = h.agent_id AND h.agent_id <> ''
         LEFT JOIN agent_usage au ON au.agent_id = h.agent_id AND h.agent_id <> ''
         WHERE h.session_id = $sid::text AND h.event_type = 'agent.subagent.start' AND h.skill_name <> ''
-          AND {is_claude_code('h')}
+          AND octet_length(h.skill_name) <= {MAX_KEY_BYTES}
           -- one row per fork: a re-sent or resumed start of the same agent_id is not another invocation
           AND {first_subagent_start("h")}
           AND NOT EXISTS (SELECT 1 FROM dispatch_fork df WHERE df.agent_id = h.agent_id)
@@ -4029,17 +4038,13 @@ class PostgresCliAnalyticsReader:
         -- A slash-command's foreground fork (dispatch_fork) or any Claude Code Skill tool's fork
         -- (skill_fork, named by its Skill call's agent.tool.end, span or no span: skill_fork lists every
         -- Skill call's fork by agent_id alone, so this needs no join through `t`) never gets a second
-        -- row here either: a fork is always one row, its initiator's, never also an agent. Deliberately
-        -- not gated on is_claude_code(), unlike the skill fallback above: Copilot CLI's hook events
-        -- report a platform other than 'claude-code', and excluding them
-        -- would silently drop the exact sessions this branch exists for. dispatch_start and
+        -- row here either: a fork is always one row, never also an agent. dispatch_start and
         -- subagent_duration_ms reuse the stop's own stop_duration_ms exactly as the first SELECT's do (see
         -- its comment above `dispatch_start`), substituting h.ts for that branch's launch_ts: the bar is
         -- anchored to end on the stop even though the stop hook lags the subagent's own last line.
         -- real_duration_ms mirrors subagent_duration_ms, as it does for the skill-fallback branch above: this
-        -- row has no span either. cost/tokens/models fall back to hook_usage (a session_usage totals row)
-        -- when the agent has no span of its own (the common Copilot CLI case): never overriding a
-        -- span-priced agent, since agent_usage is read first.
+        -- row has no span either. cost/tokens/models come from agent_usage, whose hook_usage branch serves an
+        -- agent with no span or paired request of its own (the common Copilot CLI case).
         SELECT h.agent_type, '', 0,
                CASE WHEN st.stop_duration_ms IS NOT NULL
                     THEN st.ended_at - (st.stop_duration_ms * interval '1 millisecond')
@@ -4051,16 +4056,12 @@ class PostgresCliAnalyticsReader:
                CASE WHEN st.stop_duration_ms IS NOT NULL THEN st.stop_duration_ms
                     WHEN st.ended_at >= h.ts
                     THEN (extract(epoch FROM st.ended_at - h.ts) * 1000)::bigint END AS subagent_duration_ms,
-               coalesce(au.cost_usd, hu.cost_usd)::float8 AS cost_usd,
-               coalesce(au.input_tokens, hu.input_tokens)::bigint AS input_tokens,
-               coalesce(au.output_tokens, hu.output_tokens)::bigint AS output_tokens,
-               coalesce(au.cache_read_tokens, hu.cache_read_tokens)::bigint AS cache_read_tokens,
-               coalesce(au.cache_creation_tokens, hu.cache_creation_tokens)::bigint AS cache_creation_tokens,
-               coalesce(au.models, hu.models) AS models
+               au.cost_usd::float8 AS cost_usd, au.input_tokens::bigint AS input_tokens,
+               au.output_tokens::bigint AS output_tokens, au.cache_read_tokens::bigint AS cache_read_tokens,
+               au.cache_creation_tokens::bigint AS cache_creation_tokens, au.models
         FROM hook_events h
         LEFT JOIN stopped st ON st.agent_id = h.agent_id AND h.agent_id <> ''
         LEFT JOIN agent_usage au ON au.agent_id = h.agent_id AND h.agent_id <> ''
-        LEFT JOIN hook_usage hu ON hu.agent_id = h.agent_id AND h.agent_id <> ''
         WHERE h.session_id = $sid::text AND h.event_type = 'agent.subagent.start'
           AND coalesce(h.agent_type, '') <> '' AND coalesce(h.skill_name, '') = ''
           AND {first_subagent_start("h")}
@@ -4070,6 +4071,33 @@ class PostgresCliAnalyticsReader:
                                  OR (la.agent_id IS NULL AND t.subagent_type = h.agent_type)))
           AND NOT EXISTS (SELECT 1 FROM dispatch_fork df WHERE df.agent_id = h.agent_id)
           AND NOT EXISTS (SELECT 1 FROM skill_fork sf WHERE sf.agent_id = h.agent_id)
+        UNION ALL
+        -- A skill reported by a tool hook uses the same execution gate as tool_facts_daily's skill_count.
+        -- Drop it when a skill TOOL span of that very call exists (the first SELECT's row; a start
+        -- with no tool_use_id cannot be tied to one, so any skill span of the session drops it). It starts at
+        -- the call and runs to the call's own end (NULL when it never ended). A call made by a subagent (its row's
+        -- agent_id) is its own bar all the same. No usage: nothing attributes a request to such a call, and the
+        -- agent that made it keeps its own. A Claude Code call linked to a named fork leaves the bar to that fork.
+        SELECT '', h.skill_name, 0, h.ts, 0,
+               (SELECT (extract(epoch FROM max(e.ts) - h.ts) * 1000)::bigint FROM hook_events e
+                WHERE e.session_id = h.session_id AND e.event_type IN ('agent.tool.end', 'agent.tool.error')
+                  AND e.tool_use_id = h.tool_use_id AND e.tool_name = h.tool_name AND h.tool_use_id <> ''
+                  AND e.ts >= h.ts AND e.ts < h.ts + interval '1 day'),
+               NULL::bigint, NULL::float8, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::jsonb
+        FROM hook_events h
+        WHERE h.session_id = $sid::text AND h.event_type = 'agent.tool.start'
+          AND h.skill_name <> '' AND octet_length(h.skill_name) <= {MAX_KEY_BYTES}
+          AND {executed_tool_start("h", "Skill")}
+          AND NOT EXISTS (
+              SELECT 1 FROM skill_fork sf JOIN hook_events f ON f.agent_id = sf.agent_id
+              WHERE sf.tool_use_id = h.tool_use_id AND f.session_id = h.session_id
+                AND f.event_type = 'agent.subagent.start' AND f.skill_name <> ''
+                AND octet_length(f.skill_name) <= {MAX_KEY_BYTES}
+          )
+          AND NOT EXISTS (SELECT 1 FROM spans sk WHERE sk.session_id = h.session_id AND sk.span_kind = {_TOOL}
+                          AND sk.skill_name <> ''
+                          AND (h.tool_use_id = '' OR (sk.tool_use_id = h.tool_use_id
+                               AND sk.ts >= h.ts - interval '1 hour' AND sk.ts < h.ts + interval '1 day')))
         UNION ALL
         -- A slash-command skill dispatch. With a fork it takes the fork's run and cost by the fork's agentId;
         -- a skill that ran in the main thread takes the requests the plugin attributed to it in its own prompt (see
