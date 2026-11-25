@@ -1,0 +1,61 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved compact-profile review: 0 findings, confidence low (no spec, standards audit n/a)"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved compact-profile review: 0 findings, confidence low (no spec, standards audit n/a)"
+    }
+  ],
+  "reviewed_head": "7771c1885263df8e03d78ac7967c294d8d32ae10",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "Edge-case lens ran (compact profile; acceptance skipped, no spec) and its 3 candidates were dismissed (whitespace and trailing-slash trimming are explicitly out of scope; import-time default is the pre-existing pattern); no blocking, advisory or deferred findings. Confidence is low because no spec existed to audit; dismissed items are listed in code-review-dismissed.local.md.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards audit not expected for this profile."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards audit not expected for this profile."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards audit not expected for this profile."
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "Edge-case lens ran (compact profile; acceptance skipped, no spec) and its 3 candidates were dismissed (whitespace and trailing-slash trimming are explicitly out of scope; import-time default is the pre-existing pattern); no blocking, advisory or deferred findings. Confidence is low because no spec existed to audit; dismissed items are listed in code-review-dismissed.local.md.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14087_default-oauth-authority",
+  "head": "7771c1885263df8e03d78ac7967c294d8d32ae10",
+  "runner": "poetry",
+  "started_at": "2026-11-23T12:04:13Z",
+  "completed_at": "2026-11-23T12:08:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "dist/ produced by the build was removed afterwards"
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9000,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 13000,
+      "command": "poetry run pytest tests/codemie_tools/notification/email/ tests/codemie/service/settings/test_settings_tester.py",
+      "exit_code": 0,
+      "notes": "Scoped to affected files per caller: 80 passed. Full suite not run by instruction."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 300,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "Pre-push hook step, always on"
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 100,
+      "command": "bash scripts/git-hooks/commit_msg.sh <HEAD message file>",
+      "exit_code": 0,
+      "notes": "Run against HEAD commit message"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Not run: no SONAR_* variables in environment or .env.local, and it requires the full test suite coverage that the caller excluded. Would need Sonar credentials and a full coverage run."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Caller excluded the sanity-api harness and live-API checks; MR compliance gate only"
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "",
+      "exit_code": null,
+      "notes": ".gitlab-ci.yml only includes an external guard template that waits for external contexts (ci-pipeline, compliance-report); not runnable locally. CI still owes those checks."
+    }
+  ],
+  "failures": {}
+}

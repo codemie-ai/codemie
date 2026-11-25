@@ -1,0 +1,2 @@
+{"ts":"2026-11-23T11:48:39Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved the 3-task plan (authority default only, tests requested) via the plan gate question","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-11-23T12:02:08Z","gate_id":"code-review.final","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved compact-profile review: 0 findings, confidence low (no spec, standards audit n/a)","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

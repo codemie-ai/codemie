@@ -25,6 +25,15 @@ from codemie_tools.base.models import (
 )
 
 
+DEFAULT_OAUTH_AUTHORITY = "https://login.microsoftonline.com"
+_TOOL_NAME = "email"
+
+
+def resolve_oauth_authority(value: Optional[str] = None) -> str:
+    """Explicit value, else customer tool_defaults, else the Microsoft public-cloud authority."""
+    return value or get_tool_default(_TOOL_NAME, "oauth_authority") or DEFAULT_OAUTH_AUTHORITY
+
+
 class EmailAuthType(str, Enum):
     """Email authentication types."""
 
@@ -33,7 +42,7 @@ class EmailAuthType(str, Enum):
 
 
 class EmailToolConfig(CodeMieToolConfig):
-    TOOL_NAME: ClassVar[str] = "email"
+    TOOL_NAME: ClassVar[str] = _TOOL_NAME
 
     credential_type: CredentialTypes = Field(default=CredentialTypes.EMAIL, exclude=True, frozen=True)
 
@@ -82,8 +91,8 @@ class EmailToolConfig(CodeMieToolConfig):
         description="OAuth Tenant ID - Microsoft Entra ID Tenant ID (required for Microsoft Entra ID OAuth)",
         json_schema_extra={"placeholder": "12345678-1234-1234-1234-123456789012"},
     )
-    oauth_authority: Optional[str] = Field(
-        default=get_tool_default(TOOL_NAME, "oauth_authority") or "",
+    oauth_authority: str | None = Field(
+        default=resolve_oauth_authority(),
         description="OAuth authority base URL without tenant_id (optional, defaults to https://login.microsoftonline.com)",
         json_schema_extra={"placeholder": "https://login.microsoftonline.com"},
     )

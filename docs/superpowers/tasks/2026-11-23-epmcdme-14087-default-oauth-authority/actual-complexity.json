@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-11-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 5,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "5 files per diffstat (2 source files in codemie_tools/notification/email: models.py, tools.py; 3 test files), which maps to M, though 161 insertions are mostly tests." },
+    { "dimension": "technical_risk", "reason": "A small resolve_oauth_authority helper reuses the existing get_tool_default pattern (explicit value, then customer tool_defaults, then public-cloud constant). The authority is only a base URL for MSAL, and customer override keeps precedence. No new auth logic or secret handling, so S." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

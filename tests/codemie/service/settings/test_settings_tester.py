@@ -197,6 +197,31 @@ def test_test_email_success(mock_test_integration):
     mock_test_integration.assert_called_once()
 
 
+@patch('codemie_tools.notification.email.tools.smtplib.SMTP')
+@patch('codemie_tools.notification.email.tools.ConfidentialClientApplication')
+def test_test_email_oauth_azure_blank_authority_uses_default(mock_msal, mock_smtp):
+    mock_msal.return_value.acquire_token_silent.return_value = {"access_token": "tok"}
+    request = TestSettingRequest(
+        credential_type=CredentialTypes.EMAIL,
+        credential_values=[
+            CredentialValues(key='url', value='smtp.office365.com:587'),
+            CredentialValues(key='auth_type', value='oauth_azure'),
+            CredentialValues(key='oauth_tenant_id', value='tenant-guid'),
+            CredentialValues(key='oauth_client_id', value='client-id'),
+            CredentialValues(key='oauth_client_secret', value='client-secret'),
+            CredentialValues(key='oauth_from_email', value='sender@example.com'),
+            CredentialValues(key='oauth_scope', value='https://outlook.office365.com/.default'),
+            CredentialValues(key='oauth_authority', value=''),
+        ],
+    )
+    instance = SettingsTester(request)
+
+    result = instance._test_email()
+
+    assert result == (True, '')
+    assert mock_msal.call_args.kwargs['authority'] == 'https://login.microsoftonline.com/tenant-guid'
+
+
 @patch.object(EmailTool, 'healthcheck')
 def test_test_email_fail(mock_test_integration):
     mock_test_integration.return_value = (False, "Some Error occurred")

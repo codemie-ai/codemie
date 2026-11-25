@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 
 
+from codemie.configs.customer_config import customer_config
 from codemie_tools.notification.email.models import EmailToolConfig, EmailAuthType
 from codemie_tools.notification.email.tools import EmailTool
 
@@ -239,3 +240,62 @@ class TestEmailTool(unittest.TestCase):
         self.assertEqual(config_oauth.auth_type, EmailAuthType.OAUTH_AZURE)
         self.assertEqual(config_oauth.oauth_client_id, "id")
         self.assertEqual(config_oauth.oauth_from_email, "sender@example.com")
+
+
+class TestEmailToolOAuthAuthority(unittest.TestCase):
+    TENANT = "tenant-guid"
+    MSAL_PATH = "codemie_tools.notification.email.tools.ConfidentialClientApplication"
+
+    def _build_tool(self, **authority_kwargs) -> EmailTool:
+        config = EmailToolConfig(
+            url="smtp.office365.com:587",
+            auth_type=EmailAuthType.OAUTH_AZURE,
+            oauth_from_email="sender@example.com",
+            oauth_client_id="client-id",
+            oauth_client_secret="client-secret",
+            oauth_tenant_id=self.TENANT,
+            oauth_scope="https://outlook.office365.com/.default",
+            **authority_kwargs,
+        )
+        return EmailTool(config=config)
+
+    def _acquire_token_authority(self, tool: EmailTool) -> str:
+        with patch(self.MSAL_PATH) as mock_msal:
+            mock_msal.return_value.acquire_token_silent.return_value = {"access_token": "tok"}
+            token = tool._get_oauth_token_azure()
+        self.assertEqual(token, "tok")
+        return mock_msal.call_args.kwargs["authority"]
+
+    def test_blank_authority_uses_default(self):
+        with patch.object(customer_config, "tool_defaults", {}):
+            authority = self._acquire_token_authority(self._build_tool(oauth_authority=""))
+        self.assertEqual(authority, "https://login.microsoftonline.com/tenant-guid")
+
+    def test_none_authority_uses_default(self):
+        with patch.object(customer_config, "tool_defaults", {}):
+            authority = self._acquire_token_authority(self._build_tool(oauth_authority=None))
+        self.assertEqual(authority, "https://login.microsoftonline.com/tenant-guid")
+
+    def test_missing_authority_uses_default(self):
+        with patch.object(customer_config, "tool_defaults", {}):
+            authority = self._acquire_token_authority(self._build_tool())
+        self.assertEqual(authority, "https://login.microsoftonline.com/tenant-guid")
+
+    def test_explicit_authority_is_kept(self):
+        with patch.object(customer_config, "tool_defaults", {}):
+            authority = self._acquire_token_authority(
+                self._build_tool(oauth_authority="https://login.microsoftonline.cn")
+            )
+        self.assertEqual(authority, "https://login.microsoftonline.cn/tenant-guid")
+
+    def test_blank_authority_uses_customer_override(self):
+        with patch.object(customer_config, "tool_defaults", {"email": {"oauth_authority": "https://custom.example"}}):
+            authority = self._acquire_token_authority(self._build_tool(oauth_authority=""))
+        self.assertEqual(authority, "https://custom.example/tenant-guid")
+
+    def test_explicit_authority_beats_customer_override(self):
+        with patch.object(customer_config, "tool_defaults", {"email": {"oauth_authority": "https://custom.example"}}):
+            authority = self._acquire_token_authority(
+                self._build_tool(oauth_authority="https://login.microsoftonline.cn")
+            )
+        self.assertEqual(authority, "https://login.microsoftonline.cn/tenant-guid")

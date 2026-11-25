@@ -24,7 +24,7 @@ from msal import ConfidentialClientApplication
 from pydantic import BaseModel, Field
 
 from codemie_tools.base.codemie_tool import CodeMieTool
-from codemie_tools.notification.email.models import EmailToolConfig, EmailAuthType
+from codemie_tools.notification.email.models import EmailToolConfig, EmailAuthType, resolve_oauth_authority
 from codemie_tools.notification.email.tools_vars import EMAIL_TOOL
 
 
@@ -56,7 +56,7 @@ class EmailTool(CodeMieTool):
     def _get_oauth_token_azure(self) -> str:
         """Get OAuth access token for Microsoft Entra ID / Microsoft 365."""
         # Build authority from base URL and tenant_id
-        msal_authority = f"{self.config.oauth_authority}/{self.config.oauth_tenant_id}"
+        msal_authority = f"{resolve_oauth_authority(self.config.oauth_authority)}/{self.config.oauth_tenant_id}"
         msal_scope = [self.config.oauth_scope]
 
         msal_app = ConfidentialClientApplication(
