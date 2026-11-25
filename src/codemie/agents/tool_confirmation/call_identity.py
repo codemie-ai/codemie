@@ -66,11 +66,13 @@ class RoutedCall:
     """One call of the gate's output: the raw id the AI message keeps, beside the call's identity.
 
     The raw id is kept beside the identity, never inside it, so the carrier and step keys stay those of the wire id.
+    The tool name tells apart calls that share a raw id when their results arrive out of call order.
     The stream reads a tool result's raw id back to its wire id from this pair.
     """
 
     raw_id: str
     identity: CallIdentity
+    name: str = ""
 
 
 class ConfirmationAgentState(AgentState):

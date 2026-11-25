@@ -1,0 +1,67 @@
+{
+ "schema": 1,
+ "branch": "hide-expired-personal-budgets",
+ "head": "aab560969a208123e82ef7ecd8021a5cb6252bd3",
+ "runner": "poetry",
+ "started_at": "2026-11-23T11:15:00Z",
+ "completed_at": "2026-11-23T11:35:00Z",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 3000,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 3000,
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 10000,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "gitleaks",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 138000,
+   "command": "make gitleaks",
+   "exit_code": 2,
+   "notes": "31 leaks, all in gitignored local codemie-storage/ (Test cases P1.csv, llama.py); none in files changed by this branch. Tree scan, not diff scan."
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 24000,
+   "command": "poetry run pytest tests/codemie/service/analytics -q",
+   "exit_code": 0,
+   "notes": "2089 passed, 1 skipped; scoped to analytics (changed area)"
+  },
+  {
+   "id": "sonar",
+   "source": "hook",
+   "status": "FAIL",
+   "duration_ms": 343000,
+   "command": "make sonar-local",
+   "exit_code": 2,
+   "notes": "Coverage generation failed: 14 failed in full suite, none in files changed by this branch (cli_analytics postgres LocalAnalyticsFilter missing 'scope' x13, test_hedged_handler timeout vs error x1)"
+  }
+ ],
+ "failures": {
+  "gitleaks": "RuleID:      generic-api-key\nEntropy:     4.734184\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        1901\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:1901\n\nFinding:     ..._id \u2013 s3-user\\n * aws_secret_access_key:REDACTED\\nand save\\n\\nRestart ...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.734184\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        1905\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:1905\n\nFinding:     ...:\\n\\nAccess key ID: REDACTED\\nSecret access key:...\nSecret:      REDACTED\nRuleID:      aws-access-token\nEntropy:     3.646439\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2176\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:aws-access-token:2176\n\nFinding:     ...IAXZT7RRAUQ7LKSR6Y\\nSecret access key: REDACTED\\nBucket: algtestbucke...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.753056\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2176\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:2176\n\nFinding:     nAccount_key: REDACTED\\n\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     5.335638\nTags:        [decoded:unicode decode-depth:1]\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2191\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:2191\n\nFinding:     ... s3-user\\n - Insert Secret Key: REDACTED\\n - Insert Bucket Nam...\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.734184\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2194\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:2194\n\n11:21AM INF scanned ~366624138 bytes (366.62 MB) in 2m19s\n11:21AM WRN leaks found: 31\nmake: *** [gitleaks] Error 1",
+  "sonar": "  /Users/Andriy_Lukashchuk/Dev/code-assistant/tests/codemie/service/datasource/test_file_datasource_service.py:422: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_invalid_json_bytes\n  /Users/Andriy_Lukashchuk/Dev/code-assistant/tests/codemie/service/datasource/test_file_datasource_service.py:427: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", b\"not-json-content\")\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFilesZip::test_upload_and_prepare_files_zip_validates_json_entries\n  /Users/Andriy_Lukashchuk/Dev/code-assistant/src/codemie/service/datasource/file_datasource_service.py:214: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(name, content)\n\ntests/codemie/service/test_mcp_config_service_auth_crud.py::test_update_rejects_auth_config_id_change_when_credentials_exist\n  /Users/Andriy_Lukashchuk/Dev/code-assistant/src/codemie/service/mcp_config_service.py:604: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._apply_config_field_update(\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /Users/Andriy_Lukashchuk/Dev/code-assistant/src/codemie/service/mcp_config_service.py:295: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /Users/Andriy_Lukashchuk/Dev/code-assistant/src/codemie/service/mcp_config_service.py:673: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(mcp_config.config, config_id=config_id)\n\ntests/codemie/service/test_mcp_config_service_clone.py::test_invalid_auth_config_raises_422\n  /Users/Andriy_Lukashchuk/Dev/code-assistant/src/codemie/service/mcp_config_service.py:389: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n================================ tests coverage ================================\n______________ coverage: platform darwin, python 3.12.13-final-0 _______________\n\nCoverage XML written to file coverage.xml\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_hook_only_session_detail_matches_the_session_list\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_listing_gate_drops_start_only_and_sub_agent_sessions\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_late_parent_start_flags_the_already_rolled_up_child_as_a_sub_agent\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_aggregates_keep_claude_session_results_and_add_the_session_without_usage\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_model_breakdown_merges_dotted_and_dashed_claude_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_claude_code_subagent_start_does_not_hide_the_session_it_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_subagent_with_cost_rows_of_its_own_stays_listed\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_copilot_detail.py::test_a_hidden_subagent_is_dropped_from_every_session_aggregate_and_still_opens_by_id\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_cost_rollup.py::test_rollup_cost_gives_what_the_live_cost_statements_give\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_cost_rollup.py::test_a_window_that_starts_inside_a_day_reads_that_day_from_the_sessions_live\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_foreground_agent_attribution.py::test_a_stop_alone_is_no_agent_call_so_its_span_shows_an_empty_row\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_overview_rollup.py::test_the_rollup_serves_the_overview_the_live_statements_give_with_the_model_ties\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_user_rollup.py::test_the_rollup_serves_what_the_live_statements_give_for_the_seeded_users\nFAILED tests/codemie/rest_api/handlers/test_hedged_handler.py::TestHedgingMetricEmission::test_stream_error_emits_agent_served_error_outcome\n= 14 failed, 38176 passed, 667 skipped, 6 xfailed, 655 warnings in 337.03s (0:05:37) =\n[sonar-local] coverage generation exited with code 1\nmake: *** [sonar-local] Error 1"
+ }
+}

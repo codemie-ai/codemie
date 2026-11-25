@@ -293,6 +293,7 @@ class MemberSpendService:
         enforced_only: bool = False,
         with_reset: bool = False,
         effective_limits: bool = False,
+        exclude_expired: bool = False,
     ) -> list[dict[str, Any]]:
         """Return one row per shared project the user belongs to.
 
@@ -365,6 +366,10 @@ class MemberSpendService:
         rows = _build_spend_rows(project_names, "project_name", spend_map, allocation_map, reset_map)
         if unenforced_budget_ids:
             await self._apply_unenforced_limits(rows, unenforced_budget_ids, budgets, allocation_map, with_reset)
+        if exclude_expired:
+            await self._hide_expired_categories(
+                rows, {**self._member_budget_ids(allocation_map), **unenforced_budget_ids}
+            )
         return rows
 
     @staticmethod
@@ -396,15 +401,31 @@ class MemberSpendService:
                     )
 
     @staticmethod
+    def _member_budget_ids(allocation_map: dict[tuple[str, str], Any]) -> dict[tuple[str, str], str]:
+        return {
+            key: ProjectBudgetService._effective_member_budget_id(alloc.project_budget_id, alloc)
+            for key, alloc in allocation_map.items()
+        }
+
+    @staticmethod
+    async def _hide_expired_categories(
+        rows: list[dict[str, Any]],
+        governing_budget_ids: dict[tuple[str, str], str],
+    ) -> None:
+        async with get_async_session() as session:
+            expired = await budget_repository.get_expired_budget_ids(session, list(set(governing_budget_ids.values())))
+        for row in rows:
+            for category in BudgetCategory:
+                if governing_budget_ids.get((row["project_name"], category.value)) in expired:
+                    row[f"{category.value}_limit"] = None
+
+    @staticmethod
     async def _reset_dates(
         session: AsyncSession,
         allocation_map: dict[tuple[str, str], Any],
     ) -> dict[tuple[str, str], str | None]:
         """Return each allocation's reset date, taken from the budget that governs it."""
-        member_budget_ids = {
-            key: ProjectBudgetService._effective_member_budget_id(alloc.project_budget_id, alloc)
-            for key, alloc in allocation_map.items()
-        }
+        member_budget_ids = MemberSpendService._member_budget_ids(allocation_map)
         budgets_map = await budget_repository.get_by_ids(session, list(member_budget_ids.values()))
         reset_dates: dict[tuple[str, str], str | None] = {}
         for key, alloc in allocation_map.items():

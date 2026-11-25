@@ -719,8 +719,10 @@ class TestBudgetUsageServiceGetBudgetUsage:
             await BudgetUsageService().get_budget_usage("user-1", "alice@example.com")
 
         refresh_overdue.assert_awaited_once()
-        repo.get_by_ids.assert_awaited_once()
-        assert len(sessions.sessions) == 1
+        # One read to reconcile, one expiry-filtered read after it; nothing else.
+        assert repo.get_by_ids.await_count == 2
+        assert repo.get_by_ids.await_args.kwargs == {"exclude_expired": True}
+        assert len(sessions.sessions) == 2
 
     @pytest.mark.asyncio
     async def test_no_session_is_held_while_the_provider_or_the_ledger_is_called(
@@ -750,9 +752,9 @@ class TestBudgetUsageServiceGetBudgetUsage:
             await BudgetUsageService().get_budget_usage("user-1", "alice@example.com")
 
         assert open_when_called == {"refresh_overdue": 0, "consumed_for_holders": 0}
-        (metadata_session,) = sessions.sessions
+        metadata_session, reread_session = sessions.sessions
         assert repo.get_user_category_assignments.await_args.args[0] is metadata_session
-        assert repo.get_by_ids.await_args.args[0] is metadata_session
+        assert repo.get_by_ids.await_args.args[0] is reread_session
         assert resolve_identity.await_args.args == (metadata_session, "user-1")
         asked_holders, _ = port.consumed_for_holders.await_args.args
         assert asked_holders == [PersonalHolder(user_id="user-1", category=BudgetCategory.PLATFORM, aliases=ALIASES)]
@@ -795,7 +797,7 @@ class TestBudgetUsageServiceGetBudgetUsage:
             _, rows = await BudgetUsageService().get_budget_usage("user-1", "alice@example.com")
 
         assert [row["project_name"] for row in rows] == ["alice@example.com", "proj-a"]
-        project_rows.assert_awaited_once_with("user-1", effective_limits=True, with_reset=True)
+        project_rows.assert_awaited_once_with("user-1", effective_limits=True, with_reset=True, exclude_expired=True)
 
     @pytest.mark.asyncio
     async def test_a_failed_project_read_still_returns_the_personal_rows(self, project_rows):
@@ -810,6 +812,116 @@ class TestBudgetUsageServiceGetBudgetUsage:
             _, rows = await BudgetUsageService().get_budget_usage("user-1", "alice@example.com")
 
         assert [row["project_name"] for row in rows] == ["alice@example.com"]
+
+
+PAST_RESET_AT = "2020-01-01T00:00:00Z"
+
+
+class TestExpiredBudgetsAreHidden:
+    """A budget whose reset time has passed is omitted from the usage table, by the queries."""
+
+    @pytest.fixture(autouse=True)
+    def _environment(self):
+        with (
+            patch(f"{MODULE}.get_async_session", _SessionTracker()),
+            patch(
+                f"{MODULE}.daily_budget_reset_reconciliation_service.refresh_overdue",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ) as refresh,
+            patch(
+                f"{MODULE}.resolve_identity", new_callable=AsyncMock, return_value=ResolvedIdentity("user-1", ALIASES)
+            ),
+            patch.object(
+                BudgetUsageService, "_resolve_default_project", new_callable=AsyncMock, return_value=(None, False)
+            ),
+        ):
+            self.refresh = refresh
+            yield
+
+    @staticmethod
+    def _repo(assignments, budgets_map):
+        """A repository whose filtered read drops the budgets whose reset is in the past."""
+        repo = MagicMock()
+        repo.get_user_category_assignments = AsyncMock(return_value=assignments)
+
+        async def get_by_ids(session, ids, exclude_expired=False):
+            return {
+                i: budgets_map[i]
+                for i in ids
+                if i in budgets_map
+                and not (exclude_expired and budgets_map[i].budget_reset_at and budgets_map[i].budget_reset_at < "2025")
+            }
+
+        repo.get_by_ids = AsyncMock(side_effect=get_by_ids)
+        return repo
+
+    async def _run(self, assignments, budgets_map, project_rows=()):
+        repo = self._repo(assignments, budgets_map)
+        with (
+            patch("codemie.repository.budget_repository.budget_repository", repo),
+            patch(_MSS) as member_spend,
+            patch.object(BudgetUsageService, "_consumed_per_budget", new_callable=AsyncMock, return_value={}),
+        ):
+            member_spend.get_user_project_rows = AsyncMock(return_value=list(project_rows))
+            result = await BudgetUsageService().get_budget_usage("user-1", "alice")
+        self.repo, self.project_rows_call = repo, member_spend.get_user_project_rows
+        return result
+
+    @pytest.mark.asyncio
+    async def test_expired_personal_budget_is_omitted(self):
+        _, rows = await self._run([_assignment("b1")], {"b1": _budget(reset_at=PAST_RESET_AT)})
+
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_active_and_no_reset_personal_budgets_are_kept(self):
+        _, rows = await self._run(
+            [_assignment("b1"), _assignment("b2", "cli")], {"b1": _budget(), "b2": _budget(reset_at=None)}
+        )
+
+        assert [r["project_name"] for r in rows] == ["alice", "alice (cli)"]
+
+    @pytest.mark.asyncio
+    async def test_the_filtered_read_runs_after_the_reconciliation(self):
+        order = []
+        self.refresh.side_effect = lambda budgets: order.append("refresh") or set()
+        repo = self._repo([_assignment("b1")], {"b1": _budget()})
+        inner = repo.get_by_ids.side_effect
+
+        async def recording(session, ids, exclude_expired=False):
+            order.append(f"read(exclude_expired={exclude_expired})")
+            return await inner(session, ids, exclude_expired)
+
+        repo.get_by_ids.side_effect = recording
+        with (
+            patch("codemie.repository.budget_repository.budget_repository", repo),
+            patch(_MSS) as member_spend,
+            patch.object(BudgetUsageService, "_consumed_per_budget", new_callable=AsyncMock, return_value={}),
+        ):
+            member_spend.get_user_project_rows = AsyncMock(return_value=[])
+            await BudgetUsageService().get_budget_usage("user-1", "alice")
+
+        assert order == ["read(exclude_expired=False)", "refresh", "read(exclude_expired=True)"]
+
+    @pytest.mark.asyncio
+    async def test_an_overdue_budget_the_refresh_renewed_stays(self):
+        """Overdue at the first read, renewed by the reconciliation: the post-refresh read sees the new reset."""
+        budgets = {"b1": _budget(reset_at=PAST_RESET_AT)}
+        self.refresh.side_effect = lambda b: budgets.update(b1=_budget()) or {"b1"}
+
+        _, rows = await self._run([_assignment("b1")], budgets)
+
+        assert [r["project_name"] for r in rows] == ["alice"]
+
+    @pytest.mark.asyncio
+    async def test_projects_are_read_with_expired_excluded(self):
+        project = _project_spend_row("alpha", platform_reset_at=RESET_AT)
+
+        _, rows = await self._run([], {}, [project])
+
+        assert [r["project_name"] for r in rows] == ["alpha"]
+        assert self.project_rows_call.await_args.kwargs["exclude_expired"] is True
 
 
 class TestExpandProjectRows:

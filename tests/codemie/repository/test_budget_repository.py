@@ -307,3 +307,59 @@ async def test_mark_user_category_spend_reset_flushes_without_commit(repository:
 
     session.flush.assert_awaited_once()
     session.commit.assert_not_awaited()
+
+
+def _sql(stmt) -> str:
+    return str(stmt.compile(dialect=postgresql.dialect()))
+
+
+@pytest.mark.asyncio
+async def test_get_by_ids_excludes_expired_in_sql_and_keeps_null_reset(repository: BudgetRepository):
+    session = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.all.return_value = [SimpleNamespace(budget_id="b-1")]
+    session.execute.return_value = execute_result
+
+    result = await repository.get_by_ids(session, ["b-1"], exclude_expired=True)
+
+    assert list(result) == ["b-1"]
+    stmt, params = session.execute.await_args.args[0], session.execute.await_args.args[1]
+    sql = _sql(stmt)
+    assert "budget_reset_at IS NULL" in sql
+    assert "CAST(budget_reset_at AS timestamptz) > %(now)s" in sql
+    assert params["now"].tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_get_by_ids_does_not_filter_by_default(repository: BudgetRepository):
+    session = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.all.return_value = []
+    session.execute.return_value = execute_result
+
+    await repository.get_by_ids(session, ["b-1"])
+
+    assert "timestamptz" not in _sql(session.execute.await_args.args[0])
+
+
+@pytest.mark.asyncio
+async def test_get_expired_budget_ids_selects_only_past_non_null_resets(repository: BudgetRepository):
+    session = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.all.return_value = ["b-old"]
+    session.execute.return_value = execute_result
+
+    result = await repository.get_expired_budget_ids(session, ["b-old", "b-new"])
+
+    assert result == {"b-old"}
+    sql = _sql(session.execute.await_args.args[0])
+    assert "budget_reset_at IS NOT NULL" in sql
+    assert "CAST(budget_reset_at AS timestamptz) <= %(now)s" in sql
+
+
+@pytest.mark.asyncio
+async def test_get_expired_budget_ids_with_no_ids_does_not_query(repository: BudgetRepository):
+    session = AsyncMock()
+
+    assert await repository.get_expired_budget_ids(session, []) == set()
+    session.execute.assert_not_awaited()

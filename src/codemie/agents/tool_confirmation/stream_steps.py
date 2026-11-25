@@ -72,7 +72,7 @@ class ConfirmationStepRouter:
         # (location key, raw id) -> the wire ids the gate assigned to that location's calls, in call order. The message
         # keeps the raw id, so a tool's result is resolved to its own wire id here, in the order its step was started.
         # Keyed by location so two agents whose raw ids collide never share a queue.
-        self._wire_ids: dict[tuple[str, str], deque[str]] = {}
+        self._wire_ids: dict[tuple[str, str], deque[tuple[str, str]]] = {}
 
     @staticmethod
     def namespace_key(namespace: tuple[str, ...]) -> str:
@@ -132,19 +132,20 @@ class ConfirmationStepRouter:
             self._start_wrapped_unavailable_steps(value)
         return False
 
-    def resolve_wire_id(self, raw_id: str, location_key: str = "") -> str:
+    def resolve_wire_id(self, raw_id: str, location_key: str = "", name: str | None = None) -> str:
         """The wire id of the next started call with this raw id at this location; the raw id when none is queued.
 
-        Results are popped in start order. That holds because LangGraph's ``ToolNode`` runs a turn's calls under
-        ``asyncio.gather``, which returns them in call order whatever order they finish in, and the adapter reads
-        that list in the same order. So calls sharing a raw id at one location resolve to the wire ids they
-        started with.
+        Calls sharing a raw id are told apart by tool name: tool results can stream in completion order, not call
+        order, so the first queued call with the result's tool name is taken. With no name match (or no name) the
+        oldest queued call is taken, i.e. start order.
         """
         key = (location_key, raw_id)
         queue = self._wire_ids.get(key)
         if not queue:
             return raw_id
-        wire_id = queue.popleft()
+        index = next((i for i, (_, queued_name) in enumerate(queue) if name and queued_name == name), 0)
+        wire_id, _ = queue[index]
+        del queue[index]
         if not queue:
             del self._wire_ids[key]
         return wire_id
@@ -186,7 +187,7 @@ class ConfirmationStepRouter:
         for call in routed:
             if call.raw_id not in answered_ids:
                 key = (call.identity.location_key, call.raw_id)
-                self._wire_ids.setdefault(key, deque()).append(call.identity.wire_id)
+                self._wire_ids.setdefault(key, deque()).append((call.identity.wire_id, call.name))
 
     def _start_wrapped_unavailable_steps(self, update: dict[str, Any]) -> None:
         """Start the unavailable calls of a smart-selection root as stopped steps.

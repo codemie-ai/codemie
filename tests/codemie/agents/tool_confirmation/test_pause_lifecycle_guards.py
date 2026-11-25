@@ -189,6 +189,20 @@ def test_a_shared_raw_id_still_gets_distinct_step_run_ids():
     assert router.resolve_wire_id("c0") == identities[1].wire_id
 
 
+def test_results_sharing_a_raw_id_resolve_by_tool_name_when_they_arrive_out_of_call_order():
+    router = ConfirmationStepRouter.__new__(ConfirmationStepRouter)
+    router._wire_ids = {}
+    routed = [
+        RoutedCall(raw_id="dup", identity=CallIdentity(wire_id="w_read", location_key=""), name="read_tool"),
+        RoutedCall(raw_id="dup", identity=CallIdentity(wire_id="w_write", location_key=""), name="write_tool"),
+    ]
+    router._register_wire_ids(routed, set())
+
+    assert router.resolve_wire_id("dup", "", "write_tool") == "w_write"
+    assert router.resolve_wire_id("dup", "", "read_tool") == "w_read"
+    assert router.resolve_wire_id("dup", "", "read_tool") == "dup", "queue drained"
+
+
 def test_a_raw_id_shared_by_two_agents_resolves_within_each_agents_own_location():
     """CR-002: the wire-id queue is per location, so another agent's call with the same raw id never shifts it."""
     router, _ = _router()

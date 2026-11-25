@@ -262,7 +262,7 @@ class LangGraphEventAdapter:
             for action in value["tools"]["messages"]:
                 if isinstance(action, ToolMessage):
                     # Resolved once (it pops the call's queued wire id); both the replayed start and the end use it.
-                    wire_id = self._steps.resolve_wire_id(action.tool_call_id or "")
+                    wire_id = self._steps.resolve_wire_id(action.tool_call_id or "", name=action.name)
                     self.agent._replay_tool_start_on_resume(action, wire_id=wire_id)
                     logger.debug(f"Tool {action.name} call result: {action.content}")
                     self.agent._parse_tool_message(action, wire_id=wire_id)
@@ -380,7 +380,7 @@ class LangGraphEventAdapter:
         logger.debug(f"Tool {last_message.name} call result: {last_message.content}")
         location_key = self._steps.location_key(namespace)
         # Resolved once (it pops the call's queued wire id); both the replayed start and the end use it.
-        wire_id = self._steps.resolve_wire_id(last_message.tool_call_id or "", location_key)
+        wire_id = self._steps.resolve_wire_id(last_message.tool_call_id or "", location_key, last_message.name)
         pending_events = getattr(self.agent, "tool_pending_events", None)
         if isinstance(pending_events, dict) and pending_events:
             self.agent._replay_tool_start_on_resume(

@@ -201,7 +201,10 @@ def _hook_update(
     raw_ids = [call.get("id") or "" for call in calls]
     if not denials and all(identity.wire_id == raw for raw, identity in zip(raw_ids, identities, strict=True)):
         return {}
-    routed = [RoutedCall(raw_id=raw, identity=identity) for raw, identity in zip(raw_ids, identities, strict=True)]
+    routed = [
+        RoutedCall(raw_id=raw, identity=identity, name=call.get("name") or "")
+        for raw, identity, call in zip(raw_ids, identities, calls, strict=True)
+    ]
     return {"messages": denials, "codemie_call_identities": routed}
 
 

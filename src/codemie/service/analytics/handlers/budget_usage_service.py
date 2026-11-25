@@ -304,7 +304,7 @@ class BudgetUsageService:
         try:
             project_rows = _expand_project_rows(
                 await member_spend_service.get_user_project_rows(
-                    subject_user_id, effective_limits=True, with_reset=True
+                    subject_user_id, effective_limits=True, with_reset=True, exclude_expired=True
                 ),
                 default_project,
             )
@@ -321,11 +321,10 @@ class BudgetUsageService:
             # this person's pre-rollout rows cannot be identified, which the port labels on the figure.
             # An empty set would instead claim they have no fallback identities.
             aliases = (await resolve_identity(session, subject_user_id)).aliases
-        refreshed = await daily_budget_reset_reconciliation_service.refresh_overdue(budgets_map.values())
-        if refreshed:
-            # Re-read rather than refreshed: the rows left with their closed session (EPMCDME-15537).
-            async with get_async_session() as session:
-                budgets_map.update(await budget_repository.get_by_ids(session, list(refreshed)))
+        await daily_budget_reset_reconciliation_service.refresh_overdue(budgets_map.values())
+        # Must follow refresh_overdue: an overdue budget is renewed there and so is not expired.
+        async with get_async_session() as session:
+            budgets_map = await budget_repository.get_by_ids(session, list(budgets_map), exclude_expired=True)
         spend_map = await self._consumed_per_budget(subject_user_id, assignments, budgets_map, aliases)
 
         columns, personal_rows = _build_budget_usage_rows(

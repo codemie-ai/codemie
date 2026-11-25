@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 from datetime import timedelta
 
@@ -286,12 +286,34 @@ class BudgetRepository:
         await session.refresh(budget)
         return budget
 
-    async def get_by_ids(self, session: AsyncSession, budget_ids: list[str]) -> dict[str, Budget]:
+    async def get_by_ids(
+        self, session: AsyncSession, budget_ids: list[str], *, exclude_expired: bool = False
+    ) -> dict[str, Budget]:
         """SELECT rows matching budget_ids, return dict keyed by budget_id."""
         if not budget_ids:
             return {}
-        result = await session.execute(select(Budget).where(Budget.budget_id.in_(budget_ids)))
+        stmt = select(Budget).where(Budget.budget_id.in_(budget_ids))
+        params: dict = {}
+        if exclude_expired:
+            stmt = stmt.where(
+                or_(Budget.budget_reset_at.is_(None), text("CAST(budget_reset_at AS timestamptz) > :now"))
+            )
+            params["now"] = datetime.now(UTC)
+        result = await session.execute(stmt, params)
         return {b.budget_id: b for b in result.scalars().all()}
+
+    async def get_expired_budget_ids(self, session: AsyncSession, budget_ids: list[str]) -> set[str]:
+        """Return the ids among budget_ids whose stored reset timestamp has passed."""
+        if not budget_ids:
+            return set()
+        stmt = (
+            select(Budget.budget_id)
+            .where(Budget.budget_id.in_(budget_ids))
+            .where(Budget.budget_reset_at.is_not(None))
+            .where(text("CAST(budget_reset_at AS timestamptz) <= :now"))
+        )
+        result = await session.execute(stmt, {"now": datetime.now(UTC)})
+        return set(result.scalars().all())
 
     async def upsert_from_provider(
         self,

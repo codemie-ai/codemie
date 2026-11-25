@@ -1124,3 +1124,56 @@ class TestEffectiveLimits:
 
         assert row["platform_limit"] == 50.0
         assert "platform_percent_spend" not in row
+
+
+class TestExcludeExpired:
+    """`exclude_expired` drops a category whose governing budget the repository reports as expired."""
+
+    ENFORCING = TestEffectiveLimits.ENFORCING
+    ACTIVE_PROJECT_BUDGETS = TestEffectiveLimits.ACTIVE_PROJECT_BUDGETS
+    EXPIRED = "codemie.service.analytics.handlers.member_spend_service.budget_repository.get_expired_budget_ids"
+
+    async def _rows(self, expired: set[str], *, exclude_expired: bool, enforcing=("atlas-core",)):
+        allocation = _allocation(project_name="atlas-core", category="platform", budget_id="b-1")
+        allocation.budget_reset_at = None
+        allocations = [allocation]
+        project_budget = _budget()
+        project_budget.max_budget = 100.0
+        assignments = [SimpleNamespace(project_name="atlas-core", budget_category="platform", budget_id="b-1")]
+        get_expired = AsyncMock(side_effect=lambda session, ids: expired & set(ids))
+        with (
+            _patched_user_reads([SimpleNamespace(project_name="atlas-core")], allocations, set()),
+            _patched_port([project_budget], _figures(platform=Decimal("3"))),
+            patch(self.ENFORCING, return_value=set(enforcing)),
+            patch(self.ACTIVE_PROJECT_BUDGETS, new=AsyncMock(return_value=assignments)),
+            patch(self.EXPIRED, new=get_expired),
+        ):
+            rows = await MemberSpendService().get_user_project_rows(
+                "u-1", effective_limits=True, with_reset=True, exclude_expired=exclude_expired
+            )
+        return rows, get_expired
+
+    @pytest.mark.asyncio
+    async def test_expired_member_budget_drops_the_category_limit(self):
+        (row,), _ = await self._rows({"b-1:shared"}, exclude_expired=True)
+
+        assert row["platform_limit"] is None
+
+    @pytest.mark.asyncio
+    async def test_active_member_budget_keeps_its_limit(self):
+        (row,), _ = await self._rows(set(), exclude_expired=True)
+
+        assert row["platform_limit"] == 100.0
+
+    @pytest.mark.asyncio
+    async def test_expired_project_budget_drops_an_enforcement_off_category(self):
+        (row,), _ = await self._rows({"b-1"}, exclude_expired=True, enforcing=())
+
+        assert row["platform_limit"] is None
+
+    @pytest.mark.asyncio
+    async def test_default_asks_no_expiry_question_and_keeps_the_limit(self):
+        (row,), get_expired = await self._rows({"b-1"}, exclude_expired=False)
+
+        get_expired.assert_not_awaited()
+        assert row["platform_limit"] == 100.0
