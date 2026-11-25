@@ -26,7 +26,7 @@
   shared cache, renewed while the computation runs: one pod computes while the others wait for the result, and the
   lock of a pod that died frees the key within ``_LOCK_TTL_S``. Requests wait at most ``WAIT_FOR_OTHER_POD_S``,
   then get the last good analysis or a 503 to retry.
-- **Worker processes.** Each computation runs in its own ``spawn`` process, so the API's event loop never runs it,
+- **Worker processes.** Each computation runs in its own process, so the API's event loop never runs it,
   the memory is released afterwards, and stopping one computation never touches another. One computation with the
   default settings and one with custom settings run at a time per API process, so requests with the default
   settings never wait for custom ones. The timeout counts from the start of the computation, not from the wait for
@@ -54,6 +54,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from typing import Any
@@ -306,6 +307,11 @@ def _inputs_note(inputs_blob: bytes | None, meta: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------------------------------------------------
 # Computation processes
 # ---------------------------------------------------------------------------------------------------------------------
+class _WorkerStartMethod(StrEnum):
+    FORKSERVER = "forkserver"
+    SPAWN = "spawn"
+
+
 class WorkerFailedError(RuntimeError):
     """The computation process raised an error (its type is kept), or stopped without an answer."""
 
@@ -880,8 +886,11 @@ class AnalysisService:
             slot.release()
 
     async def _run_in_process(self, kind: str, job: dict, timeout_s: float) -> dict:
-        """A ``spawn`` process of its own: memory is released afterwards, and stopping it touches nothing else."""
-        ctx = multiprocessing.get_context("spawn")
+        """Run each computation in a fresh process whose memory is released when it exits."""
+        methods = multiprocessing.get_all_start_methods()
+        # The fork server keeps the API process's peak RSS out of the worker watchdog's reading.
+        method = _WorkerStartMethod.FORKSERVER if _WorkerStartMethod.FORKSERVER in methods else _WorkerStartMethod.SPAWN
+        ctx = multiprocessing.get_context(method)
         receiver, sender = ctx.Pipe(duplex=False)
         process = ctx.Process(
             target=self._process_target, args=(sender, job), name=f"usage-attribution-{kind}", daemon=True

@@ -24,6 +24,7 @@ the hour, so only the spend of the period is read. A watchdog stops the process 
 from __future__ import annotations
 
 import gzip
+import io
 import json
 import logging
 import os
@@ -56,6 +57,14 @@ def _dt(text: str) -> datetime:
 
 def _gz(obj: Any) -> bytes:
     return gzip.compress(json.dumps(obj, separators=(",", ":"), default=str).encode("utf-8"), compresslevel=5)
+
+
+def _gz_stream(obj: Any) -> bytes:
+    """Compress large payloads without materializing the uncompressed JSON."""
+    output = io.BytesIO()
+    with gzip.open(output, "wt", compresslevel=5, encoding="utf-8") as compressed:
+        json.dump(obj, compressed, separators=(",", ":"), default=str)
+    return output.getvalue()
 
 
 def _gunzip(blob: bytes | None) -> Any:
@@ -309,7 +318,7 @@ def _build_evidence(
         "sess": by_key["sess"].result or [],
         "ev_persons": (by_key["persons"].result or {}) if same else (by_key["ev_persons"].result or {}),
     }
-    return evidence, _gz(evidence)
+    return evidence, _gz_stream(evidence)
 
 
 def _fetch_meta(
@@ -508,7 +517,7 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         inputs_cached = True
     else:
         inputs, evidence_blob = fetch_inputs(job)
-        new_inputs = _gz(inputs)
+        new_inputs = _gz_stream(inputs)
         inputs_cached = False
     t_analysis = time.perf_counter()
     an = Analysis(inputs, job["settings"]).run()
@@ -529,6 +538,8 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
             # last good copy would keep entities of an older computation.
             for shard in range(DETAIL_SHARDS):
                 encoded[f"{name}:{shard}"] = _gz(value.get(shard) or {})
+        elif name == SECTION_CLI_EVIDENCE:
+            encoded[name] = _gz_stream(value)
         else:
             encoded[name] = _gz(value)
     t_end = time.perf_counter()
