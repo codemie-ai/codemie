@@ -96,6 +96,16 @@ class GitlabTool(CodeMieTool):
                 return False
         return self._http_method_is_safe(query)
 
+    def _parse_input(self, tool_input: str | dict, tool_call_id: str | None = None):
+        """Treat a dict without ``query`` as the request itself, so ``execute`` reports what is wrong with it.
+
+        Some models send the request specification at the top level, which would fail ``GitlabInput`` validation
+        ("query: Field required") with a pydantic error instead of the tool's own message.
+        """
+        if isinstance(tool_input, dict) and "query" not in tool_input:
+            tool_input = {"query": tool_input}
+        return super()._parse_input(tool_input, tool_call_id)
+
     def _make_request(
         self, method: str, url: str, headers: dict[str, str], method_arguments: dict, stream: bool = False
     ) -> requests.Response:
