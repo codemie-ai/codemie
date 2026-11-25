@@ -810,7 +810,7 @@ class SpendLedger(Protocol):
         ...
 
     async def cli_attribution_rows(
-        self, period: TimeRange, *, access: AccessScope | None
+        self, period: TimeRange, *, access: AccessScope | None, known_repositories: tuple[str, ...] = ()
     ) -> tuple[CliSpendRow, ...] | None:
         """CLI ledger money by person, paying project and repository; None when unavailable."""
         ...

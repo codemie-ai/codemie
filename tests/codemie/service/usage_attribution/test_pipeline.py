@@ -17,8 +17,11 @@ Web Platform who pays, grouping, related projects and windows."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from codemie.service.usage_attribution import grouping
 from codemie.service.usage_attribution.classifier import decide
 from codemie.service.usage_attribution.grouping import related_project
 from codemie.service.usage_attribution.app_db import datasource_rows
@@ -34,6 +37,22 @@ from tests.codemie.service.usage_attribution.builders import (
 )
 
 TEAM = ["u1", "u2", "u3"]
+
+
+def test_group_edges_keep_qualifying_pairs_in_signal_then_people_order(monkeypatch):
+    monkeypatch.setattr(grouping, "_signal_buckets", lambda *_: [(2, "owner", "team", ["c", "d"])])
+    keys = [
+        {"key": "a", "persons": {"u1": 1, "u2": 1}},
+        {"key": "b", "persons": {"u1": 1, "u2": 1}},
+        {"key": "c", "persons": {"u1": 1}},
+        {"key": "d", "persons": {"u1": 1}},
+    ]
+    an = SimpleNamespace(S={"groupMinSignals": 1})
+
+    assert list(grouping._group_edges(an, keys).items()) == [
+        (("c", "d"), {"owner": {"team"}}),
+        (("a", "b"), {"people": 2}),
+    ]
 
 
 def team_repo(name: str, uids: list[str] = TEAM, spend: float = 100.0, cb: float = 0.0, sh: float = 0.0) -> tuple:

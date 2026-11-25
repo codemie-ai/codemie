@@ -136,6 +136,7 @@ class _StubSpendLogsRepository:
         self.holder_batch_access: object = _UNSET
         self.holder_batch_filter: object = _UNSET
         self.project_residue_access: object = _UNSET
+        self.project_residue_reads: list[tuple[TimeRange, AccessScope | None]] = []
 
     async def sum_for_dimension_values(
         self, session, period, dimension, ids_by_value, access=_UNSET, report_filter=_UNSET
@@ -159,6 +160,7 @@ class _StubSpendLogsRepository:
 
     async def project_dimension_residue(self, session, sub_range, access=_UNSET):
         self.project_residue_access = access
+        self.project_residue_reads.append((sub_range, access))
         # A non-zero row count so the portion is actually built, which is what reads the argument.
         return Decimal("2"), 3
 
@@ -520,6 +522,42 @@ class TestTheSpendLogsLedgerNarrowsTheHolderFigureAndItsResidue:
         asyncio.run(led.consumed_for_holders([PROJECT], PERIOD))
         assert repository.holder_batch_access is None
         assert repository.project_residue_access is None
+
+    @pytest.mark.asyncio
+    async def test_project_residue_is_cached_by_exact_window_and_access(self):
+        led, repository = _spend_logs_ledger()
+        shifted = TimeRange(PERIOD.start, PERIOD.end + timedelta(seconds=1))
+
+        first = await led.consumed_for_holder(PROJECT, PERIOD)
+        same = (await led.consumed_for_holders([PROJECT], PERIOD))[PROJECT]
+        await led.consumed_for_holder(PROJECT, shifted)
+        await led.consumed_for_holder(PROJECT, PERIOD, ALICE_SCOPE)
+
+        assert first == same
+        assert repository.project_residue_reads == [(PERIOD, None), (shifted, None), (PERIOD, ALICE_SCOPE)]
+
+    @pytest.mark.asyncio
+    async def test_matching_concurrent_budget_reads_share_one_cold_residue(self):
+        led, repository = _spend_logs_ledger()
+        started, release = asyncio.Event(), asyncio.Event()
+        original_read = repository.project_dimension_residue
+
+        async def blocked_read(session, period, access):
+            started.set()
+            await release.wait()
+            return await original_read(session, period, access)
+
+        with patch.object(repository, "project_dimension_residue", side_effect=blocked_read) as read:
+            single = asyncio.create_task(led.consumed_for_holder(PROJECT, PERIOD))
+            await started.wait()
+            batch = asyncio.create_task(led.consumed_for_holders([PROJECT], PERIOD))
+            scoped = asyncio.create_task(led.consumed_for_holder(PROJECT, PERIOD, ALICE_SCOPE))
+            await asyncio.sleep(0)
+            assert read.await_count == 2
+            release.set()
+            assert await single == (await batch)[PROJECT]
+            await scoped
+        assert repository.project_residue_reads == [(PERIOD, None), (PERIOD, ALICE_SCOPE)]
 
 
 class TestTheSpendLogsLedgerCarriesTheDashboardsFilterIntoTheHolderBatch:

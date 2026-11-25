@@ -39,7 +39,7 @@ from __future__ import annotations
 import inspect
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -106,6 +106,21 @@ class _CapturingSession:
                 return row[0]
 
         return _Result()
+
+
+@pytest.mark.asyncio
+async def test_postgres_groups_native_and_matched_values_in_one_statement() -> None:
+    session = AsyncMock()
+    session.execute.return_value = [("wf-1", Decimal("3.25"))]
+    totals = await SpendLogsRepository(projection=True, postgres_grouped_reads=True).sum_for_dimension_values(
+        session, PERIOD, WITH_A_COLUMN, {"wf-1": ("req-1", "req-1"), "wf-2": ()}
+    )
+    session.execute.assert_awaited_once()
+    rendered = sql(session.execute.call_args.args[0])
+    assert "litellm_spend_hourly" in rendered
+    assert "unnest(ARRAY['req-1'], ARRAY['wf-1'])" in rendered
+    assert "litellm_spend_logs.codemie_workflow_id IS NULL" in rendered
+    assert totals == {"wf-1": Decimal("3.25"), "wf-2": Decimal(0)}
 
 
 class TestTheGroupedPredicateIsRightForBothKindsOfDimension:

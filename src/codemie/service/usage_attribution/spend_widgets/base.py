@@ -17,7 +17,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import field
 from datetime import datetime
-from typing import Any, ClassVar, Protocol, Self
+from typing import Any, ClassVar, Protocol, Self, runtime_checkable
 
 from pydantic.dataclasses import dataclass
 
@@ -134,6 +134,15 @@ class WidgetCache(Protocol):
     async def get(self, key: str) -> bytes | None: ...
 
     async def set_many(self, mapping: dict[str, bytes], ttl: int) -> None: ...
+
+
+@runtime_checkable
+class LockingWidgetCache(WidgetCache, Protocol):
+    async def acquire(self, key: str, ttl: float) -> str | None: ...
+
+    async def extend(self, key: str, token: str, ttl: float) -> bool: ...
+
+    async def release(self, key: str, token: str | None) -> None: ...
 
 
 class WidgetContext:

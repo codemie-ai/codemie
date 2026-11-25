@@ -1141,8 +1141,4 @@ class WorkflowService:
 
     @classmethod
     def get_pool_enabled_workflow_configs(cls) -> list[WorkflowConfig]:
-        """Return all WorkflowConfig rows that have pool_config.enabled=True."""
-        with Session(WorkflowConfig.get_engine()) as session:
-            stmt = select(WorkflowConfig).where(WorkflowConfig.pool_config.is_not(None))
-            rows = session.exec(stmt).all()
-            return [r for r in rows if getattr(r.pool_config, "enabled", False)]
+        return _workflow_config_repository.get_pool_enabled_workflow_configs()

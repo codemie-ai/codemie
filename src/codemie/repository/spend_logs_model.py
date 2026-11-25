@@ -337,3 +337,10 @@ Index(
     LiteLLMSpendHourly.c.hour,
     postgresql_where=text("codemie_workflow_id IS NOT NULL"),
 )
+Index(
+    "ix_spend_hourly_project_residue",
+    LiteLLMSpendHourly.c.attr_source,
+    LiteLLMSpendHourly.c.hour,
+    postgresql_include=["spend", "row_count"],
+    postgresql_where=text("attr_project IS NULL"),
+)

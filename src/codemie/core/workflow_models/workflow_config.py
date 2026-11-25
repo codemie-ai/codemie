@@ -59,6 +59,7 @@ from codemie.core.workflow_models.workflow_models import (
     WorkflowAssistant,
     WorkflowRetryPolicy,
 )
+from codemie.core.workflow_models.workflow_pool_storage import POOL_ENABLED_PREDICATE
 from sqlmodel import Field as SQLField, Column, Index, text, Session, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import Text
@@ -126,6 +127,7 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
 
     # Custom PostgreSQL indexes
     __table_args__ = (
+        Index("ix_workflows_pool_enabled", "id", postgresql_where=text(POOL_ENABLED_PREDICATE)),
         Index('ix_workflows_created_by_user_id', text("(created_by->>'user_id')")),
         Index('ix_workflows_update_date', 'update_date'),
         Index('ix_workflows_name', "name", postgresql_using='gin', postgresql_ops={"name": "gin_trgm_ops"}),

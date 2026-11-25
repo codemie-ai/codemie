@@ -428,11 +428,10 @@ class Application(BaseModelWithSQLSupport, Owned, table=True):
 
     # Custom PostgreSQL indexes
     # ix_applications_name: GIN trigram index for ILIKE search performance
-    # ix_applications_name_lower: UNIQUE functional index on LOWER(name)
-    # for case-insensitive uniqueness (created by migration)
     __table_args__ = (
         UniqueConstraint("project_instance_id", name="uq_applications_project_instance_id"),
         Index("ix_applications_name", "name", postgresql_using="gin", postgresql_ops={"name": "gin_trgm_ops"}),
+        Index("ix_applications_active_name_lower", text("lower(name)"), postgresql_where=text("deleted_at IS NULL")),
         CheckConstraint("project_type IN ('personal', 'shared')", name="ck_applications_project_type"),
         CheckConstraint(
             "chargeback_attribution IN ('project', 'cost_center')", name="ck_applications_chargeback_attribution"

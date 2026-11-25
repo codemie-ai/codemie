@@ -30,6 +30,7 @@ from codemie.core.db_utils import escape_like_wildcards
 from codemie.core.models import Application, CostCenter
 from codemie.rest_api.models.user_management import UserProject
 from codemie.service.budget.budget_models import ProjectBudgetAssignment
+from codemie.utils.shared_database_read import SharedDatabaseRead
 
 
 def _personal_projects_named(names: list[str]) -> tuple[ColumnElement[bool], ...]:
@@ -42,6 +43,9 @@ def _personal_projects_named(names: list[str]) -> tuple[ColumnElement[bool], ...
 
 class ApplicationRepository:
     """Repository for application/project management (sync SQLModel)"""
+
+    def __init__(self) -> None:
+        self._active_project_reads = SharedDatabaseRead[str, Application | None]()
 
     @staticmethod
     def _build_visibility_condition(user_id: str) -> BooleanClauseList:
@@ -875,9 +879,16 @@ class ApplicationRepository:
             select(Application)
             .where(func.lower(Application.name) == name.lower(), Application.deleted_at.is_(None))
             .order_by(case((Application.name == name, 0), else_=1), Application.name)
+            .limit(1)
         )
         result = await session.execute(statement)
         return result.scalars().first()
+
+    async def aget_active_project_for_read(self, session: AsyncSession, name: str) -> Application | None:
+        """Share overlapping live lookups of the same spelling for read-only CLI requests."""
+        return await self._active_project_reads.read(
+            name, lambda: self.aget_active_by_name_case_insensitive(session, name)
+        )
 
     async def aget_active_personal_by_creator_case_insensitive(
         self, session: AsyncSession, name: str, created_by: str

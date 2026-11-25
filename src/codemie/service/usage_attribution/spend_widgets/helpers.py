@@ -46,14 +46,19 @@ def no_rows(keys: Sequence[str]) -> SpendTable:
 
 
 async def read_per_row(
-    window: TimeRange, access: AccessScope, keys: Sequence[str], filters: TableFilters
+    window: TimeRange,
+    access: AccessScope,
+    keys: Sequence[str],
+    filters: TableFilters,
+    *,
+    batch_size: int = HOLDER_BATCH_SIZE,
 ) -> SpendTable:
-    """One batched read per ``HOLDER_BATCH_SIZE`` filters; a row naming nobody gets no figure, never a read."""
+    """Read the named filters in batches; a row naming nobody gets no figure."""
     named = list(dict.fromkeys(f for f in filters.rows if f is not None))
     answers: dict[ReportFilter, SpendFigures] = {}
 
-    for i in range(0, len(named), HOLDER_BATCH_SIZE):
-        chunk = named[i : i + HOLDER_BATCH_SIZE]
+    for i in range(0, len(named), batch_size):
+        chunk = named[i : i + batch_size]
         batch = await spend_service.aggregate_by_spend_group_per_filter(
             window, access=access, common_filter=filters.common, report_filters=chunk
         )

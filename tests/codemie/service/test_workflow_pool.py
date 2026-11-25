@@ -54,6 +54,26 @@ def _make_graph(slot_ids=("node_a",)):
     return graph, slots
 
 
+def test_warmup_fetches_only_sql_selected_pool_enabled_workflows():
+    from sqlalchemy.dialects import postgresql
+
+    from codemie.service.workflow_service import WorkflowService
+
+    pooled = _make_config()
+    with (
+        patch("codemie.repository.workflow_config_repository.WorkflowConfig.get_engine"),
+        patch("codemie.repository.workflow_config_repository.Session") as session_class,
+    ):
+        session = session_class.return_value.__enter__.return_value
+        session.exec.return_value.all.return_value = [pooled]
+        assert WorkflowService.get_pool_enabled_workflow_configs() == [pooled]
+        session.exec.assert_called_once()
+        statement = session.exec.call_args.args[0]
+    rendered = str(statement.compile(dialect=postgresql.dialect()))
+    assert "WHERE (lower(pool_config ->> 'enabled') IN" in rendered
+    assert "pool_config -> 'enabled' = '1'::jsonb" in rendered
+
+
 class TestWorkflowPoolAcquire:
     def test_acquire_pool_miss_compiles(self):
         """Cold pool: acquire() calls _compile_for() and returns graph."""

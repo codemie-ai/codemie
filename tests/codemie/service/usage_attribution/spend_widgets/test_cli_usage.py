@@ -77,6 +77,20 @@ async def test_cached_cli_categories_use_ledger_money_and_keep_missing_repositor
 
 
 @pytest.mark.asyncio
+async def test_the_ledger_gets_only_repository_names_already_in_evidence(port, evidence):
+    evidence["values"] = {"owner/first": {}, "owner/second": {}}
+    port.cli_attribution_rows = AsyncMock(return_value=None)
+    widget = CliUsageSpend(context(), evidence=evidence, settings=build_defaults({}).values)
+
+    with coverage():
+        await widget.read(START, END, "analysis:v1")
+
+    port.cli_attribution_rows.assert_awaited_once_with(
+        TimeRange(FLOOR, END), access=SCOPE, known_repositories=("owner/first", "owner/second")
+    )
+
+
+@pytest.mark.asyncio
 async def test_an_unavailable_cli_read_has_no_figures_and_is_retried(port, evidence):
     port.cli_attribution_rows = AsyncMock(return_value=None)
     cache = FakeCache()

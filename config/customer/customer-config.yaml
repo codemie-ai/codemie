@@ -353,6 +353,7 @@ components:
       # them (validated against the same bounds at load). Admins and maintainers can override the tunable ones for
       # their own view in Analysis Settings; nothing is stored on the server.
       fallbackFieldSince: "2026-10-09T12:00:00Z"
+      analysisCacheMinutes: 30
       sharedProjectThresholdPer30Days: 1000
       repositoryGroupThresholdPer30Days: 1000
       experimentsHighlightPer30Days: 500

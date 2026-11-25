@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -85,6 +86,26 @@ class _CapturingSession:
                 return identities
 
         return _Result()
+
+
+@pytest.mark.asyncio
+async def test_postgres_groups_person_totals_without_an_identity_preflight() -> None:
+    session = AsyncMock()
+    session.execute.return_value = [(0, Decimal("3.25")), (2, Decimal("8.50"))]
+    holders = [
+        PersonTotalHolder(USER, frozenset({"alice"})),
+        PersonTotalHolder(USER, None),
+        PersonTotalHolder("bob", frozenset({"alice"})),
+    ]
+    totals = await SpendLogsRepository(projection=True, postgres_grouped_reads=True).sum_for_holders(
+        session, holders, PERIOD
+    )
+    session.execute.assert_awaited_once()
+    rendered = sql(session.execute.call_args.args[0])
+    assert "litellm_spend_hourly" in rendered
+    assert "WITH ORDINALITY" in rendered
+    assert "people_spend.attr_user_id IS DISTINCT FROM aliases.user_id" in rendered
+    assert totals == dict(zip(holders, (Decimal("3.25"), Decimal(0), Decimal("8.50")), strict=True))
 
 
 class TestEveryHolderPredicateSurvivesTheBatch:

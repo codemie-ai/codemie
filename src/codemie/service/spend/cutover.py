@@ -391,13 +391,13 @@ class CutoverSpendLedger:
         return await self._per_key(period, lambda ledger, half: ledger.aggregate_by_traffic_class(half, resolved_ids))
 
     async def cli_attribution_rows(
-        self, period: TimeRange, *, access: AccessScope | None
+        self, period: TimeRange, *, access: AccessScope | None, known_repositories: tuple[str, ...] = ()
     ) -> tuple[CliSpendRow, ...] | None:
         """Repository attribution has ledger figures only; never supplement it from the legacy half."""
         _legacy, current = self._split(period)
         if current is None:
             return None
-        return await self._current.cli_attribution_rows(current, access=access)
+        return await self._current.cli_attribution_rows(current, access=access, known_repositories=known_repositories)
 
     async def aggregate_by_spend_group(
         self,

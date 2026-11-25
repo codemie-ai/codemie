@@ -14,6 +14,7 @@
 
 """Who Pays: ledger money per request, in the bucket the classification gives it, footing on the cards."""
 
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -66,6 +67,58 @@ def classifier():
 
 @pytest.mark.asyncio
 class TestWhoPaysSpend:
+    async def test_request_pages_release_each_session_before_classifying(self, monkeypatch):
+        opened = 0
+        pages = iter([[('c-cb', Decimal('1')), ('c-pr', Decimal('2'))], [('c-sh', Decimal('3'))]])
+        statements = []
+
+        async def execute(statement):
+            assert opened == 1
+            statements.append(statement.compile().params)
+            result = MagicMock()
+            result.tuples.return_value = next(pages)
+            return result
+
+        @asynccontextmanager
+        async def ledger_session():
+            nonlocal opened
+            opened += 1
+            try:
+                yield MagicMock(execute=execute)
+            finally:
+                opened -= 1
+
+        window = TimeRange(FLOOR, END)
+        batches = widgets.spend_logs_repository.request_spend_batches(
+            ledger_session, window, cli=True, access=SCOPE, batch_size=2
+        )
+        monkeypatch.setattr(widgets.spend_logs_repository, "request_spend_batches", lambda *args, **kwargs: batches)
+
+        async def classify(_window, channel, request_ids):
+            assert opened == 0
+            return {key: CLASSIFICATION[channel][key] for key in request_ids}
+
+        result, foots = await WhoPaysSpend(context(), classify=classify)._split(window, "cli", 6.0)
+
+        assert foots
+        assert result == WhoPaysSplit(charged=1.0, shared=3.0, personal=2.0, unclassified=0.0, no_customer=0.0)
+        assert len(statements) == 2
+        assert "c-pr" in statements[1].values()
+
+    async def test_spend_beyond_the_card_is_clamped_and_not_kept_as_a_complete_answer(self, monkeypatch):
+        async def batches(*args, **kwargs):
+            yield {"c-pr": Decimal("9.0")}
+
+        monkeypatch.setattr(widgets.spend_logs_repository, "request_spend_batches", batches)
+
+        async def classify(_window, channel, request_ids):
+            return {key: CLASSIFICATION[channel][key] for key in request_ids}
+
+        split, foots = await WhoPaysSpend(context(), classify=classify)._split(TimeRange(FLOOR, END), "cli", 6.0)
+
+        assert not foots
+        assert split.unclassified == 0.0
+
     async def test_each_channel_foots_on_its_card_with_the_rest_unclassified(self, port, ledger):
         with coverage():
             out = await WhoPaysSpend(context(), classify=classifier()).read(START, END, "k")

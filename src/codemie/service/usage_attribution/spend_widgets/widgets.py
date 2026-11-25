@@ -115,27 +115,28 @@ class WhoPaysSpend(SpendWidget[WhoPaysFigures]):
         if window is None:
             return WhoPaysFigures()
         cards = await PlatformSpend(self._context).read(start, end)
-        web = await self._split(window, CHANNEL_WEB, cards.platform)
-        cli = await self._split(window, CHANNEL_CLI, cards.cli)
-        return WhoPaysFigures(web=web, cli=cli, complete=cards.complete)
+        web, web_foots = await self._split(window, CHANNEL_WEB, cards.platform)
+        cli, cli_foots = await self._split(window, CHANNEL_CLI, cards.cli)
+        return WhoPaysFigures(web=web, cli=cli, complete=cards.complete and web_foots and cli_foots)
 
-    async def _split(self, window: TimeRange, channel: str, card: float | None) -> WhoPaysSplit:
+    async def _split(self, window: TimeRange, channel: str, card: float | None) -> tuple[WhoPaysSplit, bool]:
         if card is None:
-            return WhoPaysSplit()
+            return WhoPaysSplit(), True
         money = dict.fromkeys(self._BUCKETS.values(), 0.0)
-        async with get_ledger_async_session() as session:
-            async for ledger in spend_logs_repository.request_spend_batches(
-                session, window, cli=channel == CHANNEL_CLI, access=self._context.scope, batch_size=4096
-            ):
-                classification = await self._classify(window, channel, list(ledger))
-                for request_id, (_, category) in classification.items():
-                    money[self._BUCKETS[category]] += float(ledger[request_id])
+        async for ledger in spend_logs_repository.request_spend_batches(
+            get_ledger_async_session, window, cli=channel == CHANNEL_CLI, access=self._context.scope, batch_size=4096
+        ):
+            classification = await self._classify(window, channel, list(ledger))
+            for request_id, (_, category) in classification.items():
+                money[self._BUCKETS[category]] += float(ledger[request_id])
         paid = {key: helpers.round_cents(money[key]) for key in (CHARGED, SHARED, PERSONAL)}
-        return WhoPaysSplit(
+        unclassified = helpers.round_cents(card - sum(paid.values()))
+        split = WhoPaysSplit(
             **paid,
-            unclassified=helpers.round_cents(card - sum(paid.values())),
+            unclassified=max(unclassified, 0.0),
             no_customer=helpers.round_cents(money[NO_CUSTOMER]),
         )
+        return split, unclassified >= 0
 
 
 class PeopleSpend(SpendWidget[SpendTable]):
@@ -153,7 +154,8 @@ class PeopleSpend(SpendWidget[SpendTable]):
             return helpers.no_rows(uids)
 
         filters = await user_report_filters(list(uids), None)
-        return await helpers.read_per_row(window, self._context.scope, uids, filters)
+        # The ledger groups the entire window once and assigns all user filters in Python.
+        return await helpers.read_per_row(window, self._context.scope, uids, filters, batch_size=len(uids))
 
 
 class ProjectSpend(SpendWidget[SpendTable]):
@@ -198,7 +200,12 @@ class CliUsageSpend(SpendWidget[CliUsageFigures]):
         window = self._window(start, end)
         if window is None:
             return CliUsageFigures()
-        rows = await spend_service.cli_attribution_rows(window, access=self._context.scope)
+        known_repositories = tuple(self._evidence.get("values", {}))
+        scope = self._context.scope
+        if known_repositories:
+            rows = await spend_service.cli_attribution_rows(window, access=scope, known_repositories=known_repositories)
+        else:
+            rows = await spend_service.cli_attribution_rows(window, access=scope)
         if rows is None:
             return CliUsageFigures(complete=False)
         return await asyncio.to_thread(self._classify, rows)

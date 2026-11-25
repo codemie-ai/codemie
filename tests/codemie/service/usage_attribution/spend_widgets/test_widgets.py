@@ -95,6 +95,18 @@ class TestPlatformSpend:
 
 @pytest.mark.asyncio
 class TestPeopleSpend:
+    async def test_many_people_share_one_grouped_read(self, port):
+        uids = [f"u{i}" for i in range(250)]
+        filters = user_filters(uids)
+        with coverage(), patch.object(widgets, "user_report_filters", AsyncMock(return_value=filters)):
+            out = await PeopleSpend(context()).read(START, END, uids)
+
+        port.aggregate_by_spend_group_per_filter.assert_awaited_once_with(
+            TimeRange(FLOOR, END), access=SCOPE, common_filter=filters.common, report_filters=filters.rows
+        )
+        assert len(out.rows) == 250
+        assert out.of(uids[-1]).total == 250.0
+
     async def test_people_over_a_window_crossing_the_floor(self, port):
         with (
             coverage(),

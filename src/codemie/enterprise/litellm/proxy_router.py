@@ -596,7 +596,7 @@ async def _authorize_project_header(headers: Headers | httpx.Headers | dict, req
         return
 
     async with get_async_session() as session:
-        application = await application_repository.aget_active_by_name_case_insensitive(session, project)
+        application = await application_repository.aget_active_project_for_read(session, project)
         allowed = application is not None and user.has_access_to_application(application.name)
         if allowed and config.ENABLE_USER_MANAGEMENT and not user.is_admin_or_maintainer:
             # The auth cache holds project lists for 30s and is not cleared on every removal path,

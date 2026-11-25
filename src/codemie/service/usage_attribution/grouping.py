@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+from bisect import bisect_right
 from collections import Counter, defaultdict
 from typing import TYPE_CHECKING, Any
 
@@ -148,25 +149,18 @@ def _signal_buckets(an: Analysis, keys: list[dict[str, Any]]) -> list[tuple[int,
     return buckets
 
 
-def _people_in_common(keys: list[dict[str, Any]]) -> Counter:
-    """Pairs of repositories and how many people worked on both (each person's first repositories only)."""
+def _people_buckets(keys: list[dict[str, Any]]) -> list[list[str]]:
+    """Each person's first repositories, in the order people first appear."""
     person_keys: dict[str, list[str]] = defaultdict(list)
     for k in keys:
         for uid, amount in k["persons"].items():
             if amount > 0:
                 person_keys[uid].append(k["key"])
-    common: Counter = Counter()
-    for ks in person_keys.values():
-        unique = sorted(set(ks))[:_PEOPLE_PAIR_KEYS]
-        for i, a in enumerate(unique):
-            for b in unique[i + 1 :]:
-                common[(a, b)] += 1
-    return common
+    return [sorted(set(ks))[:_PEOPLE_PAIR_KEYS] for ks in person_keys.values()]
 
 
-def _pair_signals(an: Analysis, keys: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
-    """The signals each pair of repositories shares. Signals shared by too many repositories are skipped."""
-    pair_sig: dict[tuple[str, str], dict[str, Any]] = defaultdict(dict)
+def _admitted_signal_buckets(an: Analysis, keys: list[dict[str, Any]]) -> list[tuple[str, str, list[str]]]:
+    buckets = []
     an.skipped_signal_buckets = Counter()
     pairs_left = _MAX_SIGNAL_PAIRS
     for n, typ, name, unique in sorted(_signal_buckets(an, keys), key=lambda b: b[:3]):
@@ -175,13 +169,56 @@ def _pair_signals(an: Analysis, keys: list[dict[str, Any]]) -> dict[tuple[str, s
             an.skipped_signal_buckets[typ] += 1
             continue
         pairs_left -= cost
-        for i, a in enumerate(unique):
-            for b in unique[i + 1 :]:
-                pair_sig[(a, b)].setdefault(typ, set()).add(name)
-    for pair, n in _people_in_common(keys).items():
-        if n >= 2:
-            pair_sig[pair]["people"] = n
-    return pair_sig
+        buckets.append((typ, name, unique))
+    return buckets
+
+
+def _repo_candidates(
+    buckets: list[tuple[str, str, list[str]]], repo: str, indices: list[int]
+) -> list[tuple[str, int, dict[str, Any]]]:
+    """(other repository, first bucket index, signals) for every later repository sharing a bucket with ``repo``."""
+    signals: dict[str, dict[str, Any]] = defaultdict(dict)
+    first: dict[str, int] = {}
+    people: Counter[str] = Counter()
+    for index in indices:
+        typ, name, members = buckets[index]
+        following = members[bisect_right(members, repo) :]
+        if typ == "people":
+            people.update(following)
+        else:
+            for other in following:
+                signals[other].setdefault(typ, set()).add(name)
+        for other in following:
+            first.setdefault(other, index)
+    candidates = []
+    for other, index in first.items():
+        sig = signals.get(other, {})
+        if people[other] >= 2:
+            sig["people"] = people[other]
+        candidates.append((other, index, sig))
+    return candidates
+
+
+def _group_edges(an: Analysis, keys: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    """Keep qualifying edges and count candidate pairs for one repository at a time."""
+    signal_buckets = _admitted_signal_buckets(an, keys)
+    buckets = signal_buckets + [("people", "", members) for members in _people_buckets(keys)]
+    by_repo: dict[str, list[int]] = defaultdict(list)
+    for index, (_, _, members) in enumerate(buckets):
+        for repo in members[:-1]:
+            by_repo[repo].append(index)
+
+    min_signals = an.S["groupMinSignals"]
+    edges: dict[tuple[str, str], dict[str, Any]] = {}
+    first_bucket: dict[tuple[str, str], int] = {}
+    for repo, indices in by_repo.items():
+        for other, index, sig in _repo_candidates(buckets, repo, indices):
+            if len(sig) >= min_signals:
+                pair = (repo, other)
+                edges[pair] = sig
+                first_bucket[pair] = index
+    # The first bucket and lexical pair order reproduce the original order of edge insertion.
+    return {pair: edges[pair] for pair in sorted(edges, key=lambda pair: (first_bucket[pair], pair))}
 
 
 def _components(an: Analysis) -> list[tuple[list[str], bool]]:
@@ -268,8 +305,7 @@ def _new_group(an: Analysis, members: list[str], oversized: bool, edges_by_membe
 
 def build_groups(an: Analysis) -> None:
     keys = [k for k in an.K.values() if not k["excluded"] and k["billed"] > 0]
-    min_signals = an.S["groupMinSignals"]
-    an.edges = {pair: sig for pair, sig in _pair_signals(an, keys).items() if len(sig) >= min_signals}
+    an.edges = _group_edges(an, keys)
     # Edges by member, so each group collects its own edges without scanning all of them.
     edges_by_member: dict[str, list[tuple[tuple[str, str], dict]]] = defaultdict(list)
     for pair, sig in an.edges.items():

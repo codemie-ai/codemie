@@ -107,7 +107,7 @@ class _ProjectIngestGate:
             return REASON_CONTEXT_CONFLICT
         try:
             async with get_async_session() as session:
-                application = await application_repository.aget_active_by_name_case_insensitive(session, project)
+                application = await application_repository.aget_active_project_for_read(session, project)
                 if application is None or application.deleted_at is not None:
                     return REASON_CONTEXT_REQUIRED
                 if not self._user.has_access_to_application(application.name):
@@ -256,7 +256,7 @@ async def _owned_personal_project(user: User) -> Application:
 async def _lookup_personal(user: User) -> Application | None:
     try:
         async with get_async_session() as session:
-            application = await application_repository.aget_active_by_name_case_insensitive(session, user.email)
+            application = await application_repository.aget_active_project_for_read(session, user.email)
     except Exception as exc:
         logger.warning("cli_analytics: personal project lookup failed: %s", type(exc).__name__)
         raise TelemetryStorageUnavailableError(REASON_PERSONAL_UNAVAILABLE) from exc
@@ -315,7 +315,7 @@ async def _routable(session, user: User, name: str) -> Application | None:
 async def _usable(session, user: User, name: str) -> Application | None:
     """The live project when the user may send for it (the legacy gate's checks); another user's personal
     project is never usable, whatever the user's role."""
-    application = await application_repository.aget_active_by_name_case_insensitive(session, name)
+    application = await application_repository.aget_active_project_for_read(session, name)
     if application is None or application.deleted_at is not None:
         return None
     if application.project_type == PERSONAL and not _owns(user, application):

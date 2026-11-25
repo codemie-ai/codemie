@@ -343,7 +343,7 @@ class SpendService:
         }
 
     async def cli_attribution_rows(
-        self, period: TimeRange, *, access: AccessScope | None
+        self, period: TimeRange, *, access: AccessScope | None, known_repositories: tuple[str, ...] = ()
     ) -> tuple[CliSpendRow, ...] | None:
         """CLI repository spend from the ledger owning chat, with the usual failure handling."""
         ledger = get_spend_ledger(LLMCallClass.CHAT)
@@ -351,7 +351,7 @@ class SpendService:
             ledger,
             "cli_attribution_rows",
             period,
-            ledger.cli_attribution_rows(period, access=access),
+            ledger.cli_attribution_rows(period, access=access, known_repositories=known_repositories),
             lambda: None,
         )
 

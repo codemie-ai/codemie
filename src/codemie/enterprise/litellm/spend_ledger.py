@@ -33,6 +33,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
 
+from cachetools import TTLCache
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codemie.configs import config, logger
@@ -65,8 +66,12 @@ from codemie.service.spend.ledger import (
 )
 from codemie.service.spend.spend_group import SpendGroup
 from codemie.service.spend.traffic_class import TrafficClass
+from codemie.utils.shared_database_read import SharedDatabaseRead
 
 LEDGER_NAME = "litellm_spend_logs"
+
+_PROJECT_RESIDUE_CACHE_TTL_S = 30
+_PROJECT_RESIDUE_CACHE_MAX_SIZE = 4096
 
 #: Holders whose figure depends on the project dimension, and therefore carry the label below the
 #: identity floor. **Deliberately excludes the personal, global and person-total holders**:
@@ -143,6 +148,10 @@ class SpendLogsLedger:
         self._coverage = coverage
         self._session_factory = session_factory
         self._repository = repository
+        self._project_residue_cache: TTLCache[tuple[TimeRange, AccessScope | None], tuple[Decimal, int]] = TTLCache(
+            maxsize=_PROJECT_RESIDUE_CACHE_MAX_SIZE, ttl=_PROJECT_RESIDUE_CACHE_TTL_S
+        )
+        self._project_residue_reads = SharedDatabaseRead[tuple[TimeRange, AccessScope | None], tuple[Decimal, int]]()
 
     async def consumed_for_holder(
         self, holder: BudgetHolder, period: TimeRange, access: AccessScope | None = None
@@ -167,12 +176,14 @@ class SpendLogsLedger:
 
         async with self._session_factory() as session:
             figure = await self._repository.sum_for_holder(session, holder, admitted, access)
-            partial = await self._label(session, holder, admitted, access=access)
+        project_portion = (
+            await self._project_portion(admitted, access=access) if isinstance(holder, _PROJECT_KEYED_HOLDERS) else None
+        )
 
         return SpendResult(
             figure=figure,
             unavailable=self._coverage.unavailable_flag(period),
-            partial=partial,
+            partial=self._batch_label(holder, project_portion),
         )
 
     async def consumed_for_holders(
@@ -212,11 +223,11 @@ class SpendLogsLedger:
 
         async with self._session_factory() as session:
             totals = await self._repository.sum_for_holders(session, holders, admitted, access, report_filter)
-            project_portion = (
-                await self._project_portion(session, admitted, access=access)
-                if any(isinstance(holder, _PROJECT_KEYED_HOLDERS) for holder in holders)
-                else None
-            )
+        project_portion = (
+            await self._project_portion(admitted, access=access)
+            if any(isinstance(holder, _PROJECT_KEYED_HOLDERS) for holder in holders)
+            else None
+        )
 
         unavailable = self._coverage.unavailable_flag(period)
         filter_label = _report_filter_label(report_filter)
@@ -385,14 +396,16 @@ class SpendLogsLedger:
         }
 
     async def cli_attribution_rows(
-        self, period: TimeRange, *, access: AccessScope | None
+        self, period: TimeRange, *, access: AccessScope | None, known_repositories: tuple[str, ...] = ()
     ) -> tuple[CliSpendRow, ...] | None:
         """The admitted CLI ledger rows, narrowed to the caller's access boundary."""
         admitted = self._coverage.admitted(period)
         if admitted is None:
             return None
         async with self._session_factory() as session:
-            return await self._repository.cli_attribution_rows(session, admitted, access)
+            return await self._repository.cli_attribution_rows(
+                session, admitted, access, known_repositories=known_repositories
+            )
 
     async def aggregate_by_spend_group(
         self,
@@ -608,6 +621,8 @@ class SpendLogsLedger:
                 dimension_ids=dimension_ids,
                 traffic_class_ids=traffic_class_ids,
             )
+        if scope.project is not None and (project_portion := await self._project_portion(admitted)) is not None:
+            partial[SpendDimension.PROJECT] = project_portion
 
         return SpendResult(
             figure=figure,
@@ -655,6 +670,8 @@ class SpendLogsLedger:
             # class residue and the split's own residue below is the only source of one.
             scope_partial = await self._composed_label(session, admitted, scope, dimension_ids=dimension_ids)
             residue = await self._class_split_label(session, admitted, ids.get(TrafficClass.ASSISTANT, ()))
+        if scope.project is not None and (project_portion := await self._project_portion(admitted)) is not None:
+            scope_partial[SpendDimension.PROJECT] = project_portion
 
         unavailable = self._coverage.unavailable_flag(period)
         return {
@@ -821,14 +838,6 @@ class SpendLogsLedger:
             # Every class, native ones included: the rows no class claims are the split's own residue
             # rather than one series' unresolved remainder, so a term naming any series carries it.
             partial |= await self._class_split_label(session, admitted, traffic_class_ids)
-        if scope.project is not None:
-            # A project term makes this figure project-keyed, so it carries `E`'s label for the same
-            # reason the three project holders do: below the identity floor a principal-form row
-            # carries no project at all, so it is absent from a project-filtered figure and no
-            # identity narrows the hole.
-            project_portion = await self._project_portion(session, admitted)
-            if project_portion is not None:
-                partial[SpendDimension.PROJECT] = project_portion
         if scope.user is not None and scope.user.aliases is None:
             # The one portion that is not computable: an unresolvable alias set means the person's
             # fallback rows cannot be *identified*, so there is no row set to sum or count.
@@ -836,9 +845,7 @@ class SpendLogsLedger:
 
         return partial
 
-    async def _project_portion(
-        self, session: AsyncSession, admitted: TimeRange, *, access: AccessScope | None = None
-    ) -> Portion | None:
+    async def _project_portion(self, admitted: TimeRange, *, access: AccessScope | None = None) -> Portion | None:
         """The project-dimension portion for a period, or None when the period has no hole.
 
         **A property of the period and not of a holder**, which is why a batch reads it once. Two
@@ -855,7 +862,19 @@ class SpendLogsLedger:
         sub_range = self._coverage.project_dimension_portion(admitted)
         if sub_range is None:
             return None
-        spend, rows = await self._repository.project_dimension_residue(session, sub_range, access)
+
+        key = (sub_range, access)
+
+        async def read_residue() -> tuple[Decimal, int]:
+            cached = self._project_residue_cache.get(key)
+            if cached is not None:
+                return cached
+            async with self._session_factory() as session:
+                residue = await self._repository.project_dimension_residue(session, sub_range, access)
+            self._project_residue_cache[key] = residue
+            return residue
+
+        spend, rows = await self._project_residue_reads.read(key, read_residue)
         # Only a period that actually holds project-less money is incomplete. Labelling one that
         # holds none would report a covered period as partial while nothing is missing.
         return _money_portion(spend, rows, sub_range=sub_range)
@@ -877,30 +896,6 @@ class SpendLogsLedger:
             # standing in for the money.
             partial[SpendDimension.IDENTITY_BRIDGE] = Portion(spend=None, rows=None)
         return partial
-
-    async def _label(
-        self,
-        session: AsyncSession,
-        holder: BudgetHolder,
-        admitted: TimeRange,
-        *,
-        access: AccessScope | None = None,
-    ) -> dict[SpendDimension, Portion]:
-        """Which dimensions this holder's figure is incomplete in, and by how much.
-
-        A figure can be incomplete in two dimensions at once with two different portions, which is
-        why this returns a mapping rather than a single slot.
-
-        `access` narrows the portion it reads, for the reason `_project_portion` gives, so that the
-        single-holder label is the label the batch would produce for the same holder, period **and
-        boundary** - the batch equality the port's contract requires.
-        """
-        project_portion = (
-            await self._project_portion(session, admitted, access=access)
-            if isinstance(holder, _PROJECT_KEYED_HOLDERS)
-            else None
-        )
-        return self._batch_label(holder, project_portion)
 
 
 @asynccontextmanager
@@ -948,7 +943,10 @@ def build_spend_logs_ledger(coverage: LedgerCoverage) -> SpendLogsLedger:
     The composition root, and the only place the four coverage values are read - and the one place
     `SPEND_LEDGER_PROJECTION_ENABLED` decides whether reads may be answered from the hourly projection.
     """
-    repository = SpendLogsRepository(projection=config.SPEND_LEDGER_PROJECTION_ENABLED)
+    repository = SpendLogsRepository(
+        projection=config.SPEND_LEDGER_PROJECTION_ENABLED,
+        postgres_grouped_reads=True,
+    )
     return SpendLogsLedger(coverage, session_factory=_ledger_session, repository=repository)
 
 

@@ -389,11 +389,13 @@ class LegacySpendLedger:
 
     async def cli_attribution_rows(
         self,
-        period: TimeRange,  # noqa: ARG002  # NOSONAR: S1172 - required ledger protocol
+        period: TimeRange,
         *,
-        access: AccessScope | None,  # noqa: ARG002  # NOSONAR: S1172 - required ledger protocol
+        access: AccessScope | None,
+        known_repositories: tuple[str, ...] = (),
     ) -> tuple[CliSpendRow, ...] | None:
-        """This adapter has no LiteLLM repository attribution figures."""
+        """Report unavailable for every request accepted by the ledger protocol."""
+        del period, access, known_repositories
         return None
 
     async def aggregate_by_spend_group(

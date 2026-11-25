@@ -68,6 +68,19 @@ def sql(clause) -> str:
     return str(clause.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).replace("\n", " ")
 
 
+def test_cli_attribution_only_groups_uncovered_repositories_by_branch_and_client():
+    repository = SpendLogsRepository()
+    raw = sql(repository._cli_attribution_statement(PERIOD, None))
+    compact = sql(repository._cli_attribution_statement(PERIOD, None, ("team/repo", "team/repo")))
+    covered, uncovered = compact.split("UNION ALL", maxsplit=1)
+
+    assert "NULL AS codemie_branch, NULL AS codemie_client" in covered
+    assert "unnest(ARRAY['team/repo'])" in covered
+    assert "codemie_branch" not in covered.split("GROUP BY", maxsplit=1)[1]
+    assert "known_cli_repositories.repository IS NULL" in uncovered
+    assert uncovered.split("GROUP BY", maxsplit=1)[1].strip() == raw.split("GROUP BY", maxsplit=1)[1].strip()
+
+
 class _CapturingSession:
     """Records each statement and answers it with a row as wide as its own column list.
 

@@ -17,13 +17,19 @@ from __future__ import annotations
 import json
 
 from sqlalchemy import text
+from sqlmodel import Session, select
 
 from codemie.core.exceptions import NotFoundException
 from codemie.core.workflow_models.workflow_config import WorkflowConfig
+from codemie.core.workflow_models.workflow_pool_storage import POOL_ENABLED_PREDICATE
 
 
 class WorkflowConfigRepository:
     """Repository for WorkflowConfig database access."""
+
+    def get_pool_enabled_workflow_configs(self) -> list[WorkflowConfig]:
+        with Session(WorkflowConfig.get_engine()) as session:
+            return list(session.exec(select(WorkflowConfig).where(text(POOL_ENABLED_PREDICATE))).all())
 
     def set_publish_state(
         self,

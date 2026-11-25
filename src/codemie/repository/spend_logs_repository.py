@@ -48,15 +48,18 @@ floors and readiness do that, above it.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     ColumnElement,
+    Integer,
     Result,
     Text,
     and_,
+    any_,
     bindparam,
     cast,
     false,
@@ -709,41 +712,193 @@ def _dimension_values_shape(
     return shape
 
 
+def _text_array(name: str, values: Sequence[str]):
+    return bindparam(name, tuple(values), type_=ARRAY(Text()))
+
+
+def _grouped_dimensions_statement(
+    period: TimeRange,
+    dimension: SpendDimension,
+    ids_by_value: Mapping[str, tuple[str, ...]],
+    access: AccessScope | None,
+    report_filter: ReportFilter | None,
+    *,
+    projection: bool,
+):
+    """Group populated dimensions by their column and match historical rows by indexed request ID."""
+    common = narrowed_by_access(narrowed_by_filter(true(), report_filter), access)
+    branches = []
+    if (column := _DIMENSION_VALUE_COLUMN.get(dimension)) is not None:
+        native = and_(
+            common,
+            _ledger_branch(DimensionScope(dimension)),
+            column == any_(_text_array("dimension_values", tuple(ids_by_value))),
+        )
+        shape = ReadShape(native, (Aggregate(label="spend"),), group_by=(column.key,))
+        branches.append(
+            read_statement(period, _id_free(shape))
+            if projection and dimension is not SpendDimension.EXECUTION
+            else raw_statement(period, shape)
+        )
+
+    request_ids, values = [], []
+    for value, ids in ids_by_value.items():
+        unique_ids = tuple(dict.fromkeys(ids))
+        request_ids.extend(unique_ids)
+        values.extend([value] * len(unique_ids))
+    if request_ids:
+        matches = (
+            func.unnest(_text_array("matched_requests", request_ids), _text_array("matched_values", values))
+            .table_valued("request_id", "value")
+            .render_derived("dimension_matches")
+        )
+        fallback = (
+            select(matches.c.value, func.sum(Row.spend).label("spend"))
+            .select_from(Row.__table__.join(matches, Row.codemie_request_id == matches.c.request_id))
+            .where(within(period), common)
+        )
+        if (precedence := _dimension_is_null(DimensionScope(dimension))) is not None:
+            fallback = fallback.where(precedence)
+        branches.append(fallback.group_by(matches.c.value))
+
+    if not branches:
+        return None
+    if len(branches) == 1:
+        return branches[0]
+    combined = union_all(*branches).subquery("dimension_spend")
+    value = combined.c[0]
+    return select(value, func.sum(combined.c.spend)).group_by(value)
+
+
+def _grouped_people_statement(
+    period: TimeRange,
+    holders: Sequence[PersonTotalHolder],
+    access: AccessScope | None,
+    report_filter: ReportFilter | None,
+    *,
+    projection: bool,
+):
+    """Scan eligible spend once, and merge user-ID and alias matches by holder in PostgreSQL."""
+    user_ids = tuple(holder.user_id for holder in holders)
+    aliases = [(index, alias) for index, holder in enumerate(holders) for alias in (holder.aliases or ())]
+    candidates = Row.attr_user_id == any_(_text_array("person_users", tuple(dict.fromkeys(user_ids))))
+    if aliases:
+        candidates = or_(
+            candidates,
+            and_(
+                Row.attr_source == _PARSED,
+                Row.attr_form == _PRINCIPAL,
+                Row.attr_principal == any_(_text_array("person_aliases", tuple(dict.fromkeys(a for _, a in aliases)))),
+            ),
+        )
+    where = narrowed_by_access(narrowed_by_filter(candidates, report_filter), access)
+    shape = ReadShape(
+        where,
+        (Aggregate(label="spend"),),
+        group_by=("attr_user_id", "attr_principal", "attr_source", "attr_form"),
+    )
+    grouped = (read_statement(period, _id_free(shape)) if projection else raw_statement(period, shape)).cte(
+        "people_spend"
+    )
+
+    people = (
+        func.unnest(_text_array("holder_users", user_ids))
+        .table_valued("user_id", with_ordinality="position")
+        .render_derived("people")
+    )
+    position = (people.c.position - 1).label("holder_index")
+    explicit = select(position, grouped.c.spend).join_from(people, grouped, people.c.user_id == grouped.c.attr_user_id)
+    if aliases:
+        alias_indices, alias_names = zip(*aliases, strict=True)
+        alias_matches = (
+            func.unnest(
+                bindparam("alias_holders", alias_indices, type_=ARRAY(Integer())),
+                _text_array("holder_aliases", alias_names),
+                _text_array("alias_users", tuple(user_ids[index] for index in alias_indices)),
+            )
+            .table_valued("holder_index", "principal", "user_id")
+            .render_derived("aliases")
+        )
+        fallback = (
+            select(alias_matches.c.holder_index, grouped.c.spend)
+            .join_from(alias_matches, grouped, alias_matches.c.principal == grouped.c.attr_principal)
+            .where(
+                grouped.c.attr_source == _PARSED,
+                grouped.c.attr_form == _PRINCIPAL,
+                # A row that already matched this holder by user ID counts once. An alias
+                # shared by different holders can still contribute to each of them.
+                grouped.c.attr_user_id.is_distinct_from(alias_matches.c.user_id),
+            )
+        )
+        combined = union_all(explicit, fallback).subquery("holder_spend")
+    else:
+        combined = explicit.subquery("holder_spend")
+    return select(combined.c.holder_index, func.sum(combined.c.spend)).group_by(combined.c.holder_index)
+
+
 class SpendLogsRepository:
     """Reads `litellm_spend_logs`. Sessions are injected; nothing here opens or commits one.
 
-    `projection` decides whether a read may be answered from the hourly projection. It defaults to off,
-    so a repository built without it - the module's singleton included - issues exactly the raw statements
-    the suites pin; the ledger's composition root builds the one it reads with from
-    `SPEND_LEDGER_PROJECTION_ENABLED`.
+    `projection` enables hourly reads. `postgres_grouped_reads` enables PostgreSQL's array-backed
+    grouping even for raw reads. The PostgreSQL ledger selects both at its composition root.
     """
 
-    def __init__(self, projection: bool = False) -> None:
+    def __init__(self, projection: bool = False, *, postgres_grouped_reads: bool = False) -> None:
         self._projection = projection
+        self._postgres_grouped_reads = postgres_grouped_reads
 
     async def cli_attribution_rows(
-        self, session: AsyncSession, period: TimeRange, access: AccessScope | None
+        self,
+        session: AsyncSession,
+        period: TimeRange,
+        access: AccessScope | None,
+        *,
+        known_repositories: tuple[str, ...] = (),
     ) -> tuple[CliSpendRow, ...]:
         """CLI money from the same source as totals, retaining raw context when it is available.
 
         Hourly imports can exist without their raw rows. The projection still supplies their money,
         but cannot supply repository context. Such spend is returned with missing context rather than
         dropped. Both reads share one statement/snapshot, so raw context cannot duplicate a projected dollar.
+        Branch and client are omitted for repositories already covered by the caller's evidence.
         """
-        statement = await asyncio.to_thread(self._cli_attribution_statement, period, access)
+        statement = await asyncio.to_thread(self._cli_attribution_statement, period, access, known_repositories)
         result = await session.execute(statement)
         return tuple(CliSpendRow(*row) for row in result)
 
-    def _cli_attribution_statement(self, period: TimeRange, access: AccessScope | None):
+    def _cli_attribution_statement(
+        self, period: TimeRange, access: AccessScope | None, known_repositories: tuple[str, ...] = ()
+    ):
         names = ("attr_user_id", "attr_principal", "attr_project", "attr_form")
         keys = tuple(getattr(Row, name) for name in names)
-        context = (Row.codemie_repository, Row.codemie_branch, Row.codemie_client)
+        repository = Row.codemie_repository
+        context = (repository, Row.codemie_branch, Row.codemie_client)
+        spend = func.sum(Row.spend).label("spend")
+        source = Row.__table__
         predicate = narrowed_by_access(traffic_class_predicate(TrafficClass.CLI), access)
-        detailed = (
-            select(*keys, *context, func.sum(Row.spend).label("spend"))
-            .where(within(period), predicate)
-            .group_by(*keys, *context)
-        )
+        filters = (within(period), predicate)
+        detailed = select(*keys, *context, spend).where(*filters).group_by(*keys, *context)
+        if known_repositories:
+            # Group covered repositories without branch and client keys. This lets Postgres aggregate the
+            # large covered set separately from the smaller set that still needs detailed context.
+            known = (
+                func.unnest(
+                    bindparam("known_repositories", tuple(dict.fromkeys(known_repositories)), type_=ARRAY(Text()))
+                )
+                .table_valued("repository")
+                .render_derived("known_cli_repositories")
+            )
+            match_repository = func.coalesce(repository, "") == known.c.repository
+            covered = (
+                select(*keys, repository, null().label("codemie_branch"), null().label("codemie_client"), spend)
+                .select_from(source.join(known, match_repository))
+                .where(*filters)
+                .group_by(*keys, repository)
+            )
+            uncovered = detailed.select_from(source.outerjoin(known, match_repository)).where(
+                known.c.repository.is_(None)
+            )
+            detailed = union_all(covered, uncovered)
         if not self._projection:
             return detailed
 
@@ -751,17 +906,18 @@ class SpendLogsRepository:
         shape = ReadShape(predicate, (Aggregate(label="spend"),), group_by=names)
         totals = read_statement(period, lambda _resolved: shape).cte("cli_totals")
         details = detailed.cte("cli_context")
-        matched = (
-            select(*(details.c[name] for name in names), func.sum(details.c.spend).label("spend"))
-            .group_by(*(details.c[name] for name in names))
-            .cte("cli_matched")
-        )
-        same_identity = and_(*(totals.c[name].is_not_distinct_from(matched.c[name]) for name in names))
-        missing = totals.c.spend - func.coalesce(matched.c.spend, 0)
+        # Grouping treats NULL identity fields as equal. Subtract detail from the authoritative totals without a
+        # join on four null-safe predicates. Only identities present in the authoritative read can emit a remainder.
+        reconciliation = union_all(
+            select(*(totals.c[name] for name in names), totals.c.spend, true().label("authoritative")),
+            select(*(details.c[name] for name in names), -details.c.spend, false()),
+        ).subquery("cli_reconciliation")
+        identity = tuple(reconciliation.c[name] for name in names)
+        missing = func.sum(reconciliation.c.spend)
         remainder = (
-            select(*(totals.c[name] for name in names), null(), null(), null(), missing)
-            .select_from(totals.outerjoin(matched, same_identity))
-            .where(missing != 0)
+            select(*identity, null(), null(), null(), missing)
+            .group_by(*identity)
+            .having(func.count().filter(reconciliation.c.authoritative) > 0, missing != 0)
         )
         return union_all(select(details), remainder)
 
@@ -802,6 +958,9 @@ class SpendLogsRepository:
     ) -> dict[BudgetHolder, Decimal]:
         """`SUM(spend)` per holder for a period, in one scan per chunk of the holders that could match.
 
+        PostgreSQL can group a batch of person totals by the ledger's identity fields in one
+        query. The other holders retain their own predicates for customer and category rules.
+
         **Why one query of N filtered aggregates, and not a `GROUP BY`.** A `GROUP BY` over the
         attribution columns would also be one query, but it would have to *re-express* each
         holder's predicate as a grouping key - and re-expressing it is exactly what
@@ -840,6 +999,10 @@ class SpendLogsRepository:
         path. A narrowing cannot undo it: the boundary and the filter only ever remove rows.
         """
         unique = list(dict.fromkeys(holders))
+        people = [holder for holder in unique if isinstance(holder, PersonTotalHolder)]
+        if self._postgres_grouped_reads and len(people) > 1 and len(people) == len(unique):
+            return await self._sum_person_totals(session, people, period, access, report_filter)
+
         totals: dict[BudgetHolder, Decimal] = {}
         if len(unique) > HOLDER_BATCH_SIZE and any(isinstance(holder, _PERSON_KEYED) for holder in unique):
             user_ids, principals = await self._identities_in(session, period)
@@ -861,6 +1024,22 @@ class SpendLogsRepository:
             for holder, total in zip(chunk, row, strict=True):
                 totals[holder] = Decimal(total)
 
+        return totals
+
+    async def _sum_person_totals(
+        self,
+        session: AsyncSession,
+        holders: Sequence[PersonTotalHolder],
+        period: TimeRange,
+        access: AccessScope | None,
+        report_filter: ReportFilter | None,
+    ) -> dict[BudgetHolder, Decimal]:
+        statement = await asyncio.to_thread(
+            _grouped_people_statement, period, holders, access, report_filter, projection=self._projection
+        )
+        result = await session.execute(statement)
+        totals: dict[BudgetHolder, Decimal] = dict.fromkeys(holders, Decimal(0))
+        totals.update((holders[index], Decimal(spend)) for index, spend in result)
         return totals
 
     async def sum_by_time_bucket(
@@ -1183,18 +1362,37 @@ class SpendLogsRepository:
         return {request_id: Decimal(total) for request_id, total in result.tuples().all()}
 
     async def request_spend_batches(
-        self, session: AsyncSession, period: TimeRange, *, cli: bool, access: AccessScope | None, batch_size: int
+        self,
+        session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+        period: TimeRange,
+        *,
+        cli: bool,
+        access: AccessScope | None,
+        batch_size: int,
     ) -> AsyncIterator[dict[str, Decimal]]:
-        """Stream the ledger IDs that can contribute to Who Pays, with retries grouped before batching."""
-        statement = self._sum_by_request_id_statement(period, cli=cli, access=access).where(
-            Row.codemie_request_id.is_not(None)
+        """Group retries by request ID and close each page's session before yielding to the caller.
+
+        Each page reads the committed ledger at the time of that query. The cursor skips earlier
+        request IDs, including any rows written for those IDs while the caller classifies a page.
+        """
+        request_id = Row.codemie_request_id
+        statement = (
+            self._sum_by_request_id_statement(period, cli=cli, access=access)
+            .where(request_id.is_not(None))
+            .order_by(request_id)
+            .limit(batch_size)
         )
-        result = await session.stream(statement.execution_options(yield_per=batch_size))
-        try:
-            async for rows in result.tuples().partitions(batch_size):
-                yield {request_id: Decimal(total) for request_id, total in rows}
-        finally:
-            await result.close()
+        page = statement
+        while True:
+            async with session_factory() as session:
+                result = await session.execute(page)
+                batch = {key: Decimal(total) for key, total in result.tuples()}
+            if not batch:
+                return
+            yield batch
+            if len(batch) < batch_size:
+                return
+            page = statement.where(request_id > next(reversed(batch)))
 
     async def count_requests(self, session: AsyncSession, period: TimeRange) -> int:
         """How many requests a period saw - **distinct calls, not rows**.
@@ -1272,6 +1470,9 @@ class SpendLogsRepository:
     ) -> dict[str, Decimal]:
         """`SUM(spend)` per dimension value, in one scan per chunk - `sum_for_holders` for a dimension.
 
+        PostgreSQL groups the native and request-ID branches separately in one statement. The
+        filtered aggregates below are the portable implementation.
+
         **Why one filtered aggregate per value and emphatically not a `GROUP BY`.** Exactly one of
         the five dimensions has a ledger column, so `GROUP BY <the dimension column>` is a statement
         that is correct for `workflow` and returns **nothing at all** for assistant, conversation and
@@ -1314,6 +1515,21 @@ class SpendLogsRepository:
         # column: its measured zero is the identical answer `sum_for_dimension_scope` returns for the
         # same scope without querying either, and seeding it here is what keeps the two in step.
         totals: dict[str, Decimal] = dict.fromkeys(ids_by_value, Decimal("0"))
+        if self._postgres_grouped_reads and ids_by_value:
+            statement = await asyncio.to_thread(
+                _grouped_dimensions_statement,
+                period,
+                dimension,
+                ids_by_value,
+                access,
+                report_filter,
+                projection=self._projection,
+            )
+            if statement is not None:
+                result = await session.execute(statement)
+                totals.update((value, Decimal(spend)) for value, spend in result)
+            return totals
+
         selectable = [
             (value, ids, in_scope)
             for value, ids in ids_by_value.items()
@@ -1434,7 +1650,7 @@ class SpendLogsRepository:
         distinct_executions, rows_without_an_id = result.one()
         return int(distinct_executions) + int(rows_without_an_id)
 
-    async def dimension_residue(
+    async def dimension_residue(  # noqa: PLR0913 - access and report filters narrow the residue independently
         self,
         session: AsyncSession,
         period: TimeRange,

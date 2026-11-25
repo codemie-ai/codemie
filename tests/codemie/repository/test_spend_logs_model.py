@@ -25,6 +25,7 @@ No database is required: the assertions are over the SQLAlchemy table metadata.
 from __future__ import annotations
 
 import importlib
+from unittest.mock import patch
 
 import sqlalchemy as sa
 
@@ -278,12 +279,13 @@ class TestTheHourlyProjectionMirrorsItsMigration:
         "coalesce('v' || end_user, 'n'))"
     )
 
-    #: name -> (columns, partial predicate): the ledger's P1, P2, P3 and P6 at hourly grain.
+    #: name -> (keys, partial predicate, included columns).
     READ_INDEXES = {
-        "ix_spend_hourly_user_time": (["attr_user_id", "hour"], "attr_user_id IS NOT NULL"),
-        "ix_spend_hourly_project_time": (["attr_project", "attr_category", "hour"], "attr_project IS NOT NULL"),
-        "ix_spend_hourly_principal_time": (["attr_principal", "hour"], "attr_principal IS NOT NULL"),
-        "ix_spend_hourly_workflow_time": (["codemie_workflow_id", "hour"], "codemie_workflow_id IS NOT NULL"),
+        "ix_spend_hourly_user_time": (["attr_user_id", "hour"], "attr_user_id IS NOT NULL", []),
+        "ix_spend_hourly_project_time": (["attr_project", "attr_category", "hour"], "attr_project IS NOT NULL", []),
+        "ix_spend_hourly_principal_time": (["attr_principal", "hour"], "attr_principal IS NOT NULL", []),
+        "ix_spend_hourly_workflow_time": (["codemie_workflow_id", "hour"], "codemie_workflow_id IS NOT NULL", []),
+        "ix_spend_hourly_project_residue": (["attr_source", "hour"], "attr_project IS NULL", ["spend", "row_count"]),
     }
 
     def _index(self, name: str) -> sa.Index:
@@ -340,27 +342,35 @@ class TestTheHourlyProjectionMirrorsItsMigration:
         migration_key = _hourly_migration().KEY.replace("(coalesce(", "coalesce(").replace("'n'))", "'n')")
         assert model_key == migration_key
 
-    def test_the_read_indexes_are_partial_on_their_leading_column(self):
-        """Each ledger write upserts here and pays for every index, so none is added on a hunch.
-
-        With the key index pinned as the only unique one, this exact set is the whole index set.
-        A NULL holder or workflow is never looked up, so indexing those rows only adds write cost.
-        """
-        actual = {
-            index.name: ([c.name for c in index.columns], str(index.dialect_options["postgresql"]["where"]))
+    @staticmethod
+    def _read_indexes():
+        return {
+            index.name: (
+                [c.name for c in index.columns],
+                str(index.dialect_options["postgresql"]["where"]),
+                list(index.dialect_options["postgresql"]["include"] or []),
+            )
             for index in LiteLLMSpendHourly.indexes
             if not index.unique
         }
-        assert actual == self.READ_INDEXES
+
+    def test_the_read_indexes_have_the_designed_keys_predicates_and_coverage(self):
+        """Pin the exact set because every hourly upsert pays for index maintenance."""
+        assert self._read_indexes() == self.READ_INDEXES
 
     def test_the_read_indexes_are_the_migrations(self):
-        """The model's read indexes must be the ones the migration builds, column for column."""
+        """The model mirrors the creation migration and later hourly index migrations."""
         expected = {
-            name: (columns, f"{leading} IS NOT NULL") for name, columns, leading in _hourly_migration().READ_INDEXES
+            name: (columns.split(", "), f"{leading} IS NOT NULL", [])
+            for name, columns, leading in _hourly_migration().READ_INDEXES
         }
-        actual = {
-            index.name: (", ".join(c.name for c in index.columns), str(index.dialect_options["postgresql"]["where"]))
-            for index in LiteLLMSpendHourly.indexes
-            if not index.unique
-        }
-        assert actual == expected
+        migration = importlib.import_module(
+            "external.alembic.versions.b4e17194c0de_index_active_application_and_project_residue"
+        )
+        with patch.object(migration, "op") as operations:
+            migration.upgrade()
+        for call in operations.create_index.call_args_list:
+            name, table, keys = call.args
+            if table == LiteLLMSpendHourly.name:
+                expected[name] = (keys, str(call.kwargs["postgresql_where"]), call.kwargs.get("postgresql_include", []))
+        assert self._read_indexes() == expected

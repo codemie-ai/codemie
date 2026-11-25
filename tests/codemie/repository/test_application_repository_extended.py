@@ -25,6 +25,7 @@ Target methods from test_coverage_plan.md:
 - Async variants: aget_by_name, acreate, aget_or_create
 """
 
+import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -492,6 +493,58 @@ class TestApplicationRepositoryAsyncOperations:
         assert "lower(applications.name) = 'proj-a'" in query_text
         assert "applications.deleted_at is null" in query_text
         assert "order by case when (applications.name = 'proj-a') then 0 else 1 end" in query_text
+        assert "limit 1" in query_text
+
+    @pytest.mark.asyncio
+    async def test_concurrent_live_lookups_share_only_the_same_spelling(self):
+        started, release = asyncio.Event(), asyncio.Event()
+        project = object()
+        session = AsyncMock()
+
+        async def lookup(_session, name):
+            if name == "Proj-A":
+                started.set()
+                await release.wait()
+                return project
+            return None
+
+        with patch.object(application_repository, "aget_active_by_name_case_insensitive", side_effect=lookup) as read:
+            first = asyncio.create_task(application_repository.aget_active_project_for_read(session, "Proj-A"))
+            await started.wait()
+            follower = asyncio.create_task(application_repository.aget_active_project_for_read(AsyncMock(), "Proj-A"))
+            assert await application_repository.aget_active_project_for_read(session, "proj-a") is None
+            await asyncio.sleep(0)
+            assert read.await_count == 2
+            release.set()
+            assert await first is project
+            assert await follower is project
+            assert await application_repository.aget_active_project_for_read(session, "Proj-A") is project
+            assert read.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_cancelled_lookup_leader_leaves_follower_able_to_retry(self):
+        started = asyncio.Event()
+        leader_session, follower_session = AsyncMock(), AsyncMock()
+        project = object()
+
+        async def lookup(session, _name):
+            if session is leader_session:
+                started.set()
+                await asyncio.Future()
+            return project
+
+        with patch.object(application_repository, "aget_active_by_name_case_insensitive", side_effect=lookup) as read:
+            first = asyncio.create_task(application_repository.aget_active_project_for_read(leader_session, "Proj-A"))
+            await started.wait()
+            follower = asyncio.create_task(
+                application_repository.aget_active_project_for_read(follower_session, "Proj-A")
+            )
+            await asyncio.sleep(0)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            assert await follower is project
+            assert read.await_count == 2
 
     @pytest.mark.asyncio
     async def test_aget_active_personal_by_creator_case_insensitive_filters_on_creator_and_type(self):

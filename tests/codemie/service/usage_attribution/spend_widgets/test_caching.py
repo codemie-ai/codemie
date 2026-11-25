@@ -14,11 +14,13 @@
 
 """The ``@cached_read`` decorator, on a widget of its own so the cache is tested apart from any ledger read."""
 
+import asyncio
 from datetime import datetime
 
 import pytest
 
 from codemie.service.usage_attribution.constants import CACHE_NAMESPACE
+from codemie.service.usage_attribution.cache import SharedCache
 from codemie.service.usage_attribution.spend_widgets import SpendFigures, SpendTable, SpendWidget, cached_read
 from codemie.service.usage_attribution.spend_widgets.caching import KEY_VERSION, LEDGER_TTL_S
 
@@ -44,6 +46,43 @@ class CountingWidget(SpendWidget[SpendTable]):
 
 @pytest.mark.asyncio
 class TestCachedRead:
+    async def test_concurrent_cold_reads_share_one_computation(self, monkeypatch):
+        from codemie.service.usage_attribution.spend_widgets import caching
+
+        cache = SharedCache(redis_factory=lambda: None)
+        computing, waiting, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        acquire = cache.acquire
+
+        async def observe_acquire(key, ttl):
+            token = await acquire(key, ttl)
+            if token is None:
+                waiting.set()
+            return token
+
+        monkeypatch.setattr(cache, "acquire", observe_acquire)
+        monkeypatch.setattr(caching, "_LOCK_POLL_S", 0.001)
+
+        class BlockingWidget(CountingWidget):
+            @cached_read
+            async def read(self, start, end, names):
+                self.reads += 1
+                computing.set()
+                await finish.wait()
+                return self.answer
+
+        first = BlockingWidget(context(cache))
+        second = BlockingWidget(context(cache))
+        with coverage():
+            async with asyncio.timeout(2), asyncio.TaskGroup() as tasks:
+                one = tasks.create_task(first.read(START, END, ["a"]))
+                await computing.wait()
+                two = tasks.create_task(second.read(START, END, ["a"]))
+                await waiting.wait()
+                finish.set()
+
+        assert one.result() == two.result() == first.answer
+        assert (first.reads, second.reads) == (1, 0)
+
     async def test_below_the_floor_nothing_is_read_from_or_written_to_the_cache(self):
         cache = FakeCache()
         widget = CountingWidget(context(cache))
