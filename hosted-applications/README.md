@@ -355,7 +355,7 @@ expiry of the sign-in it came from, or at sign-out.
 
 - Build from the repository root with the same commit as the API image:
   `docker build -f hosted-applications/Dockerfile.validator -t <registry>/codemie-hosted-validator:<commit> .`
-  The image uses a digest-pinned Python Alpine base, installs only the hash-pinned
+  The image uses a Python 3.13 Alpine base pinned by tag and digest, installs only the hash-pinned
   `requirements-validator.txt` and runs as UID 65532.
 - The scanner is the upstream `clamav/clamav` `_base` image (Alpine, amd64, no bundled signatures),
   used without a derived build and pinned by digest in `kubernetes.yaml`. Scan the validator image
@@ -458,7 +458,7 @@ expiry of the sign-in it came from, or at sign-out.
     holds the same version. Bump the pin and the label together, at least every 4 weeks.
   - The Platform team watches the Chromium security releases and bumps at once when one appears.
   - For a released line, cherry-pick the bump and cut a patch release.
-  - The base image is pinned by digest. That digest decides which Alpine release, and so which Chromium
+  - The base image is pinned by tag and digest. That digest decides which Alpine release, and so which Chromium
     versions, `apk` can install. Bump the digest in the same commit when the new Chromium needs a newer
     Alpine release.
   - When Alpine drops the pinned version, the image build fails. That failure is the signal to bump the

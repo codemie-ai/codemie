@@ -14,16 +14,21 @@
 
 # Hosted applications private validator. Build from the repository root with the same commit as the API image:
 #   docker build -f hosted-applications/Dockerfile.validator -t <registry>/codemie-hosted-validator:<commit> .
-# Official Python 3.12 / Alpine 3.24; pin the multi-architecture index after image and sandbox qualification.
-FROM python@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+# Official Python 3.13 / Alpine 3.24, pinned by tag and by multi-architecture index digest.
+# Security (EPMCDME-17875): Python 3.12 images carry krb5-libs (via libnsl and libtirpc) with the CVE-2026-40355 series;
+# Python 3.13 dropped the nis module, so the base has none of them. Do not move back to 3.12 without re-scanning.
+FROM python:3.13.18-alpine3.24@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app/src \
     VALIDATOR_BIND_HOST=127.0.0.1 VALIDATOR_PORT=8091 VALIDATOR_WORKSPACE=/work
 COPY hosted-applications/requirements-validator.txt /tmp/requirements-validator.txt
 # Every Python dependency is pinned with a hash; nothing is resolved or built at image build time.
 # Chromium comes from the Alpine package index at one exact version. If Alpine removes that version, the build fails:
 # that failure is the signal to bump the pin (and the label below).
+# Security (EPMCDME-17875): pip is removed after the install; its vendored msgpack, urllib3 and setuptools
+# carry HIGH CVEs, and the validator never runs pip.
 RUN pip install --no-cache-dir --require-hashes --only-binary=:all: --no-deps -r /tmp/requirements-validator.txt \
-    && rm /tmp/requirements-validator.txt
+    && rm /tmp/requirements-validator.txt \
+    && pip uninstall -y pip
 RUN apk add --no-cache chromium=158.0.8127.36-r0
 LABEL org.codemie.chromium-version=158.0.8127.36-r0
 WORKDIR /app
