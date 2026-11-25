@@ -596,6 +596,7 @@ class ToolkitService:
                 is_admin=user.is_admin,
                 llm_model=llm_model,
                 request_uuid=request_uuid,
+                conversation_id=request.conversation_id if request else None,
             )
         )
         logger.debug(f"Initialized core tools for assistant `{assistant.name}`. Total tools: {len(tools)}")
@@ -703,6 +704,7 @@ class ToolkitService:
         is_admin: bool = False,
         llm_model: Optional[str] = None,
         request_uuid: Optional[str] = None,
+        conversation_id: str | None = None,
     ) -> list[BaseTool]:
         tools = []
         for assistant_toolkit in assistant_toolkits:
@@ -719,12 +721,13 @@ class ToolkitService:
                 llm_model=llm_model,
                 request_uuid=request_uuid,
                 toolkit_details=assistant_toolkit,
+                conversation_id=conversation_id,
             )
             tools.extend(toolkit_tools)
         return tools
 
     @classmethod
-    def _initialize_toolkit_tools(
+    def _initialize_toolkit_tools(  # noqa: PLR0913 - assembly parameters threaded through the toolkit build chain
         cls,
         assistant_toolkit: str,
         assistant_tools: List[Tool],
@@ -737,6 +740,7 @@ class ToolkitService:
         llm_model: Optional[str] = None,
         request_uuid: Optional[str] = None,
         toolkit_details=None,
+        conversation_id: str | None = None,
     ) -> list[BaseTool]:
         """Process tools from a single toolkit and initialize them.
 
@@ -766,13 +770,14 @@ class ToolkitService:
                 llm_model=llm_model,
                 request_uuid=request_uuid,
                 toolkit_details=toolkit_details,
+                conversation_id=conversation_id,
             )
             if tool:
                 toolkit_tools.append(tool)
         return toolkit_tools
 
     @classmethod
-    def _initialize_tool(
+    def _initialize_tool(  # noqa: PLR0911, PLR0913 - one return per skip reason; assembly parameters of the build chain
         cls,
         assistant_toolkit: str,
         assistant_tool: Tool,
@@ -785,6 +790,7 @@ class ToolkitService:
         llm_model: Optional[str] = None,
         request_uuid: Optional[str] = None,
         toolkit_details=None,
+        conversation_id: str | None = None,
     ) -> Optional[BaseTool]:
         """Initialize a single tool if its configuration is available.
 
@@ -872,6 +878,7 @@ class ToolkitService:
         extra: dict[str, Any] = {}
         if 'ocr_model_factory' in tool_fields:
             extra['ocr_model_factory'] = lambda name: cls._build_ocr_model(name, request_uuid, project_name, user_id)
+        extra.update(cls._generated_files_dependency(tool_fields, conversation_id, user_id))
 
         # Pass chat_model at construction time for tools that declare it.
         # Use a multimodal LLM (needed for image/OCR), falling back to the main model.
@@ -890,6 +897,18 @@ class ToolkitService:
                 logger.debug(f"Failed to inject chat_model into '{assistant_tool.name}': {e}")
 
         return tool_definition.tool_class(config=stored_config, **extra)
+
+    @staticmethod
+    def _generated_files_dependency(tool_fields: dict, conversation_id: str | None, user_id: str) -> dict[str, Any]:
+        """Generated-file source of the tools that declare it, bound to the request's conversation and user.
+
+        Nothing the model sends can change the binding; a tool built without a conversation gets none.
+        """
+        if 'generated_files' not in tool_fields or not conversation_id:
+            return {}
+        from codemie.service.generated_files_reader import WorkspaceGeneratedFiles
+
+        return {'generated_files': WorkspaceGeneratedFiles(conversation_id, user_id)}
 
     @staticmethod
     def _build_ocr_model(
@@ -1059,7 +1078,7 @@ class ToolkitService:
         return False
 
     @classmethod
-    def _get_tools(
+    def _get_tools(  # noqa: PLR0913 - assembly parameters threaded through the toolkit build chain
         cls,
         assistant: Assistant,
         request: AssistantChatRequest,

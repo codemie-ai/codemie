@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-11-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 9,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New protocol/matching module in codemie_tools.base, a workspace-backed reader in the service layer, ToolkitService wiring, and Confluence tools/vars changes: 4 components across tools and service layers with a new abstraction (GeneratedFileSource)." },
+    { "dimension": "file_change_estimate", "reason": "9 files changed (5 source, 4 test), 740 insertions across src/codemie, src/codemie_tools and tests, 3+ directories." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

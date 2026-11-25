@@ -13,6 +13,7 @@
 # limitations under the License.
 import json
 import logging
+import mimetypes
 import re
 from typing import Optional, Type, Any, Dict, Union
 
@@ -22,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_tool_mixin import FileToolMixin
+from codemie_tools.base.generated_files import AttachmentCandidate, GeneratedFileSource, match_attachment
 from codemie_tools.base.http_result import HttpResult
 from codemie_tools.core.project_management.confluence.models import ConfluenceConfig
 from codemie_tools.core.project_management.confluence.tools_vars import GENERIC_CONFLUENCE_TOOL
@@ -36,6 +38,7 @@ logger = logging.getLogger(__name__)
 # Url that is used for testing confluence integration
 CONFLUENCE_TEST_URL: str = "/rest/api/user/current"
 CONFLUENCE_ERROR_MSG: str = "Access denied"
+ATTACHMENT_UPLOAD_URL_PATTERN: str = r"/child/attachment/?(\?.*)?$"
 
 
 class ConfluenceInput(BaseModel):
@@ -62,8 +65,10 @@ class ConfluenceInput(BaseModel):
 
         For search/read operations, you MUST always get minimum fields and set max results, until users ask explicitly for more fields.
         For search/read operations you must generate CQL query string and pass it as params.
-        For file attachments, specify the file name(s) to attach: {"file": "filename.ext"} for single file
-        or {"files": ["file1.ext", "file2.ext"]} for multiple files.
+        For file attachments (POST/PUT to .../child/attachment), specify the exact bare name(s) or exact workspace
+        path(s) (e.g. "reports/q1/out.json") of uploaded files or files generated in this conversation:
+        {"file": "report.json"} for single file
+        or {"files": ["file1.ext", "file2.ext"]} for multiple files. Names must match exactly.
 
         Dict format examples (RECOMMENDED):
         - Simple search: params={"cql": "space = DEV", "limit": 10}
@@ -91,6 +96,8 @@ class GenericConfluenceTool(CodeMieTool, FileToolMixin):
     page_search_pattern: str = r"/rest/api/content/\d+"
     throw_truncated_error: bool = False
     page_action_prefix: str = "/rest/api/content"
+    # Injected by the toolkit service, bound to the current conversation and user; None where there is no conversation.
+    generated_files: GeneratedFileSource | None = None
 
     def is_safe(self, args: dict) -> bool:
         return self._http_method_is_safe(args)
@@ -162,13 +169,8 @@ class GenericConfluenceTool(CodeMieTool, FileToolMixin):
     ):
         confluence = self._create_client()
 
-        if self._is_attachment_operation(relative_url):
-            all_files = self._resolve_files()
-            if all_files:
-                payload_params = parse_payload_params(params)
-                requested_files = self._filter_requested_files(all_files, payload_params)
-                if requested_files:
-                    return self._handle_file_attachments(confluence, relative_url, params, requested_files)
+        if self._is_attachment_operation(method, relative_url):
+            return self._handle_file_attachments(confluence, relative_url, params)
 
         payload_params = parse_payload_params(params)
         if method == "GET":
@@ -209,60 +211,130 @@ class GenericConfluenceTool(CodeMieTool, FileToolMixin):
         if "type" not in data:
             raise AssertionError(CONFLUENCE_ERROR_MSG)
 
-    def _is_attachment_operation(self, relative_url: str) -> bool:
-        """Check if the operation is for file attachments."""
-        return "/child/attachment" in relative_url or "/attachment" in relative_url
+    def _is_attachment_operation(self, method: str, relative_url: str) -> bool:
+        """An upload is a POST/PUT to `.../child/attachment`, query string allowed."""
+        return method.upper() in ("POST", "PUT") and bool(re.search(ATTACHMENT_UPLOAD_URL_PATTERN, relative_url))
 
-    def _handle_file_attachments(
-        self,
-        confluence: Confluence,
-        relative_url: str,
-        params: Optional[str],
-        files_content: Dict[str, tuple],
-    ) -> str:
-        """
-        Handle file attachment operations for Confluence pages.
+    def _attachment_candidates(self) -> list[AttachmentCandidate]:
+        candidates: list[AttachmentCandidate] = []
+        source = self.generated_files
+        uploads = list(getattr(self.config, "input_files", None) or [])
+        # An upload is also registered as a workspace row pointing at the same blob; it counts as the upload only.
+        upload_blobs = {(getattr(f, "owner", None), f.name, f.mime_type) for f in uploads}
+        if source is not None:
+            for info in source.list_generated():
+                if info.blob in upload_blobs:
+                    continue
+                candidates.append(
+                    AttachmentCandidate(
+                        "generated",
+                        info.name,
+                        lambda info=info: source.read_generated(info),
+                        info.path or info.name,
+                        info.checksum,
+                        info.size,
+                    )
+                )
+        for file_obj in uploads:
+            candidates.append(AttachmentCandidate("uploaded", file_obj.name, file_obj.bytes_content))
+        return candidates
 
-        Args:
-            confluence: Confluence client instance
-            relative_url: The relative URL (used to extract page_id)
-            params: Optional JSON params (can contain page_id)
-            files_content: Dictionary mapping file names to (content, mime_type) tuples
+    @staticmethod
+    def _requested_file_names(payload_params: dict[str, Any], candidates: list[AttachmentCandidate]) -> list[str]:
+        from langchain_core.tools import ToolException
 
-        Returns:
-            str: Response message indicating success or failure
+        raw = payload_params.get("files") or payload_params.get("file")
+        names = [raw] if isinstance(raw, str) else raw
+        if not names or not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
+            available = ", ".join(sorted({str(c.path) for c in candidates})) or "none"
+            raise ToolException(
+                'Name the file(s) to attach in params: {"file": "name.ext"} or {"files": ["a.ext", "b.ext"]}. '
+                f"Available files: {available}."
+            )
+        return names
 
-        Raises:
-            ToolException: If files cannot be loaded or attachment fails
+    def _handle_file_attachments(self, confluence: Confluence, relative_url: str, params: str | None) -> str:
+        """Attach uploaded or conversation-generated files, matched by exact path or bare name, to a Confluence page.
+
+        Never reports success for a failure and never falls back to a plain request.
         """
         from langchain_core.tools import ToolException
 
         page_id = self._extract_page_id(relative_url, params)
-
         try:
-            results = []
-            for file_name, (content, mime_type) in files_content.items():
+            candidates = self._attachment_candidates()
+        except ToolException:
+            raise
+        except Exception as e:
+            raise ToolException(f"Could not list files available to attach: {e}") from e
+        names = list(dict.fromkeys(self._requested_file_names(parse_payload_params(params), candidates)))
+
+        matched = []
+        for name in names:
+            try:
+                matched.append(match_attachment(name, candidates))
+            except ToolException:
+                if self.generated_files is None and not any(c.name == name for c in candidates):
+                    raise ToolException(
+                        f"File '{name}' was not found among the uploaded files, and generated files are not "
+                        "available here."
+                    ) from None
+                raise
+
+        # One candidate can be reached by several names (bare name and path); upload it once.
+        matched = list({id(c): c for c in matched}.values())
+        by_basename: dict[str, AttachmentCandidate] = {}
+        for candidate in matched:
+            if candidate.name in by_basename:
+                raise ToolException(
+                    f"Files '{by_basename[candidate.name].path or candidate.name}' and "
+                    f"'{candidate.path or candidate.name}' share the name '{candidate.name}' and would overwrite "
+                    "each other on the page. Attach them one at a time."
+                )
+            by_basename[candidate.name] = candidate
+
+        results: list[str] = []
+        for index, candidate in enumerate(matched):
+            name = candidate.name
+            try:
+                content = candidate.load()
+                if not content:
+                    raise ToolException(f"File '{name}' is empty and was not attached.")
                 response = confluence.attach_content(
                     content=content,
-                    name=file_name,
-                    content_type=mime_type,
+                    name=name,
+                    content_type=mimetypes.guess_type(name)[0] or "application/octet-stream",
                     page_id=page_id,
                     comment=None,
                 )
-
-                if response:
-                    attachment_id = response.get("id", "unknown")
-                    attachment_name = response.get("title", file_name)
-                    results.append(
-                        f"Successfully attached file '{attachment_name}' (ID: {attachment_id}) to page {page_id}"
+                if not response:
+                    raise ToolException(
+                        f"Failed to attach file '{name}' to page {page_id}: no response from Confluence API."
                     )
-                else:
-                    raise ToolException(f"Failed to attach file '{file_name}': No response from Confluence API")
+            except ToolException as e:
+                raise ToolException(f"{e}{self._attach_outcome(results, matched[index + 1 :])}") from e
+            except Exception as e:
+                raise ToolException(
+                    f"Failed to attach file '{name}' to page {page_id}: {e}."
+                    f"{self._attach_outcome(results, matched[index + 1 :])}"
+                ) from e
+            results.append(
+                (
+                    name,
+                    f"Successfully attached file '{response.get('title', name)}' "
+                    f"(ID: {response.get('id', 'unknown')}) to page {page_id}",
+                )
+            )
 
-            return "\n".join(results)
+        return "\n".join(r[1] for r in results)
 
-        except Exception as e:
-            raise ToolException(f"Failed to attach files to page {page_id}: {str(e)}")
+    @staticmethod
+    def _attach_outcome(done: list[tuple[str, str]], remaining: list[AttachmentCandidate]) -> str:
+        """What a failed multi-file call already attached and never tried, so a retry covers only the rest."""
+        note = f" Already attached: {', '.join(name for name, _ in done)}." if done else ""
+        if remaining:
+            note += f" Not attempted: {', '.join(c.name for c in remaining)}."
+        return note
 
     def _extract_page_id(self, relative_url: str, params: Optional[str]) -> str:
         """

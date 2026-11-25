@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Let agent-generated files (e.g. JSON) be uploaded as Confluence attachments via the Confluence tool, with strict name matching, method check and clear failure reporting (EPMCDME-16431).",
+  "generated": "2026-11-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Confluence GenericConfluenceTool and tool description, ToolkitService file injection, and a new handoff from AgentWorkspaceService/ArtifactPublisherService generated files; shared FileToolMixin is deliberately left untouched." },
+    { "dimension": "technical_risk", "reason": "No existing non-sandbox tool receives generated files (closest pattern is CodeExecutorTool deps, which does not cover name matching or current-turn files that exist only in the workspace). The AC enumerates error and edge cases (not found, empty file, partial success, method check) and the attachment path has no test template. Shared mixin has 13 consumers and the script bridge shares _perform." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped for enumerated edge/error cases with no existing attachment test template",
+    "Technical Risk reflects shared FileToolMixin / script-bridge exposure (kept untouched by decision)"
+  ],
+  "split_recommendation": null
+}

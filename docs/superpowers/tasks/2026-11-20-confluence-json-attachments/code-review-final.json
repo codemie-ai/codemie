@@ -1,0 +1,369 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved check round; all 7 findings resolved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User chose to fix all 7 findings (CR-001..CR-007) now"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved check round; all 7 findings resolved"
+    }
+  ],
+  "reviewed_head": "a2e7324d995142fc822f737ba677dc3583545079",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All 7 fix-set findings verified against current source: CR-001 and CR-002 (blocking) resolved; CR-003..CR-007 advisories resolved. Rule 10 confirmed against the installed atlassian attach_content (filename lookup, POST to /{id}/data). Tests were not executed here (Stage 7 owns execution).",
+  "confidence": "medium",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 2,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie_tools/core/project_management/confluence/tools.py",
+      "line": 41,
+      "title": "Upload URL pattern exceeds Rule 1 scope",
+      "problem": "ATTACHMENT_UPLOAD_URL_PATTERN r'/child/attachment(/\\d+/data)?/?$' also treats PUT .../attachment/{id}/data as an upload, which Rule 1 does not list, while \\d+ will not match real Confluence attachment ids such as 'att123', so the update form falls through to a plain request. Tests only use a numeric id.",
+      "impact": "Attachment-update PUTs with real ids bypass the file handling while numeric ones are intercepted; behavior diverges from the spec on a live path.",
+      "recommendation": "Make the pattern match Rule 1 and decide explicitly on the /{id}/data form with a non-digit-only id (e.g. [^/]+); add tests using a real attachment id.",
+      "status": "resolved",
+      "check_notes": "Pattern now /child/attachment/?(\\?.*)?$; the /{id}/data update form is no longer an upload, so ids like att123 are consistent; tests cover both.",
+      "fix": {
+        "change": "Upload pattern narrowed to POST/PUT .../child/attachment; /{id}/data update form no longer intercepted",
+        "test": "test_attachment_update_form_is_not_an_upload"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie_tools/core/project_management/confluence/tools.py",
+      "line": 280,
+      "title": "Same-name attach versioning unverified",
+      "problem": "Spec Rule 10 requires that attaching a same-named file adds a new version, verified against the installed atlassian library. No code, test or note settles same-name versioning, request timeout or the update URL for confluence.attach_content.",
+      "impact": "A required spec behavior is partial; re-attaching a regenerated JSON may fail or behave differently than specified.",
+      "recommendation": "Verify attach_content behavior with an existing name in the installed atlassian library, add a test or documented note settling Rule 10.",
+      "status": "resolved",
+      "check_notes": "New test pins atlassian attach_content behavior; installed library source confirms filename lookup and POST to .../{id}/data (new version).",
+      "fix": {
+        "change": "Rule 10 settled: installed atlassian attach_content looks up same-name attachment and posts a new version to /{id}/data; pinned by a test",
+        "test": "test_same_name_attach_updates_existing_attachment_via_library"
+      },
+      "disposition": {
+        "rationale": "recommended action accepted",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie/service/generated_files_reader.py",
+      "line": 69,
+      "title": "Size 0/None row bypasses size limit",
+      "problem": "read_generated checks info.size, built as row.size or 0; a row with missing size but a large blob skips the limit check and is fully read.",
+      "impact": "Trigger is narrow: only workspace rows lacking a stored size; no workaround needed otherwise.",
+      "recommendation": "Also check len(content) against the limit after read.",
+      "status": "resolved",
+      "check_notes": "Post-read len(data) limit check added with test.",
+      "fix": {
+        "change": "read_generated also checks len(content) against the limit",
+        "test": "test_missing_size_row_still_limited_after_read"
+      },
+      "disposition": {
+        "rationale": "user chose to fix all 7 findings now",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie_tools/base/generated_files.py",
+      "line": 76,
+      "title": "Naive vs aware datetime in newest-wins",
+      "problem": "max(generated, key=lambda c: c.updated or datetime.min) mixes naive datetime.min with possibly tz-aware updated values.",
+      "impact": "TypeError only when same-name duplicates mix a None update date with a tz-aware one; whether update_date is tz-aware was unconfirmed.",
+      "recommendation": "Use key=lambda c: c.updated.timestamp() if c.updated else float('-inf').",
+      "status": "resolved",
+      "check_notes": "Key uses timestamp() or -inf; mixed naive/aware test added.",
+      "fix": {
+        "change": "newest-wins key uses timestamp, missing date ranks oldest",
+        "test": "test_match_generated_duplicates_mixed_naive_aware_and_missing_dates"
+      },
+      "disposition": {
+        "rationale": "user chose to fix all 7 findings now",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie_tools/core/project_management/confluence/tools.py",
+      "line": 41,
+      "title": "Query string on upload URL skips upload path",
+      "problem": "The pattern is anchored with $ and does not allow a query string such as ?allowDuplicated=true.",
+      "impact": "Narrow trigger: model appends a query string; request falls through to a plain POST. Reachability unconfirmed.",
+      "recommendation": "Allow an optional query suffix: (\\?.*)?$.",
+      "status": "resolved",
+      "check_notes": "Optional query suffix allowed in pattern; test added.",
+      "fix": {
+        "change": "pattern allows optional query string",
+        "test": "test_query_string_on_upload_url_still_uploads"
+      },
+      "disposition": {
+        "rationale": "user chose to fix all 7 findings now",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie_tools/core/project_management/confluence/tools.py",
+      "line": 257,
+      "title": "Candidate listing errors escape raw",
+      "problem": "_attachment_candidates() calls source.list_generated() outside any try block in _handle_file_attachments.",
+      "impact": "A repository/DB failure surfaces as a raw exception instead of a clear attachment ToolException; rare trigger.",
+      "recommendation": "Wrap in try/except Exception and raise ToolException from e.",
+      "status": "resolved",
+      "check_notes": "Listing wrapped, raises ToolException; test added.",
+      "fix": {
+        "change": "candidate listing wrapped into ToolException",
+        "test": "test_listing_failure_is_a_tool_exception"
+      },
+      "disposition": {
+        "rationale": "user chose to fix all 7 findings now",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "advisory",
+      "file": "src/codemie_tools/core/project_management/confluence/tools.py",
+      "line": 258,
+      "title": "Repeated file name attaches twice",
+      "problem": "A files list repeating a name is not de-duplicated, so the same file is attached twice.",
+      "impact": "Creates a duplicate attachment version; only when the model repeats a name.",
+      "recommendation": "names = list(dict.fromkeys(names)).",
+      "status": "resolved",
+      "check_notes": "Names de-duplicated with dict.fromkeys; test added.",
+      "fix": {
+        "change": "requested names de-duplicated preserving order",
+        "test": "test_repeated_name_attached_once"
+      },
+      "disposition": {
+        "rationale": "user chose to fix all 7 findings now",
+        "source": "hitl",
+        "action": "fix-now"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Rule 1: upload path only for POST/PUT to .../child/attachment; GET, DELETE and other URLs unchanged",
+      "status": "partial",
+      "notes": "Pattern also treats PUT .../attachment/{id}/data as upload; \\d+ will not match real ids like att123"
+    },
+    {
+      "kind": "spec",
+      "item": "Rule 2: generated file = produced in current conversation incl. earlier messages",
+      "status": "pass",
+      "notes": "test_earlier_turn_file_works"
+    },
+    {
+      "kind": "spec",
+      "item": "Rule 3: exact bare name, strict match, no all-files fallback, keeps name and bytes",
+      "status": "pass",
+      "notes": "match_attachment exact equality"
+    },
+    {
+      "kind": "spec",
+      "item": "Rule 4: name matching both upload and generated is refused, error lists both",
+      "status": "pass",
+      "notes": "test_clash_refused_listing_both"
+    },
+    {
+      "kind": "spec",
+      "item": "Rule 5: several generated files with same name, newest wins",
+      "status": "pass",
+      "notes": "test_match_generated_duplicates_newest_wins"
+    },
+    {
+      "kind": "spec",
+      "item": "Rule 6: unmatched name returns not-found error listing available names",
+      "status": "pass",
+      "notes": "test_not_found_lists_names"
+    },
+    {
+      "kind": "spec",
+      "item": "Rule 7: attachment POST/PUT with no file named or no files available gives explicit error",
+      "status": "pass",
+      "notes": "test_no_file_param_errors_with_available_names"
+    },
+    {
+      "kind": "spec",
+      "item": "Rule 8: failures are plain errors naming the failed file",
+      "status": "pass",
+      "notes": "ToolException with file name"
+    },
+    {
+      "kind": "spec",
+      "item": "Rule 9: no conversation gives 'generated files are not available here'; uploads still work",
+      "status": "pass",
+      "notes": "test_generated_files_none_message"
+    },
+    {
+      "kind": "spec",
+      "item": "Rule 10: same-name attachment adds new version, verified against installed atlassian library",
+      "status": "partial",
+      "notes": "No test or code verifies same-name versioning, timeout or update URL"
+    },
+    {
+      "kind": "spec",
+      "item": "Rule 11: tool description and ConfluenceInput.params mention generated files by exact name",
+      "status": "pass",
+      "notes": "test_description_mentions_generated_files_and_exact_name"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach: read-only Protocol in codemie_tools/base; tool never imports codemie.service",
+      "status": "pass",
+      "notes": "GeneratedFileSource in base/generated_files.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach: adapter over AgentWorkspaceService, not get_workspace_input_files",
+      "status": "partial",
+      "notes": "Adapter wraps repository and FileRepositoryFactory directly; avoids loading all bytes"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach: conversation id and user bound at ToolkitService build time",
+      "status": "pass",
+      "notes": "toolkit_service.py binding test"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach: size checked before reading against FILES_STORAGE_MAX_UPLOAD_SIZE",
+      "status": "pass",
+      "notes": "test_oversize_file_refused_without_read"
+    },
+    {
+      "kind": "spec",
+      "item": "Approach: matching is one Confluence-independent unit; FileToolMixin untouched",
+      "status": "pass",
+      "notes": "match_attachment in base/generated_files.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals: no change to core/utils.py collector, no REST/SDK/UI change",
+      "status": "pass",
+      "notes": "changes confined to listed paths"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1: agent with conversation can attach a file generated this turn or earlier",
+      "status": "pass",
+      "notes": "list at call time via source.list_generated"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: attachment keeps generated file's name and content",
+      "status": "pass",
+      "notes": "attach_content name and content asserted"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: not found, clash, failure, unavailable each give clear message",
+      "status": "pass",
+      "notes": "covered by tests; isolation tested at adapter level"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: text POST/PUT and GET behavior unchanged",
+      "status": "pass",
+      "notes": "test_other_requests_use_plain_request"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: uploads still attachable; unmatched name is error, no attach-all",
+      "status": "pass",
+      "notes": "test_uploaded_file_still_attaches"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: GET and DELETE on attachment URLs not treated as uploads",
+      "status": "pass",
+      "notes": "method check in _is_attachment_operation"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 5 subjects in the range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new concerns live in new modules; typed with modern unions and license headers; follows existing Optional style"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "no security-practices guide in repo; no concrete security issue seen; source bound server-side, exact name matching"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Edge-case, acceptance and standards ran; spec Rule 10 (same-name versioning) is unverified and Rule 1's URL pattern deviates (partial), so 2 blocking; 5 advisory (inside findings total), 0 deferred, 3 dismissed. Reachability was checked only against the Confluence tool and workspace adapter windows, not all callers.",
+    "confidence": "medium",
+    "risk_flags": []
+  }
+}
