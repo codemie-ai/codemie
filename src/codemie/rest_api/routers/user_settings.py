@@ -244,6 +244,9 @@ def update_user_setting(request: SettingRequest, setting_id: str, user: User = D
         # When the project changes, run the field update and the move in one transaction so they
         # are atomic — see the matching comment in update_project_setting. Field updates still run
         # before the move so the row carries the new alias for the transfer's locked collision check.
+        if project_changed:
+            SettingsTransferService.ensure_transferable(existing_setting)
+
         transaction = transactional_session() if project_changed else nullcontext()
         with transaction:
             SettingsService.update_settings(credential_id=setting_id, request=request, user_id=user.id)

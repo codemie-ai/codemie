@@ -53,6 +53,7 @@ class SettingsTransferService:
     )
 
     _INVALID_TRANSFER_REQUEST = "Invalid transfer request"
+    _RESERVED_IDENTIFIERS = "Reserved integration identifiers"
 
     # Alias prefixes owned by other subsystems; rows carrying them are never transferred.
     SUBSYSTEM_MANAGED_PREFIXES = (
@@ -109,7 +110,7 @@ class SettingsTransferService:
                 reserved_str = ", ".join(sorted(str(a) for a in reserved))
                 raise ExtendedHTTPException(
                     code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    message="Reserved integration identifiers",
+                    message=cls._RESERVED_IDENTIFIERS,
                     details=(
                         f"These aliases are managed by internal subsystems and cannot be transferred: {reserved_str}."
                     ),
@@ -376,6 +377,17 @@ class SettingsTransferService:
             session.add(datasource)
 
     @classmethod
+    def ensure_transferable(cls, setting: Settings) -> None:
+        """Refuse a single-row transfer of a row owned by another subsystem."""
+        if cls._is_subsystem_managed(setting.alias):
+            raise ExtendedHTTPException(
+                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message=cls._RESERVED_IDENTIFIERS,
+                details=f"This alias is managed by an internal subsystem and cannot be transferred: {setting.alias}.",
+                help="Choose an integration that is not managed by an internal subsystem.",
+            )
+
+    @classmethod
     def transfer_setting(
         cls, setting_id: str, target_project_name: str, mode: TransferMode = TransferMode.MOVE
     ) -> TransferItem:
@@ -388,6 +400,9 @@ class SettingsTransferService:
         inline outside a transaction.
         """
         setting = Settings.get_by_id(setting_id)
+
+        cls.ensure_transferable(setting)
+
         source_project_name = setting.project_name
 
         cls._validate_projects(source_project_name, target_project_name)

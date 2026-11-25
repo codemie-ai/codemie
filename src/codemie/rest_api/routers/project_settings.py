@@ -176,6 +176,9 @@ def update_project_setting(request: SettingRequest, setting_id: str, user: User 
         # row already carries the new alias when the transfer's locked collision check re-validates
         # it against the target project. update_settings also runs check_alias_unique against the
         # target up front, giving an actionable 409/422 before the move is attempted.
+        if project_changed:
+            SettingsTransferService.ensure_transferable(existing_setting)
+
         transaction = transactional_session() if project_changed else nullcontext()
         with transaction:
             SettingsService.update_settings(

@@ -741,6 +741,44 @@ async def test_update_user_setting_accepts_ms_teams(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "stored_alias",
+    ["__internal__IDE_abc", "codemie:project:test_project:category:premium", "Schedule_my-datasource"],
+)
+@patch("codemie.rest_api.routers.user_settings.Settings")
+@patch("codemie.rest_api.routers.user_settings.Ability")
+@patch('codemie.service.settings.settings.SettingsService.update_settings')
+@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_update_user_setting_refuses_rename_of_managed_row_with_project_change(
+    mock_authenticate, mock_get_setting_ability, mock_update_settings, mock_ability, mock_settings, stored_alias
+):
+    user = User(id="user123", username="testuser", project_names=["test_project", "second_project"])
+    user.is_admin = False
+    mock_authenticate.return_value = user
+    mock_get_setting_ability.return_value = object()
+    mock_ability.return_value.can.return_value = True
+    mock_settings.get_by_id.return_value.project_name = "test_project"
+    mock_settings.get_by_id.return_value.alias = stored_alias
+
+    request_data = {
+        "project_name": "second_project",
+        "alias": "ordinary-git",
+        "credential_type": "Git",
+        "credential_values": [{"key": "token", "value": "t"}],
+    }
+    transport = ASGITransport(app=app)
+
+    with pytest.raises(ExtendedHTTPException) as excinfo:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.put("/v1/settings/user/setting_123", headers={"user-id": "user123"}, json=request_data)
+
+    assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert stored_alias in excinfo.value.details
+    mock_update_settings.assert_not_called()
+
+
+@pytest.mark.anyio
 @patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
 async def test_create_user_setting_rejects_unknown_credential_type(mock_authenticate):
     """An unrecognized credential_type must fail request validation (422), not reach the service."""

@@ -367,6 +367,35 @@ async def test_update_project_setting_unchanged_for_project_typed_setting_of_oth
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "stored_alias",
+    ["__internal__IDE_abc", "codemie:project:test_project:category:premium", "Schedule_my-datasource"],
+)
+@patch("codemie.rest_api.routers.project_settings.Settings")
+@patch("codemie.rest_api.routers.project_settings.Ability")
+@patch('codemie.service.settings.settings.SettingsService.update_settings')
+@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_update_project_setting_refuses_rename_of_managed_row_with_project_change(
+    mock_authenticate, mock_get_ability, mock_update_settings, mock_ability, mock_settings, stored_alias
+):
+    from codemie.rest_api.models.settings import SettingType
+
+    mock_authenticate.return_value = _admin_user()
+    mock_ability.return_value.can.return_value = True
+    stored = _stored_setting(SettingType.PROJECT, "owner-a")
+    stored.alias = stored_alias
+    mock_settings.get_by_id.return_value = stored
+
+    with pytest.raises(ExtendedHTTPException) as excinfo:
+        await _put_project_setting(_git_update_payload("second_project"))
+
+    assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert stored_alias in excinfo.value.details
+    mock_update_settings.assert_not_called()
+
+
+@pytest.mark.anyio
 @patch("codemie.rest_api.routers.project_settings.logger")
 @patch("codemie.rest_api.routers.project_settings.Settings")
 @patch("codemie.service.aws_bedrock.bedrock_orchestration_service.BedrockOrchestratorService.delete_all_entities")

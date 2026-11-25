@@ -1,0 +1,87 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "deterministic",
+    "rationale": "CR-001 resolved per check verdict (confidence high, targeted-verifier ran): routers call ensure_transferable on the pre-update row; router tests cover rename plus project change."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "deterministic",
+      "rationale": "CR-001 (major, patch): guard in transfer_setting is bypassable by renaming a managed row to a non-reserved alias in the same PUT that changes project_name, because update_settings runs before transfer_setting. Roster: compact profile, edge-case ran; confidence low because acceptance lens could not run (no spec)."
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "deterministic",
+      "rationale": "CR-001 resolved per check verdict (confidence high, targeted-verifier ran): routers call ensure_transferable on the pre-update row; router tests cover rename plus project change."
+    }
+  ],
+  "reviewed_head": "bc3f22f9f862514605c8cf161e74a8ec2c352267",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "CR-001 is resolved: both PUT routers now call SettingsTransferService.ensure_transferable on the pre-update row (existing_setting) when project_changed, before update_settings can apply a new alias, and transfer_setting still re-checks; parametrized router tests cover the rename-plus-project-change case for the three managed alias kinds. Check round discovers no new findings and did not execute tests.",
+  "confidence": "low",
+  "check_confidence": "high",
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/settings_transfer_service.py",
+      "line": 391,
+      "title": "Guard bypassed by rename in same update request",
+      "problem": "transfer_setting checks _is_subsystem_managed(setting.alias) on the row as loaded inside the transaction. Both PUT /v1/settings/project/{id} and PUT /v1/settings/user/{id} run SettingsService.update_settings (which applies the new alias) before transfer_setting, so a request that renames a subsystem-managed row (__internal__, codemie:project:, Schedule_, budget-tracking alias) to a non-reserved alias while changing project_name sees only the new alias and the row is moved anyway.",
+      "impact": "The ticket's rule (managed rows must not move via the one-row transfer) can be evaded with a single request by a caller who may write the row; the managed row ends up in another project under an ordinary alias. Exploit requires a rename combined with a project change, and write access to the row; reachability of the PUT paths confirmed from the routers.",
+      "recommendation": "Evaluate _is_subsystem_managed on the pre-update alias: in both PUT routers check existing_setting.alias before update_settings when project_changed (or reject reserved-row edits in update_settings), keeping the guard in transfer_setting too. Add a regression test renaming a managed row while changing project_name.",
+      "status": "resolved",
+      "check_notes": "Both routers call ensure_transferable(existing_setting) pre-update when project_changed; ExtendedHTTPException re-raised as 422; router tests assert update_settings not called.",
+      "fix": {
+        "change": "Added SettingsTransferService.ensure_transferable; both PUT routers call it on the pre-update row before update_settings when project_changed; transfer_setting reuses it",
+        "test": "test_update_project_setting_refuses_rename_of_managed_row_with_project_change and test_update_user_setting_refuses_rename_of_managed_row_with_project_change"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards audit not part of this round's profile."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards audit not part of this round's profile."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards audit not part of this round's profile."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Acceptance, blind and verification-gap lenses did not run (compact profile / no spec), so confidence is low. The new guard in transfer_setting is bypassable: both PUT routers call update_settings (which writes the new alias) before transfer_setting, so renaming a managed row to a non-reserved alias while changing project_name still moves it. 0 deferred, 0 advisory, 0 dismissed.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

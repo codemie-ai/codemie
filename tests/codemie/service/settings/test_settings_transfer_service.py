@@ -845,6 +845,37 @@ class TestTransferSetting:
         assert result.id == "row-1"
         assert session.commit_calls == 1
 
+    @pytest.mark.parametrize(
+        ("alias", "credential_type"),
+        [
+            ("__internal__IDE_abc", CredentialTypes.JIRA),
+            ("codemie:project:source:category:premium_models", CredentialTypes.LITE_LLM),
+            ("Schedule_my-datasource", CredentialTypes.SCHEDULER),
+            ("project_member_budget_tracking_enabled", CredentialTypes.ENVIRONMENT_VARS),
+        ],
+    )
+    @patch.object(SettingsTransferService, "_apply")
+    @patch.object(SettingsTransferService, "_validate_projects")
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_by_id")
+    def test_refuses_subsystem_managed_alias(
+        self, mock_get_by_id, mock_validate_projects, mock_apply, alias, credential_type
+    ):
+        # Arrange
+        row = _setting(alias, credential_type, id_="row-1")
+        row.project_name = "source"
+        mock_get_by_id.return_value = row
+
+        # Act / Assert
+        with pytest.raises(ExtendedHTTPException) as excinfo:
+            SettingsTransferService.transfer_setting("row-1", "target")
+
+        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert excinfo.value.message == "Reserved integration identifiers"
+        assert alias in excinfo.value.details
+        mock_apply.assert_not_called()
+        mock_validate_projects.assert_not_called()
+        assert row.project_name == "source"
+
 
 class TestApplyDoesNotLeakOrmState:
     @patch("codemie.service.settings.settings_transfer_service.get_session")

@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Make SettingsTransferService.transfer_setting refuse subsystem-managed rows like the bulk transfer, keep ordinary rows moving, and add regression tests (EPMCDME-17677).",
+  "generated": "2026-11-24T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 1, "label": "XS" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 9,
+  "size": "XS",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "One method (SettingsTransferService.transfer_setting) in one service class; the rule _is_subsystem_managed already exists in the same class. Both PUT routers re-raise ExtendedHTTPException unchanged, so they need no edits." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the bulk _select_candidates reserved-alias 422 (ExtendedHTTPException with message/details/help), which covers the same guard and the same alias set. The check must run before _validate_projects/_apply so nothing is written; the callers' transactional_session rolls back the preceding field update. The enumerated alias cases are covered by existing mock-based test templates (_setting, _FakeSession, bulk tests with the three representative aliases)." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
