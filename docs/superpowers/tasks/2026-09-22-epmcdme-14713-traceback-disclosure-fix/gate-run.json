@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "branch": "epmcdme-14713/fix-exception-middleware-traceback",
+  "head": "6e987b08f505f419d87a35c464fbad36856557a4",
+  "runner": "poetry",
+  "started_at": "2026-09-22T15:06:00Z",
+  "completed_at": "2026-09-22T15:06:52Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9667,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 16120,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4397,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 1853,
+      "command": "make gitleaks",
+      "exit_code": 1,
+      "notes": "Windows Git Bash + Docker volume mount path mapping broken: 'unable to load gitleaks config, err: open C:/Program Files/Git/workspace/.gitleaks.toml: no such file or directory'. Docker is running but $(pwd) in Git Bash resolves to a Windows path Docker cannot translate. Enable by running from WSL or a Linux CI runner."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": null,
+      "notes": "Same Windows Docker path mapping issue as the gitleaks guide gate; validate_secrets.sh uses the same Docker volume mount pattern. Enable in WSL or Linux CI."
+    },
+    {
+      "id": "codemie-commit-msg",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh",
+      "exit_code": null,
+      "notes": "Commit-msg hook validates EPMCDME-<n>: prefix; not applicable outside an active git commit operation."
+    },
+    {
+      "id": "codemie-pre-push",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": null,
+      "notes": "Opt-in only: skips unless CODEMIE_PREPUSH_ENABLED=true. Output: '[pre-push] CODEMIE_PREPUSH_ENABLED=false -> skipping heavy checks.' Runs pytest + sonar-local. Enable with CODEMIE_PREPUSH_ENABLED=true before push."
+    }
+  ],
+  "failures": {}
+}

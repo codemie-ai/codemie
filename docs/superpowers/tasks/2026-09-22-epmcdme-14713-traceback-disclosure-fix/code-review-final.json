@@ -1,0 +1,74 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance skipped (no-spec, no ArtifactRef); confidence capped at low. Four patch findings: double-logging in local mode before re-raise (CR-001), `raise e` resets traceback to handler instead of original exception site (CR-002), `request_id: null` key emitted in non-local 500 JSON when uuid is absent (CR-003, reachability uncertain), and missing Apache 2.0 license header in the new test file that will fail the `make license-check` gate (CR-004, standards). One deferred: CORS headers absent on local re-raised exceptions (pre-existing middleware ordering, not introduced by this change; see code-review-deferred.md). Six candidates dismissed as false positives after source verification.",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "Single commit 'EPMCDME-14713: Remove traceback disclosure from global exception middleware' matches the documented EPMCDME-####: Description format exactly."
+    },
+    {
+      "kind": "code-quality",
+      "status": "fail",
+      "notes": "New file tests/codemie/rest_api/test_handle_exceptions.py has no Apache 2.0 license header. The guide requires all new source files to carry the header; tests/conftest.py (modified in the same change) and all other test files in the repo carry it. The new file starts directly with 'from __future__ import annotations'."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "The change removes traceback disclosure from the HTTP 500 response body, replacing it with a generic message plus a request_id correlation token. The full traceback is retained in server logs via logger.error(e, exc_info=True), which is correct. No credentials are logged, no untrusted input normalization introduced, and no auth/authz regressions. The change is a net security improvement."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/main.py",
+      "line": 1082,
+      "title": "Logger fires before local re-raise, causing double-log",
+      "problem": "`logger.error(e, exc_info=True)` at line 1082 runs unconditionally before the `if config.is_local: raise e` branch. In local mode the exception is re-raised after logging, and the ASGI server (uvicorn) logs the propagated exception a second time.",
+      "impact": "Local development logs contain duplicate error entries for every unhandled exception, adding noise and potentially confusing developers correlating logs to a request.",
+      "recommendation": "Move `logger.error` inside the non-local branch only: `if config.is_local: raise` (bare) `else: logger.error(e, exc_info=True); return JSONResponse(...)`. This eliminates the double-log and also fixes CR-002 at the same time."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/main.py",
+      "line": 1085,
+      "title": "`raise e` resets traceback to handler line",
+      "problem": "Line 1085 uses `raise e` instead of bare `raise`. Python's `raise <expr>` form resets the traceback to the `raise` statement itself, discarding the original call chain.",
+      "impact": "In local mode the printed traceback ends at `main.py:1085` rather than the actual exception origin; developers must infer where the exception was originally raised, defeating the purpose of the local re-raise path.",
+      "recommendation": "Replace `raise e` with bare `raise` to preserve the full original traceback chain."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/main.py",
+      "line": 1097,
+      "title": "Null `request_id` key emitted in 500 JSON when uuid absent",
+      "problem": "`request_id = getattr(request.state, 'uuid', None)` can be `None` if `configure_logging` threw before setting `request.state.uuid`, or if the middleware stack is reconfigured. The value is included in the response unconditionally as `\"request_id\": null`. Reachability is uncertain given current middleware ordering (configure_logging reliably sets uuid before handle_exceptions can catch an exception), but the null key is still emitted when the edge case fires.",
+      "impact": "Clients that rely on `request_id` presence for correlation receive `null`, which is indistinguishable from an intentionally absent key and leaks that the tracing middleware did not run.",
+      "recommendation": "Generate a fallback UUID when uuid is absent: `request_id = getattr(request.state, 'uuid', None) or str(uuid.uuid4())`, or conditionally omit the key: include `'request_id': request_id` in `content` only when `request_id` is not `None`."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/test_handle_exceptions.py",
+      "line": 1,
+      "title": "Missing Apache 2.0 license header in new test file",
+      "problem": "The new file begins directly with `from __future__ import annotations` with no copyright/license block. The code-quality guide requires all new source files to carry the Apache 2.0 header; every other test file in the repo, including the modified `tests/conftest.py`, carries it.",
+      "impact": "The `make license-check` gate will fail on this file, blocking the pipeline.",
+      "recommendation": "Prepend the Apache 2.0 header block used in `tests/conftest.py` (lines 1-13) to the top of `tests/codemie/rest_api/test_handle_exceptions.py`, then verify with `make license-check`."
+    }
+  ]
+}

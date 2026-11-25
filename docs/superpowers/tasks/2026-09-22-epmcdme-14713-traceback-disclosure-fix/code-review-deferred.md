@@ -1,0 +1,3 @@
+# Deferred from code review — 2026-09-22-epmcdme-14713-traceback-disclosure-fix (2026-09-22)
+
+- **CORS headers absent on local re-raised exceptions** — `src/codemie/rest_api/main.py` — When `config.is_local` is `True`, the bare `raise` propagates past `handle_exceptions` without returning a response; `CORSMiddleware` (registered at line 1295, outer of `handle_exceptions`) never gets to decorate the error, so browser clients in local mode receive no CORS headers on the 500. Pre-existing: `CORSMiddleware` has always been registered outside `handle_exceptions` in this app; the local re-raise path existed before this change and the CORS gap is inherent to that design, not introduced here.

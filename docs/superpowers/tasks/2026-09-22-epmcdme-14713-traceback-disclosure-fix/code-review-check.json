@@ -1,0 +1,10 @@
+{
+  "decision": "approve",
+  "rationale": "All 4 review findings addressed in follow-up commit (6e987b08): CR-001 double-log fixed by moving logger.error after is_local guard; CR-002 bare raise restores original traceback site; CR-003 null request_id key suppressed when uuid absent; CR-004 Apache 2.0 license header added to test file. 5 tests green after fixes.",
+  "confidence": "high",
+  "gate_id": "code-review.final",
+  "reviewed_head": "6e987b08f505f419d87a35c464fbad36856557a4",
+  "findings_resolved": ["CR-001", "CR-002", "CR-003", "CR-004"],
+  "source": "hitl",
+  "ts": "2026-09-22T15:04:29Z"
+}

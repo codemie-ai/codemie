@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "generated": "2026-09-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 3,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Security fix suppressing traceback/exception-message disclosure in the global handle_exceptions middleware. Pattern is well-established (return generic 500 body in non-local mode, re-raise locally), but the security red flag applies — bumped from S to M."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Single middleware function (handle_exceptions) in src/codemie/rest_api/main.py; no layer boundaries crossed beyond the API layer itself."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: security fix (traceback disclosure suppression) triggers the security/compliance red flag"
+  ],
+  "split_recommendation": null
+}

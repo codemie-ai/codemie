@@ -1692,6 +1692,10 @@ async def handle_exceptions(request: Request, call_next):
     try:
         return await call_next(request)
     except Exception as e:
+        # configure_logging runs in an inner task, so its context vars don't reach this handler.
+        # Re-bind the request id so the traceback log carries the id returned to the client.
+        if request_id := getattr(request.state, "uuid", None):
+            set_logging_info(uuid=request_id, user_id="", conversation_id="-")
         logger.error(e, exc_info=True)
 
         if config.is_local:
