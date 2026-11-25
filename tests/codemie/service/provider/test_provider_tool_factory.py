@@ -176,6 +176,104 @@ def test_build_tool_class_args_schema(tool_factory, tool_params):
     assert args_schema.__annotations__["param2"] is int
 
 
+def _args_json_schema(provider_config, toolkit_config, tool_config, args):
+    tool_config.args_schema = args
+    return ProviderToolFactory(provider_config, toolkit_config, tool_config)._generate_args_schema().model_json_schema()
+
+
+def test_args_schema_carries_description(provider_config, toolkit_config, tool_config):
+    schema = _args_json_schema(
+        provider_config,
+        toolkit_config,
+        tool_config,
+        {
+            "query": ProviderToolArgument(arg_type="String", required=True, description="Search query"),
+            "limit": ProviderToolArgument(arg_type="Number", required=False, description="Max results"),
+        },
+    )
+
+    assert schema["properties"]["query"]["description"] == "Search query"
+    assert schema["properties"]["limit"]["description"] == "Max results"
+    assert schema["required"] == ["query"]
+
+
+def test_args_schema_omits_empty_description(provider_config, toolkit_config, tool_config):
+    schema = _args_json_schema(
+        provider_config,
+        toolkit_config,
+        tool_config,
+        {"query": ProviderToolArgument(arg_type="String", required=True, description="")},
+    )
+
+    assert "description" not in schema["properties"]["query"]
+
+
+def test_args_schema_declares_enum_for_string(provider_config, toolkit_config, tool_config):
+    schema = _args_json_schema(
+        provider_config,
+        toolkit_config,
+        tool_config,
+        {
+            "doc_type": ProviderToolArgument(arg_type="String", required=True, enum=["passport", "certificate"]),
+            "language": ProviderToolArgument(arg_type="String", required=False, enum=["en", "az"]),
+        },
+    )
+
+    assert schema["properties"]["doc_type"]["type"] == "string"
+    assert schema["properties"]["doc_type"]["enum"] == ["passport", "certificate"]
+    assert {"type": "string", "enum": ["en", "az"]} in schema["properties"]["language"]["anyOf"]
+    assert schema["required"] == ["doc_type"]
+
+
+def test_args_schema_declares_enum_for_list_items(provider_config, toolkit_config, tool_config):
+    schema = _args_json_schema(
+        provider_config,
+        toolkit_config,
+        tool_config,
+        {"tags": ProviderToolArgument(arg_type="List", required=True, enum=["a", "b"])},
+    )
+
+    assert schema["properties"]["tags"]["type"] == "array"
+    assert schema["properties"]["tags"]["items"] == {"type": "string", "enum": ["a", "b"]}
+
+
+def test_args_schema_ignores_enum_for_non_string_types(provider_config, toolkit_config, tool_config):
+    schema = _args_json_schema(
+        provider_config,
+        toolkit_config,
+        tool_config,
+        {"count": ProviderToolArgument(arg_type="Number", required=True, enum=["1", "2"])},
+    )
+
+    assert schema["properties"]["count"]["type"] == "integer"
+    assert "enum" not in schema["properties"]["count"]
+
+
+def test_args_schema_enum_is_not_enforced_on_validation(provider_config, toolkit_config, tool_config):
+    tool_config.args_schema = {"doc_type": ProviderToolArgument(arg_type="String", required=True, enum=["passport"])}
+    args_schema = ProviderToolFactory(provider_config, toolkit_config, tool_config)._generate_args_schema()
+
+    assert args_schema(doc_type="other").doc_type == "other"
+
+
+def test_args_schema_without_description_and_enum_is_unchanged(provider_config, toolkit_config, tool_config):
+    schema = _args_json_schema(
+        provider_config,
+        toolkit_config,
+        tool_config,
+        {
+            "param1": ProviderToolArgument(arg_type="String", required=False, description=""),
+            "param2": ProviderToolArgument(arg_type="Number", required=True, description=""),
+        },
+    )
+
+    assert schema["properties"] == {
+        "param1": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None, "title": "Param1"},
+        "param2": {"title": "Param2", "type": "integer"},
+    }
+    assert schema["required"] == ["param2"]
+
+
 def test_build_sanitizes_datasource_tool_name(provider_config, toolkit_config, tool_config):
     datasource = MagicMock(spec=ProviderIndexInfo)
     datasource.repo_name = "My.Repo.Name"

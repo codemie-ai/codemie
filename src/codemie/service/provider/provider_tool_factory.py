@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pydantic import create_model, BaseModel
-from typing import Type, Optional
+from pydantic import create_model, BaseModel, Field, WithJsonSchema
+from typing import Annotated, Type, Optional
 from urllib3.exceptions import MaxRetryError
 
 from codemie_tools.base.codemie_tool import CodeMieTool
@@ -224,9 +224,13 @@ class ProviderToolFactory:
 
         for param_name, param_config in self.tool_config.args_schema.items():
             param_type = self.ARG_SCHEMA_TYPE_MAPPING.get(param_config.arg_type.value, str)
-            if param_config.required:
-                schema[param_name] = (param_type, ...)
-            else:
-                schema[param_name] = (Optional[param_type], None)
+            if param_config.enum and param_type in (str, list[str]):
+                enum_str = Annotated[str, WithJsonSchema({"type": "string", "enum": param_config.enum})]
+                param_type = enum_str if param_type is str else list[enum_str]
+            field = Field(
+                default=... if param_config.required else None,
+                description=param_config.description or None,
+            )
+            schema[param_name] = (param_type if param_config.required else Optional[param_type], field)
 
         return create_model("ArgsSchema", **schema)

@@ -1,0 +1,19 @@
+{
+  "reviewed_head": "2179a38f36779c47e7d134a2228116d3ebef1fc2",
+  "decision": "approve",
+  "rationale": "ProviderToolFactory._generate_args_schema now passes the provider-declared argument description and, for String / List arguments, the enum into the tool JSON schema; the enum is schema-only (values are still validated by the provider), required / optional handling and the schema of arguments without description / enum are unchanged.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "Non-empty argument description is carried into the JSON schema", "status": "pass", "notes": "Field(description=... or None); empty description omitted"},
+    {"kind": "story-ac", "item": "String argument with enum declared as string + enum; List argument as array with enum items", "status": "pass", "notes": "Annotated[str, WithJsonSchema]; tests for required, optional and list"},
+    {"kind": "story-ac", "item": "Required / optional handling and schema without description / enum unchanged", "status": "pass", "notes": "test_args_schema_without_description_and_enum_is_unchanged; existing annotation test passes"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "1 subject matches EPMCDME-####: Description"},
+    {"kind": "code-quality", "status": "pass", "notes": "1 method changed, type branch limited to str / list[str]"},
+    {"kind": "security", "status": "pass", "notes": "no logging; invocation request unchanged, only the schema exposed to the model"}
+  ],
+  "findings": [],
+  "deferred": []
+}
